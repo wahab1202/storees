@@ -1,0 +1,301 @@
+import { sql, and, or } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
+import type { FilterConfig, FilterRule, FilterGroup, Customer } from '@storees/shared'
+
+// ============ SQL-FIRST EVALUATION (batch) ============
+
+/**
+ * Translates a FilterConfig into a Drizzle SQL WHERE clause.
+ * Supports nested groups, product-based filters, and date filters.
+ */
+export function filterToSql(filters: FilterConfig): SQL {
+  const clauses = filters.rules.map(ruleOrGroupToSql)
+
+  if (clauses.length === 0) return sql`TRUE`
+  if (clauses.length === 1) return clauses[0]
+
+  return filters.logic === 'AND' ? and(...clauses)! : or(...clauses)!
+}
+
+function ruleOrGroupToSql(item: FilterRule | FilterGroup): SQL {
+  if ('type' in item && item.type === 'group') {
+    return groupToSql(item)
+  }
+  return ruleToSql(item as FilterRule)
+}
+
+function groupToSql(group: FilterGroup): SQL {
+  const clauses = group.rules.map(ruleToSql)
+  if (clauses.length === 0) return sql`TRUE`
+  if (clauses.length === 1) return clauses[0]
+  return group.logic === 'AND' ? and(...clauses)! : or(...clauses)!
+}
+
+function ruleToSql(rule: FilterRule): SQL {
+  const value = rule.value
+
+  // Product-based operators use special subqueries
+  switch (rule.operator) {
+    case 'has_purchased':
+      // value is product name (string) — check if customer has any order with this product
+      return sql`EXISTS (
+        SELECT 1 FROM orders
+        WHERE orders.customer_id = customers.id
+        AND orders.line_items::jsonb @> ${JSON.stringify([{ productName: value }])}::jsonb
+      )`
+    case 'has_not_purchased':
+      return sql`NOT EXISTS (
+        SELECT 1 FROM orders
+        WHERE orders.customer_id = customers.id
+        AND orders.line_items::jsonb @> ${JSON.stringify([{ productName: value }])}::jsonb
+      )`
+    case 'in_month': {
+      // value is month number (1-12)
+      return sql`EXISTS (
+        SELECT 1 FROM orders
+        WHERE orders.customer_id = customers.id
+        AND EXTRACT(MONTH FROM orders.created_at) = ${value}
+      )`
+    }
+    case 'in_year': {
+      // value is year (e.g. 2024)
+      return sql`EXISTS (
+        SELECT 1 FROM orders
+        WHERE orders.customer_id = customers.id
+        AND EXTRACT(YEAR FROM orders.created_at) = ${value}
+      )`
+    }
+    case 'before_date': {
+      const column = fieldToSqlExpression(rule.field)
+      return sql`${column} < ${value}::timestamptz`
+    }
+    case 'after_date': {
+      const column = fieldToSqlExpression(rule.field)
+      return sql`${column} > ${value}::timestamptz`
+    }
+    default:
+      break
+  }
+
+  const column = fieldToSqlExpression(rule.field)
+
+  switch (rule.operator) {
+    case 'is':
+      return sql`${column} = ${value}`
+    case 'is_not':
+      return sql`${column} != ${value}`
+    case 'greater_than':
+      return sql`${column} > ${value}`
+    case 'less_than':
+      return sql`${column} < ${value}`
+    case 'between': {
+      const [min, max] = value as [number, number]
+      return sql`${column} BETWEEN ${min} AND ${max}`
+    }
+    case 'contains':
+      return sql`${column} ILIKE ${'%' + String(value) + '%'}`
+    case 'begins_with':
+      return sql`${column} ILIKE ${String(value) + '%'}`
+    case 'ends_with':
+      return sql`${column} ILIKE ${'%' + String(value)}`
+    case 'is_true':
+      return sql`${column} = TRUE`
+    case 'is_false':
+      return sql`${column} = FALSE`
+    default:
+      throw new Error(`Unknown operator: ${rule.operator}`)
+  }
+}
+
+/**
+ * Maps filter field names to SQL column expressions.
+ * Computed fields use SQL functions on actual columns.
+ */
+function fieldToSqlExpression(field: string): SQL {
+  switch (field) {
+    // Direct columns
+    case 'total_orders':
+      return sql`total_orders`
+    case 'total_spent':
+      return sql`total_spent`
+    case 'avg_order_value':
+      return sql`avg_order_value`
+    case 'clv':
+      return sql`clv`
+    case 'email':
+      return sql`email`
+    case 'name':
+      return sql`name`
+    case 'phone':
+      return sql`phone`
+    case 'email_subscribed':
+      return sql`email_subscribed`
+    case 'sms_subscribed':
+      return sql`sms_subscribed`
+    case 'first_seen':
+      return sql`first_seen`
+    case 'last_seen':
+      return sql`last_seen`
+
+    // Computed fields
+    case 'days_since_last_order':
+      return sql`EXTRACT(DAY FROM NOW() - last_seen)`
+    case 'days_since_first_seen':
+      return sql`EXTRACT(DAY FROM NOW() - first_seen)`
+    case 'discount_order_percentage':
+      return sql`COALESCE((
+        SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE discount > 0) / NULLIF(COUNT(*), 0))
+        FROM orders WHERE orders.customer_id = customers.id
+      ), 0)`
+    case 'product_purchase_count':
+      // Used with a value parameter — but as a standalone field, returns total distinct products
+      return sql`COALESCE((
+        SELECT COUNT(DISTINCT elem->>'productName')
+        FROM orders, jsonb_array_elements(orders.line_items::jsonb) AS elem
+        WHERE orders.customer_id = customers.id
+      ), 0)`
+    case 'orders_in_last_30_days':
+      return sql`COALESCE((
+        SELECT COUNT(*) FROM orders
+        WHERE orders.customer_id = customers.id
+        AND orders.created_at > NOW() - INTERVAL '30 days'
+      ), 0)`
+    case 'orders_in_last_90_days':
+      return sql`COALESCE((
+        SELECT COUNT(*) FROM orders
+        WHERE orders.customer_id = customers.id
+        AND orders.created_at > NOW() - INTERVAL '90 days'
+      ), 0)`
+    case 'orders_in_last_365_days':
+      return sql`COALESCE((
+        SELECT COUNT(*) FROM orders
+        WHERE orders.customer_id = customers.id
+        AND orders.created_at > NOW() - INTERVAL '365 days'
+      ), 0)`
+
+    default:
+      throw new Error(`Unknown filter field: ${field}`)
+  }
+}
+
+// ============ JS EVALUATION (single customer) ============
+
+/**
+ * Evaluates a FilterConfig against a single Customer object in memory.
+ * Supports nested groups. Product/month filters fall back to false (use SQL path).
+ */
+export function evaluateFilter(filters: FilterConfig, customer: Customer): boolean {
+  const results = filters.rules.map(item => {
+    if ('type' in item && item.type === 'group') {
+      return evaluateGroup(item, customer)
+    }
+    return evaluateRule(item as FilterRule, customer)
+  })
+
+  return filters.logic === 'AND'
+    ? results.every(Boolean)
+    : results.some(Boolean)
+}
+
+function evaluateGroup(group: FilterGroup, customer: Customer): boolean {
+  const results = group.rules.map(rule => evaluateRule(rule, customer))
+  return group.logic === 'AND'
+    ? results.every(Boolean)
+    : results.some(Boolean)
+}
+
+function evaluateRule(rule: FilterRule, customer: Customer): boolean {
+  // Product/date operators can't be evaluated in-memory without order data
+  // These return false as fallback — SQL path is the authoritative evaluator
+  switch (rule.operator) {
+    case 'has_purchased':
+    case 'has_not_purchased':
+    case 'in_month':
+    case 'in_year':
+      return false // Requires DB subquery — use SQL evaluation
+    case 'before_date':
+    case 'after_date': {
+      const fieldValue = getFieldValue(rule.field, customer)
+      if (!fieldValue) return false
+      const fieldDate = new Date(fieldValue as string | Date).getTime()
+      const targetDate = new Date(rule.value as string).getTime()
+      return rule.operator === 'before_date' ? fieldDate < targetDate : fieldDate > targetDate
+    }
+    default:
+      break
+  }
+
+  const fieldValue = getFieldValue(rule.field, customer)
+  const target = rule.value
+
+  switch (rule.operator) {
+    case 'is':
+      return fieldValue === target
+    case 'is_not':
+      return fieldValue !== target
+    case 'greater_than':
+      return (fieldValue as number) > (target as number)
+    case 'less_than':
+      return (fieldValue as number) < (target as number)
+    case 'between': {
+      const [min, max] = target as [number, number]
+      const v = fieldValue as number
+      return v >= min && v <= max
+    }
+    case 'contains':
+      return String(fieldValue).toLowerCase().includes(String(target).toLowerCase())
+    case 'begins_with':
+      return String(fieldValue).toLowerCase().startsWith(String(target).toLowerCase())
+    case 'ends_with':
+      return String(fieldValue).toLowerCase().endsWith(String(target).toLowerCase())
+    case 'is_true':
+      return fieldValue === true
+    case 'is_false':
+      return fieldValue === false
+    default:
+      return false
+  }
+}
+
+function getFieldValue(field: string, customer: Customer): unknown {
+  switch (field) {
+    case 'total_orders':
+      return customer.totalOrders
+    case 'total_spent':
+      return customer.totalSpent
+    case 'avg_order_value':
+      return customer.avgOrderValue
+    case 'clv':
+      return customer.clv
+    case 'email':
+      return customer.email
+    case 'name':
+      return customer.name
+    case 'phone':
+      return customer.phone
+    case 'email_subscribed':
+      return customer.emailSubscribed
+    case 'sms_subscribed':
+      return customer.smsSubscribed
+    case 'first_seen':
+      return customer.firstSeen
+    case 'last_seen':
+      return customer.lastSeen
+    case 'days_since_last_order':
+      return daysSince(customer.lastSeen)
+    case 'days_since_first_seen':
+      return daysSince(customer.firstSeen)
+    case 'discount_order_percentage':
+    case 'product_purchase_count':
+    case 'orders_in_last_30_days':
+    case 'orders_in_last_90_days':
+    case 'orders_in_last_365_days':
+      return 0 // Requires DB — fallback for JS evaluation
+    default:
+      return undefined
+  }
+}
+
+function daysSince(date: Date): number {
+  return Math.floor((Date.now() - new Date(date).getTime()) / (1000 * 60 * 60 * 24))
+}
