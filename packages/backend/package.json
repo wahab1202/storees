@@ -20,6 +20,7 @@
     "@storees/segments": "*",
     "@storees/shared": "*",
     "bullmq": "^5.0.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.39.0",
@@ -29,6 +30,7 @@
     "resend": "^4.0.0"
   },
   "devDependencies": {
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/pg": "^8.11.0",

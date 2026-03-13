@@ -22,6 +22,9 @@ import {
   Mail,
   Clock,
   Megaphone,
+  MousePointerClick,
+  MailOpen,
+  Ban,
 } from 'lucide-react'
 import Link from 'next/link'
 import type { Campaign } from '@storees/shared'
@@ -36,8 +39,10 @@ const STATUS_COLORS: Record<Campaign['status'], string> = {
 
 const SEND_STATUS_COLORS: Record<string, string> = {
   pending: 'text-text-muted',
-  sent: 'text-green-600',
+  sent: 'text-blue-500',
+  delivered: 'text-green-600',
   failed: 'text-red-500',
+  bounced: 'text-orange-500',
 }
 
 export default function CampaignDetailPage() {
@@ -59,7 +64,7 @@ export default function CampaignDetailPage() {
       <div className="space-y-6">
         <Skeleton className="h-8 w-64" />
         <div className="grid grid-cols-3 gap-4">
-          {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-24" />)}
         </div>
         <Skeleton className="h-60 w-full" />
       </div>
@@ -86,9 +91,13 @@ export default function CampaignDetailPage() {
     deleteCampaign.mutate(id, { onSuccess: () => router.push('/campaigns') })
   }
 
-  const deliveryRate = campaign.totalRecipients > 0
-    ? Math.round((campaign.sentCount / campaign.totalRecipients) * 100)
-    : 0
+  // Compute rates
+  const total = campaign.totalRecipients
+  const deliveryRate = total > 0 ? (campaign.deliveredCount / total) * 100 : 0
+  const openRate = campaign.deliveredCount > 0 ? (campaign.openedCount / campaign.deliveredCount) * 100 : 0
+  const clickRate = campaign.openedCount > 0 ? (campaign.clickedCount / campaign.openedCount) * 100 : 0
+  const bounceRate = total > 0 ? (campaign.bouncedCount / total) * 100 : 0
+  const hasSent = campaign.status === 'sent' || campaign.status === 'sending'
 
   return (
     <div>
@@ -214,7 +223,7 @@ export default function CampaignDetailPage() {
             </div>
             <div className="border border-border rounded-lg overflow-hidden">
               <iframe
-                srcDoc={campaign.htmlBody}
+                srcDoc={campaign.htmlBody ?? ''}
                 title="Email Preview"
                 className="w-full h-[400px]"
                 sandbox="allow-same-origin"
@@ -224,43 +233,110 @@ export default function CampaignDetailPage() {
         </div>
       )}
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard
+      {/* Performance Metrics — MoEngage-style cards with progress bars */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+        <MetricCard
           icon={Users}
-          label="Total Recipients"
-          value={campaign.totalRecipients > 0 ? campaign.totalRecipients.toLocaleString() : '—'}
-          sub={campaign.segmentName ? `From "${campaign.segmentName}"` : 'No segment'}
+          label="Recipients"
+          value={total > 0 ? total.toLocaleString() : '—'}
+          sub={campaign.segmentName ? `"${campaign.segmentName}"` : undefined}
         />
-        <StatCard
+        <MetricCard
+          icon={Send}
+          label="Sent"
+          value={campaign.sentCount > 0 ? campaign.sentCount.toLocaleString() : '—'}
+          progress={total > 0 ? (campaign.sentCount / total) * 100 : 0}
+          progressColor="bg-blue-500"
+          sub={total > 0 ? `${Math.round((campaign.sentCount / total) * 100)}%` : undefined}
+        />
+        <MetricCard
           icon={CheckCircle}
           label="Delivered"
-          value={campaign.sentCount > 0 ? campaign.sentCount.toLocaleString() : '—'}
-          sub={campaign.sentCount > 0 ? `${deliveryRate}% delivery rate` : undefined}
+          value={campaign.deliveredCount > 0 ? campaign.deliveredCount.toLocaleString() : '—'}
+          progress={deliveryRate}
+          progressColor="bg-green-500"
+          sub={hasSent ? `${deliveryRate.toFixed(1)}%` : undefined}
           valueColor="text-green-600"
         />
-        <StatCard
-          icon={XCircle}
-          label="Failed"
-          value={campaign.failedCount > 0 ? campaign.failedCount.toLocaleString() : '—'}
-          valueColor={campaign.failedCount > 0 ? 'text-red-500' : undefined}
+        <MetricCard
+          icon={MailOpen}
+          label="Opened"
+          value={campaign.openedCount > 0 ? campaign.openedCount.toLocaleString() : '—'}
+          progress={openRate}
+          progressColor="bg-indigo-500"
+          sub={hasSent ? `${openRate.toFixed(1)}% open rate` : undefined}
+          valueColor="text-indigo-600"
         />
-        <StatCard
-          icon={Clock}
-          label={campaign.sentAt ? 'Sent At' : campaign.scheduledAt ? 'Scheduled' : 'Created'}
-          value={
-            campaign.sentAt
-              ? new Date(campaign.sentAt).toLocaleDateString()
-              : campaign.scheduledAt
-              ? new Date(campaign.scheduledAt).toLocaleDateString()
-              : new Date(campaign.createdAt).toLocaleDateString()
-          }
-          sub={
-            campaign.sentAt
-              ? new Date(campaign.sentAt).toLocaleTimeString()
-              : undefined
-          }
+        <MetricCard
+          icon={MousePointerClick}
+          label="Clicked"
+          value={campaign.clickedCount > 0 ? campaign.clickedCount.toLocaleString() : '—'}
+          progress={clickRate}
+          progressColor="bg-violet-500"
+          sub={hasSent ? `${clickRate.toFixed(1)}% CTR` : undefined}
+          valueColor="text-violet-600"
         />
+        <MetricCard
+          icon={Ban}
+          label="Bounced"
+          value={campaign.bouncedCount > 0 ? campaign.bouncedCount.toLocaleString() : '—'}
+          progress={bounceRate}
+          progressColor="bg-red-500"
+          sub={hasSent && campaign.bouncedCount > 0 ? `${bounceRate.toFixed(1)}%` : undefined}
+          valueColor={campaign.bouncedCount > 0 ? 'text-red-500' : undefined}
+        />
+      </div>
+
+      {/* Delivery funnel — visual progress */}
+      {hasSent && total > 0 && (
+        <div className="bg-white border border-border rounded-xl p-5 mb-6">
+          <h3 className="text-sm font-semibold text-heading mb-4">Delivery Funnel</h3>
+          <div className="space-y-3">
+            <FunnelBar label="Sent" count={campaign.sentCount} total={total} color="bg-blue-500" />
+            <FunnelBar label="Delivered" count={campaign.deliveredCount} total={total} color="bg-green-500" />
+            <FunnelBar label="Opened" count={campaign.openedCount} total={total} color="bg-indigo-500" />
+            <FunnelBar label="Clicked" count={campaign.clickedCount} total={total} color="bg-violet-500" />
+          </div>
+          {(campaign.failedCount > 0 || campaign.bouncedCount > 0 || campaign.complainedCount > 0) && (
+            <div className="mt-4 pt-4 border-t border-border flex items-center gap-6 text-xs">
+              {campaign.failedCount > 0 && (
+                <span className="text-red-500 flex items-center gap-1">
+                  <XCircle className="h-3.5 w-3.5" /> {campaign.failedCount} Failed
+                </span>
+              )}
+              {campaign.bouncedCount > 0 && (
+                <span className="text-orange-500 flex items-center gap-1">
+                  <Ban className="h-3.5 w-3.5" /> {campaign.bouncedCount} Bounced
+                </span>
+              )}
+              {campaign.complainedCount > 0 && (
+                <span className="text-red-600 flex items-center gap-1">
+                  <XCircle className="h-3.5 w-3.5" /> {campaign.complainedCount} Complaints
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Date/time info */}
+      <div className="flex items-center gap-6 mb-6 text-xs text-text-muted">
+        <span className="flex items-center gap-1.5">
+          <Clock className="h-3.5 w-3.5" />
+          Created {new Date(campaign.createdAt).toLocaleDateString()}
+        </span>
+        {campaign.sentAt && (
+          <span className="flex items-center gap-1.5">
+            <Send className="h-3.5 w-3.5" />
+            Sent {new Date(campaign.sentAt).toLocaleString()}
+          </span>
+        )}
+        {campaign.scheduledAt && !campaign.sentAt && (
+          <span className="flex items-center gap-1.5">
+            <Clock className="h-3.5 w-3.5" />
+            Scheduled for {new Date(campaign.scheduledAt).toLocaleString()}
+          </span>
+        )}
       </div>
 
       {/* Recipients table */}
@@ -277,7 +353,9 @@ export default function CampaignDetailPage() {
                 <tr>
                   <th className="px-5 py-2 text-left text-xs font-semibold text-text-muted">Email</th>
                   <th className="px-5 py-2 text-left text-xs font-semibold text-text-muted">Status</th>
-                  <th className="px-5 py-2 text-left text-xs font-semibold text-text-muted">Sent At</th>
+                  <th className="px-5 py-2 text-left text-xs font-semibold text-text-muted">Delivered</th>
+                  <th className="px-5 py-2 text-left text-xs font-semibold text-text-muted">Opened</th>
+                  <th className="px-5 py-2 text-left text-xs font-semibold text-text-muted">Clicked</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -290,7 +368,28 @@ export default function CampaignDetailPage() {
                       </span>
                     </td>
                     <td className="px-5 py-2.5 text-xs text-text-muted">
-                      {send.sentAt ? new Date(send.sentAt).toLocaleTimeString() : '—'}
+                      {send.deliveredAt ? (
+                        <span className="text-green-600 flex items-center gap-1">
+                          <CheckCircle className="h-3 w-3" />
+                          {new Date(send.deliveredAt).toLocaleTimeString()}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-5 py-2.5 text-xs text-text-muted">
+                      {send.openedAt ? (
+                        <span className="text-indigo-600 flex items-center gap-1">
+                          <MailOpen className="h-3 w-3" />
+                          {new Date(send.openedAt).toLocaleTimeString()}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-5 py-2.5 text-xs text-text-muted">
+                      {send.clickedAt ? (
+                        <span className="text-violet-600 flex items-center gap-1">
+                          <MousePointerClick className="h-3 w-3" />
+                          {new Date(send.clickedAt).toLocaleTimeString()}
+                        </span>
+                      ) : '—'}
                     </td>
                   </tr>
                 ))}
@@ -303,27 +402,67 @@ export default function CampaignDetailPage() {
   )
 }
 
-function StatCard({
+function MetricCard({
   icon: Icon,
   label,
   value,
   sub,
   valueColor,
+  progress,
+  progressColor,
 }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
   value: string
   sub?: string
   valueColor?: string
+  progress?: number
+  progressColor?: string
 }) {
   return (
-    <div className="bg-white border border-border rounded-xl p-5">
-      <div className="flex items-center gap-2 mb-3">
+    <div className="bg-white border border-border rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-2">
         <Icon className="h-4 w-4 text-text-muted" />
-        <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">{label}</span>
+        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wide">{label}</span>
       </div>
-      <p className={cn('text-2xl font-bold tabular-nums', valueColor ?? 'text-heading')}>{value}</p>
-      {sub && <p className="text-xs text-text-muted mt-1">{sub}</p>}
+      <p className={cn('text-xl font-bold tabular-nums', valueColor ?? 'text-heading')}>{value}</p>
+      {progress !== undefined && progress > 0 && (
+        <div className="mt-2 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+          <div
+            className={cn('h-full rounded-full transition-all', progressColor ?? 'bg-accent')}
+            style={{ width: `${Math.min(progress, 100)}%` }}
+          />
+        </div>
+      )}
+      {sub && <p className="text-[11px] text-text-muted mt-1">{sub}</p>}
+    </div>
+  )
+}
+
+function FunnelBar({
+  label,
+  count,
+  total,
+  color,
+}: {
+  label: string
+  count: number
+  total: number
+  color: string
+}) {
+  const pct = total > 0 ? (count / total) * 100 : 0
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-xs font-medium text-text-secondary w-16 text-right">{label}</span>
+      <div className="flex-1 h-6 bg-gray-50 rounded-md overflow-hidden relative">
+        <div
+          className={cn('h-full rounded-md transition-all', color)}
+          style={{ width: `${Math.max(pct, 1)}%`, opacity: pct > 0 ? 1 : 0.2 }}
+        />
+        <span className="absolute inset-0 flex items-center px-2 text-xs font-medium text-text-primary">
+          {count.toLocaleString()} ({pct.toFixed(1)}%)
+        </span>
+      </div>
     </div>
   )
 }

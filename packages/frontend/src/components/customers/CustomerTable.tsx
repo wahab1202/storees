@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@storees/shared'
@@ -17,6 +18,7 @@ type Props = {
   onSort: (field: CustomerListParams['sortBy']) => void
   expandedId: string | null
   onToggleExpand: (id: string) => void
+  domain?: string
 }
 
 type SortableColumn = {
@@ -49,7 +51,16 @@ function formatDate(date: Date | string): string {
   })
 }
 
-export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId, onToggleExpand }: Props) {
+export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId, onToggleExpand, domain }: Props) {
+  const activityLabel = domain === 'fintech' ? 'Transactions' : domain === 'saas' ? 'Events' : 'Orders'
+
+  function getActivityCount(customer: CustomerWithSegments): number {
+    if (domain === 'fintech') {
+      return Number((customer.metrics as Record<string, unknown>)?.total_transactions ?? 0)
+    }
+    return customer.totalOrders
+  }
+
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-surface-elevated">
       <table className="w-full text-sm">
@@ -71,7 +82,7 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
               </th>
             ))}
             <th className="px-4 py-3 font-medium text-text-secondary text-left">Segments</th>
-            <th className="px-4 py-3 font-medium text-text-secondary text-right">Orders</th>
+            <th className="px-4 py-3 font-medium text-text-secondary text-right">{activityLabel}</th>
           </tr>
         </thead>
         <tbody>
@@ -87,9 +98,13 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
               >
                 {/* Customer name + email */}
                 <td className="px-4 py-3">
-                  <div className="font-medium text-text-primary">
+                  <Link
+                    href={`/customers/${customer.id}`}
+                    className="font-medium text-text-primary hover:text-accent hover:underline transition-colors"
+                    onClick={e => e.stopPropagation()}
+                  >
                     {customer.name || 'Unknown'}
-                  </div>
+                  </Link>
                   {customer.email && (
                     <div className="text-xs text-text-muted mt-0.5">{customer.email}</div>
                   )}
@@ -128,9 +143,9 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
                   </div>
                 </td>
 
-                {/* Orders count */}
+                {/* Activity count */}
                 <td className="px-4 py-3 text-right text-text-secondary">
-                  {customer.totalOrders}
+                  {getActivityCount(customer)}
                 </td>
               </tr>
 

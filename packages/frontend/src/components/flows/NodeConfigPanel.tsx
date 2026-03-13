@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
+import { useDashboardStats } from '@/hooks/useDashboard'
 import type { Node } from '@xyflow/react'
 
 type NodeConfigPanelProps = {
@@ -10,20 +11,28 @@ type NodeConfigPanelProps = {
   onClose: () => void
 }
 
-const EVENT_OPTIONS = [
-  'cart_created',
-  'cart_updated',
-  'checkout_started',
-  'order_placed',
-  'order_fulfilled',
-  'order_cancelled',
-  'customer_created',
-  'customer_updated',
-  'enters_segment',
-  'exits_segment',
-]
+const EVENTS_BY_DOMAIN: Record<string, string[]> = {
+  ecommerce: [
+    'cart_created', 'cart_updated', 'checkout_started', 'order_placed',
+    'order_fulfilled', 'order_cancelled', 'customer_created', 'customer_updated',
+    'enters_segment', 'exits_segment',
+  ],
+  fintech: [
+    'transaction_completed', 'app_login', 'bill_payment_completed', 'kyc_verified',
+    'kyc_expired', 'loan_disbursed', 'emi_paid', 'emi_overdue',
+    'sip_started', 'card_activated', 'enters_segment', 'exits_segment',
+  ],
+  saas: [
+    'user_signup', 'feature_used', 'trial_expiring', 'subscription_started',
+    'subscription_cancelled', 'user_invited', 'enters_segment', 'exits_segment',
+  ],
+}
 
 export function NodeConfigPanel({ node, onUpdate, onClose }: NodeConfigPanelProps) {
+  const { data: statsData } = useDashboardStats()
+  const domain = statsData?.data.domainType ?? 'ecommerce'
+  const eventOptions = EVENTS_BY_DOMAIN[domain] ?? EVENTS_BY_DOMAIN.ecommerce
+
   if (!node) return null
 
   return (
@@ -41,13 +50,13 @@ export function NodeConfigPanel({ node, onUpdate, onClose }: NodeConfigPanelProp
       </div>
       <div className="p-4">
         {node.type === 'trigger' && (
-          <TriggerForm node={node} onUpdate={onUpdate} />
+          <TriggerForm node={node} onUpdate={onUpdate} eventOptions={eventOptions} />
         )}
         {node.type === 'delay' && (
           <DelayForm node={node} onUpdate={onUpdate} />
         )}
         {node.type === 'condition' && (
-          <ConditionForm node={node} onUpdate={onUpdate} />
+          <ConditionForm node={node} onUpdate={onUpdate} eventOptions={eventOptions} />
         )}
         {node.type === 'action' && (
           <ActionForm node={node} onUpdate={onUpdate} />
@@ -60,7 +69,7 @@ export function NodeConfigPanel({ node, onUpdate, onClose }: NodeConfigPanelProp
   )
 }
 
-function TriggerForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void }) {
+function TriggerForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void; eventOptions: string[] }) {
   const d = node.data as Record<string, unknown>
   const [event, setEvent] = useState((d.event as string) ?? '')
 
@@ -80,7 +89,7 @@ function TriggerForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, da
           className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
         >
           <option value="">Select event...</option>
-          {EVENT_OPTIONS.map(ev => (
+          {eventOptions.map((ev: string) => (
             <option key={ev} value={ev}>{formatEvent(ev)}</option>
           ))}
         </select>
@@ -136,7 +145,7 @@ function DelayForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data
   )
 }
 
-function ConditionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void }) {
+function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void; eventOptions: string[] }) {
   const d = node.data as Record<string, unknown>
   const [check, setCheck] = useState((d.check as string) ?? 'event_occurred')
   const [event, setEvent] = useState((d.event as string) ?? '')
@@ -176,7 +185,7 @@ function ConditionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, 
             className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
           >
             <option value="">Select event...</option>
-            {EVENT_OPTIONS.map(ev => (
+            {eventOptions.map((ev: string) => (
               <option key={ev} value={ev}>{formatEvent(ev)}</option>
             ))}
           </select>

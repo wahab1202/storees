@@ -286,7 +286,7 @@ export function AiChatPanel({ onApplyFilters }: AiChatPanelProps) {
           {/* Text input */}
           <input
             ref={inputRef}
-            value={input}
+            value={speech.isListening && speech.interimTranscript ? speech.interimTranscript : input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={speech.isListening ? 'Listening...' : 'Describe your segment...'}
@@ -309,7 +309,7 @@ export function AiChatPanel({ onApplyFilters }: AiChatPanelProps) {
 }
 
 const EXAMPLE_PROMPTS = [
-  'Customers who spent over ₹5000',
-  'Repeat buyers in the last 30 days',
-  'Email subscribers who haven\'t ordered recently',
+  'Customers with verified KYC and active SIPs',
+  'High-value customers with portfolio over 5 lakh',
+  'Dormant users who haven\'t transacted in 90 days',
 ]

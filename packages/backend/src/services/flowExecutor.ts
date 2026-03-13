@@ -109,6 +109,17 @@ export async function advanceTrip(tripId: string): Promise<void> {
       }
 
       case 'action': {
+        // Re-check trip status before executing — prevents sending after exit event race
+        const [freshTrip] = await db
+          .select({ status: flowTrips.status })
+          .from(flowTrips)
+          .where(eq(flowTrips.id, tripId))
+          .limit(1)
+        if (!freshTrip || freshTrip.status === 'exited' || freshTrip.status === 'completed') {
+          console.log(`Trip ${tripId} already ${freshTrip?.status}, skipping action`)
+          return
+        }
+
         const actionNode = currentNode as ActionNode
         await executeAction(actionNode, trip)
 
@@ -323,8 +334,8 @@ async function executeAction(
   if (template) {
     subject = subjectOverride
       ? interpolateTemplate(subjectOverride, templateContext)
-      : interpolateTemplate(template.subject, templateContext)
-    html = interpolateTemplate(template.htmlBody, templateContext)
+      : interpolateTemplate(template.subject ?? '', templateContext)
+    html = interpolateTemplate(template.htmlBody ?? '', templateContext)
   } else {
     // Fallback for missing template
     subject = subjectOverride

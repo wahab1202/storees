@@ -4,10 +4,11 @@ import { useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useCustomers } from '@/hooks/useCustomers'
 import { useSegments } from '@/hooks/useSegments'
+import { useDashboardStats } from '@/hooks/useDashboard'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CustomerTable } from '@/components/customers/CustomerTable'
 import { Pagination } from '@/components/customers/Pagination'
-import { Search, X } from 'lucide-react'
+import { Search, X, Users, UserCheck, UserPlus, DollarSign } from 'lucide-react'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import type { CustomerListParams } from '@storees/shared'
 
@@ -25,6 +26,8 @@ export default function CustomersPage() {
   const [searchInput, setSearchInput] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const { data: segmentsData } = useSegments()
+  const { data: statsData } = useDashboardStats()
+  const domain = statsData?.data.domainType
 
   const { data, isLoading, isError } = useCustomers(params)
 
@@ -56,6 +59,42 @@ export default function CustomersPage() {
           </span>
         }
       />
+
+      {/* Metric strip */}
+      {statsData?.data && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+          {[
+            { label: 'Total Customers', value: statsData.data.totalCustomers, icon: Users, color: 'text-blue-600 bg-blue-50' },
+            { label: 'Active (7d)', value: statsData.data.activeCustomers, icon: UserCheck, color: 'text-emerald-600 bg-emerald-50', change: statsData.data.activeChange },
+            { label: 'New This Week', value: statsData.data.newCustomers, icon: UserPlus, color: 'text-violet-600 bg-violet-50', change: statsData.data.newCustomersChange },
+            { label: 'Avg CLV', value: statsData.data.avgClv, icon: DollarSign, color: 'text-amber-600 bg-amber-50', isCurrency: true },
+          ].map(metric => {
+            const Icon = metric.icon
+            return (
+              <div key={metric.label} className="bg-white border border-border rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className={`p-1.5 rounded-lg ${metric.color}`}>
+                    <Icon className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="text-xs font-medium text-text-muted uppercase tracking-wider">{metric.label}</span>
+                </div>
+                <div className="flex items-end gap-2">
+                  <p className="text-xl font-bold text-heading tabular-nums">
+                    {metric.isCurrency
+                      ? `$${(metric.value / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                      : metric.value.toLocaleString()}
+                  </p>
+                  {metric.change !== undefined && metric.change !== 0 && (
+                    <span className={`text-xs font-medium mb-0.5 ${metric.change > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {metric.change > 0 ? '+' : ''}{metric.change.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Search bar + segment filter */}
       <div className="mb-4 flex gap-2 flex-wrap">
@@ -114,7 +153,7 @@ export default function CustomersPage() {
       ) : data && data.data.length === 0 ? (
         <div className="text-center py-20">
           <p className="text-text-secondary text-sm">
-            {params.search ? 'No customers match your search.' : 'No customers yet. Connect a Shopify store to sync data.'}
+            {params.search ? 'No customers match your search.' : 'No customers yet. Send events via the API to start syncing data.'}
           </p>
         </div>
       ) : data ? (
@@ -126,6 +165,7 @@ export default function CustomersPage() {
             onSort={handleSort}
             expandedId={expandedId}
             onToggleExpand={id => setExpandedId(expandedId === id ? null : id)}
+            domain={domain}
           />
           <Pagination
             page={data.pagination.page}

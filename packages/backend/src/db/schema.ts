@@ -20,7 +20,12 @@ export const projects = pgTable('projects', {
   shopifyDomain: varchar('shopify_domain', { length: 255 }).unique(),
   shopifyAccessToken: varchar('shopify_access_token', { length: 512 }),
   businessType: varchar('business_type', { length: 20 }).notNull().default('ecommerce'),
+  domainType: varchar('domain_type', { length: 20 }).notNull().default('ecommerce'),
+  // 'ecommerce' | 'fintech' | 'saas' | 'custom'
+  integrationType: varchar('integration_type', { length: 20 }).notNull().default('shopify'),
+  // 'shopify' | 'api_key' | 'stripe' | 'custom'
   webhookSecret: varchar('webhook_secret', { length: 255 }),
+  settings: jsonb('settings').default('{}'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -45,6 +50,7 @@ export const customers = pgTable('customers', {
   pushSubscribed: boolean('push_subscribed').notNull().default(false),
   whatsappSubscribed: boolean('whatsapp_subscribed').notNull().default(false),
   customAttributes: jsonb('custom_attributes').default('{}'),
+  metrics: jsonb('metrics').default('{}'), // Precomputed domain-specific metrics
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -93,14 +99,18 @@ export const events = pgTable('events', {
   customerId: uuid('customer_id').references(() => customers.id),
   eventName: varchar('event_name', { length: 100 }).notNull(),
   properties: jsonb('properties').default('{}'),
-  platform: varchar('platform', { length: 30 }).notNull(),
+  platform: varchar('platform', { length: 30 }).notNull(), // kept for backwards compat
+  source: varchar('source', { length: 30 }).notNull().default('api'),
+  // 'shopify_webhook' | 'api' | 'sdk' | 'sync' | 'system'
   sessionId: varchar('session_id', { length: 255 }),
+  idempotencyKey: varchar('idempotency_key', { length: 255 }),
   timestamp: timestamp('timestamp', { withTimezone: true }).notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_events_trigger').on(table.projectId, table.eventName, table.timestamp),
   index('idx_events_customer').on(table.projectId, table.customerId, table.timestamp),
   index('idx_events_recent').on(table.projectId, table.receivedAt),
+  uniqueIndex('idx_events_idempotency').on(table.projectId, table.idempotencyKey),
 ])
 
 // ============ PRODUCTS ============
@@ -212,16 +222,31 @@ export const campaigns = pgTable('campaigns', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').notNull().references(() => projects.id),
   name: varchar('name', { length: 255 }).notNull(),
+  channel: varchar('channel', { length: 20 }).notNull().default('email'), // email | sms | push
+  deliveryType: varchar('delivery_type', { length: 20 }).notNull().default('one-time'), // one-time | periodic
   status: varchar('status', { length: 20 }).notNull().default('draft'), // draft | scheduled | sending | sent | paused
+  contentType: varchar('content_type', { length: 20 }).notNull().default('promotional'), // promotional | transactional
   segmentId: uuid('segment_id').references(() => segments.id),
-  subject: varchar('subject', { length: 500 }).notNull(),
-  htmlBody: text('html_body').notNull(),
+  subject: varchar('subject', { length: 500 }),
+  previewText: varchar('preview_text', { length: 500 }),
+  htmlBody: text('html_body'),
+  bodyText: text('body_text'),
   fromName: varchar('from_name', { length: 255 }),
+  periodicSchedule: jsonb('periodic_schedule'),
+  templateId: uuid('template_id'),
+  conversionGoals: jsonb('conversion_goals').notNull().default([]),
+  goalTrackingHours: integer('goal_tracking_hours').notNull().default(36),
+  deliveryLimit: integer('delivery_limit'),
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
   sentAt: timestamp('sent_at', { withTimezone: true }),
   totalRecipients: integer('total_recipients').notNull().default(0),
   sentCount: integer('sent_count').notNull().default(0),
   failedCount: integer('failed_count').notNull().default(0),
+  deliveredCount: integer('delivered_count').notNull().default(0),
+  openedCount: integer('opened_count').notNull().default(0),
+  clickedCount: integer('clicked_count').notNull().default(0),
+  bouncedCount: integer('bounced_count').notNull().default(0),
+  complainedCount: integer('complained_count').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -236,13 +261,19 @@ export const campaignSends = pgTable('campaign_sends', {
   campaignId: uuid('campaign_id').notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
   customerId: uuid('customer_id').notNull().references(() => customers.id),
   email: varchar('email', { length: 255 }).notNull(),
-  status: varchar('status', { length: 20 }).notNull().default('pending'), // pending | sent | failed
+  status: varchar('status', { length: 20 }).notNull().default('pending'), // pending | sent | delivered | failed | bounced
   sentAt: timestamp('sent_at', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  openedAt: timestamp('opened_at', { withTimezone: true }),
+  clickedAt: timestamp('clicked_at', { withTimezone: true }),
+  bouncedAt: timestamp('bounced_at', { withTimezone: true }),
+  complainedAt: timestamp('complained_at', { withTimezone: true }),
   resendMessageId: varchar('resend_message_id', { length: 255 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_campaign_sends_campaign').on(table.campaignId, table.status),
   index('idx_campaign_sends_customer').on(table.customerId),
+  index('idx_campaign_sends_resend_id').on(table.resendMessageId),
 ])
 
 // ============ EMAIL TEMPLATES ============
@@ -251,8 +282,105 @@ export const emailTemplates = pgTable('email_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').notNull().references(() => projects.id),
   name: varchar('name', { length: 255 }).notNull(),
-  subject: varchar('subject', { length: 500 }).notNull(),
-  htmlBody: text('html_body').notNull(),
+  channel: varchar('channel', { length: 20 }).notNull().default('email'),
+  subject: varchar('subject', { length: 500 }),
+  htmlBody: text('html_body'),
+  bodyText: text('body_text'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// ============ API KEYS ============
+
+export const apiKeys = pgTable('api_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  name: varchar('name', { length: 255 }).notNull().default('Default'),
+  keyPublic: varchar('key_public', { length: 255 }).notNull().unique(),
+  keySecretHash: varchar('key_secret_hash', { length: 255 }).notNull(),
+  permissions: jsonb('permissions').default('["write"]'), // ['read', 'write', 'admin']
+  ipWhitelist: jsonb('ip_whitelist'), // string[] or null
+  rateLimit: integer('rate_limit').notNull().default(1000), // requests per minute
+  isActive: boolean('is_active').notNull().default(true),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_api_keys_project').on(table.projectId),
+  index('idx_api_keys_active').on(table.keyPublic),
+])
+
+// ============ ENTITIES (generic: orders, transactions, accounts, subscriptions) ============
+
+export const entities = pgTable('entities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').references(() => customers.id),
+  entityType: varchar('entity_type', { length: 50 }).notNull(),
+  // 'order' | 'transaction' | 'account' | 'subscription' | 'loan' | 'investment'
+  externalId: varchar('external_id', { length: 255 }),
+  status: varchar('status', { length: 50 }),
+  attributes: jsonb('attributes').default('{}'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_entities_project_type').on(table.projectId, table.entityType, table.createdAt),
+  index('idx_entities_customer').on(table.projectId, table.customerId, table.entityType),
+  uniqueIndex('idx_entities_external').on(table.projectId, table.entityType, table.externalId),
+])
+
+// ============ IDENTITIES (multi-identifier resolution) ============
+
+export const identities = pgTable('identities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  identifierType: varchar('identifier_type', { length: 30 }).notNull(),
+  // 'email' | 'phone' | 'external_id' | 'device_id'
+  identifierValue: varchar('identifier_value', { length: 255 }).notNull(),
+  isPrimary: boolean('is_primary').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_identities_unique').on(table.projectId, table.identifierType, table.identifierValue),
+  index('idx_identities_customer').on(table.customerId),
+])
+
+// ============ CONSENTS ============
+
+export const consents = pgTable('consents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  channel: varchar('channel', { length: 20 }).notNull(), // 'email' | 'sms' | 'push' | 'whatsapp'
+  purpose: varchar('purpose', { length: 20 }).notNull().default('promotional'),
+  // 'transactional' | 'promotional'
+  status: varchar('status', { length: 20 }).notNull().default('opted_in'),
+  // 'opted_in' | 'opted_out'
+  source: varchar('source', { length: 20 }), // 'app' | 'web' | 'api' | 'sms'
+  consentedAt: timestamp('consented_at', { withTimezone: true }).notNull().defaultNow(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_consents_customer').on(table.projectId, table.customerId, table.channel),
+])
+
+// ============ COMMUNICATION LOG ============
+
+export const communicationLog = pgTable('communication_log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  channel: varchar('channel', { length: 20 }).notNull(), // 'email' | 'sms' | 'push' | 'whatsapp'
+  messageType: varchar('message_type', { length: 20 }).notNull(), // 'campaign' | 'flow' | 'transactional'
+  templateId: varchar('template_id', { length: 255 }),
+  contentHash: varchar('content_hash', { length: 64 }), // SHA-256
+  status: varchar('status', { length: 20 }).notNull(), // 'sent' | 'delivered' | 'failed' | 'read'
+  providerMessageId: varchar('provider_message_id', { length: 255 }),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  metadata: jsonb('metadata').default('{}'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_comlog_customer').on(table.projectId, table.customerId, table.createdAt),
+  index('idx_comlog_channel').on(table.projectId, table.channel, table.createdAt),
+])

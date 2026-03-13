@@ -1,24 +1,31 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 import { AiChatPanel } from '@/components/segments/AiChatPanel'
 import { useCreateSegment } from '@/hooks/useSegments'
+import { useDomainSchema } from '@/hooks/useDomainSchema'
 import { ArrowLeft, Users, Filter, Loader2 } from 'lucide-react'
 import type { FilterConfig } from '@storees/shared'
-
-const EMPTY_FILTERS: FilterConfig = {
-  logic: 'AND',
-  rules: [{ field: 'total_orders', operator: 'greater_than', value: 0 }],
-}
 
 export default function CreateSegmentPage() {
   const router = useRouter()
   const createSegment = useCreateSegment()
+  const { data: schemaData } = useDomainSchema()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [filters, setFilters] = useState<FilterConfig>(EMPTY_FILTERS)
+  const [filters, setFilters] = useState<FilterConfig>({ logic: 'AND', rules: [] })
+
+  // Seed the first rule once schema loads so the builder isn't blank
+  useEffect(() => {
+    if (schemaData?.data.fields?.length && filters.rules.length === 0) {
+      const first = schemaData.data.fields[0]
+      const operator = first.operators?.[0] ?? 'greater_than'
+      const value = first.type === 'number' ? 0 : first.type === 'boolean' ? true : ''
+      setFilters({ logic: 'AND', rules: [{ field: first.field, operator, value }] })
+    }
+  }, [schemaData, filters])
 
   const handleCreate = () => {
     if (!name.trim()) return

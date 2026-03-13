@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, and, sql, count } from 'drizzle-orm'
+import { eq, and, sql, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flows, flowTrips } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -28,7 +28,7 @@ router.get('/', requireProjectId, async (req, res) => {
             total: count(),
           })
           .from(flowTrips)
-          .where(sql`${flowTrips.flowId} IN ${flowRows.map(f => f.id)}`)
+          .where(inArray(flowTrips.flowId, flowRows.map(f => f.id)))
           .groupBy(flowTrips.flowId)
       : []
 

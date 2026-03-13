@@ -5,6 +5,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 type SpeechRecognitionHook = {
   isListening: boolean
   transcript: string
+  interimTranscript: string
   isSupported: boolean
   start: () => void
   stop: () => void
@@ -24,11 +25,17 @@ export const SPEECH_LANGUAGES = [
 export function useSpeechRecognition(): SpeechRecognitionHook {
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState('')
+  const [interimTranscript, setInterimTranscript] = useState('')
   const [language, setLanguage] = useState('en-US')
+  const [isSupported, setIsSupported] = useState(false)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
 
-  const isSupported = typeof window !== 'undefined' &&
-    ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
+  // Detect browser support on client only (avoids SSR hydration mismatch)
+  useEffect(() => {
+    setIsSupported(
+      'SpeechRecognition' in window || 'webkitSpeechRecognition' in window,
+    )
+  }, [])
 
   const stop = useCallback(() => {
     if (recognitionRef.current) {
@@ -36,14 +43,15 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
       recognitionRef.current = null
     }
     setIsListening(false)
+    setInterimTranscript('')
   }, [])
 
   const start = useCallback(() => {
     if (!isSupported) return
 
-    // Stop any existing recognition
     if (recognitionRef.current) {
       recognitionRef.current.stop()
+      recognitionRef.current = null
     }
 
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -51,27 +59,57 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     const recognition = new SpeechRecognitionCtor()
 
     recognition.lang = language
-    recognition.interimResults = false
-    recognition.continuous = false
+    recognition.interimResults = true  // show partial results while speaking
+    recognition.continuous = true      // keep mic open — don't auto-close on silence
     recognition.maxAlternatives = 1
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const result = event.results[0][0].transcript
-      setTranscript(result)
-      setIsListening(false)
+      let finalText = ''
+      let interimText = ''
+      // resultIndex may not be in all TS lib versions — cast to access it
+      const startIndex = (event as unknown as { resultIndex: number }).resultIndex ?? 0
+
+      for (let i = startIndex; i < event.results.length; i++) {
+        const text = event.results[i][0].transcript
+        if (event.results[i].isFinal) {
+          finalText += text
+        } else {
+          interimText += text
+        }
+      }
+
+      if (interimText) {
+        setInterimTranscript(interimText)
+      }
+
+      if (finalText) {
+        // Got a complete utterance — set transcript and stop listening
+        setTranscript(finalText.trim())
+        setInterimTranscript('')
+        recognition.stop()
+      }
     }
 
-    recognition.onerror = () => {
+    recognition.onerror = (event: Event) => {
+      const error = (event as unknown as { error: string }).error
+      // 'no-speech' is common and expected — don't treat as fatal
+      if (error !== 'no-speech') {
+        console.warn('[Speech] Recognition error:', error)
+      }
       setIsListening(false)
+      setInterimTranscript('')
+      recognitionRef.current = null
     }
 
     recognition.onend = () => {
       setIsListening(false)
+      setInterimTranscript('')
       recognitionRef.current = null
     }
 
     recognitionRef.current = recognition
     setTranscript('')
+    setInterimTranscript('')
     setIsListening(true)
     recognition.start()
   }, [isSupported, language])
@@ -85,5 +123,5 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     }
   }, [])
 
-  return { isListening, transcript, isSupported, start, stop, language, setLanguage }
+  return { isListening, transcript, interimTranscript, isSupported, start, stop, language, setLanguage }
 }

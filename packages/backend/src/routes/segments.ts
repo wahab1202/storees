@@ -13,8 +13,11 @@ router.get('/', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
 
-    // Ensure default segments exist
+    // Ensure default segments exist (evaluates them on first creation)
     await instantiateDefaultSegments(projectId)
+
+    // Re-evaluate all segments to keep counts fresh
+    await evaluateAllSegments(projectId)
 
     const rows = await db
       .select()
@@ -91,8 +94,13 @@ router.post('/', requireProjectId, async (req, res) => {
       isActive: true,
     }).returning()
 
-    // Evaluate the new segment immediately
-    const memberCount = await evaluateSegment(segment.id)
+    // Evaluate the new segment immediately (non-fatal — don't fail creation if SQL evaluation errors)
+    let memberCount = 0
+    try {
+      memberCount = await evaluateSegment(segment.id)
+    } catch (evalErr) {
+      console.error('Segment evaluation error (non-fatal):', (evalErr as Error).message)
+    }
 
     res.status(201).json({ success: true, data: { ...segment, memberCount } })
   } catch (err) {

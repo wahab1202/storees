@@ -39,7 +39,7 @@ export function startTriggerWorker(): Worker {
     },
     {
       connection: redisConnection,
-      concurrency: 5,
+      concurrency: 50, // Up from 5 — SDK sends 100+ events/sec
     },
   )
 
@@ -84,6 +84,7 @@ async function evaluateFlowTrigger(flow: Record<string, unknown>, event: EventJo
       avgOrderValue: Number(customer.avgOrderValue),
       clv: Number(customer.clv),
       customAttributes: (customer.customAttributes ?? {}) as Record<string, unknown>,
+      metrics: (customer.metrics ?? {}) as Record<string, unknown>,
     }
 
     if (!evaluateFilter(triggerConfig.audienceFilter, customerObj)) return null

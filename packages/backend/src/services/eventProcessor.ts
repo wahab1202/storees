@@ -1,7 +1,7 @@
 import { eq, and } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { events, orders } from '../db/schema.js'
-import { eventsQueue } from './queue.js'
+import { eventsQueue, metricsQueue } from './queue.js'
 import {
   resolveCustomer,
   updateCustomerAggregates,
@@ -73,6 +73,12 @@ export async function processWebhookEvent(
 
     // 6. Publish — send to BullMQ for segment evaluation + flow triggers
     await eventsQueue.add(eventName, {
+      ...processed,
+      timestamp: processed.timestamp.toISOString(),
+    })
+
+    // 7. Publish to metrics queue — recompute customer metrics
+    await metricsQueue.add('recompute', {
       ...processed,
       timestamp: processed.timestamp.toISOString(),
     })

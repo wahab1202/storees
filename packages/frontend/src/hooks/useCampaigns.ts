@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
-import type { Campaign, CampaignSend } from '@storees/shared'
+import type { Campaign, CampaignSend, CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule } from '@storees/shared'
 
 export function useCampaigns() {
   return useQuery({
@@ -34,11 +34,21 @@ export function useCreateCampaign() {
   return useMutation({
     mutationFn: (data: {
       name: string
-      subject: string
-      htmlBody: string
+      channel?: CampaignChannel
+      deliveryType?: CampaignDeliveryType
+      subject?: string
+      htmlBody?: string
+      bodyText?: string
       segmentId?: string
       fromName?: string
       scheduledAt?: string
+      contentType?: CampaignContentType
+      previewText?: string
+      templateId?: string
+      conversionGoals?: ConversionGoal[]
+      goalTrackingHours?: number
+      deliveryLimit?: number | null
+      periodicSchedule?: PeriodicSchedule
     }) => api.post<Campaign>(withProject('/api/campaigns'), data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
@@ -56,9 +66,16 @@ export function useUpdateCampaign() {
       name?: string
       subject?: string
       htmlBody?: string
+      bodyText?: string
       segmentId?: string | null
       fromName?: string | null
       scheduledAt?: string | null
+      contentType?: CampaignContentType
+      previewText?: string | null
+      conversionGoals?: ConversionGoal[]
+      goalTrackingHours?: number
+      deliveryLimit?: number | null
+      periodicSchedule?: PeriodicSchedule | null
     }) => api.patch<Campaign>(withProject(`/api/campaigns/${id}`), data),
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })

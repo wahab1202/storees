@@ -30,8 +30,26 @@ export const flowActionsQueue = new Queue('flow-actions', {
 export const shopifySyncQueue = new Queue('shopify-sync', {
   connection: redisConnection,
   defaultJobOptions: {
-    attempts: 1,
+    attempts: 3, // Up from 1 — Shopify rate limits need retries
+    backoff: {
+      type: 'exponential',
+      delay: 2000,
+    },
     removeOnComplete: true,
+    removeOnFail: { count: 50 },
+  },
+})
+
+export const metricsQueue = new Queue('metrics', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 1000,
+    },
+    removeOnComplete: true,
+    removeOnFail: { count: 100 },
   },
 })
 

@@ -17,8 +17,9 @@ export async function instantiateDefaultSegments(projectId: string): Promise<voi
 
   if (existing.length > 0) return
 
+  const created: string[] = []
   for (const template of SEGMENT_TEMPLATE_DEFINITIONS) {
-    await db.insert(segments).values({
+    const [seg] = await db.insert(segments).values({
       projectId,
       name: template.name,
       type: 'default',
@@ -26,10 +27,20 @@ export async function instantiateDefaultSegments(projectId: string): Promise<voi
       filters: template.filters,
       memberCount: 0,
       isActive: true,
-    })
+    }).returning()
+    created.push(seg.id)
   }
 
   console.log(`Created ${SEGMENT_TEMPLATE_DEFINITIONS.length} default segments for project ${projectId}`)
+
+  // Evaluate newly created segments immediately
+  for (const segId of created) {
+    try {
+      await evaluateSegment(segId)
+    } catch (err) {
+      console.error(`Default segment evaluation error (non-fatal):`, (err as Error).message)
+    }
+  }
 }
 
 /**

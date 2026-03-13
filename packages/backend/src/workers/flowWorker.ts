@@ -28,7 +28,7 @@ export function startFlowWorker(): Worker {
     },
     {
       connection: redisConnection,
-      concurrency: 5,
+      concurrency: 20, // Up from 5 — more flow actions with SDK traffic
     },
   )
 

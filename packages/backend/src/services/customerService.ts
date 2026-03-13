@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers } from '../db/schema.js'
 
@@ -19,14 +19,15 @@ type ResolveParams = {
  * 1. external_id (Shopify customer ID)
  * 2. email
  * 3. phone
- * 4. Create new if not found
+ * 4. Create new if not found (atomic INSERT ... ON CONFLICT)
  *
+ * Race-condition safe: uses unique partial indexes + ON CONFLICT.
  * Always updates last_seen.
  */
 export async function resolveCustomer(params: ResolveParams): Promise<string> {
   const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed } = params
 
-  // 1. Try external_id
+  // 1. Try external_id (has unique index: idx_customers_external)
   if (externalId) {
     const [found] = await db
       .select({ id: customers.id })
@@ -35,12 +36,12 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, emailSubscribed, smsSubscribed })
+      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed })
       return found.id
     }
   }
 
-  // 2. Try email
+  // 2. Try email (has unique partial index: idx_customers_email_unique)
   if (email) {
     const [found] = await db
       .select({ id: customers.id })
@@ -49,10 +50,10 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      // Backfill external_id if we now have it
-      const updates: Record<string, unknown> = { lastSeen: new Date() }
+      const updates: Record<string, unknown> = { lastSeen: new Date(), updatedAt: new Date() }
       if (externalId) updates.externalId = externalId
       if (name) updates.name = name
+      if (phone) updates.phone = phone
       if (emailSubscribed !== undefined) updates.emailSubscribed = emailSubscribed
       if (smsSubscribed !== undefined) updates.smsSubscribed = smsSubscribed
       await db.update(customers).set(updates).where(eq(customers.id, found.id))
@@ -60,7 +61,7 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
     }
   }
 
-  // 3. Try phone
+  // 3. Try phone (has unique partial index: idx_customers_phone_unique)
   if (phone) {
     const [found] = await db
       .select({ id: customers.id })
@@ -69,20 +70,54 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, externalId, emailSubscribed, smsSubscribed })
+      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed })
       return found.id
     }
   }
 
-  // 4. Create new customer
+  // 4. Atomic create — ON CONFLICT prevents duplicate creation race condition
+  // Try insert with the best unique key available
+  if (email) {
+    const result = await db.execute(sql`
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, metrics)
+      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, '{}'::jsonb)
+      ON CONFLICT (project_id, email) WHERE email IS NOT NULL
+      DO UPDATE SET
+        last_seen = NOW(),
+        updated_at = NOW(),
+        external_id = COALESCE(EXCLUDED.external_id, customers.external_id),
+        phone = COALESCE(EXCLUDED.phone, customers.phone),
+        name = COALESCE(EXCLUDED.name, customers.name)
+      RETURNING id
+    `)
+    return (result.rows[0] as { id: string }).id
+  }
+
+  if (phone) {
+    const result = await db.execute(sql`
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, metrics)
+      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, '{}'::jsonb)
+      ON CONFLICT (project_id, phone) WHERE phone IS NOT NULL
+      DO UPDATE SET
+        last_seen = NOW(),
+        updated_at = NOW(),
+        external_id = COALESCE(EXCLUDED.external_id, customers.external_id),
+        name = COALESCE(EXCLUDED.name, customers.name)
+      RETURNING id
+    `)
+    return (result.rows[0] as { id: string }).id
+  }
+
+  // Fallback: no email or phone, just insert (external_id unique constraint protects)
   const [created] = await db.insert(customers).values({
     projectId,
     externalId: externalId ?? null,
-    email: email ?? null,
-    phone: phone ?? null,
+    email: null,
+    phone: null,
     name: name ?? null,
     emailSubscribed: emailSubscribed ?? false,
     smsSubscribed: smsSubscribed ?? false,
+    metrics: {},
   }).returning({ id: customers.id })
 
   return created.id
@@ -93,6 +128,8 @@ async function updateLastSeen(
   extra?: {
     name?: string | null
     externalId?: string
+    email?: string | null
+    phone?: string | null
     emailSubscribed?: boolean
     smsSubscribed?: boolean
   },
@@ -103,6 +140,8 @@ async function updateLastSeen(
   }
   if (extra?.name) updates.name = extra.name
   if (extra?.externalId) updates.externalId = extra.externalId
+  if (extra?.email) updates.email = extra.email
+  if (extra?.phone) updates.phone = extra.phone
   if (extra?.emailSubscribed !== undefined) updates.emailSubscribed = extra.emailSubscribed
   if (extra?.smsSubscribed !== undefined) updates.smsSubscribed = extra.smsSubscribed
 
@@ -111,63 +150,43 @@ async function updateLastSeen(
 
 /**
  * Update customer aggregates after an order event.
+ * Uses atomic SQL increment to prevent lost-update race conditions.
  */
 export async function updateCustomerAggregates(
   customerId: string,
   orderTotal: number,
 ): Promise<void> {
-  const [customer] = await db
-    .select({
-      totalOrders: customers.totalOrders,
-      totalSpent: customers.totalSpent,
-    })
-    .from(customers)
-    .where(eq(customers.id, customerId))
-    .limit(1)
-
-  if (!customer) return
-
-  const newTotalOrders = customer.totalOrders + 1
-  const newTotalSpent = Number(customer.totalSpent) + orderTotal
-  const newAvg = newTotalSpent / newTotalOrders
-
-  await db.update(customers).set({
-    totalOrders: newTotalOrders,
-    totalSpent: String(newTotalSpent),
-    avgOrderValue: String(newAvg),
-    clv: String(newTotalSpent),
-    lastSeen: new Date(),
-    updatedAt: new Date(),
-  }).where(eq(customers.id, customerId))
+  await db.execute(sql`
+    UPDATE customers SET
+      total_orders = total_orders + 1,
+      total_spent = total_spent + ${orderTotal},
+      avg_order_value = (total_spent + ${orderTotal}) / NULLIF(total_orders + 1, 0),
+      clv = total_spent + ${orderTotal},
+      last_seen = NOW(),
+      updated_at = NOW()
+    WHERE id = ${customerId}
+  `)
 }
 
 /**
  * Recalculate aggregates after order cancellation.
+ * Uses atomic SQL decrement to prevent lost-update race conditions.
  */
 export async function recalculateAggregates(
   customerId: string,
   orderTotal: number,
 ): Promise<void> {
-  const [customer] = await db
-    .select({
-      totalOrders: customers.totalOrders,
-      totalSpent: customers.totalSpent,
-    })
-    .from(customers)
-    .where(eq(customers.id, customerId))
-    .limit(1)
-
-  if (!customer) return
-
-  const newTotalOrders = Math.max(0, customer.totalOrders - 1)
-  const newTotalSpent = Math.max(0, Number(customer.totalSpent) - orderTotal)
-  const newAvg = newTotalOrders > 0 ? newTotalSpent / newTotalOrders : 0
-
-  await db.update(customers).set({
-    totalOrders: newTotalOrders,
-    totalSpent: String(newTotalSpent),
-    avgOrderValue: String(newAvg),
-    clv: String(newTotalSpent),
-    updatedAt: new Date(),
-  }).where(eq(customers.id, customerId))
+  await db.execute(sql`
+    UPDATE customers SET
+      total_orders = GREATEST(0, total_orders - 1),
+      total_spent = GREATEST(0, total_spent - ${orderTotal}),
+      avg_order_value = CASE
+        WHEN GREATEST(0, total_orders - 1) > 0
+        THEN GREATEST(0, total_spent - ${orderTotal}) / GREATEST(1, total_orders - 1)
+        ELSE 0
+      END,
+      clv = GREATEST(0, total_spent - ${orderTotal}),
+      updated_at = NOW()
+    WHERE id = ${customerId}
+  `)
 }

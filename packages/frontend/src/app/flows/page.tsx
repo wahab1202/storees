@@ -8,7 +8,7 @@ import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow } from '@/h
 import { Zap, Pause, FileEdit, Play, Square, ExternalLink, Plus, X, Workflow, Loader2, Trash2 } from 'lucide-react'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
-import { STANDARD_EVENTS } from '@storees/shared'
+import { useDashboardStats } from '@/hooks/useDashboard'
 
 const STATUS_CONFIG = {
   active: { label: 'Active', color: 'bg-emerald-50 text-emerald-700', icon: Zap },
@@ -16,43 +16,69 @@ const STATUS_CONFIG = {
   draft: { label: 'Draft', color: 'bg-gray-100 text-gray-600', icon: FileEdit },
 } as const
 
-const EVENT_LABELS: Record<string, string> = {
-  cart_created: 'Cart Created',
-  cart_updated: 'Cart Updated',
-  checkout_started: 'Checkout Started',
-  order_placed: 'Order Placed',
-  order_fulfilled: 'Order Fulfilled',
-  order_cancelled: 'Order Cancelled',
-  customer_created: 'Customer Created',
-  customer_updated: 'Customer Updated',
-  enters_segment: 'Enters Segment',
-  exits_segment: 'Exits Segment',
+// Domain-specific trigger event lists — these are self-contained, no shared import needed
+const DOMAIN_EVENTS: Record<string, { label: string; events: string[]; defaultTrigger: string }> = {
+  ecommerce: {
+    label: 'Ecommerce',
+    defaultTrigger: 'cart_created',
+    events: [
+      'cart_created', 'cart_updated', 'checkout_started', 'order_placed',
+      'order_fulfilled', 'order_cancelled', 'customer_created', 'customer_updated',
+      'enters_segment', 'exits_segment',
+    ],
+  },
+  fintech: {
+    label: 'Fintech',
+    defaultTrigger: 'transaction_completed',
+    events: [
+      'transaction_completed', 'app_login', 'bill_payment_completed', 'kyc_verified',
+      'kyc_expired', 'loan_disbursed', 'emi_paid', 'emi_overdue',
+      'sip_started', 'card_activated', 'enters_segment', 'exits_segment',
+    ],
+  },
+  saas: {
+    label: 'SaaS',
+    defaultTrigger: 'user_signup',
+    events: [
+      'user_signup', 'feature_used', 'trial_expiring', 'subscription_started',
+      'subscription_cancelled', 'user_invited', 'enters_segment', 'exits_segment',
+    ],
+  },
+}
+
+function formatEventLabel(evt: string): string {
+  return evt.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
 export default function FlowsPage() {
   const router = useRouter()
   const { data, isLoading, isError } = useFlows()
+  const { data: statsData } = useDashboardStats()
   const updateStatus = useUpdateFlowStatus()
   const createFlow = useCreateFlow()
   const deleteFlow = useDeleteFlow()
+
+  const domain = statsData?.data.domainType ?? 'ecommerce'
+  const domainConfig = DOMAIN_EVENTS[domain] ?? DOMAIN_EVENTS.ecommerce
+
   const [showCreate, setShowCreate] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
-  const [newTrigger, setNewTrigger] = useState('cart_created')
+  const [newTrigger, setNewTrigger] = useState(domainConfig.defaultTrigger)
 
   const handleCreate = () => {
     if (!newName.trim()) return
     createFlow.mutate(
       { name: newName, description: newDescription, triggerEvent: newTrigger },
       {
-        onSuccess: (data) => {
+        onSuccess: (result) => {
           setShowCreate(false)
           setNewName('')
           setNewDescription('')
-          setNewTrigger('cart_created')
-          if (data.data?.id) {
-            router.push(`/flows/${data.data.id}`)
+          setNewTrigger(domainConfig.defaultTrigger)
+          if (result.data?.id) {
+            router.push(`/flows/${result.data.id}`)
           }
         },
       },
@@ -63,7 +89,7 @@ export default function FlowsPage() {
     setShowCreate(false)
     setNewName('')
     setNewDescription('')
-    setNewTrigger('cart_created')
+    setNewTrigger(domainConfig.defaultTrigger)
   }
 
   return (
@@ -139,8 +165,8 @@ export default function FlowsPage() {
                 <p className="text-xs text-text-muted mb-2">
                   This flow starts when this event occurs for a customer
                 </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {Object.values(STANDARD_EVENTS).map(evt => (
+                <div className="grid grid-cols-2 gap-2 max-h-52 overflow-y-auto pr-1">
+                  {domainConfig.events.map((evt: string) => (
                     <button
                       key={evt}
                       onClick={() => setNewTrigger(evt)}
@@ -151,7 +177,7 @@ export default function FlowsPage() {
                           : 'border-border text-text-secondary hover:border-text-muted hover:bg-surface',
                       )}
                     >
-                      {EVENT_LABELS[evt] ?? evt.replace(/_/g, ' ')}
+                      {formatEventLabel(evt)}
                     </button>
                   ))}
                 </div>
@@ -308,13 +334,47 @@ export default function FlowsPage() {
                   </div>
                 )}
 
-                {/* Trip counts */}
-                <div className="flex gap-6 mt-4 pt-3 border-t border-border text-sm">
-                  <Stat label="Active" value={flow.tripCounts.active} />
-                  <Stat label="Waiting" value={flow.tripCounts.waiting} />
-                  <Stat label="Completed" value={flow.tripCounts.completed} />
-                  <Stat label="Exited" value={flow.tripCounts.exited} />
-                  <Stat label="Total" value={flow.tripCounts.total} highlight />
+                {/* Trip counts + status distribution bar */}
+                <div className="mt-4 pt-3 border-t border-border">
+                  {flow.tripCounts.total > 0 && (
+                    <div className="flex h-2 rounded-full overflow-hidden mb-3">
+                      {flow.tripCounts.active > 0 && (
+                        <div
+                          className="bg-emerald-500 transition-all"
+                          style={{ width: `${(flow.tripCounts.active / flow.tripCounts.total) * 100}%` }}
+                          title={`Active: ${flow.tripCounts.active}`}
+                        />
+                      )}
+                      {flow.tripCounts.waiting > 0 && (
+                        <div
+                          className="bg-amber-400 transition-all"
+                          style={{ width: `${(flow.tripCounts.waiting / flow.tripCounts.total) * 100}%` }}
+                          title={`Waiting: ${flow.tripCounts.waiting}`}
+                        />
+                      )}
+                      {flow.tripCounts.completed > 0 && (
+                        <div
+                          className="bg-blue-500 transition-all"
+                          style={{ width: `${(flow.tripCounts.completed / flow.tripCounts.total) * 100}%` }}
+                          title={`Completed: ${flow.tripCounts.completed}`}
+                        />
+                      )}
+                      {flow.tripCounts.exited > 0 && (
+                        <div
+                          className="bg-gray-300 transition-all"
+                          style={{ width: `${(flow.tripCounts.exited / flow.tripCounts.total) * 100}%` }}
+                          title={`Exited: ${flow.tripCounts.exited}`}
+                        />
+                      )}
+                    </div>
+                  )}
+                  <div className="flex gap-6 text-sm">
+                    <Stat label="Active" value={flow.tripCounts.active} dotColor="bg-emerald-500" />
+                    <Stat label="Waiting" value={flow.tripCounts.waiting} dotColor="bg-amber-400" />
+                    <Stat label="Completed" value={flow.tripCounts.completed} dotColor="bg-blue-500" />
+                    <Stat label="Exited" value={flow.tripCounts.exited} dotColor="bg-gray-300" />
+                    <Stat label="Total" value={flow.tripCounts.total} highlight />
+                  </div>
                 </div>
               </div>
             )
@@ -325,13 +385,16 @@ export default function FlowsPage() {
   )
 }
 
-function Stat({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
+function Stat({ label, value, highlight, dotColor }: { label: string; value: number; highlight?: boolean; dotColor?: string }) {
   return (
-    <div>
-      <span className="text-text-muted text-xs">{label}</span>
-      <p className={cn('font-semibold tabular-nums', highlight ? 'text-accent' : 'text-text-primary')}>
-        {value}
-      </p>
+    <div className="flex items-center gap-1.5">
+      {dotColor && <span className={cn('w-2 h-2 rounded-full flex-shrink-0', dotColor)} />}
+      <div>
+        <span className="text-text-muted text-xs">{label}</span>
+        <p className={cn('font-semibold tabular-nums', highlight ? 'text-accent' : 'text-text-primary')}>
+          {value}
+        </p>
+      </div>
     </div>
   )
 }

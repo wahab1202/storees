@@ -23,13 +23,8 @@ router.post('/segment', requireProjectId, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Input too long (max 500 characters)' })
     }
 
-    // Map frontend role names to Gemini role names
-    const geminiHistory = history?.map((msg: { role: string; text: string }) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      text: msg.text,
-    }))
-
-    const result = await generateSegmentFilter(input.trim(), geminiHistory)
+    const projectId = req.query.projectId as string
+    const result = await generateSegmentFilter(projectId, input.trim(), history)
 
     res.json({ success: true, data: result })
   } catch (err) {

@@ -4,64 +4,8 @@ import { useState, useRef, useEffect } from 'react'
 import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useProducts, useCollections } from '@/hooks/useProducts'
-import type { FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
-
-// Field categories for organized dropdown — Klaviyo-style grouped fields
-const FIELD_CATEGORIES = [
-  {
-    label: 'Purchase Activity',
-    fields: [
-      { value: 'total_orders', label: 'Total Orders', type: 'number' },
-      { value: 'total_spent', label: 'Total Spent', type: 'number' },
-      { value: 'avg_order_value', label: 'Average Order Value', type: 'number' },
-      { value: 'clv', label: 'Customer Lifetime Value', type: 'number' },
-      { value: 'discount_order_percentage', label: 'Discount Order %', type: 'number' },
-    ],
-  },
-  {
-    label: 'Product Filters',
-    fields: [
-      { value: 'product_name', label: 'Has Purchased Product', type: 'product' },
-      { value: 'collection_name', label: 'From Collection', type: 'collection' },
-      { value: 'product_purchase_count', label: 'Distinct Products Bought', type: 'number' },
-    ],
-  },
-  {
-    label: 'Order Frequency',
-    fields: [
-      { value: 'orders_in_last_30_days', label: 'Orders in Last 30 Days', type: 'number' },
-      { value: 'orders_in_last_90_days', label: 'Orders in Last 90 Days', type: 'number' },
-      { value: 'orders_in_last_365_days', label: 'Orders in Last Year', type: 'number' },
-      { value: 'days_since_last_order', label: 'Days Since Last Order', type: 'number' },
-    ],
-  },
-  {
-    label: 'Customer Properties',
-    fields: [
-      { value: 'email', label: 'Email Address', type: 'string' },
-      { value: 'name', label: 'Full Name', type: 'string' },
-    ],
-  },
-  {
-    label: 'Engagement',
-    fields: [
-      { value: 'days_since_first_seen', label: 'Days Since First Seen', type: 'number' },
-      { value: 'first_seen', label: 'First Seen Date', type: 'date' },
-      { value: 'last_seen', label: 'Last Seen Date', type: 'date' },
-    ],
-  },
-  {
-    label: 'Subscriptions',
-    fields: [
-      { value: 'email_subscribed', label: 'Email Subscribed', type: 'boolean' },
-      { value: 'sms_subscribed', label: 'SMS Subscribed', type: 'boolean' },
-    ],
-  },
-]
-
-type FieldDef = { value: string; label: string; type: string }
-
-const ALL_FIELDS: FieldDef[] = FIELD_CATEGORIES.flatMap(c => c.fields)
+import { useDomainSchema } from '@/hooks/useDomainSchema'
+import type { FilterConfig, FilterRule, FilterOperator, DomainFieldDef } from '@storees/shared'
 
 const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }[]> = {
   number: [
@@ -86,6 +30,10 @@ const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }
     { value: 'before_date', label: 'is before' },
     { value: 'after_date', label: 'is after' },
   ],
+  select: [
+    { value: 'is', label: 'equals' },
+    { value: 'is_not', label: 'does not equal' },
+  ],
   product: [
     { value: 'has_purchased', label: 'has purchased' },
     { value: 'has_not_purchased', label: 'has not purchased' },
@@ -96,18 +44,6 @@ const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }
   ],
 }
 
-function getFieldType(field: string): string {
-  return ALL_FIELDS.find(f => f.value === field)?.type ?? 'string'
-}
-
-function getFieldLabel(field: string): string {
-  return ALL_FIELDS.find(f => f.value === field)?.label ?? field
-}
-
-function getOperatorsForField(field: string) {
-  return OPERATORS_BY_TYPE[getFieldType(field)] ?? OPERATORS_BY_TYPE.string
-}
-
 function needsValue(operator: FilterOperator): boolean {
   return !['is_true', 'is_false'].includes(operator)
 }
@@ -115,15 +51,9 @@ function needsValue(operator: FilterOperator): boolean {
 const selectClass = 'h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus appearance-none cursor-pointer'
 const inputClass = 'h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted'
 
-// ============ Searchable Product Dropdown ============
+// ============ Product Search Dropdown ============
 
-function ProductSearchDropdown({
-  value,
-  onChange,
-}: {
-  value: string
-  onChange: (val: string) => void
-}) {
+function ProductSearchDropdown({ value, onChange }: { value: string; onChange: (val: string) => void }) {
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -143,16 +73,11 @@ function ProductSearchDropdown({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={cn(
-          inputClass,
-          'w-52 flex items-center justify-between gap-1 text-left truncate',
-          !value && 'text-text-muted',
-        )}
+        className={cn(inputClass, 'w-52 flex items-center justify-between gap-1 text-left truncate', !value && 'text-text-muted')}
       >
         <span className="truncate">{value || 'Select product...'}</span>
         <ChevronDown className="h-3.5 w-3.5 text-text-muted flex-shrink-0" />
       </button>
-
       {open && (
         <div className="absolute z-50 top-full mt-1 w-72 bg-white border border-border rounded-lg shadow-lg overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
@@ -177,19 +102,10 @@ function ProductSearchDropdown({
               <button
                 key={p.id}
                 type="button"
-                onClick={() => {
-                  onChange(p.title)
-                  setOpen(false)
-                  setSearch('')
-                }}
-                className={cn(
-                  'w-full px-3 py-2 text-sm text-left hover:bg-surface transition-colors flex items-center gap-2',
-                  p.title === value && 'bg-accent/5 text-accent font-medium',
-                )}
+                onClick={() => { onChange(p.title); setOpen(false); setSearch('') }}
+                className={cn('w-full px-3 py-2 text-sm text-left hover:bg-surface transition-colors flex items-center gap-2', p.title === value && 'bg-accent/5 text-accent font-medium')}
               >
-                {p.imageUrl && (
-                  <img src={p.imageUrl} alt="" className="h-6 w-6 rounded object-cover flex-shrink-0" />
-                )}
+                {p.imageUrl && <img src={p.imageUrl} alt="" className="h-6 w-6 rounded object-cover flex-shrink-0" />}
                 <span className="truncate">{p.title}</span>
               </button>
             ))}
@@ -202,13 +118,7 @@ function ProductSearchDropdown({
 
 // ============ Collection Dropdown ============
 
-function CollectionDropdown({
-  value,
-  onChange,
-}: {
-  value: string
-  onChange: (val: string) => void
-}) {
+function CollectionDropdown({ value, onChange }: { value: string; onChange: (val: string) => void }) {
   const { data, isLoading } = useCollections()
   const collections = data?.data ?? []
 
@@ -222,11 +132,7 @@ function CollectionDropdown({
   }
 
   return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className={cn(selectClass, 'w-52')}
-    >
+    <select value={value} onChange={e => onChange(e.target.value)} className={cn(selectClass, 'w-52')}>
       <option value="">Select collection...</option>
       {collections.map(c => (
         <option key={c.id} value={c.title}>{c.title}</option>
@@ -243,7 +149,37 @@ type SegmentFilterBuilderProps = {
 }
 
 export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilderProps) {
+  const { data: schemaData, isLoading: schemaLoading } = useDomainSchema()
   const rules = filters.rules as FilterRule[]
+
+  // Build category → fields map from schema
+  const schemaFields: DomainFieldDef[] = schemaData?.data.fields ?? []
+  const categories = schemaData?.data.categories ?? []
+
+  function getFieldDef(field: string): DomainFieldDef | undefined {
+    return schemaFields.find(f => f.field === field)
+  }
+
+  function getFieldType(field: string): string {
+    return getFieldDef(field)?.type ?? 'string'
+  }
+
+  function getFieldLabel(field: string): string {
+    return getFieldDef(field)?.label ?? field.replace(/_/g, ' ')
+  }
+
+  function getOperators(field: string) {
+    const def = getFieldDef(field)
+    if (def?.operators?.length) {
+      return def.operators.map(op => ({
+        value: op,
+        label: OPERATORS_BY_TYPE[def.type]?.find(o => o.value === op)?.label ?? op,
+      }))
+    }
+    return OPERATORS_BY_TYPE[getFieldType(field)] ?? OPERATORS_BY_TYPE.string
+  }
+
+  const firstField = schemaFields[0]?.field ?? 'email'
 
   const updateRule = (index: number, updates: Partial<FilterRule>) => {
     const newRules = [...rules]
@@ -251,8 +187,8 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
 
     if (updates.field && updates.field !== current.field) {
       const newType = getFieldType(updates.field)
-      const operators = OPERATORS_BY_TYPE[newType]
-      updates.operator = operators[0].value
+      const ops = getOperators(updates.field)
+      updates.operator = ops[0]?.value as FilterOperator
       updates.value = newType === 'number' ? 0 : newType === 'boolean' ? true : ''
     }
 
@@ -265,157 +201,177 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
   }
 
   const addRule = () => {
+    const def = getFieldDef(firstField)
+    const ops = getOperators(firstField)
+    const op = (ops[0]?.value ?? 'is') as FilterOperator
+    const type = def?.type ?? 'string'
+    const defaultValue = type === 'number' ? 0 : type === 'boolean' ? true : type === 'select' ? (def?.options?.[0] ?? '') : ''
     onChange({
       ...filters,
-      rules: [...rules, { field: 'total_orders', operator: 'greater_than', value: 0 }],
+      rules: [...rules, { field: firstField, operator: op, value: defaultValue }],
     })
   }
 
   const removeRule = (index: number) => {
-    const newRules = rules.filter((_, i) => i !== index)
-    onChange({ ...filters, rules: newRules })
+    onChange({ ...filters, rules: rules.filter((_, i) => i !== index) })
   }
 
   const toggleLogic = () => {
     onChange({ ...filters, logic: filters.logic === 'AND' ? 'OR' : 'AND' })
   }
 
+  if (schemaLoading) {
+    return (
+      <div className="flex items-center gap-2 py-4 text-sm text-text-muted">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading field definitions...
+      </div>
+    )
+  }
+
   return (
     <div className="relative">
-      {/* Vertical connector line */}
       {rules.length > 1 && (
         <div className="absolute left-6 top-[44px] bottom-[44px] w-px bg-border" />
       )}
 
       <div className="space-y-0">
-        {rules.map((rule, index) => (
-          <div key={index} className="relative">
-            {/* AND/OR connector pill */}
-            {index > 0 && (
-              <div className="flex items-center py-2 pl-3">
-                <button
-                  onClick={toggleLogic}
-                  className={cn(
-                    'relative z-10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider rounded-full border transition-colors',
-                    filters.logic === 'AND'
-                      ? 'bg-accent/10 text-accent border-accent/20 hover:bg-accent/20'
-                      : 'bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100',
-                  )}
-                >
-                  {filters.logic}
-                </button>
-              </div>
-            )}
+        {rules.map((rule, index) => {
+          const fieldType = getFieldType(rule.field)
+          const fieldDef = getFieldDef(rule.field)
+          const operators = getOperators(rule.field)
 
-            {/* Rule card */}
-            <div className="group flex items-center gap-2 p-3 rounded-lg border border-border bg-white hover:border-border-focus/50 transition-colors">
-              <GripVertical className="h-4 w-4 text-text-muted/40 flex-shrink-0" />
-
-              {/* Field selector — grouped like Klaviyo */}
-              <select
-                value={rule.field}
-                onChange={e => updateRule(index, { field: e.target.value })}
-                className={cn(selectClass, 'min-w-[180px]')}
-              >
-                {FIELD_CATEGORIES.map(cat => (
-                  <optgroup key={cat.label} label={cat.label}>
-                    {cat.fields.map(f => (
-                      <option key={f.value} value={f.value}>{f.label}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-
-              {/* Operator selector */}
-              <select
-                value={rule.operator}
-                onChange={e => updateRule(index, { operator: e.target.value as FilterOperator })}
-                className={cn(selectClass, 'min-w-[150px]')}
-              >
-                {getOperatorsForField(rule.field).map(op => (
-                  <option key={op.value} value={op.value}>{op.label}</option>
-                ))}
-              </select>
-
-              {/* Value input — product/collection get searchable dropdowns */}
-              {needsValue(rule.operator) && (
-                getFieldType(rule.field) === 'product' ? (
-                  <ProductSearchDropdown
-                    value={rule.value as string}
-                    onChange={val => updateRule(index, { value: val })}
-                  />
-                ) : getFieldType(rule.field) === 'collection' ? (
-                  <CollectionDropdown
-                    value={rule.value as string}
-                    onChange={val => updateRule(index, { value: val })}
-                  />
-                ) : rule.operator === 'between' ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={Array.isArray(rule.value) ? rule.value[0] : 0}
-                      onChange={e => updateRule(index, {
-                        value: [Number(e.target.value), Array.isArray(rule.value) ? rule.value[1] : 100],
-                      })}
-                      className={cn(inputClass, 'w-24')}
-                    />
-                    <span className="text-xs font-medium text-text-muted">and</span>
-                    <input
-                      type="number"
-                      value={Array.isArray(rule.value) ? rule.value[1] : 100}
-                      onChange={e => updateRule(index, {
-                        value: [Array.isArray(rule.value) ? rule.value[0] : 0, Number(e.target.value)],
-                      })}
-                      className={cn(inputClass, 'w-24')}
-                    />
-                  </div>
-                ) : getFieldType(rule.field) === 'number' ? (
-                  <input
-                    type="number"
-                    value={rule.value as number}
-                    onChange={e => updateRule(index, { value: Number(e.target.value) })}
-                    className={cn(inputClass, 'w-28')}
-                  />
-                ) : getFieldType(rule.field) === 'date' ? (
-                  <input
-                    type="date"
-                    value={rule.value as string}
-                    onChange={e => updateRule(index, { value: e.target.value })}
-                    className={cn(inputClass, 'w-40')}
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    value={rule.value as string}
-                    onChange={e => updateRule(index, { value: e.target.value })}
-                    placeholder="Enter value..."
-                    className={cn(inputClass, 'w-44')}
-                  />
-                )
+          return (
+            <div key={index} className="relative">
+              {index > 0 && (
+                <div className="flex items-center py-2 pl-3">
+                  <button
+                    onClick={toggleLogic}
+                    className={cn(
+                      'relative z-10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider rounded-full border transition-colors',
+                      filters.logic === 'AND'
+                        ? 'bg-accent/10 text-accent border-accent/20 hover:bg-accent/20'
+                        : 'bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100',
+                    )}
+                  >
+                    {filters.logic}
+                  </button>
+                </div>
               )}
 
-              {/* Spacer */}
-              <div className="flex-1" />
+              <div className="group flex items-center gap-2 p-3 rounded-lg border border-border bg-white hover:border-border-focus/50 transition-colors">
+                <GripVertical className="h-4 w-4 text-text-muted/40 flex-shrink-0" />
 
-              {/* Remove button */}
-              <button
-                onClick={() => removeRule(index)}
-                disabled={rules.length <= 1}
-                className={cn(
-                  'p-1.5 rounded-md transition-colors',
-                  rules.length > 1
-                    ? 'text-text-muted hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100'
-                    : 'text-text-muted/30 cursor-not-allowed',
+                {/* Field selector */}
+                <select
+                  value={rule.field}
+                  onChange={e => updateRule(index, { field: e.target.value })}
+                  className={cn(selectClass, 'min-w-[180px]')}
+                >
+                  {categories.map(cat => (
+                    <optgroup key={cat} label={cat}>
+                      {schemaFields.filter(f => f.category === cat).map(f => (
+                        <option key={f.field} value={f.field}>{f.label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+
+                {/* Operator selector */}
+                <select
+                  value={rule.operator}
+                  onChange={e => updateRule(index, { operator: e.target.value as FilterOperator })}
+                  className={cn(selectClass, 'min-w-[150px]')}
+                >
+                  {operators.map(op => (
+                    <option key={op.value} value={op.value}>{op.label}</option>
+                  ))}
+                </select>
+
+                {/* Value input */}
+                {needsValue(rule.operator) && (
+                  fieldType === 'product' ? (
+                    <ProductSearchDropdown
+                      value={rule.value as string}
+                      onChange={val => updateRule(index, { value: val })}
+                    />
+                  ) : fieldType === 'collection' ? (
+                    <CollectionDropdown
+                      value={rule.value as string}
+                      onChange={val => updateRule(index, { value: val })}
+                    />
+                  ) : fieldType === 'select' && fieldDef?.options ? (
+                    <select
+                      value={rule.value as string}
+                      onChange={e => updateRule(index, { value: e.target.value })}
+                      className={cn(selectClass, 'min-w-[140px]')}
+                    >
+                      <option value="">Select...</option>
+                      {fieldDef.options.map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  ) : rule.operator === 'between' ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={Array.isArray(rule.value) ? rule.value[0] : 0}
+                        onChange={e => updateRule(index, { value: [Number(e.target.value), Array.isArray(rule.value) ? rule.value[1] : 100] })}
+                        className={cn(inputClass, 'w-24')}
+                      />
+                      <span className="text-xs font-medium text-text-muted">and</span>
+                      <input
+                        type="number"
+                        value={Array.isArray(rule.value) ? rule.value[1] : 100}
+                        onChange={e => updateRule(index, { value: [Array.isArray(rule.value) ? rule.value[0] : 0, Number(e.target.value)] })}
+                        className={cn(inputClass, 'w-24')}
+                      />
+                    </div>
+                  ) : fieldType === 'number' ? (
+                    <input
+                      type="number"
+                      value={rule.value as number}
+                      onChange={e => updateRule(index, { value: Number(e.target.value) })}
+                      className={cn(inputClass, 'w-28')}
+                    />
+                  ) : fieldType === 'date' ? (
+                    <input
+                      type="date"
+                      value={rule.value as string}
+                      onChange={e => updateRule(index, { value: e.target.value })}
+                      className={cn(inputClass, 'w-40')}
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={rule.value as string}
+                      onChange={e => updateRule(index, { value: e.target.value })}
+                      placeholder="Enter value..."
+                      className={cn(inputClass, 'w-44')}
+                    />
+                  )
                 )}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+
+                <div className="flex-1" />
+
+                <button
+                  onClick={() => removeRule(index)}
+                  disabled={rules.length <= 1}
+                  className={cn(
+                    'p-1.5 rounded-md transition-colors',
+                    rules.length > 1
+                      ? 'text-text-muted hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100'
+                      : 'text-text-muted/30 cursor-not-allowed',
+                  )}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
-      {/* Add condition button */}
       <div className="mt-3 pl-3">
         <button
           onClick={addRule}
@@ -429,21 +385,16 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
   )
 }
 
-/** Generates a human-readable summary of a filter config */
+/** Generates a human-readable summary of a filter config (field labels may be IDs if schema not loaded) */
 export function filterSummary(filters: FilterConfig): string {
   const rules = filters.rules as FilterRule[]
   if (rules.length === 0) return 'No conditions'
 
   const parts = rules.slice(0, 3).map(rule => {
-    const field = getFieldLabel(rule.field)
-    const ops = getOperatorsForField(rule.field)
-    const opLabel = ops.find(o => o.value === rule.operator)?.label ?? rule.operator
-    if (['is_true', 'is_false'].includes(rule.operator)) {
-      return `${field} ${opLabel}`
-    }
-    if (['has_purchased', 'has_not_purchased'].includes(rule.operator)) {
-      return `${opLabel} "${rule.value}"`
-    }
+    const field = rule.field.replace(/_/g, ' ')
+    const opLabel = rule.operator.replace(/_/g, ' ')
+    if (['is_true', 'is_false'].includes(rule.operator)) return `${field} ${opLabel}`
+    if (['has_purchased', 'has_not_purchased'].includes(rule.operator)) return `${opLabel} "${rule.value}"`
     return `${field} ${opLabel} ${rule.value}`
   })
 

@@ -40,26 +40,59 @@ router.get('/:id', requireProjectId, async (req, res) => {
 // POST /api/campaigns?projectId=
 router.post('/', requireProjectId, async (req, res) => {
   try {
-    const { name, subject, htmlBody, segmentId, fromName, scheduledAt } = req.body as {
+    const {
+      name, channel, deliveryType, subject, htmlBody, bodyText,
+      segmentId, fromName, scheduledAt, contentType, previewText,
+      templateId, conversionGoals, goalTrackingHours, deliveryLimit,
+      periodicSchedule,
+    } = req.body as {
       name: string
-      subject: string
-      htmlBody: string
+      channel?: string
+      deliveryType?: string
+      subject?: string
+      htmlBody?: string
+      bodyText?: string
       segmentId?: string
       fromName?: string
       scheduledAt?: string
+      contentType?: string
+      previewText?: string
+      templateId?: string
+      conversionGoals?: unknown[]
+      goalTrackingHours?: number
+      deliveryLimit?: number | null
+      periodicSchedule?: unknown
     }
 
-    if (!name?.trim() || !subject?.trim() || !htmlBody?.trim()) {
-      return res.status(400).json({ success: false, error: 'name, subject, and htmlBody are required' })
+    if (!name?.trim()) {
+      return res.status(400).json({ success: false, error: 'name is required' })
+    }
+
+    const ch = channel ?? 'email'
+    if (ch === 'email' && (!subject?.trim() || !htmlBody?.trim())) {
+      return res.status(400).json({ success: false, error: 'Email campaigns require subject and htmlBody' })
+    }
+    if ((ch === 'sms' || ch === 'push') && !bodyText?.trim()) {
+      return res.status(400).json({ success: false, error: `${ch.toUpperCase()} campaigns require bodyText` })
     }
 
     const [campaign] = await db.insert(campaigns).values({
       projectId: req.projectId!,
       name: name.trim(),
-      subject: subject.trim(),
-      htmlBody,
+      channel: ch,
+      deliveryType: deliveryType ?? 'one-time',
+      subject: subject?.trim() ?? null,
+      htmlBody: htmlBody ?? null,
+      bodyText: bodyText?.trim() ?? null,
       segmentId: segmentId ?? null,
       fromName: fromName?.trim() ?? null,
+      contentType: contentType ?? 'promotional',
+      previewText: previewText?.trim() ?? null,
+      templateId: templateId ?? null,
+      conversionGoals: conversionGoals ?? [],
+      goalTrackingHours: goalTrackingHours ?? 36,
+      deliveryLimit: deliveryLimit ?? null,
+      periodicSchedule: periodicSchedule ?? null,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
       status: scheduledAt ? 'scheduled' : 'draft',
     }).returning()
@@ -75,13 +108,24 @@ router.post('/', requireProjectId, async (req, res) => {
 router.patch('/:id', requireProjectId, async (req, res) => {
   try {
     const id = req.params.id as string
-    const { name, subject, htmlBody, segmentId, fromName, scheduledAt } = req.body as {
+    const {
+      name, subject, htmlBody, bodyText, segmentId, fromName, scheduledAt,
+      contentType, previewText, conversionGoals, goalTrackingHours, deliveryLimit,
+      periodicSchedule,
+    } = req.body as {
       name?: string
       subject?: string
       htmlBody?: string
+      bodyText?: string
       segmentId?: string | null
       fromName?: string | null
       scheduledAt?: string | null
+      contentType?: string
+      previewText?: string | null
+      conversionGoals?: unknown[]
+      goalTrackingHours?: number
+      deliveryLimit?: number | null
+      periodicSchedule?: unknown | null
     }
 
     const [existing] = await db
@@ -100,10 +144,17 @@ router.patch('/:id', requireProjectId, async (req, res) => {
 
     const updates: Record<string, unknown> = { updatedAt: new Date() }
     if (name !== undefined) updates.name = name.trim()
-    if (subject !== undefined) updates.subject = subject.trim()
+    if (subject !== undefined) updates.subject = subject?.trim() ?? null
     if (htmlBody !== undefined) updates.htmlBody = htmlBody
+    if (bodyText !== undefined) updates.bodyText = bodyText?.trim() ?? null
     if (segmentId !== undefined) updates.segmentId = segmentId
     if (fromName !== undefined) updates.fromName = fromName
+    if (contentType !== undefined) updates.contentType = contentType
+    if (previewText !== undefined) updates.previewText = previewText
+    if (conversionGoals !== undefined) updates.conversionGoals = conversionGoals
+    if (goalTrackingHours !== undefined) updates.goalTrackingHours = goalTrackingHours
+    if (deliveryLimit !== undefined) updates.deliveryLimit = deliveryLimit
+    if (periodicSchedule !== undefined) updates.periodicSchedule = periodicSchedule
     if (scheduledAt !== undefined) {
       updates.scheduledAt = scheduledAt ? new Date(scheduledAt) : null
       updates.status = scheduledAt ? 'scheduled' : 'draft'

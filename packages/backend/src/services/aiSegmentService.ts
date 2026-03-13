@@ -1,8 +1,50 @@
-const GEMINI_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'
+import { db } from '../db/connection.js'
+import { projects } from '../db/schema.js'
+import { eq } from 'drizzle-orm'
+import { getDomainFields } from './domainRegistry.js'
+import type { DomainType, DomainFieldDef } from '@storees/shared'
 
-// Field names MUST match SegmentFilterBuilder's FIELD_CATEGORIES (snake_case)
-const SYSTEM_PROMPT = `You are a segment filter generator for an e-commerce customer data platform.
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
+const GROQ_MODEL = 'llama-3.3-70b-versatile'
+
+type ChatMessage = {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+type AiSegmentResult = {
+  filters: {
+    logic: 'AND' | 'OR'
+    rules: Array<{ field: string; operator: string; value: unknown }>
+  }
+  summary: string
+}
+
+// ---- System prompt builder ----
+
+function buildSystemPrompt(fields: DomainFieldDef[]): string {
+  // Group fields by category for readability
+  const byCategory: Record<string, DomainFieldDef[]> = {}
+  for (const f of fields) {
+    if (!byCategory[f.category]) byCategory[f.category] = []
+    byCategory[f.category].push(f)
+  }
+
+  const fieldDocs = Object.entries(byCategory).map(([cat, flds]) => {
+    const lines = flds.map(f => {
+      const ops = (f.operators ?? []).join(', ')
+      const opts = f.options?.length ? ` — options: ${f.options.join(', ')}` : ''
+      return `- ${f.field} (${f.type}): ${ops}${opts}`
+    })
+    return `### ${cat}\n${lines.join('\n')}`
+  }).join('\n\n')
+
+  const moneyFields = fields.filter(f => f.type === 'number' && f.metricKey && ['total_spent', 'total_debit', 'total_credit', 'avg_order_value', 'clv', 'avg_transaction_value', 'portfolio_value', 'mrr'].includes(f.field))
+  const moneyNote = moneyFields.length
+    ? `All monetary values (${moneyFields.map(f => f.field).join(', ')}) are in PAISE/smallest currency unit. ₹5000 = 500000, $100 = 10000.`
+    : ''
+
+  return `You are a segment filter generator for a customer data platform.
 
 Your job: convert natural language customer segment descriptions (in ANY language) into a FilterConfig JSON object.
 
@@ -17,130 +59,133 @@ Your job: convert natural language customer segment descriptions (in ANY languag
 
 ## Available Fields and Operators
 
-### Purchase Activity
-- total_orders (number): is, is_not, greater_than, less_than, between
-- total_spent (number): is, is_not, greater_than, less_than, between
-- avg_order_value (number): is, is_not, greater_than, less_than, between
-- clv (number): is, is_not, greater_than, less_than, between
-- discount_order_percentage (number): is, is_not, greater_than, less_than, between
-
-### Product Filters
-- product_name (product): has_purchased, has_not_purchased
-- collection_name (collection): has_purchased, has_not_purchased
-
-### Order Frequency
-- orders_in_last_30_days (number): is, is_not, greater_than, less_than, between
-- orders_in_last_90_days (number): is, is_not, greater_than, less_than, between
-- orders_in_last_365_days (number): is, is_not, greater_than, less_than, between
-- days_since_last_order (number): is, is_not, greater_than, less_than, between
-
-### Customer Properties
-- email (string): is, is_not, contains, begins_with, ends_with
-- name (string): is, is_not, contains, begins_with, ends_with
-
-### Engagement
-- days_since_first_seen (number): is, is_not, greater_than, less_than, between
-- first_seen (date): before_date, after_date
-- last_seen (date): before_date, after_date
-
-### Subscriptions
-- email_subscribed (boolean): is_true, is_false
-- sms_subscribed (boolean): is_true, is_false
+${fieldDocs}
 
 ## CRITICAL RULES
-1. All monetary values are in PAISE (smallest currency unit). ₹5000 = 500000, $100 = 10000, ₹1000 = 100000.
+1. ${moneyNote || 'Use numeric values as-is for non-monetary number fields.'}
 2. For boolean fields (is_true/is_false), set value to true or false.
 3. For "between" operator, value must be an array of two numbers: [min, max].
 4. For date fields, value must be an ISO 8601 date string (YYYY-MM-DD).
 5. Use "AND" logic by default unless the user explicitly says "any" or "or".
-6. For product searches, translate product names to English for the value.
-7. For collection-based queries (e.g. "from Summer Collection", "bought from category X"), use collection_name with has_purchased/has_not_purchased.
-8. Field names are ALWAYS snake_case. Never use camelCase.
-9. Output ONLY the FilterConfig JSON. No explanations, no markdown, no code fences.
+6. Field names are ALWAYS snake_case. Never use camelCase.
+7. For select fields, value must be one of the listed options exactly.
+8. Output ONLY the FilterConfig JSON. No explanations, no markdown, no code fences.
 
 ## Examples
 
-Input: "Customers who spent more than 5000 rupees"
-Output: {"logic":"AND","rules":[{"field":"total_spent","operator":"greater_than","value":500000}]}
+Input: "Active customers who haven't transacted in 30 days"
+Output: {"logic":"AND","rules":[{"field":"lifecycle_stage","operator":"is","value":"active"},{"field":"days_since_last_txn","operator":"greater_than","value":30}]}
 
-Input: "People who ordered more than 3 times and are email subscribers"
-Output: {"logic":"AND","rules":[{"field":"total_orders","operator":"greater_than","value":3},{"field":"email_subscribed","operator":"is_true","value":true}]}
+Input: "Customers with verified KYC and active SIPs"
+Output: {"logic":"AND","rules":[{"field":"kyc_status","operator":"is","value":"verified"},{"field":"active_sips","operator":"greater_than","value":0}]}
 
-Input: "கடந்த 90 நாட்களில் ஆர்டர் செய்யாத வாடிக்கையாளர்கள்"
-Output: {"logic":"AND","rules":[{"field":"days_since_last_order","operator":"greater_than","value":90}]}
+Input: "கடந்த 90 நாட்களில் பரிவர்த்தனை செய்யாத வாடிக்கையாளர்கள்"
+Output: {"logic":"AND","rules":[{"field":"days_since_last_txn","operator":"greater_than","value":90}]}
 
-Input: "Clients qui ont acheté des chaussures et dépensé plus de 10000 roupies"
-Output: {"logic":"AND","rules":[{"field":"product_name","operator":"has_purchased","value":"shoes"},{"field":"total_spent","operator":"greater_than","value":1000000}]}
-
-Input: "高价值客户，CLV大于50000"
-Output: {"logic":"AND","rules":[{"field":"clv","operator":"greater_than","value":5000000}]}
-
-Input: "Customers who spent between 1000 and 5000 and haven't ordered in 30 days"
-Output: {"logic":"AND","rules":[{"field":"total_spent","operator":"between","value":[100000,500000]},{"field":"days_since_last_order","operator":"greater_than","value":30}]}
-
-Input: "Recent buyers in last 30 days who bought shoes"
-Output: {"logic":"AND","rules":[{"field":"orders_in_last_30_days","operator":"greater_than","value":0},{"field":"product_name","operator":"has_purchased","value":"shoes"}]}
-
-Input: "Customers who bought from Summer Collection and spent over 3000"
-Output: {"logic":"AND","rules":[{"field":"collection_name","operator":"has_purchased","value":"Summer Collection"},{"field":"total_spent","operator":"greater_than","value":300000}]}`
-
-type ChatMessage = {
-  role: 'user' | 'model'
-  text: string
+Input: "High value customers with portfolio over 5 lakh"
+Output: {"logic":"AND","rules":[{"field":"portfolio_value","operator":"greater_than","value":50000000}]}`
 }
 
-type AiSegmentResult = {
-  filters: {
-    logic: 'AND' | 'OR'
-    rules: Array<{ field: string; operator: string; value: unknown }>
+// ---- Summary generator ----
+
+function generateSummary(filters: AiSegmentResult['filters'], fields: DomainFieldDef[]): string {
+  const labelMap: Record<string, string> = {}
+  for (const f of fields) labelMap[f.field] = f.label
+
+  const OPERATOR_LABELS: Record<string, string> = {
+    greater_than: '>',
+    less_than: '<',
+    between: 'between',
+    is: 'is',
+    is_not: 'is not',
+    contains: 'contains',
+    begins_with: 'starts with',
+    ends_with: 'ends with',
+    before_date: 'before',
+    after_date: 'after',
+    has_purchased: 'purchased',
+    has_not_purchased: 'not purchased',
+    is_true: 'is true',
+    is_false: 'is false',
   }
-  summary: string
+
+  const MONEY_FIELDS = new Set(['total_spent', 'total_debit', 'total_credit', 'avg_order_value', 'clv', 'avg_transaction_value', 'portfolio_value', 'mrr'])
+
+  function formatValue(field: string, value: unknown): string {
+    if (typeof value === 'number' && MONEY_FIELDS.has(field)) {
+      return `₹${(value / 100).toLocaleString()}`
+    }
+    return String(value)
+  }
+
+  const parts = filters.rules.map(rule => {
+    const fieldLabel = labelMap[rule.field] ?? rule.field
+    const opLabel = OPERATOR_LABELS[rule.operator] ?? rule.operator
+
+    if (rule.operator === 'is_true') return `${fieldLabel}`
+    if (rule.operator === 'is_false') return `not ${fieldLabel}`
+    if (rule.operator === 'between' && Array.isArray(rule.value)) {
+      return `${fieldLabel} ${formatValue(rule.field, rule.value[0])}–${formatValue(rule.field, rule.value[1])}`
+    }
+    if (rule.operator === 'has_purchased') return `purchased "${rule.value}"`
+    if (rule.operator === 'has_not_purchased') return `not purchased "${rule.value}"`
+
+    return `${fieldLabel} ${opLabel} ${formatValue(rule.field, rule.value)}`
+  })
+
+  const joiner = filters.logic === 'AND' ? ' and ' : ' or '
+  return parts.join(joiner)
 }
+
+// ---- Main export ----
 
 /**
- * Convert natural language to FilterConfig using Gemini Flash.
+ * Convert natural language to FilterConfig using Groq (llama-3.3-70b-versatile).
+ * Domain-aware: loads field definitions from domainRegistry based on project's domainType.
  */
 export async function generateSegmentFilter(
+  projectId: string,
   input: string,
   history?: ChatMessage[],
 ): Promise<AiSegmentResult> {
-  const apiKey = process.env.GEMINI_API_KEY
+  const apiKey = process.env.GROQ_API_KEY
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured')
+    throw new Error('GROQ_API_KEY is not configured')
   }
 
-  // Build conversation contents
-  const contents: Array<{ role: string; parts: Array<{ text: string }> }> = []
+  // Resolve domain for this project
+  const [project] = await db.select({ domainType: projects.domainType }).from(projects).where(eq(projects.id, projectId)).limit(1)
+  const domainType: DomainType = (project?.domainType as DomainType) ?? 'ecommerce'
+  const fields = getDomainFields(domainType)
 
-  // Add history if provided (for follow-up messages)
+  const validFields = new Set(fields.map(f => f.field))
+  const systemPrompt = buildSystemPrompt(fields)
+
+  // Build messages (OpenAI-compatible format)
+  const messages: Array<{ role: string; content: string }> = [
+    { role: 'system', content: systemPrompt },
+  ]
+
   if (history && history.length > 0) {
     for (const msg of history) {
-      contents.push({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.text }],
-      })
+      messages.push({ role: msg.role, content: msg.text })
     }
   }
 
-  // Add current user input
-  contents.push({
-    role: 'user',
-    parts: [{ text: input.slice(0, 500) }],
-  })
+  messages.push({ role: 'user', content: input.slice(0, 500) })
 
-  const response = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+  const response = await fetch(GROQ_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      system_instruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
-      },
-      contents,
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.1,
-        maxOutputTokens: 1024,
-      },
+      model: GROQ_MODEL,
+      messages,
+      temperature: 0.1,
+      max_tokens: 1024,
+      response_format: { type: 'json_object' },
     }),
   })
 
@@ -150,14 +195,14 @@ export async function generateSegmentFilter(
       throw new Error('AI assistant is busy. Please try again in a moment.')
     }
     const errText = await response.text().catch(() => 'Unknown error')
-    console.error(`[AI] Gemini API error: ${status} — ${errText}`)
+    console.error(`[AI] Groq API error: ${status} — ${errText}`)
     throw new Error('AI service unavailable')
   }
 
   const data = await response.json() as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+    choices?: Array<{ message?: { content?: string } }>
   }
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+  const text = data.choices?.[0]?.message?.content
 
   if (!text) {
     throw new Error("Couldn't understand the request. Try rephrasing.")
@@ -165,115 +210,28 @@ export async function generateSegmentFilter(
 
   const filters = JSON.parse(text)
 
-  // Validate basic structure
   if (!filters.logic || !Array.isArray(filters.rules) || filters.rules.length === 0) {
     throw new Error("Couldn't generate valid filters. Try being more specific.")
   }
 
-  // Validate each rule has required fields
   for (const rule of filters.rules) {
     if (!rule.field || !rule.operator) {
       throw new Error("Couldn't map all conditions to filter fields. Try rephrasing.")
     }
-    // Validate field exists in our schema
-    if (!VALID_FIELDS.has(rule.field)) {
+    if (!validFields.has(rule.field)) {
       throw new Error(`Unknown field "${rule.field}". Try rephrasing your request.`)
     }
   }
 
-  const summary = generateSummary(filters)
-  console.log(`[AI] Segment query: "${input}" → ${filters.rules.length} rules`)
+  const summary = generateSummary(filters, fields)
+  console.log(`[AI] [${domainType}] Segment query: "${input}" → ${filters.rules.length} rules`)
 
   return { filters, summary }
 }
 
 /**
- * Check if Gemini API key is configured.
+ * Check if Groq API key is configured.
  */
 export function isAiEnabled(): boolean {
-  return !!process.env.GEMINI_API_KEY
-}
-
-// Valid field names (must match SegmentFilterBuilder FIELD_CATEGORIES)
-const VALID_FIELDS = new Set([
-  'total_orders', 'total_spent', 'avg_order_value', 'clv', 'discount_order_percentage',
-  'product_name', 'collection_name', 'product_purchase_count',
-  'orders_in_last_30_days', 'orders_in_last_90_days', 'orders_in_last_365_days', 'days_since_last_order',
-  'email', 'name',
-  'days_since_first_seen', 'first_seen', 'last_seen',
-  'email_subscribed', 'sms_subscribed',
-])
-
-/**
- * Generate a human-readable summary of the filters.
- */
-function generateSummary(filters: AiSegmentResult['filters']): string {
-  const parts = filters.rules.map(rule => {
-    const fieldLabel = FIELD_LABELS[rule.field] ?? rule.field
-    const opLabel = OPERATOR_LABELS[rule.operator] ?? rule.operator
-
-    if (rule.operator === 'is_true') return `${fieldLabel}`
-    if (rule.operator === 'is_false') return `not ${fieldLabel}`
-    if (rule.operator === 'between' && Array.isArray(rule.value)) {
-      return `${fieldLabel} ${formatValue(rule.field, rule.value[0])}–${formatValue(rule.field, rule.value[1])}`
-    }
-    if (rule.operator === 'has_purchased') {
-      const label = rule.field === 'collection_name' ? 'from collection' : 'purchased'
-      return `${label} "${rule.value}"`
-    }
-    if (rule.operator === 'has_not_purchased') {
-      const label = rule.field === 'collection_name' ? 'not from collection' : 'not purchased'
-      return `${label} "${rule.value}"`
-    }
-
-    return `${fieldLabel} ${opLabel} ${formatValue(rule.field, rule.value)}`
-  })
-
-  const joiner = filters.logic === 'AND' ? ' and ' : ' or '
-  return parts.join(joiner)
-}
-
-function formatValue(field: string, value: unknown): string {
-  if (typeof value === 'number' && MONEY_FIELDS.has(field)) {
-    return `₹${(value / 100).toLocaleString()}`
-  }
-  return String(value)
-}
-
-const MONEY_FIELDS = new Set(['total_spent', 'avg_order_value', 'clv'])
-
-const FIELD_LABELS: Record<string, string> = {
-  total_spent: 'total spent',
-  avg_order_value: 'avg order value',
-  days_since_last_order: 'days since last order',
-  product_name: 'product',
-  collection_name: 'collection',
-  total_orders: 'total orders',
-  discount_order_percentage: 'discount order %',
-  orders_in_last_30_days: 'orders in last 30 days',
-  orders_in_last_90_days: 'orders in last 90 days',
-  orders_in_last_365_days: 'orders in last year',
-  name: 'name',
-  email: 'email',
-  clv: 'CLV',
-  days_since_first_seen: 'days since first seen',
-  first_seen: 'first seen',
-  last_seen: 'last seen',
-  email_subscribed: 'email subscribed',
-  sms_subscribed: 'SMS subscribed',
-}
-
-const OPERATOR_LABELS: Record<string, string> = {
-  greater_than: '>',
-  less_than: '<',
-  between: 'between',
-  is: 'is',
-  is_not: 'is not',
-  contains: 'contains',
-  begins_with: 'starts with',
-  ends_with: 'ends with',
-  before_date: 'before',
-  after_date: 'after',
-  has_purchased: 'purchased',
-  has_not_purchased: 'not purchased',
+  return !!process.env.GROQ_API_KEY
 }

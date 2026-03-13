@@ -2,15 +2,29 @@
 
 import { useState } from 'react'
 import { useLifecycleChart } from '@/hooks/useSegments'
+import { useDashboardStats } from '@/hooks/useDashboard'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { TrendingUp, Repeat, ShoppingBag, DollarSign } from 'lucide-react'
 
-const ROW_LABELS = ['Recent (0–30d)', 'Medium (31–90d)', 'Lapsed (90d+)']
-const COL_LABELS = ['Low Value', 'Medium Value', 'High Value']
+const ROW_LABELS_BY_DOMAIN: Record<string, string[]> = {
+  ecommerce: ['Recent (0–30d)', 'Medium (31–90d)', 'Lapsed (90d+)'],
+  fintech:   ['Active (0–30d)', 'Inactive (31–90d)', 'Dormant (90d+)'],
+  saas:      ['Active (0–30d)', 'Slipping (31–90d)', 'Churned (90d+)'],
+}
+
+const COL_LABELS_BY_DOMAIN: Record<string, string[]> = {
+  ecommerce: ['Low Value', 'Medium Value', 'High Value'],
+  fintech:   ['Low Activity', 'Medium Activity', 'High Activity'],
+  saas:      ['Free / Trial', 'Starter', 'Pro / Enterprise'],
+}
 
 export function LifecycleChart() {
   const { data, isLoading, isError } = useLifecycleChart()
+  const { data: statsData } = useDashboardStats()
+  const domain = statsData?.data.domainType ?? 'ecommerce'
+  const ROW_LABELS = ROW_LABELS_BY_DOMAIN[domain] ?? ROW_LABELS_BY_DOMAIN.ecommerce
+  const COL_LABELS = COL_LABELS_BY_DOMAIN[domain] ?? COL_LABELS_BY_DOMAIN.ecommerce
   const [hoveredCell, setHoveredCell] = useState<string | null>(null)
 
   if (isLoading) {
@@ -38,24 +52,28 @@ export function LifecycleChart() {
       {/* Header */}
       <div className="px-5 py-3 bg-surface border-b border-border">
         <h2 className="text-sm font-semibold text-text-primary">Customer Lifecycle</h2>
-        <p className="text-xs text-text-muted mt-0.5">RFM analysis — Recency vs. Monetary Value</p>
+        <p className="text-xs text-text-muted mt-0.5">
+          {domain === 'fintech' ? 'Activity analysis — Recency vs. Transaction Volume'
+            : domain === 'saas' ? 'Engagement analysis — Recency vs. Plan Value'
+            : 'RFM analysis — Recency vs. Monetary Value'}
+        </p>
       </div>
 
       {/* Metrics row */}
       <div className="grid grid-cols-4 gap-px bg-border border-b border-border">
         <MetricCell
           icon={Repeat}
-          label="Returning %"
+          label={domain === 'saas' ? 'Returning %' : domain === 'fintech' ? 'Active %' : 'Returning %'}
           value={`${metrics.returningCustomerPercentage}%`}
         />
         <MetricCell
           icon={ShoppingBag}
-          label="Avg Frequency"
+          label={domain === 'saas' ? 'Avg Usage' : domain === 'fintech' ? 'Avg Txn Freq' : 'Avg Frequency'}
           value={`${metrics.avgPurchaseFrequency}x`}
         />
         <MetricCell
           icon={DollarSign}
-          label="Avg Order Value"
+          label={domain === 'fintech' ? 'Avg Txn Value' : domain === 'saas' ? 'Avg MRR' : 'Avg Order Value'}
           value={`${metrics.avgPurchaseValue.toLocaleString()}`}
         />
         <MetricCell

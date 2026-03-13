@@ -119,8 +119,8 @@ export async function processCampaign(campaignId: string): Promise<void> {
       store_name: 'Storees Store',
     }
 
-    const subject = interpolateTemplate(campaign.subject, templateContext)
-    const html = interpolateTemplate(campaign.htmlBody, templateContext)
+    const subject = interpolateTemplate(campaign.subject ?? '', templateContext)
+    const html = interpolateTemplate(campaign.htmlBody ?? '', templateContext)
 
     const messageId = await sendEmail({ to: send.email, subject, html })
 

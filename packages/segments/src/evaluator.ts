@@ -173,8 +173,70 @@ function fieldToSqlExpression(field: string): SQL {
         AND orders.created_at > NOW() - INTERVAL '365 days'
       ), 0)`
 
+    // ──── Metrics-based fields (domain-agnostic — reads from customers.metrics JSONB) ────
+    // Fintech metrics
+    case 'total_transactions':
+      return sql`COALESCE((metrics->>'total_transactions')::numeric, 0)`
+    case 'total_debit':
+      return sql`COALESCE((metrics->>'total_debit')::numeric, 0)`
+    case 'total_credit':
+      return sql`COALESCE((metrics->>'total_credit')::numeric, 0)`
+    case 'avg_transaction_value':
+      return sql`COALESCE((metrics->>'avg_transaction_value')::numeric, 0)`
+    case 'days_since_last_txn':
+      return sql`COALESCE((metrics->>'days_since_last_txn')::numeric, 999)`
+    case 'emi_overdue':
+      return sql`COALESCE((metrics->>'emi_overdue')::boolean, false)`
+    case 'active_loans':
+      return sql`COALESCE((metrics->>'active_loans')::numeric, 0)`
+    case 'active_sips':
+      return sql`COALESCE((metrics->>'active_sips')::numeric, 0)`
+    case 'lifecycle_stage':
+      return sql`COALESCE(metrics->>'lifecycle_stage', 'new')`
+    case 'kyc_status':
+      return sql`COALESCE(metrics->>'kyc_status', 'pending')`
+
+    // SaaS metrics
+    case 'feature_usage_count':
+      return sql`COALESCE((metrics->>'feature_usage_count')::numeric, 0)`
+    case 'days_since_signup':
+      return sql`COALESCE((metrics->>'days_since_signup')::numeric, 0)`
+    case 'plan':
+      return sql`COALESCE(metrics->>'plan', 'free')`
+    case 'mrr':
+      return sql`COALESCE((metrics->>'mrr')::numeric, 0)`
+    case 'trial_status':
+      return sql`COALESCE(metrics->>'trial_status', 'no_trial')`
+
+    // Customer attribute fields (from custom_attributes JSONB)
+    case 'account_type':
+      return sql`COALESCE(custom_attributes->>'account_type', '')`
+    case 'balance_bracket':
+      return sql`COALESCE(custom_attributes->>'balance_bracket', '')`
+    case 'salary_bracket':
+      return sql`COALESCE(custom_attributes->>'salary_bracket', '')`
+    case 'city_tier':
+      return sql`COALESCE(custom_attributes->>'city_tier', '')`
+    case 'age_group':
+      return sql`COALESCE(custom_attributes->>'age_group', '')`
+    case 'transaction_channel':
+      return sql`COALESCE(metrics->>'primary_channel', '')`
+    case 'card_type':
+      return sql`COALESCE(custom_attributes->>'card_type', '')`
+    case 'loan_type':
+      return sql`COALESCE(custom_attributes->>'loan_type', '')`
+    case 'investment_type':
+      return sql`COALESCE(custom_attributes->>'investment_type', '')`
+    case 'portfolio_value':
+      return sql`COALESCE((metrics->>'portfolio_value')::numeric, 0)`
+
     default:
-      throw new Error(`Unknown filter field: ${field}`)
+      // Fallback: try metrics JSONB, then custom_attributes JSONB
+      return sql`COALESCE(
+        metrics->>${field},
+        custom_attributes->>${field},
+        ''
+      )`
   }
 }
 
@@ -291,8 +353,45 @@ function getFieldValue(field: string, customer: Customer): unknown {
     case 'orders_in_last_90_days':
     case 'orders_in_last_365_days':
       return 0 // Requires DB — fallback for JS evaluation
+
+    // Metrics-based fields — read from customer.metrics JSONB
+    case 'total_transactions':
+    case 'total_debit':
+    case 'total_credit':
+    case 'avg_transaction_value':
+    case 'days_since_last_txn':
+    case 'active_loans':
+    case 'active_sips':
+    case 'feature_usage_count':
+    case 'days_since_signup':
+    case 'mrr':
+    case 'portfolio_value':
+      return Number(customer.metrics?.[field] ?? 0)
+
+    case 'emi_overdue':
+      return customer.metrics?.emi_overdue === true
+
+    case 'lifecycle_stage':
+    case 'kyc_status':
+    case 'plan':
+    case 'trial_status':
+    case 'transaction_channel':
+      return customer.metrics?.[field] ?? ''
+
+    // Customer attributes
+    case 'account_type':
+    case 'balance_bracket':
+    case 'salary_bracket':
+    case 'city_tier':
+    case 'age_group':
+    case 'card_type':
+    case 'loan_type':
+    case 'investment_type':
+      return customer.customAttributes?.[field] ?? ''
+
     default:
-      return undefined
+      // Fallback: check metrics, then customAttributes
+      return customer.metrics?.[field] ?? customer.customAttributes?.[field] ?? undefined
   }
 }
 

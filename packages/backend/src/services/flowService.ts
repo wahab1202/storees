@@ -1,7 +1,8 @@
 import { eq } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { flows, emailTemplates } from '../db/schema.js'
+import { flows, emailTemplates, projects } from '../db/schema.js'
 import { FLOW_TEMPLATE_DEFINITIONS } from '@storees/flows'
+import type { DomainType } from '@storees/shared'
 
 const abandonedCartEmailHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -73,9 +74,10 @@ const abandonedCartEmailHtml = `<!DOCTYPE html>
 
 /**
  * Create default flows and their email templates for a new project.
+ * Filters templates by the project's domain type.
  * Idempotent — skips if flows already exist for the project.
  */
-export async function instantiateDefaultFlows(projectId: string): Promise<void> {
+export async function instantiateDefaultFlows(projectId: string, domainType?: DomainType): Promise<void> {
   const existing = await db
     .select({ id: flows.id })
     .from(flows)
@@ -84,13 +86,28 @@ export async function instantiateDefaultFlows(projectId: string): Promise<void> 
 
   if (existing.length > 0) return
 
-  for (const template of FLOW_TEMPLATE_DEFINITIONS) {
+  // If domainType not passed, look it up
+  let domain = domainType
+  if (!domain) {
+    const [project] = await db
+      .select({ domainType: projects.domainType })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1)
+    domain = (project?.domainType as DomainType) ?? 'ecommerce'
+  }
+
+  // Filter templates for this domain
+  const templates = FLOW_TEMPLATE_DEFINITIONS.filter(t => t.domainTypes.includes(domain!))
+
+  for (const template of templates) {
     // Create email template
+    const subject = getTemplateSubject(template.slug)
     await db.insert(emailTemplates).values({
       projectId,
       name: template.emailTemplateId,
-      subject: 'You left something behind!',
-      htmlBody: abandonedCartEmailHtml,
+      subject,
+      htmlBody: getTemplateHtml(template.slug),
     }).onConflictDoNothing()
 
     // Create flow (starts as draft — must be manually activated)
@@ -105,5 +122,71 @@ export async function instantiateDefaultFlows(projectId: string): Promise<void> 
     })
   }
 
-  console.log(`Created ${FLOW_TEMPLATE_DEFINITIONS.length} default flows for project ${projectId}`)
+  console.log(`Created ${templates.length} default flows (${domain}) for project ${projectId}`)
 }
+
+function getTemplateSubject(slug: string): string {
+  switch (slug) {
+    case 'abandoned_cart': return 'You left something behind!'
+    case 'emi_overdue_reminder': return 'Your EMI payment is overdue'
+    case 'kyc_reverification': return 'Action required: Re-verify your KYC'
+    case 'dormant_reactivation': return 'We miss you! Come back and transact'
+    case 'trial_expiry': return 'Your trial is ending soon'
+    default: return 'Important update from {{app_name}}'
+  }
+}
+
+function getTemplateHtml(slug: string): string {
+  // Ecommerce template already exists as the default
+  if (slug === 'abandoned_cart') return abandonedCartEmailHtml
+
+  // Generic template for all other flows
+  return genericEmailTemplate
+}
+
+const genericEmailTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f5; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="background-color:#0F1D40; padding:32px 40px; text-align:center;">
+              <h1 style="margin:0; color:#ffffff; font-size:24px; font-weight:700;">{{app_name}}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:40px;">
+              <h2 style="margin:0 0 16px; color:#18181b; font-size:22px; font-weight:600;">Hi {{customer_name}},</h2>
+              <p style="margin:0 0 28px; color:#3f3f46; font-size:16px; line-height:1.6;">
+                {{message_body}}
+              </p>
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
+                <tr>
+                  <td style="border-radius:8px; background-color:#D9A441;">
+                    <a href="{{action_url}}" style="display:inline-block; padding:14px 32px; color:#ffffff; font-size:16px; font-weight:600; text-decoration:none; border-radius:8px;">
+                      {{action_label}}
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px 40px 32px;">
+              <p style="margin:0; color:#a1a1aa; font-size:13px; line-height:1.5; text-align:center;">
+                Questions? Just reply to this email.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
