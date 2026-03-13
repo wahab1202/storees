@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useCustomers } from '@/hooks/useCustomers'
 import { useSegments } from '@/hooks/useSegments'
@@ -13,6 +13,14 @@ import { TableSkeleton } from '@/components/ui/Skeleton'
 import type { CustomerListParams } from '@storees/shared'
 
 export default function CustomersPage() {
+  return (
+    <Suspense fallback={<TableSkeleton />}>
+      <CustomersContent />
+    </Suspense>
+  )
+}
+
+function CustomersContent() {
   const searchParams = useSearchParams()
   const initialSegmentId = searchParams.get('segmentId') ?? undefined
 

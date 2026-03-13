@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useCreateCampaign } from '@/hooks/useCampaigns'
 import { useSegments } from '@/hooks/useSegments'
@@ -105,6 +105,14 @@ const LAYOUT_STARTERS = [
 /* ─── Main Page ─── */
 
 export default function CreateCampaignPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-text-secondary">Loading...</div>}>
+      <CreateCampaignContent />
+    </Suspense>
+  )
+}
+
+function CreateCampaignContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const createCampaign = useCreateCampaign()
