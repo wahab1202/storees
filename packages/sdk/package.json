@@ -1,0 +1,25 @@
+{
+  "name": "@storees/sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Storees client-side JavaScript SDK for event tracking, identity management, and behavioral analytics",
+  "main": "dist/storees.umd.js",
+  "module": "dist/storees.esm.js",
+  "types": "dist/types/core.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^11.1.6",
+    "@rollup/plugin-terser": "^0.4.4",
+    "rollup": "^4.9.0",
+    "tslib": "^2.6.0",
+    "typescript": "^5.3.0"
+  },
+  "license": "MIT"
+}
