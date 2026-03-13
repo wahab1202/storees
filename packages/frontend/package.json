@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000",
-    "build": "NEXT_SKIP_SOURCE_MAPS=true NODE_OPTIONS='--max-old-space-size=2048' next build",
+    "build": "NEXT_SKIP_SOURCE_MAPS=true NODE_OPTIONS='--max-old-space-size=1536' next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
