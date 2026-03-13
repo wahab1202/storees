@@ -12,14 +12,33 @@ export const STANDARD_EVENTS = {
   // Segment engine-sourced
   ENTERS_SEGMENT: 'enters_segment',
   EXITS_SEGMENT: 'exits_segment',
+} as const
 
-  // Phase 2 — require storefront SDK with consent
-  // PRODUCT_VIEWED: 'product_viewed',
-  // PRODUCT_ADDED_TO_CART: 'product_added_to_cart',
-  // REVIEW_SUBMITTED: 'review_submitted',
-  // SESSION_START: 'session_start',
-  // SESSION_END: 'session_end',
-  // PAGE_VIEWED: 'page_viewed',
+export const FINTECH_EVENTS = {
+  TRANSACTION_COMPLETED: 'transaction_completed',
+  APP_LOGIN: 'app_login',
+  BILL_PAYMENT_COMPLETED: 'bill_payment_completed',
+  KYC_VERIFIED: 'kyc_verified',
+  KYC_EXPIRED: 'kyc_expired',
+  LOAN_DISBURSED: 'loan_disbursed',
+  EMI_PAID: 'emi_paid',
+  EMI_OVERDUE: 'emi_overdue',
+  SIP_STARTED: 'sip_started',
+  SIP_EXECUTED: 'sip_executed',
+  CARD_ACTIVATED: 'card_activated',
+  ENTERS_SEGMENT: 'enters_segment',
+  EXITS_SEGMENT: 'exits_segment',
+} as const
+
+export const SAAS_EVENTS = {
+  FEATURE_USED: 'feature_used',
+  TRIAL_EXPIRING: 'trial_expiring',
+  SUBSCRIPTION_STARTED: 'subscription_started',
+  SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
+  USER_SIGNUP: 'user_signup',
+  USER_INVITED: 'user_invited',
+  ENTERS_SEGMENT: 'enters_segment',
+  EXITS_SEGMENT: 'exits_segment',
 } as const
 
 export const SEGMENT_TEMPLATES = [
@@ -31,6 +50,16 @@ export const SEGMENT_TEMPLATES = [
 
 // 'researchers' removed from Phase 1 — depends on product_views_count
 // which requires storefront SDK (Phase 2)
+
+export const SDK_EVENTS = {
+  PAGE_VIEWED: 'page_viewed',
+  SESSION_STARTED: 'session_started',
+  SESSION_ENDED: 'session_ended',
+  ELEMENT_CLICKED: 'element_clicked',
+  SCROLL_DEPTH_REACHED: 'scroll_depth_reached',
+  CUSTOMER_IDENTIFIED: 'customer_identified',
+  USER_PROPERTIES_UPDATED: 'user_properties_updated',
+} as const
 
 export const SHOPIFY_API_VERSION = '2024-01' as const
 

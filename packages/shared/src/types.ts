@@ -1,12 +1,18 @@
 // ============ DATABASE MODELS ============
 
+export type DomainType = 'ecommerce' | 'fintech' | 'saas' | 'custom'
+export type IntegrationType = 'shopify' | 'api_key' | 'stripe' | 'custom'
+
 export type Project = {
   id: string
   name: string
-  shopifyDomain: string
-  shopifyAccessToken: string
+  shopifyDomain: string | null
+  shopifyAccessToken: string | null
   businessType: 'ecommerce' | 'booking' | 'saas' | 'general'
-  webhookSecret: string
+  domainType: DomainType
+  integrationType: IntegrationType
+  webhookSecret: string | null
+  settings: Record<string, unknown>
   createdAt: Date
   updatedAt: Date
 }
@@ -29,6 +35,7 @@ export type Customer = {
   pushSubscribed: boolean
   whatsappSubscribed: boolean
   customAttributes: Record<string, unknown>
+  metrics: Record<string, unknown> // Precomputed domain-specific metrics
   createdAt: Date
   updatedAt: Date
 }
@@ -79,21 +86,54 @@ export type Collection = {
   updatedAt: Date
 }
 
+export type CampaignContentType = 'promotional' | 'transactional'
+export type CampaignChannel = 'email' | 'sms' | 'push'
+export type CampaignDeliveryType = 'one-time' | 'periodic'
+
+export type ConversionGoal = {
+  name: string
+  eventName: string
+  attributes?: Record<string, string>
+}
+
+export type PeriodicSchedule = {
+  frequency: 'daily' | 'weekly' | 'monthly'
+  dayOfWeek?: number  // 0=Sun..6=Sat (for weekly)
+  dayOfMonth?: number // 1-28 (for monthly)
+  time: string        // HH:mm
+  endsAt?: string     // ISO date or empty for indefinite
+}
+
 export type Campaign = {
   id: string
   projectId: string
   name: string
+  channel: CampaignChannel
+  deliveryType: CampaignDeliveryType
   status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused'
+  contentType: CampaignContentType
   segmentId: string | null
   segmentName?: string
-  subject: string
-  htmlBody: string
+  subject: string | null
+  previewText: string | null
+  htmlBody: string | null
+  bodyText: string | null
   fromName: string | null
+  templateId: string | null
+  conversionGoals: ConversionGoal[]
+  goalTrackingHours: number
+  deliveryLimit: number | null
+  periodicSchedule: PeriodicSchedule | null
   scheduledAt: Date | null
   sentAt: Date | null
   totalRecipients: number
   sentCount: number
   failedCount: number
+  deliveredCount: number
+  openedCount: number
+  clickedCount: number
+  bouncedCount: number
+  complainedCount: number
   createdAt: Date
   updatedAt: Date
 }
@@ -103,8 +143,13 @@ export type CampaignSend = {
   campaignId: string
   customerId: string
   email: string
-  status: 'pending' | 'sent' | 'failed'
+  status: 'pending' | 'sent' | 'delivered' | 'failed' | 'bounced'
   sentAt: Date | null
+  deliveredAt: Date | null
+  openedAt: Date | null
+  clickedAt: Date | null
+  bouncedAt: Date | null
+  complainedAt: Date | null
   resendMessageId: string | null
   createdAt: Date
 }
@@ -167,12 +212,16 @@ export type ScheduledJob = {
   createdAt: Date
 }
 
+export type TemplateChannel = 'email' | 'sms' | 'push' | 'whatsapp'
+
 export type EmailTemplate = {
   id: string
   projectId: string
   name: string
-  subject: string
-  htmlBody: string
+  channel: TemplateChannel
+  subject: string | null    // email only
+  htmlBody: string | null   // email only
+  bodyText: string | null   // sms / push / whatsapp
   createdAt: Date
   updatedAt: Date
 }
@@ -331,4 +380,124 @@ export type EventStreamItem = {
   properties: Record<string, unknown>
   platform: string
   timestamp: Date
+}
+
+// ============ UNIFIED PLATFORM TYPES ============
+
+export type ApiKey = {
+  id: string
+  projectId: string
+  name: string
+  keyPublic: string
+  permissions: string[]
+  ipWhitelist: string[] | null
+  rateLimit: number
+  isActive: boolean
+  lastUsedAt: Date | null
+  expiresAt: Date | null
+  createdAt: Date
+}
+
+export type Entity = {
+  id: string
+  projectId: string
+  customerId: string | null
+  entityType: string
+  externalId: string | null
+  status: string | null
+  attributes: Record<string, unknown>
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type Identity = {
+  id: string
+  projectId: string
+  customerId: string
+  identifierType: 'email' | 'phone' | 'external_id' | 'device_id'
+  identifierValue: string
+  isPrimary: boolean
+  createdAt: Date
+}
+
+export type Consent = {
+  id: string
+  projectId: string
+  customerId: string
+  channel: 'email' | 'sms' | 'push' | 'whatsapp'
+  purpose: 'transactional' | 'promotional'
+  status: 'opted_in' | 'opted_out'
+  source: string | null
+  consentedAt: Date
+  revokedAt: Date | null
+  createdAt: Date
+}
+
+export type CommunicationLogEntry = {
+  id: string
+  projectId: string
+  customerId: string
+  channel: 'email' | 'sms' | 'push' | 'whatsapp'
+  messageType: 'campaign' | 'flow' | 'transactional'
+  templateId: string | null
+  contentHash: string | null
+  status: 'sent' | 'delivered' | 'failed' | 'read'
+  providerMessageId: string | null
+  sentAt: Date | null
+  deliveredAt: Date | null
+  metadata: Record<string, unknown>
+  createdAt: Date
+}
+
+// ============ DOMAIN REGISTRY TYPES ============
+
+export type DomainFieldDef = {
+  field: string
+  label: string
+  type: 'number' | 'string' | 'date' | 'boolean' | 'select' | 'product' | 'collection'
+  category: string
+  operators: FilterOperator[]
+  options?: string[]
+  metricKey?: string
+}
+
+export type DomainConfig = {
+  domainType: DomainType
+  fields: DomainFieldDef[]
+  channels: ('email' | 'sms' | 'push' | 'whatsapp')[]
+}
+
+// ============ GENERIC EVENT API TYPES ============
+
+export type EventIngestionPayload = {
+  event_name: string
+  customer_id?: string
+  customer_email?: string
+  customer_phone?: string
+  timestamp?: string
+  idempotency_key?: string
+  session_id?: string
+  source?: 'sdk' | 'api' | 'server' | string
+  platform?: 'web' | 'mobile' | 'server' | string
+  properties?: Record<string, unknown>
+  entities?: {
+    type: string
+    external_id: string
+    status?: string
+    attributes?: Record<string, unknown>
+  }[]
+}
+
+export type BatchEventPayload = {
+  events: EventIngestionPayload[]
+}
+
+export type CustomerUpsertPayload = {
+  customer_id: string
+  attributes: {
+    email?: string
+    phone?: string
+    name?: string
+    [key: string]: unknown
+  }
 }
