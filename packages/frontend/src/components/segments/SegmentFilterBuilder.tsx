@@ -73,7 +73,7 @@ function ProductSearchDropdown({ value, onChange }: { value: string; onChange: (
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={cn(inputClass, 'w-52 flex items-center justify-between gap-1 text-left truncate', !value && 'text-text-muted')}
+        className={cn(inputClass, 'w-full sm:w-52 flex items-center justify-between gap-1 text-left truncate', !value && 'text-text-muted')}
       >
         <span className="truncate">{value || 'Select product...'}</span>
         <ChevronDown className="h-3.5 w-3.5 text-text-muted flex-shrink-0" />
@@ -124,7 +124,7 @@ function CollectionDropdown({ value, onChange }: { value: string; onChange: (val
 
   if (isLoading) {
     return (
-      <div className={cn(inputClass, 'w-52 flex items-center gap-2')}>
+      <div className={cn(inputClass, 'w-full sm:w-52 flex items-center gap-2')}>
         <Loader2 className="h-3.5 w-3.5 text-text-muted animate-spin" />
         <span className="text-sm text-text-muted">Loading...</span>
       </div>
@@ -132,7 +132,7 @@ function CollectionDropdown({ value, onChange }: { value: string; onChange: (val
   }
 
   return (
-    <select value={value} onChange={e => onChange(e.target.value)} className={cn(selectClass, 'w-52')}>
+    <select value={value} onChange={e => onChange(e.target.value)} className={cn(selectClass, 'w-full sm:w-52')}>
       <option value="">Select collection...</option>
       {collections.map(c => (
         <option key={c.id} value={c.title}>{c.title}</option>
@@ -259,14 +259,14 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
                 </div>
               )}
 
-              <div className="group flex items-center gap-2 p-3 rounded-lg border border-border bg-white hover:border-border-focus/50 transition-colors">
-                <GripVertical className="h-4 w-4 text-text-muted/40 flex-shrink-0" />
+              <div className="group flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-white hover:border-border-focus/50 transition-colors">
+                <GripVertical className="h-4 w-4 text-text-muted/40 flex-shrink-0 hidden sm:block" />
 
                 {/* Field selector */}
                 <select
                   value={rule.field}
                   onChange={e => updateRule(index, { field: e.target.value })}
-                  className={cn(selectClass, 'min-w-[180px]')}
+                  className={cn(selectClass, 'min-w-0 w-full sm:w-auto sm:min-w-[180px]')}
                 >
                   {categories.map(cat => (
                     <optgroup key={cat} label={cat}>
@@ -281,7 +281,7 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
                 <select
                   value={rule.operator}
                   onChange={e => updateRule(index, { operator: e.target.value as FilterOperator })}
-                  className={cn(selectClass, 'min-w-[150px]')}
+                  className={cn(selectClass, 'min-w-0 w-full sm:w-auto sm:min-w-[150px]')}
                 >
                   {operators.map(op => (
                     <option key={op.value} value={op.value}>{op.label}</option>

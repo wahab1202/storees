@@ -264,7 +264,7 @@ Storees.identify('user-123', {
           <p className="text-sm text-text-secondary mb-4">
             These are tracked automatically when you enable autoTrack in your SDK config:
           </p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[
               { name: 'page_viewed', desc: 'Every page navigation (SPA-aware)', config: 'pageViews' },
               { name: 'session_started', desc: 'New session (30min inactivity timeout)', config: 'sessions' },

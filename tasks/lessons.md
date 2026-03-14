@@ -24,6 +24,14 @@ Mistakes, corrections, and insights captured during development.
 - **Webhook HMAC needs raw body** — Express JSON parser destroys raw body. Webhook routes must use `express.raw()` mounted BEFORE `express.json()`.
 - **`composite: true` needed in shared tsconfig** — Required for project references to work across packages.
 
+## Build & Deployment
+
+- **`useSearchParams()` requires Suspense boundary in Next.js 14** — Pages using `useSearchParams()` fail static generation during `next build` with "should be wrapped in a suspense boundary" error. Fix: extract the component using `useSearchParams` into a child component and wrap it in `<Suspense fallback={...}>` in the default export.
+- **`skipLibCheck: true` must be in every package tsconfig, not just base** — The base `tsconfig.base.json` has `skipLibCheck: true` but packages with `composite: true` don't inherit it reliably. Add it explicitly to every package's `tsconfig.json` `compilerOptions`.
+- **drizzle-orm types fail on some deployment servers** — Even with `skipLibCheck`, TypeScript can't find `drizzle-orm` declaration files on certain Linux deployment environments (node_modules hoisting differs from macOS). Fix: add a `declarations.d.ts` file in the consuming package with `declare module 'drizzle-orm'` and basic type stubs. This acts as a fallback when the real types aren't resolved.
+- **Always test `npm run build` (full turbo build) before pushing** — Local `tsc --noEmit` may pass but `next build` (static generation) and cross-package builds on deployment servers can fail differently. Run the full `turbo run build` to catch issues early.
+- **SSH keys are better than HTTPS tokens for GitHub** — Use `ssh-keygen -t ed25519` and add to github.com/settings/keys. No token expiry, no password prompts. Set remote with `git remote set-url origin git@github.com:user/repo.git`.
+
 ## Frontend Testing
 
 - **Take screenshots of every module after running** — Verify data renders correctly visually. Don't rely on typecheck alone. Prevents repeat iteration cycles.

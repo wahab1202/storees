@@ -211,7 +211,7 @@ export default function CampaignsPage() {
         {/* Delivery Type Cards */}
         <div>
           <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Delivery Type</h3>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {DELIVERY_TYPES.map(dt => {
               const Icon = dt.icon
               const isSelected = selectedType === dt.key
@@ -296,8 +296,8 @@ export default function CampaignsPage() {
           </div>
 
           {/* Campaign Table */}
-          <div className="bg-white border border-border rounded-xl overflow-hidden">
-            <table className="w-full">
+          <div className="bg-white border border-border rounded-xl overflow-hidden overflow-x-auto">
+            <table className="w-full min-w-[900px]">
               <thead>
                 <tr className="border-b border-border bg-surface">
                   <th className="px-5 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider">Campaign</th>
