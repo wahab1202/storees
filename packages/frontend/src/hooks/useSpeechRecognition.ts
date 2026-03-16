@@ -7,6 +7,7 @@ type SpeechRecognitionHook = {
   transcript: string
   interimTranscript: string
   isSupported: boolean
+  error: string | null
   start: () => void
   stop: () => void
   language: string
@@ -28,6 +29,7 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
   const [interimTranscript, setInterimTranscript] = useState('')
   const [language, setLanguage] = useState('en-US')
   const [isSupported, setIsSupported] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
 
   // Detect browser support on client only (avoids SSR hydration mismatch)
@@ -46,8 +48,20 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     setInterimTranscript('')
   }, [])
 
-  const start = useCallback(() => {
+  const start = useCallback(async () => {
     if (!isSupported) return
+
+    setError(null)
+
+    // Request microphone permission explicitly before starting recognition
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Release the stream immediately — we only needed to trigger the permission prompt
+      stream.getTracks().forEach(t => t.stop())
+    } catch {
+      setError('Microphone access denied. Please allow microphone permission and try again.')
+      return
+    }
 
     if (recognitionRef.current) {
       recognitionRef.current.stop()
@@ -59,14 +73,13 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     const recognition = new SpeechRecognitionCtor()
 
     recognition.lang = language
-    recognition.interimResults = true  // show partial results while speaking
-    recognition.continuous = true      // keep mic open — don't auto-close on silence
+    recognition.interimResults = true
+    recognition.continuous = false // non-continuous is more reliable across Chromium forks
     recognition.maxAlternatives = 1
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let finalText = ''
       let interimText = ''
-      // resultIndex may not be in all TS lib versions — cast to access it
       const startIndex = (event as unknown as { resultIndex: number }).resultIndex ?? 0
 
       for (let i = startIndex; i < event.results.length; i++) {
@@ -83,7 +96,6 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
       }
 
       if (finalText) {
-        // Got a complete utterance — set transcript and stop listening
         setTranscript(finalText.trim())
         setInterimTranscript('')
         recognition.stop()
@@ -91,14 +103,21 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     }
 
     recognition.onerror = (event: Event) => {
-      const error = (event as unknown as { error: string }).error
-      // 'no-speech' is common and expected — don't treat as fatal
-      if (error !== 'no-speech') {
-        console.warn('[Speech] Recognition error:', error)
-      }
+      const errCode = (event as unknown as { error: string }).error
+      recognitionRef.current = null
       setIsListening(false)
       setInterimTranscript('')
-      recognitionRef.current = null
+
+      if (errCode === 'no-speech') return // expected — user didn't say anything
+      if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
+        setError('Microphone access denied. Check browser permissions.')
+      } else if (errCode === 'network') {
+        setError('Speech recognition requires an internet connection.')
+      } else if (errCode === 'aborted') {
+        // User or system cancelled — not an error
+      } else {
+        setError(`Speech recognition error: ${errCode}`)
+      }
     }
 
     recognition.onend = () => {
@@ -111,7 +130,14 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     setTranscript('')
     setInterimTranscript('')
     setIsListening(true)
-    recognition.start()
+
+    try {
+      recognition.start()
+    } catch (e) {
+      setError(`Failed to start: ${e instanceof Error ? e.message : 'unknown error'}`)
+      setIsListening(false)
+      recognitionRef.current = null
+    }
   }, [isSupported, language])
 
   // Cleanup on unmount
@@ -123,5 +149,5 @@ export function useSpeechRecognition(): SpeechRecognitionHook {
     }
   }, [])
 
-  return { isListening, transcript, interimTranscript, isSupported, start, stop, language, setLanguage }
+  return { isListening, transcript, interimTranscript, isSupported, error, start, stop, language, setLanguage }
 }

@@ -285,22 +285,31 @@ export function AiChatPanel({ onApplyFilters }: AiChatPanelProps) {
         <div className="flex items-center gap-2">
           {/* Mic button */}
           {speech.isSupported && (
-            <button
-              onClick={toggleMic}
-              className={cn(
-                'p-2 rounded-lg transition-colors flex-shrink-0',
-                speech.isListening
-                  ? 'bg-red-50 text-red-600 animate-pulse'
-                  : 'text-text-muted hover:bg-surface hover:text-text-primary',
+            <div className="flex flex-col items-center flex-shrink-0">
+              <button
+                onClick={toggleMic}
+                className={cn(
+                  'p-2 rounded-lg transition-colors',
+                  speech.isListening
+                    ? 'bg-red-50 text-red-600 animate-pulse'
+                    : speech.error
+                      ? 'text-red-500 hover:bg-red-50'
+                      : 'text-text-muted hover:bg-surface hover:text-text-primary',
+                )}
+                title={speech.error ?? (speech.isListening ? 'Stop recording' : 'Start voice input')}
+              >
+                {speech.isListening ? (
+                  <MicOff className="h-4 w-4" />
+                ) : (
+                  <Mic className="h-4 w-4" />
+                )}
+              </button>
+              {speech.error && (
+                <span className="text-[9px] text-red-500 max-w-[80px] text-center leading-tight mt-0.5">
+                  {speech.error.includes('denied') ? 'Mic blocked' : 'Mic error'}
+                </span>
               )}
-              title={speech.isListening ? 'Stop recording' : 'Start voice input'}
-            >
-              {speech.isListening ? (
-                <MicOff className="h-4 w-4" />
-              ) : (
-                <Mic className="h-4 w-4" />
-              )}
-            </button>
+            </div>
           )}
 
           {/* Text input */}
