@@ -255,23 +255,19 @@ export default function CampaignsPage() {
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => <CardSkeleton key={i} />)}
         </div>
-      ) : isError ? (
-        <div className="text-center py-20">
-          <p className="text-red-600 text-sm">Failed to load campaigns.</p>
-        </div>
-      ) : campaigns.length === 0 ? (
+      ) : isError || campaigns.length === 0 ? (
         <div className="text-center py-20 bg-white border border-border rounded-xl">
           <Megaphone className="h-10 w-10 text-text-muted mx-auto mb-3" />
           <h3 className="text-sm font-semibold text-text-primary mb-1">No campaigns yet</h3>
-          <p className="text-sm text-text-secondary mb-4">
-            Send one-time email broadcasts to a customer segment.
+          <p className="text-sm text-text-secondary mb-4 max-w-sm mx-auto">
+            Create your first campaign to send targeted messages to your customer segments.
           </p>
           <button
             onClick={() => setShowCreateModal(true)}
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
           >
             <Plus className="h-4 w-4" />
-            Create Campaign
+            Create Your First Campaign
           </button>
         </div>
       ) : (
