@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Sparkles, Send, Mic, MicOff, Loader2, Check, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAiSegment } from '@/hooks/useAiSegment'
+import { useAiSegment, useAiStatus } from '@/hooks/useAiSegment'
 import { useSpeechRecognition, SPEECH_LANGUAGES } from '@/hooks/useSpeechRecognition'
 import type { FilterConfig } from '@storees/shared'
 
@@ -27,7 +27,11 @@ export function AiChatPanel({ onApplyFilters }: AiChatPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
 
   const aiSegment = useAiSegment()
+  const aiStatus = useAiStatus()
   const speech = useSpeechRecognition()
+
+  const aiEnabled = aiStatus.data?.data?.enabled ?? false
+  const aiLoading = aiStatus.isLoading
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -123,27 +127,43 @@ export function AiChatPanel({ onApplyFilters }: AiChatPanelProps) {
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && (
           <div className="text-center py-8">
-            <Sparkles className="h-8 w-8 text-text-muted/30 mx-auto mb-3" />
-            <p className="text-sm font-medium text-text-primary mb-1">
-              Describe your segment
-            </p>
-            <p className="text-xs text-text-muted max-w-[240px] mx-auto leading-relaxed">
-              Type or speak in any language. For example:
-            </p>
-            <div className="mt-3 space-y-1.5">
-              {EXAMPLE_PROMPTS.map((prompt, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    setInput(prompt)
-                    inputRef.current?.focus()
-                  }}
-                  className="block w-full text-left px-3 py-2 text-xs text-text-secondary bg-surface rounded-lg hover:bg-border/50 transition-colors"
-                >
-                  &ldquo;{prompt}&rdquo;
-                </button>
-              ))}
-            </div>
+            <Sparkles className={cn('h-8 w-8 mx-auto mb-3', aiEnabled ? 'text-text-muted/30' : 'text-text-muted/20')} />
+            {aiLoading ? (
+              <div className="flex items-center justify-center gap-2 text-sm text-text-muted">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Checking AI availability...
+              </div>
+            ) : !aiEnabled ? (
+              <>
+                <p className="text-sm font-medium text-text-primary mb-1">AI not configured</p>
+                <p className="text-xs text-text-muted max-w-[240px] mx-auto leading-relaxed">
+                  Set the <code className="text-[11px] bg-surface px-1 py-0.5 rounded">GROQ_API_KEY</code> environment variable on the backend to enable AI-powered segment creation.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium text-text-primary mb-1">
+                  Describe your segment
+                </p>
+                <p className="text-xs text-text-muted max-w-[240px] mx-auto leading-relaxed">
+                  Type or speak in any language. For example:
+                </p>
+                <div className="mt-3 space-y-1.5">
+                  {EXAMPLE_PROMPTS.map((prompt, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        setInput(prompt)
+                        inputRef.current?.focus()
+                      }}
+                      className="block w-full text-left px-3 py-2 text-xs text-text-secondary bg-surface rounded-lg hover:bg-border/50 transition-colors"
+                    >
+                      &ldquo;{prompt}&rdquo;
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -290,14 +310,14 @@ export function AiChatPanel({ onApplyFilters }: AiChatPanelProps) {
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={speech.isListening ? 'Listening...' : 'Describe your segment...'}
-            disabled={aiSegment.isPending || speech.isListening}
+            disabled={!aiEnabled || aiSegment.isPending || speech.isListening}
             className="flex-1 h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted disabled:bg-surface disabled:cursor-not-allowed"
           />
 
           {/* Send button */}
           <button
             onClick={() => handleSubmit()}
-            disabled={!input.trim() || aiSegment.isPending}
+            disabled={!aiEnabled || !input.trim() || aiSegment.isPending}
             className="p-2 rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
           >
             <Send className="h-4 w-4" />

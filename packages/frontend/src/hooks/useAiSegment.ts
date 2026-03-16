@@ -1,6 +1,6 @@
 'use client'
 
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import type { FilterConfig } from '@storees/shared'
@@ -23,7 +23,9 @@ export function useAiSegment() {
 }
 
 export function useAiStatus() {
-  return useMutation({
-    mutationFn: () => api.get<{ enabled: boolean }>('/api/ai/status'),
+  return useQuery({
+    queryKey: ['ai-status'],
+    queryFn: () => api.get<{ enabled: boolean }>('/api/ai/status'),
+    staleTime: 5 * 60_000,
   })
 }
