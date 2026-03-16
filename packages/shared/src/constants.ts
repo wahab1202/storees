@@ -61,6 +61,14 @@ export const SDK_EVENTS = {
   USER_PROPERTIES_UPDATED: 'user_properties_updated',
 } as const
 
+/** All recognized events grouped by domain — used for validation and metrics routing */
+export const EVENTS_BY_DOMAIN = {
+  ecommerce: Object.values(STANDARD_EVENTS),
+  fintech: Object.values(FINTECH_EVENTS),
+  saas: Object.values(SAAS_EVENTS),
+  sdk: Object.values(SDK_EVENTS),
+} as const
+
 export const SHOPIFY_API_VERSION = '2024-01' as const
 
 export const SHOPIFY_API_DELAY_MS = 500 as const

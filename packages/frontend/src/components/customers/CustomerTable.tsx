@@ -27,14 +27,72 @@ type SortableColumn = {
   align?: 'left' | 'right'
 }
 
-const COLUMNS: SortableColumn[] = [
-  { key: 'name', label: 'Customer' },
-  { key: 'totalSpent', label: 'Total Spent', align: 'right' },
-  { key: 'clv', label: 'CLV', align: 'right' },
-  { key: 'lastSeen', label: 'Last Seen' },
-]
+type DomainColumnConfig = {
+  columns: SortableColumn[]
+  activityLabel: string
+  getMoneyValue: (c: CustomerWithSegments) => number
+  getSecondaryValue: (c: CustomerWithSegments) => string
+  getActivityCount: (c: CustomerWithSegments) => number
+}
 
-const COL_COUNT = COLUMNS.length + 2 // +Segments +Orders
+function getMetric(c: CustomerWithSegments, key: string): unknown {
+  return (c.metrics as Record<string, unknown>)?.[key]
+}
+
+function getDomainColumns(domain?: string): DomainColumnConfig {
+  switch (domain) {
+    case 'fintech':
+      return {
+        columns: [
+          { key: 'name', label: 'Customer' },
+          { key: 'totalSpent', label: 'Txn Volume', align: 'right' },
+          { key: 'clv', label: 'Net Flow', align: 'right' },
+          { key: 'lastSeen', label: 'Last Seen' },
+        ],
+        activityLabel: 'Transactions',
+        getMoneyValue: (c) => {
+          const debit = Number(getMetric(c, 'total_debit') ?? 0)
+          const credit = Number(getMetric(c, 'total_credit') ?? 0)
+          return debit + credit
+        },
+        getSecondaryValue: (c) => {
+          const credit = Number(getMetric(c, 'total_credit') ?? 0)
+          const debit = Number(getMetric(c, 'total_debit') ?? 0)
+          return formatCurrency(credit - debit)
+        },
+        getActivityCount: (c) => Number(getMetric(c, 'total_transactions') ?? 0),
+      }
+    case 'saas':
+      return {
+        columns: [
+          { key: 'name', label: 'Customer' },
+          { key: 'totalSpent', label: 'MRR', align: 'right' },
+          { key: 'clv', label: 'Plan', align: 'right' },
+          { key: 'lastSeen', label: 'Last Seen' },
+        ],
+        activityLabel: 'Feature Usage',
+        getMoneyValue: (c) => Number(getMetric(c, 'mrr') ?? 0),
+        getSecondaryValue: (c) => {
+          const plan = (getMetric(c, 'plan') as string) ?? 'free'
+          return plan.charAt(0).toUpperCase() + plan.slice(1)
+        },
+        getActivityCount: (c) => Number(getMetric(c, 'feature_usage_count') ?? 0),
+      }
+    default: // ecommerce + custom
+      return {
+        columns: [
+          { key: 'name', label: 'Customer' },
+          { key: 'totalSpent', label: 'Total Spent', align: 'right' },
+          { key: 'clv', label: 'CLV', align: 'right' },
+          { key: 'lastSeen', label: 'Last Seen' },
+        ],
+        activityLabel: 'Orders',
+        getMoneyValue: (c) => c.totalSpent,
+        getSecondaryValue: (c) => formatCurrency(c.clv),
+        getActivityCount: (c) => c.totalOrders,
+      }
+  }
+}
 
 function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy?: string; sortOrder?: string }) {
   if (column !== sortBy) return <ArrowUpDown className="h-3.5 w-3.5 text-text-muted" />
@@ -52,21 +110,15 @@ function formatDate(date: Date | string): string {
 }
 
 export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId, onToggleExpand, domain }: Props) {
-  const activityLabel = domain === 'fintech' ? 'Transactions' : domain === 'saas' ? 'Events' : 'Orders'
-
-  function getActivityCount(customer: CustomerWithSegments): number {
-    if (domain === 'fintech') {
-      return Number((customer.metrics as Record<string, unknown>)?.total_transactions ?? 0)
-    }
-    return customer.totalOrders
-  }
+  const cfg = getDomainColumns(domain)
+  const colCount = cfg.columns.length + 2 // +Segments +Activity
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-surface-elevated overflow-x-auto">
       <table className="w-full text-sm min-w-[700px]">
         <thead>
           <tr className="border-b border-border bg-surface">
-            {COLUMNS.map(col => (
+            {cfg.columns.map(col => (
               <th
                 key={col.key}
                 className={cn(
@@ -82,7 +134,7 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
               </th>
             ))}
             <th className="px-4 py-3 font-medium text-text-secondary text-left">Segments</th>
-            <th className="px-4 py-3 font-medium text-text-secondary text-right">{activityLabel}</th>
+            <th className="px-4 py-3 font-medium text-text-secondary text-right">{cfg.activityLabel}</th>
           </tr>
         </thead>
         <tbody>
@@ -110,14 +162,14 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
                   )}
                 </td>
 
-                {/* Total spent */}
+                {/* Money column (domain-aware) */}
                 <td className="px-4 py-3 text-right font-medium text-text-primary">
-                  {formatCurrency(customer.totalSpent)}
+                  {formatCurrency(cfg.getMoneyValue(customer))}
                 </td>
 
-                {/* CLV */}
+                {/* Secondary column (domain-aware) */}
                 <td className="px-4 py-3 text-right text-text-secondary">
-                  {formatCurrency(customer.clv)}
+                  {cfg.getSecondaryValue(customer)}
                 </td>
 
                 {/* Last seen */}
@@ -143,16 +195,16 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
                   </div>
                 </td>
 
-                {/* Activity count */}
+                {/* Activity count (domain-aware) */}
                 <td className="px-4 py-3 text-right text-text-secondary">
-                  {getActivityCount(customer)}
+                  {cfg.getActivityCount(customer)}
                 </td>
               </tr>
 
               {/* Expanded detail row */}
               {expandedId === customer.id && (
                 <tr key={`${customer.id}-detail`}>
-                  <td colSpan={COL_COUNT} className="p-0">
+                  <td colSpan={colCount} className="p-0">
                     <CustomerDetail customerId={customer.id} />
                   </td>
                 </tr>

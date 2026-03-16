@@ -54,7 +54,13 @@ class StoreesSdk {
       return
     }
 
-    this.config = { ...DEFAULT_CONFIG, ...config } as StoreesSdkConfig
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+      // Deep merge nested objects so partial overrides don't wipe defaults
+      autoTrack: { ...DEFAULT_CONFIG.autoTrack, ...config.autoTrack },
+      consent: { ...DEFAULT_CONFIG.consent, ...config.consent },
+    } as StoreesSdkConfig
     const log = createLogger(this.config.debug || false)
 
     // Initialize modules
@@ -76,25 +82,24 @@ class StoreesSdk {
       log
     )
 
-    // AutoTracker needs a sessionId getter — wire it up via a closure
-    // that returns the autoTracker's session ID once it's created
-    let sessionId = ''
-    this.eventBuilder = new EventBuilder(
-      this.identity,
-      () => sessionId,
-      log
-    )
-
+    // AutoTracker needs a sessionId getter — use a late-binding closure
+    // so EventBuilder always gets the current session ID (not a stale copy)
     this.autoTracker = new AutoTracker(
       this.config.autoTrack || {},
-      this.eventBuilder,
+      undefined as unknown as EventBuilder, // set below after eventBuilder is created
       this.queue,
       this.consent,
       log
     )
 
-    // Now the autoTracker is created, wire up the session ID
-    sessionId = this.autoTracker.getSessionId()
+    this.eventBuilder = new EventBuilder(
+      this.identity,
+      () => this.autoTracker.getSessionId(),
+      log
+    )
+
+    // Wire up the EventBuilder reference that AutoTracker needs
+    this.autoTracker.setEventBuilder(this.eventBuilder)
 
     this.initialized = true
     log.log('SDK initialized', {

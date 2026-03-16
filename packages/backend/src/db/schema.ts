@@ -170,7 +170,10 @@ export const segments = pgTable('segments', {
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-})
+}, (table) => [
+  index('idx_segments_project').on(table.projectId),
+  index('idx_segments_project_active').on(table.projectId, table.isActive),
+])
 
 // ============ FLOWS ============
 
@@ -185,7 +188,10 @@ export const flows = pgTable('flows', {
   status: varchar('status', { length: 20 }).notNull().default('draft'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-})
+}, (table) => [
+  index('idx_flows_project').on(table.projectId),
+  index('idx_flows_project_status').on(table.projectId, table.status),
+])
 
 // ============ FLOW TRIPS ============
 
@@ -288,7 +294,9 @@ export const emailTemplates = pgTable('email_templates', {
   bodyText: text('body_text'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-})
+}, (table) => [
+  index('idx_email_templates_project').on(table.projectId),
+])
 
 // ============ API KEYS ============
 

@@ -232,6 +232,12 @@ function fieldToSqlExpression(field: string): SQL {
 
     default:
       // Fallback: try metrics JSONB, then custom_attributes JSONB
+      // Validate field name to prevent unexpected values (defense-in-depth;
+      // Drizzle's sql`` already parameterizes ${field} as a bind variable)
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field)) {
+        console.warn(`[Segments] Rejected invalid field name: ${field}`)
+        return sql`''`
+      }
       return sql`COALESCE(
         metrics->>${field},
         custom_attributes->>${field},

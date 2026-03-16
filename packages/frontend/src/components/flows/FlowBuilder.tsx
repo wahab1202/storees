@@ -27,6 +27,7 @@ type FlowBuilderProps = {
   exitConfig?: ExitConfig | null
   onSave: (nodes: FlowNode[], exitConfig: ExitConfig | null) => void
   saving?: boolean
+  domainType?: string
 }
 
 // Convert FlowNode[] to React Flow nodes + edges
@@ -158,7 +159,7 @@ function reactFlowToFlowNodes(nodes: Node[], edges: Edge[]): FlowNode[] {
 
 let nodeIdCounter = 0
 
-function FlowCanvas({ flowNodes, exitConfig: initialExitConfig, onSave, saving }: FlowBuilderProps) {
+function FlowCanvas({ flowNodes, exitConfig: initialExitConfig, onSave, saving, domainType }: FlowBuilderProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const { screenToFlowPosition } = useReactFlow()
 
@@ -273,6 +274,7 @@ function FlowCanvas({ flowNodes, exitConfig: initialExitConfig, onSave, saving }
         node={selectedNode}
         onUpdate={onNodeDataUpdate}
         onClose={() => setSelectedNode(null)}
+        domainType={domainType}
       />
     </div>
   )

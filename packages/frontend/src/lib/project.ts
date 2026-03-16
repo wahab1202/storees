@@ -1,7 +1,13 @@
-/** Returns the active project ID from env. Will be replaced with proper project switching later. */
+const STORAGE_KEY = 'storees-active-project'
+
+/** Returns the active project ID — from localStorage first, then env var fallback */
 export function getProjectId(): string {
+  if (typeof window !== 'undefined') {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) return stored
+  }
   const id = process.env.NEXT_PUBLIC_PROJECT_ID
-  if (!id) throw new Error('NEXT_PUBLIC_PROJECT_ID is not set')
+  if (!id) throw new Error('No active project. Select one from the Projects page.')
   return id
 }
 

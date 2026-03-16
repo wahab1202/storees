@@ -1,4 +1,4 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { segments, customers, customerSegments } from '../db/schema.js'
 import { SEGMENT_TEMPLATE_DEFINITIONS, filterToSql } from '@storees/segments'
@@ -86,13 +86,13 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
     ).onConflictDoNothing()
   }
 
-  // Remove members who no longer match
+  // Remove members who no longer match (batched)
   const toRemove = [...currentIds].filter(id => !matchingIds.has(id))
-  for (const customerId of toRemove) {
+  if (toRemove.length > 0) {
     await db.delete(customerSegments).where(
       and(
-        eq(customerSegments.customerId, customerId),
         eq(customerSegments.segmentId, segmentId),
+        inArray(customerSegments.customerId, toRemove),
       ),
     )
   }

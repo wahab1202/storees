@@ -2,36 +2,19 @@
 
 import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
-import { useDashboardStats } from '@/hooks/useDashboard'
+import { EVENTS_BY_DOMAIN } from '@storees/shared'
 import type { Node } from '@xyflow/react'
 
 type NodeConfigPanelProps = {
   node: Node | null
   onUpdate: (id: string, data: Record<string, unknown>) => void
   onClose: () => void
+  domainType?: string
 }
 
-const EVENTS_BY_DOMAIN: Record<string, string[]> = {
-  ecommerce: [
-    'cart_created', 'cart_updated', 'checkout_started', 'order_placed',
-    'order_fulfilled', 'order_cancelled', 'customer_created', 'customer_updated',
-    'enters_segment', 'exits_segment',
-  ],
-  fintech: [
-    'transaction_completed', 'app_login', 'bill_payment_completed', 'kyc_verified',
-    'kyc_expired', 'loan_disbursed', 'emi_paid', 'emi_overdue',
-    'sip_started', 'card_activated', 'enters_segment', 'exits_segment',
-  ],
-  saas: [
-    'user_signup', 'feature_used', 'trial_expiring', 'subscription_started',
-    'subscription_cancelled', 'user_invited', 'enters_segment', 'exits_segment',
-  ],
-}
-
-export function NodeConfigPanel({ node, onUpdate, onClose }: NodeConfigPanelProps) {
-  const { data: statsData } = useDashboardStats()
-  const domain = statsData?.data.domainType ?? 'ecommerce'
-  const eventOptions = EVENTS_BY_DOMAIN[domain] ?? EVENTS_BY_DOMAIN.ecommerce
+export function NodeConfigPanel({ node, onUpdate, onClose, domainType = 'ecommerce' }: NodeConfigPanelProps) {
+  const domainKey = domainType as keyof typeof EVENTS_BY_DOMAIN
+  const eventOptions = EVENTS_BY_DOMAIN[domainKey] ?? EVENTS_BY_DOMAIN.ecommerce
 
   if (!node) return null
 
@@ -75,7 +58,7 @@ function TriggerForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (
 
   useEffect(() => {
     setEvent((node.data as Record<string, unknown>).event as string ?? '')
-  }, [node.id, node.data])
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
     <div className="space-y-3">
@@ -107,7 +90,7 @@ function DelayForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data
     const nd = node.data as Record<string, unknown>
     setValue((nd.value as number) ?? 30)
     setUnit((nd.unit as string) ?? 'minutes')
-  }, [node.id, node.data])
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
     <div className="space-y-3">
@@ -156,7 +139,7 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
     setCheck((nd.check as string) ?? 'event_occurred')
     setEvent((nd.event as string) ?? '')
     setField((nd.field as string) ?? '')
-  }, [node.id, node.data])
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
     <div className="space-y-3">
@@ -221,7 +204,7 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
     const nd = node.data as Record<string, unknown>
     setActionType((nd.actionType as string) ?? 'send_email')
     setTemplateId((nd.templateId as string) ?? '')
-  }, [node.id, node.data])
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
     <div className="space-y-3">
@@ -262,7 +245,7 @@ function EndForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: 
 
   useEffect(() => {
     setLabel(((node.data as Record<string, unknown>).label as string) ?? 'End')
-  }, [node.id, node.data])
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
     <div className="space-y-3">

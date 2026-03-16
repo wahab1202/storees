@@ -104,16 +104,26 @@ function formatDate(date: Date | string): string {
 
 function summarizeProperties(props: Record<string, unknown>): string {
   const parts: string[] = []
+  // Page views
+  if (props.page) parts.push(String(props.page))
+  if (props.url && !props.page) parts.push(String(props.url))
   // Ecommerce
-  if (props.total !== undefined) parts.push(`Total: ₹${Number(props.total).toLocaleString()}`)
+  if (props.total !== undefined) parts.push(`₹${Number(props.total).toLocaleString('en-IN')}`)
   if (props.item_count !== undefined) parts.push(`${props.item_count} items`)
   if (props.order_id) parts.push(`Order #${props.order_id}`)
-  if (props.cart_value !== undefined) parts.push(`Cart: ₹${Number(props.cart_value).toLocaleString()}`)
+  if (props.cart_value !== undefined) parts.push(`Cart: ₹${Number(props.cart_value).toLocaleString('en-IN')}`)
   // Fintech
-  if (props.amount !== undefined) parts.push(`₹${Number(props.amount).toLocaleString()}`)
+  if (props.amount !== undefined) parts.push(`₹${Number(props.amount).toLocaleString('en-IN')}`)
   if (props.channel) parts.push(String(props.channel).toUpperCase())
+  if (props.biller) parts.push(String(props.biller))
+  if (props.category) parts.push(String(props.category))
+  if (props.recipient) parts.push(`to ${props.recipient}`)
   if (props.transaction_id) parts.push(`Txn #${props.transaction_id}`)
-  if (props.loan_amount !== undefined) parts.push(`₹${Number(props.loan_amount).toLocaleString()}`)
+  if (props.loan_amount !== undefined) parts.push(`₹${Number(props.loan_amount).toLocaleString('en-IN')}`)
+  // Auth
+  if (props.method) parts.push(String(props.method))
+  if (props.device) parts.push(String(props.device))
+  if (props.type && !props.amount) parts.push(String(props.type))
   // SaaS
   if (props.plan) parts.push(`Plan: ${props.plan}`)
   if (props.feature) parts.push(String(props.feature))

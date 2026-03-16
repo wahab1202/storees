@@ -14,9 +14,9 @@ type DateRange = '7d' | '14d' | '30d'
 
 export default function DashboardPage() {
   const [range, setRange] = useState<DateRange>('7d')
-  const { data: stats, isLoading: statsLoading } = useDashboardStats()
-  const { data: activity, isLoading: activityLoading } = useDashboardActivity()
-  const { data: trends, isLoading: trendsLoading } = useDashboardTrends(range)
+  const { data: stats, isLoading: statsLoading, isError: statsError } = useDashboardStats()
+  const { data: activity, isLoading: activityLoading, isError: activityError } = useDashboardActivity()
+  const { data: trends, isLoading: trendsLoading, isError: trendsError } = useDashboardTrends(range)
 
   const domain = stats?.data.domainType ?? 'ecommerce'
   const chartData = useMemo(() => ({
@@ -52,8 +52,17 @@ export default function DashboardPage() {
   // Build metrics array for the inline strip
   const metrics = buildMetrics(stats?.data, domain, statsLoading)
 
+  const hasError = statsError || activityError || trendsError
+
   return (
     <div className="space-y-5">
+      {hasError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 flex items-center gap-2">
+          <span className="text-red-600 text-sm font-medium">Failed to load dashboard data.</span>
+          <span className="text-red-500 text-xs">Check your backend connection and try refreshing.</span>
+        </div>
+      )}
+
       {/* Header bar — MoEngage style: breadcrumb + filters */}
       <div className="flex items-center justify-between">
         <div>
@@ -107,6 +116,7 @@ export default function DashboardPage() {
           title="Active Customers"
           color="#4F46E5"
           loading={trendsLoading}
+          error={trendsError}
           subStats={customerSubStats ? [
             { label: 'Last Day', value: customerSubStats.lastDayActive.toLocaleString() },
             { label: 'Average', value: customerSubStats.avgActive.toLocaleString() },
@@ -129,6 +139,7 @@ export default function DashboardPage() {
           title="Events"
           color="#8B5CF6"
           loading={trendsLoading}
+          error={trendsError}
           subStats={eventSubStats ? [
             { label: 'Last Day', value: eventSubStats.lastDay.toLocaleString() },
             { label: 'Average', value: eventSubStats.average.toLocaleString() },
@@ -149,7 +160,7 @@ export default function DashboardPage() {
       {/* Chart Row 2 — Domain + Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {domain === 'ecommerce' && chartData.domain.length > 0 && (
-          <DashboardChart title="Orders & Revenue" color="#10B981" loading={trendsLoading}>
+          <DashboardChart title="Orders & Revenue" color="#10B981" loading={trendsLoading} error={trendsError}>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={chartData.domain}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
@@ -166,7 +177,7 @@ export default function DashboardPage() {
         )}
 
         {domain === 'fintech' && chartData.domain.length > 0 && (
-          <DashboardChart title="Transactions" color="#F59E0B" loading={trendsLoading}>
+          <DashboardChart title="Transactions" color="#F59E0B" loading={trendsLoading} error={trendsError}>
             <ResponsiveContainer width="100%" height={220}>
               <AreaChart data={chartData.domain}>
                 <defs>
@@ -255,12 +266,14 @@ function DashboardChart({
   title,
   color,
   loading,
+  error,
   children,
   subStats,
 }: {
   title: string
   color: string
   loading: boolean
+  error?: boolean
   children: React.ReactNode
   subStats?: Array<{ label: string; value: string }>
 }) {
@@ -292,6 +305,10 @@ function DashboardChart({
               <Skeleton className="h-28 w-full" />
               <Skeleton className="h-3 w-2/3" />
             </div>
+          </div>
+        ) : error ? (
+          <div className="h-[220px] flex items-center justify-center">
+            <p className="text-sm text-text-muted">Failed to load chart data</p>
           </div>
         ) : (
           children

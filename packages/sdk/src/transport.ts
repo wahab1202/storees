@@ -82,32 +82,52 @@ export class Transport {
     return sent
   }
 
-  /** Send customer upsert (for identify) */
+  /** Send customer upsert (for identify) — with retry on 5xx/network errors */
   async sendCustomerUpsert(
     customerId: string,
     attributes: Record<string, unknown>
   ): Promise<void> {
     const url = `${this.apiUrl}/api/v1/customers`
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          customer_id: customerId,
-          attributes,
-        }),
-      })
+    const body = JSON.stringify({ customer_id: customerId, attributes })
 
-      if (response.ok) {
-        this.log.log('Customer upserted:', customerId)
-      } else {
-        this.log.warn(`Customer upsert failed (${response.status})`)
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': this.apiKey,
+          },
+          body,
+        })
+
+        if (response.ok) {
+          this.log.log('Customer upserted:', customerId)
+          return
+        }
+
+        // 4xx — don't retry (client error)
+        if (response.status >= 400 && response.status < 500) {
+          this.log.warn(`Customer upsert rejected (${response.status})`)
+          return
+        }
+
+        this.log.warn(
+          `Customer upsert failed (${response.status}), attempt ${attempt + 1}/${MAX_RETRIES + 1}`
+        )
+      } catch (err) {
+        this.log.warn(
+          `Customer upsert network error, attempt ${attempt + 1}/${MAX_RETRIES + 1}:`,
+          err
+        )
       }
-    } catch (err) {
-      this.log.warn('Customer upsert network error:', err)
+
+      if (attempt < MAX_RETRIES) {
+        const delay = RETRY_BASE_MS * Math.pow(2, attempt)
+        await new Promise((r) => setTimeout(r, delay))
+      }
     }
+
+    this.log.error('Customer upsert failed after max retries:', customerId)
   }
 }

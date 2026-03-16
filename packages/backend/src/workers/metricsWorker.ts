@@ -14,6 +14,29 @@ type EventJob = {
   timestamp: string
 }
 
+// In-memory cache: projectId → domainType (TTL: 5 minutes)
+const domainTypeCache = new Map<string, { domainType: DomainType; expiresAt: number }>()
+const CACHE_TTL_MS = 5 * 60 * 1000
+
+async function getDomainType(projectId: string): Promise<DomainType | null> {
+  const cached = domainTypeCache.get(projectId)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.domainType
+  }
+
+  const [project] = await db
+    .select({ domainType: sql<string>`domain_type` })
+    .from(sql`projects`)
+    .where(sql`id = ${projectId}`)
+    .limit(1)
+
+  if (!project) return null
+
+  const domainType = project.domainType as DomainType
+  domainTypeCache.set(projectId, { domainType, expiresAt: Date.now() + CACHE_TTL_MS })
+  return domainType
+}
+
 /**
  * Metrics Worker — listens to the 'events' queue and updates customers.metrics JSONB.
  *
@@ -30,12 +53,23 @@ type EventJob = {
  * supports multiple workers on the same queue (each job goes to one worker).
  * We use a separate queue name 'metrics' to avoid conflicts.
  */
+// SDK auto-track events that only affect engagement metrics — skip full domain recompute
+const ENGAGEMENT_ONLY_EVENTS = new Set([
+  'page_viewed', 'session_started', 'session_ended', 'element_clicked',
+])
+
 export function startMetricsWorker(): Worker {
   const worker = new Worker(
     'metrics',
     async (job) => {
       const event = job.data as EventJob
-      await computeAndUpdateMetrics(event.projectId, event.customerId)
+
+      if (ENGAGEMENT_ONLY_EVENTS.has(event.eventName)) {
+        // Only recompute engagement metrics, skip domain-specific queries
+        await computeEngagementOnly(event.projectId, event.customerId)
+      } else {
+        await computeAndUpdateMetrics(event.projectId, event.customerId)
+      }
     },
     {
       connection: redisConnection,
@@ -63,16 +97,9 @@ export async function computeAndUpdateMetrics(
   projectId: string,
   customerId: string,
 ): Promise<void> {
-  // Get project domain type
-  const [project] = await db
-    .select({ domainType: sql<string>`domain_type` })
-    .from(sql`projects`)
-    .where(sql`id = ${projectId}`)
-    .limit(1)
-
-  if (!project) return
-
-  const domainType = project.domainType as DomainType
+  // Get project domain type (cached)
+  const domainType = await getDomainType(projectId)
+  if (!domainType) return
 
   // Compute metrics based on domain
   let metrics: Record<string, unknown> = {}
@@ -192,6 +219,32 @@ async function computeFintechMetrics(
     else lifecycleStage = 'churned'
   }
 
+  // Fetch customAttributes to use as fallback for fields set via identify()
+  const [custRow] = await db
+    .select({ customAttributes: customers.customAttributes })
+    .from(customers)
+    .where(and(eq(customers.id, customerId), eq(customers.projectId, projectId)))
+    .limit(1)
+  const attrs = (custRow?.customAttributes ?? {}) as Record<string, unknown>
+
+  // KYC status: prefer event-based, fallback to customAttributes
+  let kycStatus = 'pending'
+  if (e.latest_kyc_event === 'kyc_verified') {
+    kycStatus = 'verified'
+  } else if (e.latest_kyc_event === 'kyc_expired') {
+    kycStatus = 'expired'
+  } else if (attrs.kyc_status === 'verified' || attrs.kyc_status === 'expired') {
+    kycStatus = attrs.kyc_status as string
+  }
+
+  // emi_overdue: prefer event-based, fallback to customAttributes
+  const emiOverdueFromEvents = Number(e.emi_overdue_count ?? 0) > 0
+  const emiOverdue = emiOverdueFromEvents || attrs.emi_overdue === true || attrs.emi_overdue === 'true'
+
+  // active_loans/active_sips: prefer entity-based, fallback to customAttributes
+  const activeLoans = Number(ent.active_loans ?? 0) || Number(attrs.active_loans ?? 0)
+  const activeSips = Number(ent.active_sips ?? 0) || Number(attrs.active_sips ?? 0)
+
   return {
     total_transactions: totalTransactions,
     total_debit: totalDebit,
@@ -203,12 +256,10 @@ async function computeFintechMetrics(
     credit_count: Number(e.credit_count ?? 0),
     days_since_last_txn: daysSinceLastTxn,
     last_txn_at: e.last_txn_at ?? null,
-    emi_overdue: Number(e.emi_overdue_count ?? 0) > 0,
-    active_loans: Number(ent.active_loans ?? 0),
-    active_sips: Number(ent.active_sips ?? 0),
-    kyc_status: e.latest_kyc_event === 'kyc_verified' ? 'verified'
-              : e.latest_kyc_event === 'kyc_expired' ? 'expired'
-              : 'pending',
+    emi_overdue: emiOverdue,
+    active_loans: activeLoans,
+    active_sips: activeSips,
+    kyc_status: kycStatus,
     lifecycle_stage: lifecycleStage,
     logins_last_7d: Number(e.logins_last_7d ?? 0),
     bill_payments: Number(e.bill_payments ?? 0),
@@ -297,6 +348,29 @@ async function computeEngagementMetrics(
     pages_per_session: sessions > 0 ? Math.round((pageViews / sessions) * 10) / 10 : null,
     last_page_viewed: row?.last_page_viewed ?? null,
   }
+}
+
+// ============ ENGAGEMENT-ONLY UPDATE ============
+// Fast path for SDK auto-track events — merges engagement into existing metrics
+
+async function computeEngagementOnly(
+  projectId: string,
+  customerId: string,
+): Promise<void> {
+  const engagement = await computeEngagementMetrics(projectId, customerId)
+  if (Object.keys(engagement).length === 0) return
+
+  // Merge engagement into existing metrics without recomputing domain metrics
+  const [customer] = await db
+    .select({ metrics: customers.metrics })
+    .from(customers)
+    .where(eq(customers.id, customerId))
+    .limit(1)
+
+  const existingMetrics = (customer?.metrics ?? {}) as Record<string, unknown>
+  await db.update(customers)
+    .set({ metrics: { ...existingMetrics, ...engagement }, updatedAt: new Date() })
+    .where(eq(customers.id, customerId))
 }
 
 // ============ GENERIC/CUSTOM METRICS ============

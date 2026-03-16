@@ -64,6 +64,7 @@ export function useDashboardStats() {
   return useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: () => api.get<DashboardStats>(withProject('/api/dashboard/stats')),
+    staleTime: 60_000, // 1 minute — don't refetch on every tab focus
   })
 }
 
@@ -71,6 +72,7 @@ export function useDashboardActivity(limit = 20) {
   return useQuery({
     queryKey: ['dashboard-activity', limit],
     queryFn: () => api.get<ActivityItem[]>(withProject('/api/dashboard/activity', { limit })),
+    staleTime: 30_000, // 30 seconds — activity is more time-sensitive
   })
 }
 
@@ -78,5 +80,6 @@ export function useDashboardTrends(range: '7d' | '14d' | '30d' = '7d') {
   return useQuery({
     queryKey: ['dashboard-trends', range],
     queryFn: () => api.get<TrendsData>(withProject('/api/dashboard/trends', { range })),
+    staleTime: 60_000, // 1 minute — trend data doesn't change fast
   })
 }

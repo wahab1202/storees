@@ -44,8 +44,8 @@ const fintechFields: DomainFieldDef[] = [
 
   // Transaction History
   { field: 'total_transactions', label: 'Total Transactions', type: 'number', category: 'Transaction History', operators: ['is', 'greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'total_transactions' },
-  { field: 'total_debit', label: 'Total Debit (paise)', type: 'number', category: 'Transaction History', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'total_debit' },
-  { field: 'total_credit', label: 'Total Credit (paise)', type: 'number', category: 'Transaction History', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'total_credit' },
+  { field: 'total_debit', label: 'Total Debit (INR)', type: 'number', category: 'Transaction History', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'total_debit' },
+  { field: 'total_credit', label: 'Total Credit (INR)', type: 'number', category: 'Transaction History', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'total_credit' },
   { field: 'avg_transaction_value', label: 'Avg Transaction Value', type: 'number', category: 'Transaction History', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'avg_transaction_value' },
   { field: 'transaction_channel', label: 'Primary Channel', type: 'select', category: 'Transaction Filters', operators: ['is', 'is_not'] as FilterOperator[], options: ['upi', 'neft', 'imps', 'card', 'cash'] },
 
@@ -65,7 +65,7 @@ const fintechFields: DomainFieldDef[] = [
 
   // Investment
   { field: 'investment_type', label: 'Investment Type', type: 'select', category: 'Investment', operators: ['is', 'is_not'] as FilterOperator[], options: ['equity', 'mutual_fund', 'sip', 'fd', 'rd'] },
-  { field: 'portfolio_value', label: 'Portfolio Value (paise)', type: 'number', category: 'Investment', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'portfolio_value' },
+  { field: 'portfolio_value', label: 'Portfolio Value (INR)', type: 'number', category: 'Investment', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'portfolio_value' },
   { field: 'active_sips', label: 'Active SIPs', type: 'number', category: 'Investment', operators: ['is', 'greater_than'] as FilterOperator[], metricKey: 'active_sips' },
 
   // Card

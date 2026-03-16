@@ -32,13 +32,13 @@ export class AutoTracker {
 
   constructor(
     autoTrackConfig: NonNullable<StoreesSdkConfig['autoTrack']>,
-    eventBuilder: EventBuilder,
+    eventBuilder: EventBuilder | undefined,
     queue: EventQueue,
     consent: ConsentManager,
     log: Logger
   ) {
     this.config = autoTrackConfig
-    this.eventBuilder = eventBuilder
+    this.eventBuilder = eventBuilder as EventBuilder
     this.queue = queue
     this.consent = consent
     this.log = log
@@ -51,7 +51,20 @@ export class AutoTracker {
       this.captureUTM()
     }
 
-    // Set up auto-tracking
+    // Auto-tracking is started in setEventBuilder() to avoid using
+    // an uninitialized eventBuilder (circular dependency with core.ts)
+    if (eventBuilder) {
+      this.startAutoTracking()
+    }
+  }
+
+  /** Set the EventBuilder after construction (breaks circular init dependency) */
+  setEventBuilder(builder: EventBuilder): void {
+    this.eventBuilder = builder
+    this.startAutoTracking()
+  }
+
+  private startAutoTracking(): void {
     if (this.config.pageViews !== false) this.trackPageViews()
     if (this.config.sessions !== false) this.trackSessions()
     if (this.config.clicks) this.trackClicks()

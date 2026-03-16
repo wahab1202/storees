@@ -80,6 +80,11 @@ export default function DebuggerPage() {
                     {event.platform}
                   </span>
                   <span className="text-accent font-medium">{event.eventName}</span>
+                  {eventPreview(event.properties) && (
+                    <span className="text-text-muted text-xs truncate max-w-[200px]">
+                      {eventPreview(event.properties)}
+                    </span>
+                  )}
                   {event.customerName && (
                     <span className="text-text-muted ml-auto truncate">
                       {event.customerName}
@@ -100,6 +105,27 @@ export default function DebuggerPage() {
       )}
     </div>
   )
+}
+
+function eventPreview(properties: Record<string, unknown> | null | undefined): string | null {
+  if (!properties) return null
+  const p = properties as Record<string, unknown>
+
+  // Page views
+  if (p.page) return String(p.page)
+  if (p.url) return String(p.url)
+
+  // Transactions / payments
+  const parts: string[] = []
+  if (p.amount) parts.push(`₹${Number(p.amount).toLocaleString('en-IN')}`)
+  if (p.channel) parts.push(String(p.channel).toUpperCase())
+  if (p.biller) parts.push(String(p.biller))
+  if (p.category && !p.amount) parts.push(String(p.category))
+  if (p.type && p.amount) parts.push(String(p.type))
+  if (p.method) parts.push(String(p.method))
+  if (p.plan) parts.push(String(p.plan))
+
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 function platformColor(platform: string): string {

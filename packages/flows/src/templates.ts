@@ -6,7 +6,7 @@ type FlowTemplate = {
   description: string
   domainTypes: DomainType[] // which domains this template applies to
   triggerConfig: TriggerConfig
-  exitConfig: ExitConfig
+  exitConfig?: ExitConfig
   nodes: FlowNode[]
   emailTemplateId: string
 }
@@ -193,10 +193,9 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
         ],
       },
     },
-    exitConfig: {
-      event: 'transaction_completed',
-      scope: 'any',
-    },
+    // No exitConfig — the condition node at 'check_active' handles re-engagement.
+    // (Cannot use transaction_completed as exit event because it is also the trigger —
+    // the flow would immediately self-cancel on the same event that started it.)
     nodes: [
       { id: 'trigger', type: 'trigger' },
       { id: 'send_email', type: 'action', config: {

@@ -16,9 +16,7 @@ router.get('/', requireProjectId, async (req, res) => {
     // Ensure default segments exist (evaluates them on first creation)
     await instantiateDefaultSegments(projectId)
 
-    // Re-evaluate all segments to keep counts fresh
-    await evaluateAllSegments(projectId)
-
+    // Return cached counts immediately, re-evaluate in background
     const rows = await db
       .select()
       .from(segments)
@@ -27,6 +25,11 @@ router.get('/', requireProjectId, async (req, res) => {
     res.json({
       success: true,
       data: rows,
+    })
+
+    // Fire-and-forget: re-evaluate all segments after response is sent
+    evaluateAllSegments(projectId).catch(err => {
+      console.error('Background segment evaluation error:', err)
     })
   } catch (err) {
     console.error('Segment list error:', err)

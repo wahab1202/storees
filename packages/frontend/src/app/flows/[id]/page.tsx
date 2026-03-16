@@ -2,6 +2,7 @@
 
 import { useParams, useRouter } from 'next/navigation'
 import { useFlowDetail, useUpdateFlow, useUpdateFlowStatus } from '@/hooks/useFlows'
+import { useDashboardStats } from '@/hooks/useDashboard'
 import { FlowBuilder } from '@/components/flows/FlowBuilder'
 import { Loader2, ArrowLeft, Play, Pause } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -12,6 +13,7 @@ export default function FlowDetailPage() {
   const router = useRouter()
   const id = params.id as string
   const { data, isLoading, isError } = useFlowDetail(id)
+  const { data: statsData } = useDashboardStats()
   const updateFlow = useUpdateFlow()
   const updateStatus = useUpdateFlowStatus()
 
@@ -99,6 +101,7 @@ export default function FlowDetailPage() {
         exitConfig={flow.exitConfig as ExitConfig | null}
         onSave={handleSave}
         saving={updateFlow.isPending}
+        domainType={statsData?.data.domainType}
       />
     </div>
   )

@@ -6,6 +6,7 @@ import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { dataMaskingMiddleware } from '../middleware/dataMasking.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { eventsQueue, metricsQueue } from '../services/queue.js'
+import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
 import type { EventIngestionPayload } from '@storees/shared'
 
 const router = Router()
@@ -242,23 +243,26 @@ router.post('/events/batch', async (req: Request, res: Response) => {
           return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, ${payload.idempotency_key}, ${ts})`
         })
 
+        // RETURNING id + idempotency_key so we can match results correctly
+        // (PG does not guarantee RETURNING order matches VALUES order with ON CONFLICT DO NOTHING)
         const insertResult = await db.execute(sql`
           INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
           VALUES ${sql.join(insertValues, sql`, `)}
           ON CONFLICT (project_id, idempotency_key) DO NOTHING
-          RETURNING id
+          RETURNING id, idempotency_key
         `)
 
-        const insertedIds = insertResult.rows as { id: string }[]
-        for (let j = 0; j < insertedIds.length; j++) {
-          insertedEvents.push({ ...withIdemKey[j], id: insertedIds[j].id })
-          results.push({ index: withIdemKey[j].index, id: insertedIds[j].id })
-        }
-        // Events not returned were deduplicated
-        if (insertedIds.length < withIdemKey.length) {
-          const insertedSet = new Set(insertedIds.map(r => r.id))
-          for (let j = insertedIds.length; j < withIdemKey.length; j++) {
-            results.push({ index: withIdemKey[j].index, error: 'Deduplicated' })
+        const insertedRows = insertResult.rows as { id: string; idempotency_key: string }[]
+        const insertedByKey = new Map(insertedRows.map(r => [r.idempotency_key, r.id]))
+
+        for (const entry of withIdemKey) {
+          const eventId = insertedByKey.get(entry.payload.idempotency_key!)
+          if (eventId) {
+            insertedEvents.push({ ...entry, id: eventId })
+            results.push({ index: entry.index, id: eventId })
+          } else {
+            // Not in RETURNING = deduplicated by ON CONFLICT
+            results.push({ index: entry.index, error: 'Deduplicated' })
           }
         }
       }
@@ -455,61 +459,30 @@ async function resolveCustomer(
   projectId: string,
   payload: EventIngestionPayload,
 ): Promise<string> {
-  // Try external_id first
-  if (payload.customer_id) {
-    const [existing] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.projectId, projectId), eq(customers.externalId, payload.customer_id)))
-      .limit(1)
-    if (existing) return existing.id
-  }
-
-  // Try email
-  if (payload.customer_email) {
-    const [existing] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.projectId, projectId), eq(customers.email, payload.customer_email)))
-      .limit(1)
-    if (existing) return existing.id
-  }
-
-  // Try phone
-  if (payload.customer_phone) {
-    const [existing] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.projectId, projectId), eq(customers.phone, payload.customer_phone)))
-      .limit(1)
-    if (existing) return existing.id
-  }
-
-  // Create new customer
-  const [customer] = await db.insert(customers).values({
+  // Delegate to shared service (handles resolution, creation, lastSeen, ON CONFLICT)
+  const customerId = await resolveCustomerService({
     projectId,
-    externalId: payload.customer_id ?? null,
-    email: payload.customer_email ?? null,
-    phone: payload.customer_phone ?? null,
-    metrics: {},
-  }).returning({ id: customers.id })
+    externalId: payload.customer_id ?? undefined,
+    email: payload.customer_email ?? undefined,
+    phone: payload.customer_phone ?? undefined,
+  })
 
-  // Create identity records
+  // Ensure identity records exist for this customer (idempotent via ON CONFLICT)
   const identityRecords = []
   if (payload.customer_id) {
-    identityRecords.push({ projectId, customerId: customer.id, identifierType: 'external_id', identifierValue: payload.customer_id, isPrimary: true })
+    identityRecords.push({ projectId, customerId, identifierType: 'external_id', identifierValue: payload.customer_id, isPrimary: true })
   }
   if (payload.customer_email) {
-    identityRecords.push({ projectId, customerId: customer.id, identifierType: 'email', identifierValue: payload.customer_email, isPrimary: false })
+    identityRecords.push({ projectId, customerId, identifierType: 'email', identifierValue: payload.customer_email, isPrimary: false })
   }
   if (payload.customer_phone) {
-    identityRecords.push({ projectId, customerId: customer.id, identifierType: 'phone', identifierValue: payload.customer_phone, isPrimary: false })
+    identityRecords.push({ projectId, customerId, identifierType: 'phone', identifierValue: payload.customer_phone, isPrimary: false })
   }
   if (identityRecords.length > 0) {
     await db.insert(identities).values(identityRecords).onConflictDoNothing()
   }
 
-  return customer.id
+  return customerId
 }
 
 /** Upsert an entity (order, transaction, account, etc.) */
@@ -600,37 +573,38 @@ async function handleCustomerIdentified(
 
   if (identifiedCustomer && identifiedCustomer.id !== anonCustomer.id) {
     // Two different records exist — merge anonymous into identified
-    // 1. Reassign all events from anonymous to identified
-    await db.execute(sql`
-      UPDATE events SET customer_id = ${identifiedCustomer.id}
-      WHERE customer_id = ${anonCustomer.id} AND project_id = ${projectId}
-    `)
-
-    // 2. Reassign entities
-    await db.execute(sql`
-      UPDATE entities SET customer_id = ${identifiedCustomer.id}
-      WHERE customer_id = ${anonCustomer.id} AND project_id = ${projectId}
-    `)
-
-    // 3. Merge custom attributes (identified wins on conflicts)
+    // Wrap in a transaction to prevent partial merges (e.g. events moved but anon not deleted)
     const anonAttrs = (anonCustomer.customAttributes ?? {}) as Record<string, unknown>
     const identifiedAttrs = (identifiedCustomer.customAttributes ?? {}) as Record<string, unknown>
     const mergedAttrs = { ...anonAttrs, ...identifiedAttrs }
-
-    // 4. Use the earlier firstSeen
     const earlierFirstSeen = anonCustomer.firstSeen < identifiedCustomer.firstSeen
       ? anonCustomer.firstSeen
       : identifiedCustomer.firstSeen
 
-    await db.update(customers)
-      .set({ customAttributes: mergedAttrs, firstSeen: earlierFirstSeen, updatedAt: new Date() })
-      .where(eq(customers.id, identifiedCustomer.id))
+    await db.transaction(async (tx) => {
+      // 1. Reassign all events from anonymous to identified
+      await tx.execute(sql`
+        UPDATE events SET customer_id = ${identifiedCustomer.id}
+        WHERE customer_id = ${anonCustomer.id} AND project_id = ${projectId}
+      `)
 
-    // 5. Delete anonymous customer
-    await db.execute(sql`
-      DELETE FROM identities WHERE customer_id = ${anonCustomer.id} AND project_id = ${projectId}
-    `)
-    await db.delete(customers).where(eq(customers.id, anonCustomer.id))
+      // 2. Reassign entities
+      await tx.execute(sql`
+        UPDATE entities SET customer_id = ${identifiedCustomer.id}
+        WHERE customer_id = ${anonCustomer.id} AND project_id = ${projectId}
+      `)
+
+      // 3. Merge custom attributes + use earlier firstSeen
+      await tx.update(customers)
+        .set({ customAttributes: mergedAttrs, firstSeen: earlierFirstSeen, updatedAt: new Date() })
+        .where(eq(customers.id, identifiedCustomer.id))
+
+      // 4. Delete anonymous customer's identities and the customer record
+      await tx.execute(sql`
+        DELETE FROM identities WHERE customer_id = ${anonCustomer.id} AND project_id = ${projectId}
+      `)
+      await tx.delete(customers).where(eq(customers.id, anonCustomer.id))
+    })
 
     console.log(`Merged anonymous customer ${anonCustomer.id} → ${identifiedCustomer.id}`)
   } else if (!identifiedCustomer) {
