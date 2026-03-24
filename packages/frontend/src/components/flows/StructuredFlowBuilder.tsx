@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import {
   Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone,
-  CircleStop, Plus, Trash2, LogOut, X, Save, Loader2,
+  CircleStop, Plus, Trash2, LogOut, X, Save, Loader2, AlertCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
@@ -21,28 +21,25 @@ type Props = {
 
 type TreeNode = {
   node: FlowNode
-  children: TreeNode[] // linear next nodes
-  yesBranch?: TreeNode[] // condition yes path
-  noBranch?: TreeNode[] // condition no path
+  yesBranch?: TreeNode[]
+  noBranch?: TreeNode[]
 }
 
-// Convert flat FlowNode[] (with branch pointers) to a render tree
 function buildTree(nodes: FlowNode[]): TreeNode[] {
   if (nodes.length === 0) return []
 
   const nodeMap = new Map<string, FlowNode>()
   nodes.forEach(n => nodeMap.set(n.id, n))
 
-  // Track which nodes are branch targets so we skip them in linear flow
+  // Track which nodes are branch targets
   const branchTargets = new Set<string>()
   nodes.forEach(n => {
     if (n.type === 'condition') {
-      if (n.config.branches.yes) branchTargets.add(n.config.branches.yes)
-      if (n.config.branches.no) branchTargets.add(n.config.branches.no)
+      if (n.config.branches?.yes) branchTargets.add(n.config.branches.yes)
+      if (n.config.branches?.no) branchTargets.add(n.config.branches.no)
     }
   })
 
-  // Build chain starting from a given node ID
   function buildChain(startId: string, visited: Set<string>): TreeNode[] {
     const chain: TreeNode[] = []
     let currentId: string | null = startId
@@ -52,11 +49,11 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
       if (!fn) break
       visited.add(currentId)
 
-      const treeNode: TreeNode = { node: fn, children: [] }
+      const treeNode: TreeNode = { node: fn }
 
       if (fn.type === 'condition') {
-        const yesId = fn.config.branches.yes
-        const noId = fn.config.branches.no
+        const yesId = fn.config.branches?.yes
+        const noId = fn.config.branches?.no
         if (yesId && nodeMap.has(yesId)) {
           treeNode.yesBranch = buildChain(yesId, new Set(visited))
         }
@@ -64,12 +61,12 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
           treeNode.noBranch = buildChain(noId, new Set(visited))
         }
         chain.push(treeNode)
-        break // condition terminates this linear chain
+        break
       }
 
       chain.push(treeNode)
 
-      // Find next node in linear sequence
+      // Find next linear node
       const idx = nodes.indexOf(fn)
       const nextNode = idx >= 0 && idx < nodes.length - 1 ? nodes[idx + 1] : null
       currentId = nextNode && !branchTargets.has(nextNode.id) ? nextNode.id : null
@@ -81,26 +78,6 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
   return buildChain(nodes[0].id, new Set())
 }
 
-// Flatten tree back to FlowNode[] for saving
-function flattenTree(tree: TreeNode[]): FlowNode[] {
-  const result: FlowNode[] = []
-  const visited = new Set<string>()
-
-  function walk(chain: TreeNode[]) {
-    for (const tn of chain) {
-      if (visited.has(tn.node.id)) continue
-      visited.add(tn.node.id)
-      result.push(tn.node)
-      if (tn.yesBranch) walk(tn.yesBranch)
-      if (tn.noBranch) walk(tn.noBranch)
-      walk(tn.children)
-    }
-  }
-
-  walk(tree)
-  return result
-}
-
 // ─── ID generator ───────────────────────────────────────
 
 let idCounter = 0
@@ -110,71 +87,88 @@ function nextId(type: string) {
 
 // ─── Node styling ───────────────────────────────────────
 
-const NODE_STYLES: Record<string, { icon: typeof Zap; border: string; bg: string; text: string; label: string }> = {
-  trigger: { icon: Zap, border: 'border-purple-300', bg: 'bg-purple-50', text: 'text-purple-700', label: 'Trigger' },
-  delay: { icon: Clock, border: 'border-blue-300', bg: 'bg-blue-50', text: 'text-blue-700', label: 'Wait' },
-  condition: { icon: GitBranch, border: 'border-amber-300', bg: 'bg-amber-50', text: 'text-amber-700', label: 'Condition' },
-  send_email: { icon: Mail, border: 'border-green-300', bg: 'bg-green-50', text: 'text-green-700', label: 'Send Email' },
-  send_sms: { icon: MessageSquare, border: 'border-teal-300', bg: 'bg-teal-50', text: 'text-teal-700', label: 'Send SMS' },
-  send_push: { icon: Bell, border: 'border-violet-300', bg: 'bg-violet-50', text: 'text-violet-700', label: 'Push Notification' },
-  send_whatsapp: { icon: Phone, border: 'border-emerald-300', bg: 'bg-emerald-50', text: 'text-emerald-700', label: 'WhatsApp' },
-  end: { icon: CircleStop, border: 'border-gray-300', bg: 'bg-gray-50', text: 'text-gray-600', label: 'End' },
+const NODE_META: Record<string, {
+  icon: typeof Zap
+  iconColor: string
+  iconBg: string
+  ringColor: string
+  label: string
+}> = {
+  trigger:       { icon: Zap,            iconColor: 'text-purple-600',  iconBg: 'bg-purple-100',  ringColor: 'ring-purple-200',  label: 'Trigger' },
+  delay:         { icon: Clock,          iconColor: 'text-blue-600',    iconBg: 'bg-blue-100',    ringColor: 'ring-blue-200',    label: 'Wait / Delay' },
+  condition:     { icon: GitBranch,      iconColor: 'text-amber-600',   iconBg: 'bg-amber-100',   ringColor: 'ring-amber-200',   label: 'Condition' },
+  send_email:    { icon: Mail,           iconColor: 'text-green-600',   iconBg: 'bg-green-100',   ringColor: 'ring-green-200',   label: 'Email' },
+  send_sms:      { icon: MessageSquare,  iconColor: 'text-teal-600',    iconBg: 'bg-teal-100',    ringColor: 'ring-teal-200',    label: 'SMS' },
+  send_push:     { icon: Bell,           iconColor: 'text-violet-600',  iconBg: 'bg-violet-100',  ringColor: 'ring-violet-200',  label: 'Push Notification' },
+  send_whatsapp: { icon: Phone,          iconColor: 'text-emerald-600', iconBg: 'bg-emerald-100', ringColor: 'ring-emerald-200', label: 'WhatsApp' },
+  end:           { icon: CircleStop,     iconColor: 'text-gray-500',    iconBg: 'bg-gray-100',    ringColor: 'ring-gray-200',    label: 'End' },
 }
 
-function getNodeStyle(node: FlowNode) {
-  if (node.type === 'action') return NODE_STYLES[node.config.actionType] ?? NODE_STYLES.send_email
-  return NODE_STYLES[node.type] ?? NODE_STYLES.end
+function getMeta(node: FlowNode) {
+  if (node.type === 'action') return NODE_META[node.config.actionType] ?? NODE_META.send_email
+  return NODE_META[node.type] ?? NODE_META.end
 }
 
-function getNodeSubtitle(node: FlowNode): string {
+function getSubtitle(node: FlowNode): string {
   switch (node.type) {
-    case 'trigger': return node.config?.event ? formatEvent(node.config.event) : 'Select trigger event'
+    case 'trigger': return node.config?.event ? fmtEvent(node.config.event) : 'Select trigger event'
     case 'delay': return `${node.config.value} ${node.config.unit}`
     case 'condition':
       return node.config.check === 'event_occurred'
-        ? `Has done: ${node.config.event ? formatEvent(node.config.event) : '?'}`
+        ? `Has done: ${node.config.event ? fmtEvent(node.config.event) : '?'}`
         : `Check: ${node.config.field ?? '?'}`
-    case 'action': return node.config.templateId ? `Template: ${node.config.templateId.slice(0, 16)}` : 'No template selected'
+    case 'action': return node.config.templateId ? `Template: ${node.config.templateId.slice(0, 20)}` : 'No template selected'
     case 'end': return node.label ?? 'End'
     default: return ''
   }
 }
 
-function formatEvent(name: string): string {
+function fmtEvent(name: string): string {
   return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 }
 
-// ─── Add Node Menu ──────────────────────────────────────
+// ─── Add Node Popup ─────────────────────────────────────
 
 const ADD_OPTIONS = [
-  { type: 'delay', label: 'Wait / Delay', icon: Clock, color: 'text-blue-600', category: 'Controls' },
-  { type: 'condition', label: 'Conditional Split', icon: GitBranch, color: 'text-amber-600', category: 'Conditions' },
-  { type: 'send_email', label: 'Email', icon: Mail, color: 'text-green-600', category: 'Actions' },
-  { type: 'send_sms', label: 'SMS', icon: MessageSquare, color: 'text-teal-600', category: 'Actions' },
-  { type: 'send_push', label: 'Push Notification', icon: Bell, color: 'text-violet-600', category: 'Actions' },
-  { type: 'send_whatsapp', label: 'WhatsApp', icon: Phone, color: 'text-emerald-600', category: 'Actions' },
-  { type: 'end', label: 'Exit', icon: CircleStop, color: 'text-red-500', category: 'Controls' },
+  { type: 'delay',         label: 'Wait / Delay',       icon: Clock,          color: 'text-blue-500',    category: 'Controls' },
+  { type: 'end',           label: 'Exit',               icon: CircleStop,     color: 'text-red-400',     category: 'Controls' },
+  { type: 'condition',     label: 'Conditional Split',   icon: GitBranch,      color: 'text-amber-500',   category: 'Conditions' },
+  { type: 'send_email',    label: 'Email',              icon: Mail,           color: 'text-green-500',   category: 'Actions' },
+  { type: 'send_sms',      label: 'SMS',                icon: MessageSquare,  color: 'text-teal-500',    category: 'Actions' },
+  { type: 'send_push',     label: 'Push Notification',  icon: Bell,           color: 'text-violet-500',  category: 'Actions' },
+  { type: 'send_whatsapp', label: 'WhatsApp',           icon: Phone,          color: 'text-emerald-500', category: 'Actions' },
 ]
 
-function createNode(optionType: string): FlowNode {
-  if (optionType === 'delay') return { id: nextId('delay'), type: 'delay', config: { value: 30, unit: 'minutes' } }
-  if (optionType === 'condition') {
-    const yesEnd: FlowNode = { id: nextId('end'), type: 'end', label: 'End' }
-    const noEnd: FlowNode = { id: nextId('end'), type: 'end', label: 'End' }
-    return {
-      id: nextId('condition'), type: 'condition',
-      config: { check: 'event_occurred', since: 'trip_start', branches: { yes: yesEnd.id, no: noEnd.id } },
-      // @ts-expect-error - storing branch end nodes for tree building
-      _yesNodes: [yesEnd], _noNodes: [noEnd],
-    }
-  }
-  if (optionType === 'end') return { id: nextId('end'), type: 'end', label: 'End' }
-  const actionType = optionType as 'send_email' | 'send_sms' | 'send_push' | 'send_whatsapp'
-  return { id: nextId('action'), type: 'action', config: { actionType, templateId: '' } }
+const CATEGORY_ORDER = ['Controls', 'Conditions', 'Actions'] as const
+const CATEGORY_DOT: Record<string, string> = {
+  Controls: 'bg-violet-400',
+  Conditions: 'bg-amber-400',
+  Actions: 'bg-green-400',
 }
 
-function AddNodeButton({ onAdd }: { onAdd: (optionType: string) => void }) {
+function AddNodePopup({
+  onAdd,
+  className,
+}: {
+  onAdd: (optionType: string) => void
+  className?: string
+}) {
   const [open, setOpen] = useState(false)
+  const popupRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
 
   const grouped = useMemo(() => {
     const map = new Map<string, typeof ADD_OPTIONS>()
@@ -187,35 +181,50 @@ function AddNodeButton({ onAdd }: { onAdd: (optionType: string) => void }) {
   }, [])
 
   return (
-    <div className="relative flex flex-col items-center">
-      <div className="w-px h-5 bg-border" />
+    <div className={cn('relative flex flex-col items-center', className)}>
+      {/* Connector line above button */}
+      <div className="w-px h-6 bg-gray-300" />
+
       <button
+        ref={btnRef}
         onClick={() => setOpen(!open)}
-        className="w-6 h-6 rounded-full bg-accent text-white flex items-center justify-center hover:bg-accent-hover transition-colors shadow-sm"
+        className={cn(
+          'w-7 h-7 rounded-full flex items-center justify-center transition-all z-10',
+          'bg-indigo-600 text-white shadow-md hover:bg-indigo-700 hover:shadow-lg hover:scale-110',
+        )}
       >
-        <Plus className="h-3 w-3" />
+        <Plus className="h-3.5 w-3.5" strokeWidth={3} />
       </button>
-      <div className="w-px h-5 bg-border" />
+
+      {/* Connector line below button */}
+      <div className="w-px h-6 bg-gray-300" />
 
       {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-9 left-1/2 -translate-x-1/2 z-50 bg-white border border-border rounded-xl shadow-xl p-4 w-[420px]">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-text-muted uppercase tracking-wider">Add Node</span>
-              <button onClick={() => setOpen(false)} className="p-0.5 rounded hover:bg-surface">
-                <X className="h-3.5 w-3.5 text-text-muted" />
-              </button>
-            </div>
-            <div className="flex gap-6">
-              {Array.from(grouped.entries()).map(([category, items]) => (
-                <div key={category} className="flex-1">
-                  <div className="flex items-center gap-1.5 mb-2">
-                    <span className={cn(
-                      'w-2 h-2 rounded-full',
-                      category === 'Actions' ? 'bg-green-400' : category === 'Conditions' ? 'bg-amber-400' : 'bg-violet-400',
-                    )} />
-                    <span className="text-xs font-semibold text-heading">{category}</span>
+        <div
+          ref={popupRef}
+          className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-white rounded-2xl shadow-2xl border border-gray-100 p-5 w-[460px]"
+          style={{ filter: 'drop-shadow(0 8px 30px rgba(0,0,0,0.12))' }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Add Node</span>
+            <button
+              onClick={() => setOpen(false)}
+              className="w-6 h-6 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors"
+            >
+              <X className="h-3.5 w-3.5 text-gray-400" />
+            </button>
+          </div>
+
+          {/* 3 columns */}
+          <div className="grid grid-cols-3 gap-5">
+            {CATEGORY_ORDER.map(category => {
+              const items = grouped.get(category) ?? []
+              return (
+                <div key={category}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className={cn('w-2 h-2 rounded-full', CATEGORY_DOT[category])} />
+                    <span className="text-xs font-bold text-gray-800">{category}</span>
                   </div>
                   <div className="space-y-1">
                     {items.map(opt => {
@@ -224,19 +233,19 @@ function AddNodeButton({ onAdd }: { onAdd: (optionType: string) => void }) {
                         <button
                           key={opt.type}
                           onClick={() => { onAdd(opt.type); setOpen(false) }}
-                          className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-text-primary hover:bg-surface transition-colors"
+                          className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-gray-50 transition-colors"
                         >
-                          <Icon className={cn('h-4 w-4', opt.color)} />
-                          {opt.label}
+                          <Icon className={cn('h-5 w-5 flex-shrink-0', opt.color)} />
+                          <span className="font-medium">{opt.label}</span>
                         </button>
                       )
                     })}
                   </div>
                 </div>
-              ))}
-            </div>
+              )
+            })}
           </div>
-        </>
+        </div>
       )}
     </div>
   )
@@ -245,12 +254,7 @@ function AddNodeButton({ onAdd }: { onAdd: (optionType: string) => void }) {
 // ─── Node Card ──────────────────────────────────────────
 
 function NodeCard({
-  node,
-  isSelected,
-  onSelect,
-  onDelete,
-  canDelete,
-  errors,
+  node, isSelected, onSelect, onDelete, canDelete, errors,
 }: {
   node: FlowNode
   isSelected: boolean
@@ -259,39 +263,45 @@ function NodeCard({
   canDelete: boolean
   errors: string[]
 }) {
-  const style = getNodeStyle(node)
-  const Icon = style.icon
-  const subtitle = getNodeSubtitle(node)
+  const meta = getMeta(node)
+  const Icon = meta.icon
+  const subtitle = getSubtitle(node)
+  const hasError = errors.length > 0
 
   return (
     <div
       onClick={onSelect}
       className={cn(
-        'relative w-64 border-2 rounded-xl px-4 py-3 cursor-pointer transition-all bg-white',
-        style.border,
-        isSelected && 'ring-2 ring-accent ring-offset-2',
-        errors.length > 0 && '!border-red-400',
+        'relative w-[280px] bg-white border rounded-2xl px-5 py-4 cursor-pointer transition-all',
+        'shadow-sm hover:shadow-md',
+        hasError
+          ? 'border-red-300 ring-2 ring-red-100'
+          : isSelected
+            ? 'border-indigo-400 ring-2 ring-indigo-100'
+            : 'border-gray-200 hover:border-gray-300',
       )}
     >
-      {errors.length > 0 && (
-        <div className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
-          !
+      {/* Error badge */}
+      {hasError && (
+        <div className="absolute -top-2.5 -right-2.5 w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center shadow-sm">
+          <AlertCircle className="h-3.5 w-3.5" />
         </div>
       )}
-      <div className="flex items-center gap-2.5">
-        <div className={cn('p-1.5 rounded-lg', style.bg)}>
-          <Icon className={cn('h-4 w-4', style.text)} />
+
+      <div className="flex items-center gap-3">
+        <div className={cn('w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0', meta.iconBg)}>
+          <Icon className={cn('h-[18px] w-[18px]', meta.iconColor)} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className={cn('text-sm font-semibold', style.text)}>{style.label}</p>
-          <p className="text-xs text-text-muted truncate">{subtitle}</p>
+          <p className={cn('text-sm font-semibold', meta.iconColor)}>{meta.label}</p>
+          <p className="text-xs text-gray-400 truncate mt-0.5">{subtitle}</p>
         </div>
         {canDelete && (
           <button
             onClick={e => { e.stopPropagation(); onDelete() }}
-            className="p-1 rounded-md hover:bg-red-50 text-text-muted hover:text-red-500 transition-colors"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-4 w-4" />
           </button>
         )}
       </div>
@@ -302,12 +312,7 @@ function NodeCard({
 // ─── Branch Renderer (recursive) ────────────────────────
 
 function BranchRenderer({
-  chain,
-  selectedId,
-  onSelect,
-  onDelete,
-  onAddNode,
-  errors,
+  chain, selectedId, onSelect, onDelete, onAddNode, errors,
 }: {
   chain: TreeNode[]
   selectedId: string | null
@@ -320,12 +325,12 @@ function BranchRenderer({
     <div className="flex flex-col items-center">
       {chain.map((tn, i) => (
         <div key={tn.node.id} className="flex flex-col items-center">
-          {/* Add button before this node (except first) */}
+          {/* Connector + add button between nodes */}
           {i > 0 && (
-            <AddNodeButton onAdd={(type) => onAddNode(chain[i - 1].node.id, type)} />
+            <AddNodePopup onAdd={(type) => onAddNode(chain[i - 1].node.id, type)} />
           )}
 
-          {/* The node itself */}
+          {/* Node card */}
           <NodeCard
             node={tn.node}
             isSelected={selectedId === tn.node.id}
@@ -335,75 +340,16 @@ function BranchRenderer({
             errors={errors.get(tn.node.id) ?? []}
           />
 
-          {/* Condition branching */}
+          {/* Condition → Branch split */}
           {tn.node.type === 'condition' && (
-            <div className="flex flex-col items-center mt-0">
-              {/* Connector down from condition */}
-              <div className="w-px h-4 bg-border" />
-
-              {/* Branch split */}
-              <div className="flex items-start">
-                {/* Yes branch */}
-                <div className="flex flex-col items-center min-w-[200px] px-4">
-                  {/* Horizontal + vertical connector */}
-                  <div className="flex items-center">
-                    <div className="w-16 h-px bg-green-400" />
-                  </div>
-                  <div className="w-px h-3 bg-green-400" />
-                  <span className="text-xs font-bold text-green-600 bg-green-50 px-2.5 py-0.5 rounded-full mb-1">Yes</span>
-                  <div className="w-px h-3 bg-green-400" />
-
-                  {/* Add node at start of yes branch */}
-                  {(!tn.yesBranch || tn.yesBranch.length === 0) ? (
-                    <AddNodeButton onAdd={(type) => onAddNode(tn.node.id, type, 'yes')} />
-                  ) : (
-                    <>
-                      {/* Render yes branch nodes */}
-                      <BranchRenderer
-                        chain={tn.yesBranch}
-                        selectedId={selectedId}
-                        onSelect={onSelect}
-                        onDelete={onDelete}
-                        onAddNode={onAddNode}
-                        errors={errors}
-                      />
-                      {/* Add after last yes node */}
-                      <AddNodeButton
-                        onAdd={(type) => onAddNode(tn.yesBranch![tn.yesBranch!.length - 1].node.id, type, 'yes')}
-                      />
-                    </>
-                  )}
-                </div>
-
-                {/* No branch */}
-                <div className="flex flex-col items-center min-w-[200px] px-4">
-                  <div className="flex items-center">
-                    <div className="w-16 h-px bg-red-400" />
-                  </div>
-                  <div className="w-px h-3 bg-red-400" />
-                  <span className="text-xs font-bold text-red-600 bg-red-50 px-2.5 py-0.5 rounded-full mb-1">No</span>
-                  <div className="w-px h-3 bg-red-400" />
-
-                  {(!tn.noBranch || tn.noBranch.length === 0) ? (
-                    <AddNodeButton onAdd={(type) => onAddNode(tn.node.id, type, 'no')} />
-                  ) : (
-                    <>
-                      <BranchRenderer
-                        chain={tn.noBranch}
-                        selectedId={selectedId}
-                        onSelect={onSelect}
-                        onDelete={onDelete}
-                        onAddNode={onAddNode}
-                        errors={errors}
-                      />
-                      <AddNodeButton
-                        onAdd={(type) => onAddNode(tn.noBranch![tn.noBranch!.length - 1].node.id, type, 'no')}
-                      />
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+            <ConditionBranches
+              conditionNode={tn}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onDelete={onDelete}
+              onAddNode={onAddNode}
+              errors={errors}
+            />
           )}
         </div>
       ))}
@@ -411,13 +357,104 @@ function BranchRenderer({
   )
 }
 
+function ConditionBranches({
+  conditionNode, selectedId, onSelect, onDelete, onAddNode, errors,
+}: {
+  conditionNode: TreeNode
+  selectedId: string | null
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+  onAddNode: (afterId: string, optionType: string, branch?: 'yes' | 'no') => void
+  errors: Map<string, string[]>
+}) {
+  const condId = conditionNode.node.id
+  const yesBranch = conditionNode.yesBranch ?? []
+  const noBranch = conditionNode.noBranch ?? []
+
+  return (
+    <div className="flex flex-col items-center">
+      {/* Vertical line down from condition */}
+      <div className="w-px h-5 bg-gray-300" />
+
+      {/* T-connector: horizontal bar spanning both branches */}
+      <div className="relative flex" style={{ width: '580px' }}>
+        {/* Horizontal line */}
+        <div className="absolute top-0 left-[calc(50%-145px)] right-[calc(50%-145px)] h-px bg-gray-300" />
+
+        {/* Left (Yes) vertical tick */}
+        <div className="absolute left-[calc(50%-145px)] top-0 w-px h-4 bg-green-400" />
+        {/* Right (No) vertical tick */}
+        <div className="absolute right-[calc(50%-145px)] top-0 w-px h-4 bg-red-400" />
+
+        {/* Branches side by side */}
+        <div className="flex w-full pt-4">
+          {/* Yes Branch */}
+          <div className="flex-1 flex flex-col items-center">
+            <span className="text-xs font-bold text-green-600 bg-green-50 border border-green-200 px-3 py-0.5 rounded-full mb-1">
+              Yes
+            </span>
+            <div className="w-px h-3 bg-green-400" />
+
+            {yesBranch.length > 0 ? (
+              <>
+                <BranchRenderer
+                  chain={yesBranch}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                  onAddNode={onAddNode}
+                  errors={errors}
+                />
+                <AddNodePopup
+                  onAdd={(type) => {
+                    const lastNode = yesBranch[yesBranch.length - 1]
+                    onAddNode(lastNode.node.id, type, 'yes')
+                  }}
+                />
+              </>
+            ) : (
+              <AddNodePopup onAdd={(type) => onAddNode(condId, type, 'yes')} />
+            )}
+          </div>
+
+          {/* No Branch */}
+          <div className="flex-1 flex flex-col items-center">
+            <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-3 py-0.5 rounded-full mb-1">
+              No
+            </span>
+            <div className="w-px h-3 bg-red-400" />
+
+            {noBranch.length > 0 ? (
+              <>
+                <BranchRenderer
+                  chain={noBranch}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                  onAddNode={onAddNode}
+                  errors={errors}
+                />
+                <AddNodePopup
+                  onAdd={(type) => {
+                    const lastNode = noBranch[noBranch.length - 1]
+                    onAddNode(lastNode.node.id, type, 'no')
+                  }}
+                />
+              </>
+            ) : (
+              <AddNodePopup onAdd={(type) => onAddNode(condId, type, 'no')} />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Right Drawer (Node Config) ─────────────────────────
 
 function NodeConfigDrawer({
-  node,
-  onUpdate,
-  onClose,
-  domainType = 'ecommerce',
+  node, onUpdate, onClose, domainType = 'ecommerce',
 }: {
   node: FlowNode
   onUpdate: (updated: FlowNode) => void
@@ -427,162 +464,165 @@ function NodeConfigDrawer({
   const domainKey = domainType as keyof typeof EVENTS_BY_DOMAIN
   const eventOptions = EVENTS_BY_DOMAIN[domainKey] ?? EVENTS_BY_DOMAIN.ecommerce
 
+  const meta = getMeta(node)
+  const Icon = meta.icon
+
   return (
-    <div className="w-80 border-l border-border bg-white overflow-y-auto flex-shrink-0">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <h3 className="text-sm font-semibold text-heading capitalize">{node.type} Config</h3>
-        <button onClick={onClose} className="p-1 rounded hover:bg-surface transition-colors">
-          <X className="h-4 w-4 text-text-muted" />
+    <div className="w-80 bg-white border-l border-gray-200 flex flex-col flex-shrink-0">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100">
+        <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center', meta.iconBg)}>
+          <Icon className={cn('h-4 w-4', meta.iconColor)} />
+        </div>
+        <h3 className="text-sm font-semibold text-gray-900 flex-1">{meta.label} Settings</h3>
+        <button onClick={onClose} className="w-7 h-7 rounded-lg hover:bg-gray-100 flex items-center justify-center transition-colors">
+          <X className="h-4 w-4 text-gray-400" />
         </button>
       </div>
-      <div className="p-4 space-y-4">
+
+      {/* Config body */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
         {node.type === 'trigger' && (
-          <div>
-            <Label text="Trigger Event" />
+          <Field label="Trigger Event">
             <select
               value={node.config?.event ?? ''}
               onChange={e => onUpdate({ ...node, config: { event: e.target.value, filters: { logic: 'AND', rules: [] } } } as FlowNode)}
-              className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+              className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
             >
               <option value="">Select event...</option>
-              {eventOptions.map((ev: string) => <option key={ev} value={ev}>{formatEvent(ev)}</option>)}
+              {eventOptions.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
             </select>
-          </div>
+          </Field>
         )}
 
         {node.type === 'delay' && (
-          <div>
-            <Label text="Duration" />
+          <Field label="Wait Duration">
             <div className="flex gap-2">
               <input
-                type="number"
-                min={1}
+                type="number" min={1}
                 value={node.config.value}
                 onChange={e => onUpdate({ ...node, config: { ...node.config, value: parseInt(e.target.value) || 1 } })}
-                className="w-20 px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                className="w-24 px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
               />
               <select
                 value={node.config.unit}
                 onChange={e => onUpdate({ ...node, config: { ...node.config, unit: e.target.value as 'minutes' | 'hours' | 'days' } })}
-                className="flex-1 px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                className="flex-1 px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
               >
                 <option value="minutes">Minutes</option>
                 <option value="hours">Hours</option>
                 <option value="days">Days</option>
               </select>
             </div>
-            <p className="text-xs text-text-muted mt-2">In demo mode, delays use DEMO_DELAY_MINUTES.</p>
-          </div>
+            <p className="text-[11px] text-gray-400 mt-2">In demo mode, delays use DEMO_DELAY_MINUTES override.</p>
+          </Field>
         )}
 
         {node.type === 'condition' && (
           <>
-            <div>
-              <Label text="Check Type" />
+            <Field label="Check Type">
               <select
                 value={node.config.check}
                 onChange={e => onUpdate({ ...node, config: { ...node.config, check: e.target.value as 'event_occurred' | 'attribute_check' } })}
-                className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
               >
                 <option value="event_occurred">Has Done Event</option>
                 <option value="attribute_check">Check User Attribute</option>
               </select>
-            </div>
+            </Field>
             {node.config.check === 'event_occurred' ? (
-              <div>
-                <Label text="Event Name" />
+              <Field label="Event">
                 <select
                   value={node.config.event ?? ''}
                   onChange={e => onUpdate({ ...node, config: { ...node.config, event: e.target.value } })}
-                  className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                  className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
                 >
                   <option value="">Select event...</option>
-                  {eventOptions.map((ev: string) => <option key={ev} value={ev}>{formatEvent(ev)}</option>)}
+                  {eventOptions.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
                 </select>
-              </div>
+              </Field>
             ) : (
-              <div>
-                <Label text="Customer Field" />
+              <Field label="Customer Field">
                 <input
                   type="text"
                   value={node.config.field ?? ''}
                   placeholder="e.g. totalOrders"
                   onChange={e => onUpdate({ ...node, config: { ...node.config, field: e.target.value } })}
-                  className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                  className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
                 />
-              </div>
+              </Field>
             )}
           </>
         )}
 
         {node.type === 'action' && (
           <>
-            <div>
-              <Label text="Channel" />
+            <Field label="Channel">
               <select
                 value={node.config.actionType}
                 onChange={e => onUpdate({ ...node, config: { ...node.config, actionType: e.target.value as 'send_email' | 'send_sms' | 'send_push' | 'send_whatsapp' } })}
-                className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
               >
                 <option value="send_email">Email</option>
                 <option value="send_sms">SMS</option>
                 <option value="send_push">Push Notification</option>
                 <option value="send_whatsapp">WhatsApp</option>
               </select>
-            </div>
-            <div>
-              <Label text="Template ID" />
+            </Field>
+            <Field label="Template ID">
               <input
                 type="text"
                 value={node.config.templateId}
                 placeholder="e.g. abandoned_cart_default"
                 onChange={e => onUpdate({ ...node, config: { ...node.config, templateId: e.target.value } })}
-                className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+                className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
               />
-            </div>
+            </Field>
           </>
         )}
 
         {node.type === 'end' && (
-          <div>
-            <Label text="Label" />
+          <Field label="Label">
             <input
               type="text"
               value={node.label ?? 'End'}
               onChange={e => onUpdate({ ...node, label: e.target.value })}
-              className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+              className="w-full px-3 py-2 text-[13px] border border-gray-200 rounded-[10px] bg-gray-50 text-gray-800 outline-none transition-all focus:border-indigo-400 focus:ring-[3px] focus:ring-indigo-100 focus:bg-white"
             />
-          </div>
+          </Field>
         )}
       </div>
     </div>
   )
 }
 
-function Label({ text }: { text: string }) {
-  return <span className="text-xs font-medium text-text-secondary block mb-1.5">{text}</span>
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-2">{label}</label>
+      {children}
+    </div>
+  )
 }
 
 // ─── Validation ─────────────────────────────────────────
 
 function validateNodes(nodes: FlowNode[]): Map<string, string[]> {
-  const errors = new Map<string, string[]>()
-  const addError = (id: string, msg: string) => {
-    errors.set(id, [...(errors.get(id) ?? []), msg])
-  }
+  const errs = new Map<string, string[]>()
+  const add = (id: string, msg: string) => errs.set(id, [...(errs.get(id) ?? []), msg])
 
-  if (nodes.length === 0) return errors
-  if (nodes[0]?.type !== 'trigger') addError(nodes[0].id, 'Flow must start with a trigger')
+  if (nodes.length === 0) return errs
+  if (nodes[0]?.type !== 'trigger') add(nodes[0].id, 'Flow must start with a trigger')
 
-  for (const node of nodes) {
-    if (node.type === 'trigger' && !node.config?.event) addError(node.id, 'Select a trigger event')
-    if (node.type === 'action' && !node.config.templateId) addError(node.id, 'Select a template')
-    if (node.type === 'condition' && node.config.check === 'event_occurred' && !node.config.event) {
-      addError(node.id, 'Select an event to check')
+  for (const n of nodes) {
+    if (n.type === 'trigger' && !n.config?.event) add(n.id, 'Select a trigger event')
+    if (n.type === 'action' && !n.config.templateId) add(n.id, 'Select a template')
+    if (n.type === 'condition' && n.config.check === 'event_occurred' && !n.config.event) {
+      add(n.id, 'Select an event to check')
     }
   }
 
-  return errors
+  return errs
 }
 
 // ─── Main Component ─────────────────────────────────────
@@ -600,37 +640,88 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
 
   const handleAddNode = useCallback((afterId: string, optionType: string, branch?: 'yes' | 'no') => {
     if (optionType === 'condition') {
-      // Create condition with two end nodes for branches
-      const yesEnd: FlowNode = { id: nextId('end'), type: 'end', label: 'End' }
-      const noEnd: FlowNode = { id: nextId('end'), type: 'end', label: 'End' }
+      // Condition node — no auto-created End nodes, branches start empty
       const condNode: FlowNode = {
         id: nextId('condition'), type: 'condition',
-        config: { check: 'event_occurred', since: 'trip_start', branches: { yes: yesEnd.id, no: noEnd.id } },
+        config: { check: 'event_occurred', since: 'trip_start', branches: { yes: '', no: '' } },
       }
 
       setNodes(prev => {
         const idx = prev.findIndex(n => n.id === afterId)
-        if (idx < 0) return [...prev, condNode, yesEnd, noEnd]
+        if (idx < 0) return [...prev, condNode]
         const copy = [...prev]
-        copy.splice(idx + 1, 0, condNode, yesEnd, noEnd)
+        copy.splice(idx + 1, 0, condNode)
         return copy
       })
       setSelectedId(condNode.id)
     } else {
-      const newNode = createNode(optionType)
-      setNodes(prev => {
-        const idx = prev.findIndex(n => n.id === afterId)
-        if (idx < 0) return [...prev, newNode]
-        const copy = [...prev]
-        copy.splice(idx + 1, 0, newNode)
-        return copy
-      })
+      const newNode = optionType === 'delay'
+        ? { id: nextId('delay'), type: 'delay' as const, config: { value: 30, unit: 'minutes' as const } }
+        : optionType === 'end'
+          ? { id: nextId('end'), type: 'end' as const, label: 'End' }
+          : {
+              id: nextId('action'), type: 'action' as const,
+              config: { actionType: optionType as 'send_email', templateId: '' },
+            }
+
+      if (branch) {
+        // Adding to a condition branch — update branch pointer and insert node
+        setNodes(prev => {
+          const condIdx = prev.findIndex(n => n.id === afterId && n.type === 'condition')
+          if (condIdx >= 0) {
+            // afterId is the condition itself, adding first node to branch
+            const cond = prev[condIdx]
+            if (cond.type !== 'condition') return prev
+            const updatedCond: FlowNode = {
+              ...cond,
+              config: {
+                ...cond.config,
+                branches: {
+                  ...cond.config.branches,
+                  [branch]: newNode.id,
+                },
+              },
+            }
+            const copy = [...prev]
+            copy[condIdx] = updatedCond
+            copy.splice(condIdx + 1, 0, newNode)
+            return copy
+          }
+
+          // afterId is a node inside a branch — insert after it
+          const idx = prev.findIndex(n => n.id === afterId)
+          if (idx < 0) return [...prev, newNode]
+          const copy = [...prev]
+          copy.splice(idx + 1, 0, newNode)
+          return copy
+        })
+      } else {
+        setNodes(prev => {
+          const idx = prev.findIndex(n => n.id === afterId)
+          if (idx < 0) return [...prev, newNode]
+          const copy = [...prev]
+          copy.splice(idx + 1, 0, newNode)
+          return copy
+        })
+      }
       setSelectedId(newNode.id)
     }
   }, [])
 
   const handleDeleteNode = useCallback((id: string) => {
-    setNodes(prev => prev.filter(n => n.id !== id))
+    setNodes(prev => {
+      // If deleting a node that's a branch target, clear the branch pointer
+      const copy = prev.map(n => {
+        if (n.type === 'condition') {
+          const branches = { ...n.config.branches }
+          if (branches.yes === id) branches.yes = ''
+          if (branches.no === id) branches.no = ''
+          return { ...n, config: { ...n.config, branches } }
+        }
+        return n
+      })
+      return copy.filter(n => n.id !== id)
+    })
     if (selectedId === id) setSelectedId(null)
   }, [selectedId])
 
@@ -645,10 +736,9 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
 
   return (
     <div className="flex h-[calc(100vh-120px)]">
-      {/* Main canvas */}
-      <div className="flex-1 overflow-auto bg-[#f8f9fc] p-8">
-        <div className="flex flex-col items-center min-w-fit">
-          {/* Tree renderer */}
+      {/* Canvas */}
+      <div className="flex-1 overflow-auto bg-[#f7f8fc]">
+        <div className="flex flex-col items-center py-12 px-8 min-w-fit">
           <BranchRenderer
             chain={tree}
             selectedId={selectedId}
@@ -658,40 +748,47 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
             errors={errors}
           />
 
-          {/* Add at end (only if no condition at end) */}
+          {/* Trailing add button (if last node isn't a condition) */}
           {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && (
-            <AddNodeButton onAdd={(type) => handleAddNode(nodes[nodes.length - 1].id, type)} />
+            <AddNodePopup onAdd={(type) => handleAddNode(nodes[nodes.length - 1].id, type)} />
           )}
         </div>
 
         {/* Bottom bar */}
-        <div className="sticky bottom-0 left-0 right-0 mt-8 flex items-center justify-between bg-white border border-border rounded-xl px-5 py-3 shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <LogOut className="h-4 w-4 text-red-500" />
-              <span className="text-xs font-medium text-text-secondary">Exit on:</span>
+        <div className="sticky bottom-4 mx-8 flex items-center justify-between bg-white border border-gray-200 rounded-2xl px-6 py-3.5 shadow-lg">
+          <div className="flex items-center gap-5">
+            <div className="flex items-center gap-2.5">
+              <LogOut className="h-4 w-4 text-red-400 rotate-180" />
+              <span className="text-xs font-semibold text-gray-500">Exit on:</span>
               <select
                 value={exitEvent}
                 onChange={e => setExitEvent(e.target.value)}
-                className="text-xs border border-border rounded-lg px-2.5 py-1.5 text-text-primary"
+                className="text-xs font-medium border border-gray-200 rounded-lg px-3 py-1.5 text-gray-700 bg-gray-50"
               >
                 <option value="">No exit event</option>
                 {(EVENTS_BY_DOMAIN[domainType as keyof typeof EVENTS_BY_DOMAIN] ?? EVENTS_BY_DOMAIN.ecommerce).map((ev: string) => (
-                  <option key={ev} value={ev}>{formatEvent(ev)}</option>
+                  <option key={ev} value={ev}>{fmtEvent(ev)}</option>
                 ))}
               </select>
             </div>
+
             {errorCount > 0 && (
-              <button className="text-xs font-medium text-red-600 bg-red-50 px-2.5 py-1 rounded-full hover:bg-red-100 transition-colors">
+              <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-3 py-1 rounded-full">
                 Errors ({errorCount})
-              </button>
+              </span>
             )}
-            <span className="text-xs text-text-muted">{nodes.length} node{nodes.length !== 1 ? 's' : ''}</span>
+
+            <span className="text-xs text-gray-400 font-medium">{nodes.length} node{nodes.length !== 1 ? 's' : ''}</span>
           </div>
+
           <button
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center gap-2 px-5 py-2 bg-accent text-white text-sm font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50"
+            className={cn(
+              'inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-xl transition-all',
+              'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg',
+              'disabled:opacity-50 disabled:cursor-not-allowed',
+            )}
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saving ? 'Saving...' : 'Save Flow'}
@@ -699,7 +796,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
         </div>
       </div>
 
-      {/* Right drawer */}
+      {/* Right config drawer */}
       {selectedNode && (
         <NodeConfigDrawer
           node={selectedNode}
@@ -708,6 +805,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
           domainType={domainType}
         />
       )}
+
     </div>
   )
 }
