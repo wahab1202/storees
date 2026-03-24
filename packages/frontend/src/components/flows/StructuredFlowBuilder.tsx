@@ -173,50 +173,46 @@ function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
 
       {open && (
         <div
-          ref={undefined}
-          className="absolute z-50 bg-white rounded-2xl border border-gray-200 py-5"
+          className="absolute z-50 bg-white rounded-xl py-4 px-2"
           style={{
-            top: '100%',
+            top: '50%',
             left: '50%',
-            transform: 'translateX(-50%)',
-            marginTop: -16,
-            width: 620,
-            boxShadow: '0 12px 48px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)',
+            transform: 'translate(-50%, -50%)',
+            width: 680,
+            boxShadow: '0 4px 24px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06)',
           }}
         >
-          {/* Close */}
+          {/* Close — top right */}
           <button
             onClick={() => setOpen(false)}
-            className="absolute top-4 right-4 w-7 h-7 rounded-lg hover:bg-gray-100 flex items-center justify-center"
+            className="absolute top-3 right-3 w-6 h-6 rounded-md hover:bg-gray-100 flex items-center justify-center"
           >
             <X className="h-4 w-4 text-gray-400" />
           </button>
 
-          {/* 3 columns with individual scroll */}
-          <div className="flex divide-x divide-gray-100">
+          {/* 3 columns */}
+          <div className="flex">
             {CATS.map(cat => {
               const items = grouped.get(cat) ?? []
               return (
-                <div key={cat} className="flex-1 min-w-0 px-5">
+                <div key={cat} className="flex-1 px-4">
                   {/* Category header */}
-                  <div className="flex items-center gap-2 mb-3 sticky top-0 bg-white pb-1">
-                    <span className={cn('w-3 h-3 rounded', CAT_ICON[cat])} />
-                    <span className="text-[13px] font-bold text-gray-800">{cat}</span>
+                  <div className="flex items-center gap-2.5 mb-4">
+                    <span className={cn('w-3.5 h-3.5 rounded-sm', CAT_ICON[cat])} />
+                    <span className="text-sm font-bold text-gray-900">{cat}</span>
                   </div>
-                  {/* Scrollable list */}
-                  <div className="max-h-[280px] overflow-y-auto -mr-2 pr-2 space-y-0.5">
+                  {/* Scrollable options */}
+                  <div className="max-h-[300px] overflow-y-auto">
                     {items.map(opt => {
                       const Icon = opt.icon
                       return (
                         <button
                           key={opt.type}
                           onClick={() => { onAdd(resolveNodeType(opt.type)); setOpen(false) }}
-                          className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-[13px] text-gray-700 hover:bg-gray-50 transition-colors"
+                          className="w-full flex items-center gap-3 py-3 px-1 text-sm text-gray-700 hover:text-gray-900 transition-colors whitespace-nowrap"
                         >
-                          <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0', opt.bg)}>
-                            <Icon className={cn('h-[18px] w-[18px]', opt.color)} />
-                          </div>
-                          <span className="font-medium leading-tight">{opt.label}</span>
+                          <Icon className={cn('h-5 w-5 flex-shrink-0', opt.color)} />
+                          <span>{opt.label}</span>
                         </button>
                       )
                     })}
