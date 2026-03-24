@@ -295,7 +295,7 @@ function BranchRenderer({ chain, selectedId, onSelect, onDelete, onAddNode, erro
     <div className="flex flex-col items-center">
       {chain.map((tn, i) => (
         <div key={tn.node.id} className="flex flex-col items-center">
-          {i > 0 && <AddNodeBtn onAdd={(t) => onAddNode(chain[i - 1].node.id, t)} />}
+          {i > 0 && chain[i - 1].node.type !== 'end' && <AddNodeBtn onAdd={(t) => onAddNode(chain[i - 1].node.id, t)} />}
 
           <NodeCard
             node={tn.node}
@@ -343,7 +343,7 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
           {yes.length > 0 ? (
             <>
               <BranchRenderer chain={yes} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
-              <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />
+              {yes[yes.length - 1].node.type !== 'end' && <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />}
             </>
           ) : (
             <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'yes')} />
@@ -357,7 +357,7 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
           {no.length > 0 ? (
             <>
               <BranchRenderer chain={no} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
-              <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />
+              {no[no.length - 1].node.type !== 'end' && <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />}
             </>
           ) : (
             <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'no')} />
@@ -584,7 +584,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
               onAddNode={handleAddNode}
               errors={errors}
             />
-            {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && (
+            {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && tree[tree.length - 1].node.type !== 'end' && (
               <AddNodeBtn onAdd={(t) => handleAddNode(nodes[nodes.length - 1].id, t)} />
             )}
           </div>
