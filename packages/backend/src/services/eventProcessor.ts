@@ -1,7 +1,7 @@
 import { eq, and } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { events, orders } from '../db/schema.js'
-import { eventsQueue, metricsQueue } from './queue.js'
+import { eventsQueue, metricsQueue, interactionQueue } from './queue.js'
 import {
   resolveCustomer,
   updateCustomerAggregates,
@@ -82,6 +82,17 @@ export async function processWebhookEvent(
       ...processed,
       timestamp: processed.timestamp.toISOString(),
     })
+
+    // 8. Publish to interaction queue — create user-item interactions if configured
+    if (processed.properties.item_id || processed.properties.item_internal_id) {
+      await interactionQueue.add('process', {
+        projectId: processed.projectId,
+        customerId: processed.customerId,
+        eventName: processed.eventName,
+        properties: processed.properties,
+        eventId: processed.projectId, // event ID not returned from insert; use projectId as correlation
+      })
+    }
 
     console.log(`Event processed: ${eventName} for customer ${customerId}`)
   } catch (err) {
