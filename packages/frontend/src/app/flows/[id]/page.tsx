@@ -39,9 +39,12 @@ export default function FlowDetailPage() {
 
   const flow = data.data
 
+  // Full-bleed: negate horizontal + bottom padding from AppShell
+  // AppShell: p-4 sm:p-6, pt-14 lg:pt-0
+  // On desktop (lg): parent has p-6 pt-0 → available height = 100vh - 2*24px (top+bottom padding)
+  // On mobile: parent has p-4 pt-14 → available height = 100vh - 56px - 2*16px
   return (
-    // Break out of AppShell's max-w and padding — full bleed layout
-    <div className="-m-4 sm:-m-6 flex flex-col h-screen lg:h-screen">
+    <div className="-mx-4 sm:-mx-6 -mb-4 sm:-mb-6 flex flex-col h-[calc(100vh-56px-2rem)] lg:h-[calc(100vh-3rem)]">
       {/* Top bar */}
       <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-gray-200 flex-shrink-0">
         <div className="flex items-center gap-3">
