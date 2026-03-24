@@ -113,13 +113,13 @@ function Connector({ color = 'bg-gray-300', h = 'h-5' }: { color?: string; h?: s
 // ─── Add Node Popup ─────────────────────────────────────
 
 const ADD_OPTIONS = [
-  { type: 'delay',         label: 'Wait / Delay',      icon: Clock,         color: 'text-blue-500',    cat: 'Controls' },
-  { type: 'end',           label: 'Exit',              icon: CircleStop,    color: 'text-red-400',     cat: 'Controls' },
-  { type: 'condition',     label: 'Conditional Split',  icon: GitBranch,     color: 'text-amber-500',   cat: 'Conditions' },
-  { type: 'send_email',    label: 'Email',             icon: Mail,          color: 'text-green-500',   cat: 'Actions' },
-  { type: 'send_sms',      label: 'SMS',               icon: MessageSquare, color: 'text-teal-500',    cat: 'Actions' },
-  { type: 'send_push',     label: 'Push Notification', icon: Bell,          color: 'text-violet-500',  cat: 'Actions' },
-  { type: 'send_whatsapp', label: 'WhatsApp',          icon: Phone,         color: 'text-emerald-500', cat: 'Actions' },
+  { type: 'delay',         label: 'Wait / Delay',      icon: Clock,         color: 'text-blue-500',    bg: 'bg-blue-50',    cat: 'Controls' },
+  { type: 'end',           label: 'Exit',              icon: CircleStop,    color: 'text-red-400',     bg: 'bg-red-50',     cat: 'Controls' },
+  { type: 'condition',     label: 'Conditional Split',  icon: GitBranch,     color: 'text-amber-500',   bg: 'bg-amber-50',   cat: 'Conditions' },
+  { type: 'send_email',    label: 'Email',             icon: Mail,          color: 'text-green-500',   bg: 'bg-green-50',   cat: 'Actions' },
+  { type: 'send_sms',      label: 'SMS',               icon: MessageSquare, color: 'text-teal-500',    bg: 'bg-teal-50',    cat: 'Actions' },
+  { type: 'send_push',     label: 'Push Notification', icon: Bell,          color: 'text-violet-500',  bg: 'bg-violet-50',  cat: 'Actions' },
+  { type: 'send_whatsapp', label: 'WhatsApp',          icon: Phone,         color: 'text-emerald-500', bg: 'bg-emerald-50', cat: 'Actions' },
 ]
 
 const CATS = ['Controls', 'Conditions', 'Actions'] as const
@@ -157,40 +157,44 @@ function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
 
       {open && (
         <div
-          className="absolute z-50 bg-white rounded-xl shadow-xl border border-gray-100 p-4"
+          className="absolute z-50 bg-white rounded-2xl shadow-2xl border border-gray-100 px-7 py-5"
           style={{
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            width: 420,
+            width: 560,
           }}
         >
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Add Node</span>
-            <button onClick={() => setOpen(false)} className="p-1 rounded-md hover:bg-gray-100">
-              <X className="h-3.5 w-3.5 text-gray-400" />
+          <div className="flex items-center justify-between mb-5">
+            <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Add Node</span>
+            <button onClick={() => setOpen(false)} className="w-7 h-7 rounded-lg hover:bg-gray-100 flex items-center justify-center">
+              <X className="h-4 w-4 text-gray-400" />
             </button>
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-8">
             {CATS.map(cat => (
               <div key={cat}>
-                <div className="flex items-center gap-1.5 mb-2">
-                  <span className={cn('w-1.5 h-1.5 rounded-full', CAT_DOT[cat])} />
-                  <span className="text-[11px] font-bold text-gray-700">{cat}</span>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={cn('w-2 h-2 rounded-full', CAT_DOT[cat])} />
+                  <span className="text-xs font-bold text-gray-800">{cat}</span>
                 </div>
-                {(grouped.get(cat) ?? []).map(opt => {
-                  const Icon = opt.icon
-                  return (
-                    <button
-                      key={opt.type}
-                      onClick={() => { onAdd(opt.type); setOpen(false) }}
-                      className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 transition-colors"
-                    >
-                      <Icon className={cn('h-4 w-4 flex-shrink-0', opt.color)} />
-                      <span className="font-medium">{opt.label}</span>
-                    </button>
-                  )
-                })}
+                <div className="space-y-1">
+                  {(grouped.get(cat) ?? []).map(opt => {
+                    const Icon = opt.icon
+                    return (
+                      <button
+                        key={opt.type}
+                        onClick={() => { onAdd(opt.type); setOpen(false) }}
+                        className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0', opt.bg)}>
+                          <Icon className={cn('h-[18px] w-[18px]', opt.color)} />
+                        </div>
+                        <span className="font-medium">{opt.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             ))}
           </div>
