@@ -449,6 +449,132 @@ export type CommunicationLogEntry = {
   createdAt: Date
 }
 
+// ============ GENERIC ITEM CATALOGUE ============
+
+export type Catalogue = {
+  id: string
+  projectId: string
+  name: string
+  itemTypeLabel: string // "Product", "Loan", "Course", "Plan"
+  attributeSchema: CatalogueAttribute[]
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type CatalogueAttribute = {
+  name: string
+  type: 'string' | 'number' | 'boolean' | 'select'
+  values?: string[] // for select type
+  weight?: number // for recommendation attribute similarity
+}
+
+export type Item = {
+  id: string
+  projectId: string
+  catalogueId: string
+  externalId: string | null
+  type: string // "product", "gold_loan", "personal_loan", "course"
+  name: string
+  attributes: Record<string, unknown>
+  status: 'active' | 'inactive' | 'archived'
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type InteractionType = 'view' | 'engage' | 'intent' | 'strong_intent' | 'conversion'
+
+export type Interaction = {
+  id: string
+  projectId: string
+  customerId: string
+  itemId: string
+  interactionType: InteractionType
+  weight: number
+  sourceEventId: string | null
+  createdAt: Date
+}
+
+export type InteractionConfig = {
+  id: string
+  projectId: string
+  catalogueId: string
+  eventName: string
+  interactionType: InteractionType
+  weight: number
+  decayHalfLifeDays: number
+  createdAt: Date
+}
+
+// ============ DELIVERY & MESSAGING ============
+
+export type MessageChannel = 'email' | 'sms' | 'push' | 'whatsapp' | 'inapp'
+
+export type SendCommand = {
+  userId: string
+  channel: MessageChannel
+  templateId: string
+  variables: Record<string, string>
+  scheduledAt?: Date
+  messageType: 'promotional' | 'transactional'
+  flowTripId?: string
+  campaignId?: string
+  projectId: string
+}
+
+export type Message = {
+  id: string
+  projectId: string
+  customerId: string
+  channel: MessageChannel
+  messageType: 'promotional' | 'transactional'
+  templateId: string | null
+  variables: Record<string, string>
+  status: 'queued' | 'sent' | 'delivered' | 'read' | 'clicked' | 'failed' | 'blocked'
+  blockReason: string | null
+  provider: 'pinnacle' | 'resend' | null
+  providerMessageId: string | null
+  flowTripId: string | null
+  campaignId: string | null
+  scheduledAt: Date | null
+  sentAt: Date | null
+  deliveredAt: Date | null
+  readAt: Date | null
+  clickedAt: Date | null
+  failedAt: Date | null
+  createdAt: Date
+}
+
+export type ConsentAuditEntry = {
+  id: string
+  projectId: string
+  customerId: string
+  channel: string
+  messageType: string
+  action: 'opt_in' | 'opt_out'
+  source: 'sdk' | 'api' | 'admin' | 'webhook'
+  consentText: string | null
+  ipAddress: string | null
+  createdAt: Date
+}
+
+// ============ PREDICTION GOALS ============
+
+export type PredictionGoal = {
+  id: string
+  projectId: string
+  name: string
+  targetEvent: string
+  observationWindowDays: number
+  predictionWindowDays: number
+  minPositiveLabels: number
+  status: 'active' | 'paused' | 'insufficient_data'
+  lastTrainedAt: Date | null
+  currentMetric: number | null
+  origin: 'pack' | 'user'
+  createdAt: Date
+  updatedAt: Date
+}
+
 // ============ DOMAIN REGISTRY TYPES ============
 
 export type DomainFieldDef = {
