@@ -21,6 +21,9 @@ import resendWebhookRoutes from './routes/resendWebhook.js'
 import catalogueRoutes from './routes/catalogues.js'
 import itemRoutes from './routes/items.js'
 import interactionConfigRoutes from './routes/interactionConfig.js'
+import predictionGoalRoutes from './routes/predictionGoals.js'
+import consentRoutes from './routes/consent.js'
+import verticalPackRoutes from './routes/verticalPacks.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { startSyncWorker } from './workers/syncWorker.js'
 import { startTriggerWorker } from './workers/triggerWorker.js'
@@ -84,6 +87,9 @@ app.use('/api/onboarding', onboardingRoutes)
 app.use('/api/catalogues', catalogueRoutes)
 app.use('/api/items', itemRoutes)
 app.use('/api/interaction-config', interactionConfigRoutes)
+app.use('/api/prediction-goals', predictionGoalRoutes)
+app.use('/api/consent', consentRoutes)
+app.use('/api/packs', verticalPackRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)

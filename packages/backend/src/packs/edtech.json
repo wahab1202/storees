@@ -1,0 +1,126 @@
+{
+  "id": "edtech",
+  "name": "EdTech",
+  "icon": "🎓",
+  "description": "Education platforms — courses, enrollments, completion, certification",
+  "catalogue": {
+    "name": "Courses",
+    "item_type_label": "Course",
+    "attribute_schema": [
+      { "name": "category", "type": "select", "values": ["Technology", "Business", "Design", "Marketing", "Data Science", "Language", "Personal Development", "Academics"], "weight": 0.3 },
+      { "name": "difficulty", "type": "select", "values": ["Beginner", "Intermediate", "Advanced"], "weight": 0.2 },
+      { "name": "duration_hours", "type": "number", "weight": 0.1 },
+      { "name": "price", "type": "number", "weight": 0.15 },
+      { "name": "instructor", "type": "text", "weight": 0.1 },
+      { "name": "has_certificate", "type": "boolean", "weight": 0.05 },
+      { "name": "rating", "type": "number", "weight": 0.1 }
+    ],
+    "default_items": []
+  },
+  "interaction_config": [
+    { "event_name": "course_viewed", "interaction_type": "view", "weight": 1.0, "decay_half_life_days": 14 },
+    { "event_name": "course_preview_watched", "interaction_type": "engage", "weight": 2.0, "decay_half_life_days": 7 },
+    { "event_name": "course_added_to_list", "interaction_type": "intent", "weight": 2.5, "decay_half_life_days": 30 },
+    { "event_name": "course_enrolled", "interaction_type": "strong_intent", "weight": 4.0, "decay_half_life_days": 60 },
+    { "event_name": "course_completed", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 180 },
+    { "event_name": "lesson_completed", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 14 },
+    { "event_name": "quiz_attempted", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 14 },
+    { "event_name": "certificate_earned", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 365 }
+  ],
+  "prediction_goals": [
+    {
+      "name": "Enrollment Propensity",
+      "target_event": "course_enrolled",
+      "observation_window_days": 30,
+      "prediction_window_days": 7,
+      "min_positive_labels": 150,
+      "priority": 1,
+      "default_status": "active"
+    },
+    {
+      "name": "Completion Risk",
+      "target_event": "course_dropped",
+      "observation_window_days": 60,
+      "prediction_window_days": 14,
+      "min_positive_labels": 100,
+      "priority": 2,
+      "default_status": "active"
+    },
+    {
+      "name": "Next Course Recommendation",
+      "target_event": "course_enrolled",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 200,
+      "priority": 3,
+      "default_status": "paused"
+    },
+    {
+      "name": "Subscription Conversion",
+      "target_event": "subscription_created",
+      "observation_window_days": 30,
+      "prediction_window_days": 14,
+      "min_positive_labels": 100,
+      "priority": 4,
+      "default_status": "paused"
+    }
+  ],
+  "segment_templates": [
+    {
+      "name": "Active Learners",
+      "description": "Completed a lesson in last 7 days",
+      "icon": "📚",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_lesson", "operator": "less_than", "value": 7 }] }
+    },
+    {
+      "name": "Course Completers",
+      "description": "Completed at least one course",
+      "icon": "🏆",
+      "filter": { "logic": "AND", "rules": [{ "field": "courses_completed", "operator": "greater_than", "value": 0 }] }
+    },
+    {
+      "name": "At Risk of Dropping",
+      "description": "Enrolled but no activity in 14+ days",
+      "icon": "⚠️",
+      "filter": { "logic": "AND", "rules": [{ "field": "enrolled_courses", "operator": "greater_than", "value": 0 }, { "field": "days_since_last_seen", "operator": "greater_than", "value": 14 }] }
+    },
+    {
+      "name": "Free Users",
+      "description": "Browsed but never purchased",
+      "icon": "👀",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_spent", "operator": "equals", "value": 0 }, { "field": "days_since_first_seen", "operator": "greater_than", "value": 3 }] }
+    },
+    {
+      "name": "Certificate Earners",
+      "description": "Earned at least one certificate",
+      "icon": "🎖️",
+      "filter": { "logic": "AND", "rules": [{ "field": "certificates_earned", "operator": "greater_than", "value": 0 }] }
+    },
+    {
+      "name": "Multi-Course Learners",
+      "description": "Enrolled in 3+ courses",
+      "icon": "📖",
+      "filter": { "logic": "AND", "rules": [{ "field": "enrolled_courses", "operator": "greater_than", "value": 2 }] }
+    },
+    {
+      "name": "Subscription Active",
+      "description": "Active subscription plan",
+      "icon": "💳",
+      "filter": { "logic": "AND", "rules": [{ "field": "subscription_status", "operator": "is", "value": "active" }] }
+    }
+  ],
+  "flow_templates": [],
+  "dashboard_templates": [],
+  "wizard_questions": {
+    "products_label": "What type of courses do you offer?",
+    "products_options": ["Self-Paced Courses", "Live Classes", "Bootcamps", "Certifications", "Tutoring", "Test Prep"],
+    "journey_steps": ["Browse Courses", "Watch Preview", "Enroll", "Start Learning", "Complete Lessons", "Take Quiz", "Earn Certificate"],
+    "priorities": [
+      { "label": "Increase course enrollments", "maps_to": "Enrollment Propensity" },
+      { "label": "Reduce course dropouts", "maps_to": "Completion Risk" },
+      { "label": "Drive next course purchases", "maps_to": "Next Course Recommendation" },
+      { "label": "Convert free to paid", "maps_to": "Subscription Conversion" },
+      { "label": "Improve learning outcomes", "maps_to": null }
+    ]
+  }
+}

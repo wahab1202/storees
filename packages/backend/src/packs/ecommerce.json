@@ -1,0 +1,132 @@
+{
+  "id": "ecommerce",
+  "name": "Ecommerce",
+  "icon": "🛍️",
+  "description": "Online retail stores — product-centric, order-driven engagement",
+  "catalogue": {
+    "name": "Products",
+    "item_type_label": "Product",
+    "attribute_schema": [
+      { "name": "category", "type": "select", "values": ["Electronics", "Fashion", "Home", "Beauty", "Food", "Sports", "Books", "Other"], "weight": 0.3 },
+      { "name": "brand", "type": "text", "weight": 0.2 },
+      { "name": "price", "type": "number", "weight": 0.15 },
+      { "name": "collection", "type": "select", "values": ["New Arrivals", "Best Sellers", "Sale", "Premium", "Seasonal"], "weight": 0.15 },
+      { "name": "in_stock", "type": "boolean", "weight": 0.0 },
+      { "name": "rating", "type": "number", "weight": 0.1 },
+      { "name": "tags", "type": "text", "weight": 0.1 }
+    ],
+    "default_items": []
+  },
+  "interaction_config": [
+    { "event_name": "product_viewed", "interaction_type": "view", "weight": 1.0, "decay_half_life_days": 14 },
+    { "event_name": "added_to_cart", "interaction_type": "intent", "weight": 3.0, "decay_half_life_days": 7 },
+    { "event_name": "added_to_wishlist", "interaction_type": "engage", "weight": 2.0, "decay_half_life_days": 30 },
+    { "event_name": "checkout_started", "interaction_type": "strong_intent", "weight": 4.0, "decay_half_life_days": 3 },
+    { "event_name": "order_completed", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 60 },
+    { "event_name": "product_reviewed", "interaction_type": "engage", "weight": 2.5, "decay_half_life_days": 90 },
+    { "event_name": "product_shared", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 30 },
+    { "event_name": "collection_viewed", "interaction_type": "view", "weight": 0.5, "decay_half_life_days": 14 }
+  ],
+  "prediction_goals": [
+    {
+      "name": "Propensity to Purchase",
+      "target_event": "order_completed",
+      "observation_window_days": 30,
+      "prediction_window_days": 7,
+      "min_positive_labels": 200,
+      "priority": 1,
+      "default_status": "active"
+    },
+    {
+      "name": "Churn Risk",
+      "target_event": "order_completed",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 100,
+      "priority": 2,
+      "default_status": "active"
+    },
+    {
+      "name": "Upsell Likelihood",
+      "target_event": "order_completed",
+      "observation_window_days": 60,
+      "prediction_window_days": 14,
+      "min_positive_labels": 300,
+      "priority": 3,
+      "default_status": "paused"
+    },
+    {
+      "name": "Cart Abandonment Recovery",
+      "target_event": "added_to_cart",
+      "observation_window_days": 14,
+      "prediction_window_days": 1,
+      "min_positive_labels": 150,
+      "priority": 4,
+      "default_status": "paused"
+    }
+  ],
+  "segment_templates": [
+    {
+      "name": "High Value Customers",
+      "description": "Customers with total spend above ₹5,000",
+      "icon": "💎",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_spent", "operator": "greater_than", "value": 500000 }] }
+    },
+    {
+      "name": "Cart Abandoners",
+      "description": "Added to cart in last 7 days but didn't purchase",
+      "icon": "🛒",
+      "filter": { "logic": "AND", "rules": [{ "field": "last_event", "operator": "is", "value": "added_to_cart" }, { "field": "days_since_last_order", "operator": "greater_than", "value": 7 }] }
+    },
+    {
+      "name": "Repeat Buyers",
+      "description": "Customers with 2+ orders",
+      "icon": "🔄",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_orders", "operator": "greater_than", "value": 1 }] }
+    },
+    {
+      "name": "At Risk",
+      "description": "No orders in 30+ days",
+      "icon": "⚠️",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_order", "operator": "greater_than", "value": 30 }] }
+    },
+    {
+      "name": "New Customers",
+      "description": "First seen in last 7 days",
+      "icon": "🆕",
+      "filter": { "logic": "AND", "rules": [{ "field": "first_seen", "operator": "within_last", "value": 7, "unit": "days" }] }
+    },
+    {
+      "name": "Discount Shoppers",
+      "description": "Customers who primarily buy on discount",
+      "icon": "🏷️",
+      "filter": { "logic": "AND", "rules": [{ "field": "avg_discount_rate", "operator": "greater_than", "value": 20 }] }
+    },
+    {
+      "name": "Email Subscribers",
+      "description": "Customers opted into email",
+      "icon": "📧",
+      "filter": { "logic": "AND", "rules": [{ "field": "email_subscribed", "operator": "is_true", "value": true }] }
+    },
+    {
+      "name": "Dormant",
+      "description": "No activity in 60+ days",
+      "icon": "💤",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_seen", "operator": "greater_than", "value": 60 }] }
+    }
+  ],
+  "flow_templates": [],
+  "dashboard_templates": [],
+  "wizard_questions": {
+    "products_label": "What do you sell?",
+    "products_options": ["Physical Products", "Digital Products", "Subscriptions", "Services", "Mixed"],
+    "journey_steps": ["Browse Products", "Add to Cart", "Checkout", "Purchase", "Review", "Refer Friend"],
+    "priorities": [
+      { "label": "Increase repeat purchases", "maps_to": "Propensity to Purchase" },
+      { "label": "Reduce customer churn", "maps_to": "Churn Risk" },
+      { "label": "Increase average order value", "maps_to": "Upsell Likelihood" },
+      { "label": "Recover abandoned carts", "maps_to": "Cart Abandonment Recovery" },
+      { "label": "Improve email engagement", "maps_to": null }
+    ]
+  }
+}
