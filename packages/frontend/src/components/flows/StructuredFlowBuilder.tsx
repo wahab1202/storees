@@ -111,19 +111,35 @@ function Connector({ color = 'bg-gray-300', h = 'h-5' }: { color?: string; h?: s
 }
 
 // ─── Add Node Popup ─────────────────────────────────────
+// Column order matches MoEngage: Actions → Conditions → Controls
 
-const ADD_OPTIONS = [
-  { type: 'delay',         label: 'Wait / Delay',      icon: Clock,         color: 'text-blue-500',    bg: 'bg-blue-50',    cat: 'Controls' },
-  { type: 'end',           label: 'Exit',              icon: CircleStop,    color: 'text-red-400',     bg: 'bg-red-50',     cat: 'Controls' },
-  { type: 'condition',     label: 'Conditional Split',  icon: GitBranch,     color: 'text-amber-500',   bg: 'bg-amber-50',   cat: 'Conditions' },
-  { type: 'send_email',    label: 'Email',             icon: Mail,          color: 'text-green-500',   bg: 'bg-green-50',   cat: 'Actions' },
-  { type: 'send_sms',      label: 'SMS',               icon: MessageSquare, color: 'text-teal-500',    bg: 'bg-teal-50',    cat: 'Actions' },
-  { type: 'send_push',     label: 'Push Notification', icon: Bell,          color: 'text-violet-500',  bg: 'bg-violet-50',  cat: 'Actions' },
-  { type: 'send_whatsapp', label: 'WhatsApp',          icon: Phone,         color: 'text-emerald-500', bg: 'bg-emerald-50', cat: 'Actions' },
+type NodeOption = { type: string; label: string; icon: typeof Zap; color: string; bg: string; cat: string }
+
+const ADD_OPTIONS: NodeOption[] = [
+  // Actions
+  { type: 'send_email',    label: 'Email',              icon: Mail,          color: 'text-green-600',   bg: 'bg-green-50',   cat: 'Actions' },
+  { type: 'send_sms',      label: 'SMS',                icon: MessageSquare, color: 'text-teal-600',    bg: 'bg-teal-50',    cat: 'Actions' },
+  { type: 'send_push',     label: 'Push Notification',  icon: Bell,          color: 'text-violet-600',  bg: 'bg-violet-50',  cat: 'Actions' },
+  { type: 'send_whatsapp', label: 'WhatsApp',           icon: Phone,         color: 'text-emerald-600', bg: 'bg-emerald-50', cat: 'Actions' },
+  // Conditions
+  { type: 'condition',          label: 'Conditional Split',       icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  { type: 'condition_email',    label: 'Has opened email',        icon: Mail,          color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  { type: 'condition_click',    label: 'Has clicked email',       icon: Mail,          color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  { type: 'condition_segment',  label: 'Is in segment',           icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  { type: 'condition_attr',     label: 'Check user attribute',    icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  // Controls
+  { type: 'delay',         label: 'Wait for / till',    icon: Clock,         color: 'text-blue-600',    bg: 'bg-blue-50',    cat: 'Controls' },
+  { type: 'end',           label: 'Exit',               icon: CircleStop,    color: 'text-red-500',     bg: 'bg-red-50',     cat: 'Controls' },
 ]
 
-const CATS = ['Controls', 'Conditions', 'Actions'] as const
-const CAT_DOT: Record<string, string> = { Controls: 'bg-violet-400', Conditions: 'bg-amber-400', Actions: 'bg-green-400' }
+const CATS = ['Actions', 'Conditions', 'Controls'] as const
+const CAT_ICON: Record<string, string> = { Actions: 'bg-green-400', Conditions: 'bg-amber-400', Controls: 'bg-violet-400' }
+
+// Map subtypes to the actual FlowNode type for creation
+function resolveNodeType(optionType: string): string {
+  if (optionType.startsWith('condition')) return 'condition'
+  return optionType
+}
 
 function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
   const [open, setOpen] = useState(false)
@@ -139,7 +155,7 @@ function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
   }, [open])
 
   const grouped = useMemo(() => {
-    const m = new Map<string, typeof ADD_OPTIONS>()
+    const m = new Map<string, NodeOption[]>()
     ADD_OPTIONS.forEach(o => m.set(o.cat, [...(m.get(o.cat) ?? []), o]))
     return m
   }, [])
@@ -157,46 +173,57 @@ function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
 
       {open && (
         <div
-          className="absolute z-50 bg-white rounded-2xl shadow-2xl border border-gray-100 px-7 py-5"
+          ref={undefined}
+          className="absolute z-50 bg-white rounded-2xl border border-gray-200 py-5"
           style={{
-            top: '50%',
+            top: '100%',
             left: '50%',
-            transform: 'translate(-50%, -50%)',
-            width: 560,
+            transform: 'translateX(-50%)',
+            marginTop: -16,
+            width: 620,
+            boxShadow: '0 12px 48px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)',
           }}
         >
-          <div className="flex items-center justify-between mb-5">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Add Node</span>
-            <button onClick={() => setOpen(false)} className="w-7 h-7 rounded-lg hover:bg-gray-100 flex items-center justify-center">
-              <X className="h-4 w-4 text-gray-400" />
-            </button>
-          </div>
-          <div className="grid grid-cols-3 gap-8">
-            {CATS.map(cat => (
-              <div key={cat}>
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={cn('w-2 h-2 rounded-full', CAT_DOT[cat])} />
-                  <span className="text-xs font-bold text-gray-800">{cat}</span>
+          {/* Close */}
+          <button
+            onClick={() => setOpen(false)}
+            className="absolute top-4 right-4 w-7 h-7 rounded-lg hover:bg-gray-100 flex items-center justify-center"
+          >
+            <X className="h-4 w-4 text-gray-400" />
+          </button>
+
+          {/* 3 columns with individual scroll */}
+          <div className="flex divide-x divide-gray-100">
+            {CATS.map(cat => {
+              const items = grouped.get(cat) ?? []
+              return (
+                <div key={cat} className="flex-1 min-w-0 px-5">
+                  {/* Category header */}
+                  <div className="flex items-center gap-2 mb-3 sticky top-0 bg-white pb-1">
+                    <span className={cn('w-3 h-3 rounded', CAT_ICON[cat])} />
+                    <span className="text-[13px] font-bold text-gray-800">{cat}</span>
+                  </div>
+                  {/* Scrollable list */}
+                  <div className="max-h-[280px] overflow-y-auto -mr-2 pr-2 space-y-0.5">
+                    {items.map(opt => {
+                      const Icon = opt.icon
+                      return (
+                        <button
+                          key={opt.type}
+                          onClick={() => { onAdd(resolveNodeType(opt.type)); setOpen(false) }}
+                          className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-[13px] text-gray-700 hover:bg-gray-50 transition-colors"
+                        >
+                          <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0', opt.bg)}>
+                            <Icon className={cn('h-[18px] w-[18px]', opt.color)} />
+                          </div>
+                          <span className="font-medium leading-tight">{opt.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  {(grouped.get(cat) ?? []).map(opt => {
-                    const Icon = opt.icon
-                    return (
-                      <button
-                        key={opt.type}
-                        onClick={() => { onAdd(opt.type); setOpen(false) }}
-                        className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                      >
-                        <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0', opt.bg)}>
-                          <Icon className={cn('h-[18px] w-[18px]', opt.color)} />
-                        </div>
-                        <span className="font-medium">{opt.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
@@ -543,26 +570,29 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   }
 
   return (
-    <div className="flex h-full">
-      {/* Canvas */}
-      <div className="flex-1 relative overflow-auto bg-[#f8f9fc]">
-        <div className="flex flex-col items-center py-10 px-6 min-w-fit min-h-full">
-          <BranchRenderer
-            chain={tree}
-            selectedId={selectedId}
-            onSelect={id => setSelectedId(selectedId === id ? null : id)}
-            onDelete={handleDelete}
-            onAddNode={handleAddNode}
-            errors={errors}
-          />
-          {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && (
-            <AddNodeBtn onAdd={(t) => handleAddNode(nodes[nodes.length - 1].id, t)} />
-          )}
+    <div className="flex h-full bg-gray-50">
+      {/* Canvas area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Scrollable canvas — cocooned in a bordered section */}
+        <div className="flex-1 overflow-auto m-3 bg-white rounded-2xl border border-gray-200 shadow-sm">
+          <div className="flex flex-col items-center py-10 px-6 min-w-fit min-h-full">
+            <BranchRenderer
+              chain={tree}
+              selectedId={selectedId}
+              onSelect={id => setSelectedId(selectedId === id ? null : id)}
+              onDelete={handleDelete}
+              onAddNode={handleAddNode}
+              errors={errors}
+            />
+            {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && (
+              <AddNodeBtn onAdd={(t) => handleAddNode(nodes[nodes.length - 1].id, t)} />
+            )}
+          </div>
         </div>
 
-        {/* Bottom bar — pinned */}
-        <div className="sticky bottom-0 left-0 right-0 p-3">
-          <div className="flex items-center justify-between bg-white border border-gray-200 rounded-xl px-5 py-2.5 shadow-lg">
+        {/* Bottom bar — outside the canvas, pinned to bottom */}
+        <div className="flex-shrink-0 mx-3 mb-3">
+          <div className="flex items-center justify-between bg-white border border-gray-200 rounded-xl px-5 py-2.5 shadow-sm">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <LogOut className="h-3.5 w-3.5 text-gray-400 rotate-180" />
