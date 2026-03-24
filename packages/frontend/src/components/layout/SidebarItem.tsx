@@ -9,9 +9,10 @@ type SidebarItemProps = {
   href: string
   label: string
   icon: LucideIcon
+  count?: number
 }
 
-export function SidebarItem({ href, label, icon: Icon }: SidebarItemProps) {
+export function SidebarItem({ href, label, icon: Icon, count }: SidebarItemProps) {
   const pathname = usePathname()
   const isActive = pathname === href || pathname.startsWith(`${href}/`)
 
@@ -29,7 +30,15 @@ export function SidebarItem({ href, label, icon: Icon }: SidebarItemProps) {
         size={16}
         className={cn(isActive ? 'text-sidebar-active' : 'text-sidebar-muted')}
       />
-      <span>{label}</span>
+      <span className="flex-1">{label}</span>
+      {count !== undefined && count > 0 && (
+        <span className={cn(
+          'text-[10px] font-semibold px-1.5 py-0.5 rounded-full tabular-nums',
+          isActive ? 'bg-sidebar-active/20 text-sidebar-active' : 'bg-white/10 text-sidebar-muted',
+        )}>
+          {count > 999 ? '999+' : count}
+        </span>
+      )}
     </Link>
   )
 }

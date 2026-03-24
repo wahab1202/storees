@@ -5,10 +5,11 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow } from '@/hooks/useFlows'
-import { Zap, Pause, FileEdit, Play, Square, ExternalLink, Plus, X, Workflow, Loader2, Trash2 } from 'lucide-react'
+import { Zap, Pause, FileEdit, Play, Square, ExternalLink, Plus, X, Workflow, Loader2, Trash2, LayoutTemplate } from 'lucide-react'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { useDashboardStats } from '@/hooks/useDashboard'
+import { FlowTemplateGallery } from '@/components/flows/FlowTemplateGallery'
 
 const STATUS_CONFIG = {
   active: { label: 'Active', color: 'bg-emerald-50 text-emerald-700', icon: Zap },
@@ -62,6 +63,7 @@ export default function FlowsPage() {
   const domainConfig = DOMAIN_EVENTS[domain] ?? DOMAIN_EVENTS.ecommerce
 
   const [showCreate, setShowCreate] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
@@ -97,15 +99,45 @@ export default function FlowsPage() {
       <PageHeader
         title="Flows"
         actions={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            Create Flow
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowTemplates(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-secondary rounded-lg hover:bg-surface transition-colors"
+            >
+              <LayoutTemplate className="h-4 w-4" />
+              Templates
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              Create Flow
+            </button>
+          </div>
         }
       />
+
+      {/* Template Gallery */}
+      {showTemplates && (
+        <FlowTemplateGallery
+          domainType={domain}
+          onClose={() => setShowTemplates(false)}
+          onSelect={(template) => {
+            setShowTemplates(false)
+            createFlow.mutate(
+              { name: template.name, description: template.description, triggerEvent: template.triggerEvent },
+              {
+                onSuccess: (result) => {
+                  if (result.data?.id) {
+                    router.push(`/flows/${result.data.id}`)
+                  }
+                },
+              },
+            )
+          }}
+        />
+      )}
 
       {/* Create Flow Modal */}
       {showCreate && (

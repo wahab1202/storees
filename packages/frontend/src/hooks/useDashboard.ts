@@ -76,6 +76,22 @@ export function useDashboardActivity(limit = 20) {
   })
 }
 
+type EntityCounts = {
+  customers: number
+  segments: number
+  flows: number
+  templates: number
+  campaigns: number
+}
+
+export function useSidebarCounts() {
+  return useQuery({
+    queryKey: ['sidebar-counts'],
+    queryFn: () => api.get<EntityCounts>(withProject('/api/dashboard/counts')),
+    staleTime: 120_000, // 2 minutes
+  })
+}
+
 export function useDashboardTrends(range: '7d' | '14d' | '30d' = '7d') {
   return useQuery({
     queryKey: ['dashboard-trends', range],

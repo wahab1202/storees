@@ -33,3 +33,45 @@ export function useCustomerEvents(customerId: string | null, limit = 50) {
     enabled: !!customerId,
   })
 }
+
+type CustomerTrip = {
+  id: string
+  flowId: string
+  flowName: string
+  status: string
+  currentNodeId: string
+  enteredAt: string
+  exitedAt: string | null
+  context: Record<string, unknown>
+}
+
+export function useCustomerTrips(customerId: string | null) {
+  return useQuery({
+    queryKey: ['customer-trips', customerId],
+    queryFn: () =>
+      api.get<CustomerTrip[]>(withProject(`/api/customers/${customerId}/trips`)),
+    enabled: !!customerId,
+  })
+}
+
+type CustomerMessage = {
+  id: string
+  channel: string
+  messageType: string
+  status: string
+  sentAt: string | null
+  deliveredAt: string | null
+  readAt: string | null
+  campaignName: string | null
+  flowName: string | null
+  blockReason: string | null
+}
+
+export function useCustomerMessages(customerId: string | null) {
+  return useQuery({
+    queryKey: ['customer-messages', customerId],
+    queryFn: () =>
+      api.get<CustomerMessage[]>(withProject(`/api/customers/${customerId}/messages`)),
+    enabled: !!customerId,
+  })
+}

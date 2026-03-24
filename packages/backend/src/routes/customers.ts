@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq, and, desc, asc, ilike, or, sql, count } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { customers, orders, events, customerSegments, segments } from '../db/schema.js'
+import { customers, orders, events, customerSegments, segments, flowTrips, flows, messages, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 
@@ -199,6 +199,67 @@ router.get('/:id/events', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Customer events error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch events' })
+  }
+})
+
+// GET /api/customers/:id/trips?projectId=...
+router.get('/:id/trips', requireProjectId, async (req, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: flowTrips.id,
+        flowId: flowTrips.flowId,
+        flowName: flows.name,
+        status: flowTrips.status,
+        currentNodeId: flowTrips.currentNodeId,
+        enteredAt: flowTrips.enteredAt,
+        exitedAt: flowTrips.exitedAt,
+        context: flowTrips.context,
+      })
+      .from(flowTrips)
+      .innerJoin(flows, eq(flowTrips.flowId, flows.id))
+      .where(
+        and(eq(flowTrips.customerId, req.params.id as string), eq(flows.projectId, req.projectId!)),
+      )
+      .orderBy(desc(flowTrips.enteredAt))
+
+    res.json({ success: true, data: rows })
+  } catch (err) {
+    console.error('Customer trips error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch trips' })
+  }
+})
+
+// GET /api/customers/:id/messages?projectId=...
+router.get('/:id/messages', requireProjectId, async (req, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: messages.id,
+        channel: messages.channel,
+        messageType: messages.messageType,
+        status: messages.status,
+        sentAt: messages.sentAt,
+        deliveredAt: messages.deliveredAt,
+        readAt: messages.readAt,
+        campaignName: campaigns.name,
+        flowName: flows.name,
+        blockReason: messages.blockReason,
+      })
+      .from(messages)
+      .leftJoin(campaigns, eq(messages.campaignId, campaigns.id))
+      .leftJoin(flowTrips, eq(messages.flowTripId, flowTrips.id))
+      .leftJoin(flows, eq(flowTrips.flowId, flows.id))
+      .where(
+        and(eq(messages.customerId, req.params.id as string), eq(messages.projectId, req.projectId!)),
+      )
+      .orderBy(desc(messages.sentAt))
+      .limit(50)
+
+    res.json({ success: true, data: rows })
+  } catch (err) {
+    console.error('Customer messages error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch messages' })
   }
 })
 

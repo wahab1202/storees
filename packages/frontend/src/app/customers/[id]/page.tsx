@@ -3,14 +3,16 @@
 import { use, useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Loader2 } from 'lucide-react'
-import { useCustomerDetail, useCustomerOrders, useCustomerEvents } from '@/hooks/useCustomerDetail'
+import { useCustomerDetail, useCustomerOrders, useCustomerEvents, useCustomerTrips, useCustomerMessages } from '@/hooks/useCustomerDetail'
 import { useDashboardStats } from '@/hooks/useDashboard'
 import { UserInfoTab } from '@/components/customers/UserInfoTab'
 import { ActivityTab } from '@/components/customers/ActivityTab'
 import { OrdersTab } from '@/components/customers/OrdersTab'
+import { JourneysTab } from '@/components/customers/JourneysTab'
+import { MessagesTab } from '@/components/customers/MessagesTab'
 import { cn } from '@/lib/utils'
 
-const TABS = ['User Info', 'Activity', 'Orders'] as const
+const TABS = ['User Info', 'Activity', 'Orders', 'Journeys', 'Messages'] as const
 type Tab = (typeof TABS)[number]
 
 function getInitials(name: string | null, email: string | null): string {
@@ -46,6 +48,8 @@ export default function CustomerProfilePage({
   const { data: customerRes, isLoading } = useCustomerDetail(id)
   const { data: ordersRes, isLoading: ordersLoading } = useCustomerOrders(id)
   const { data: eventsRes, isLoading: eventsLoading } = useCustomerEvents(id, 200)
+  const { data: tripsRes, isLoading: tripsLoading } = useCustomerTrips(id)
+  const { data: messagesRes, isLoading: messagesLoading } = useCustomerMessages(id)
   const { data: statsData } = useDashboardStats()
 
   const domain = statsData?.data?.domainType ?? 'ecommerce'
@@ -155,6 +159,12 @@ export default function CustomerProfilePage({
       )}
       {activeTab === 'Orders' && (
         <OrdersTab orders={ordersRes?.data ?? []} isLoading={ordersLoading} />
+      )}
+      {activeTab === 'Journeys' && (
+        <JourneysTab trips={tripsRes?.data ?? []} isLoading={tripsLoading} />
+      )}
+      {activeTab === 'Messages' && (
+        <MessagesTab messages={messagesRes?.data ?? []} isLoading={messagesLoading} />
       )}
     </div>
   )

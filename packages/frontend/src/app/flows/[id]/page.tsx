@@ -3,7 +3,7 @@
 import { useParams, useRouter } from 'next/navigation'
 import { useFlowDetail, useUpdateFlow, useUpdateFlowStatus } from '@/hooks/useFlows'
 import { useDashboardStats } from '@/hooks/useDashboard'
-import { FlowBuilder } from '@/components/flows/FlowBuilder'
+import { StructuredFlowBuilder } from '@/components/flows/StructuredFlowBuilder'
 import { Loader2, ArrowLeft, Play, Pause } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { FlowNode, ExitConfig } from '@storees/shared'
@@ -96,7 +96,7 @@ export default function FlowDetailPage() {
         </div>
       </div>
 
-      <FlowBuilder
+      <StructuredFlowBuilder
         flowNodes={flow.nodes as FlowNode[]}
         exitConfig={flow.exitConfig as ExitConfig | null}
         onSave={handleSave}
