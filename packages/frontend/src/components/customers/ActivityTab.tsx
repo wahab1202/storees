@@ -25,6 +25,7 @@ import {
   Heart,
   ShoppingBag,
   LayoutGrid,
+  Mail,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TrackedEvent } from '@storees/shared'
@@ -68,6 +69,12 @@ const EVENT_ICONS: Record<string, typeof ShoppingCart> = {
   subscription_started: Star,
   subscription_cancelled: AlertCircle,
   user_invited: UserPlus,
+  // Email tracking
+  email_delivered: Mail,
+  email_opened: Eye,
+  email_clicked: ShoppingBag,
+  email_bounced: AlertCircle,
+  email_complained: AlertCircle,
 }
 
 const EVENT_COLORS: Record<string, string> = {
@@ -89,6 +96,12 @@ const EVENT_COLORS: Record<string, string> = {
   feature_used: 'bg-purple-500',
   subscription_started: 'bg-green-500',
   subscription_cancelled: 'bg-red-500',
+  // Email tracking
+  email_delivered: 'bg-teal-500',
+  email_opened: 'bg-sky-500',
+  email_clicked: 'bg-blue-600',
+  email_bounced: 'bg-red-400',
+  email_complained: 'bg-red-600',
 }
 
 // ─── Helpers ─────────────────────────────────────────────
