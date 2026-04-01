@@ -2,6 +2,129 @@ import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events } from '../db/schema.js'
 
+// ============ CLV CALCULATION ============
+
+type ClvInput = {
+  totalSpent: number
+  totalOrders: number
+  firstOrderDate: Date | null
+  lastOrderDate: Date | null
+  churnRiskScore?: number // 0-100 from ML, if available
+}
+
+type ClvResult = {
+  clv_historical: number
+  clv_predicted: number
+  clv_total: number
+  clv_monthly_frequency: number
+  clv_retention_months: number
+  clv_churn_probability: number
+  clv_health: 'growing' | 'stable' | 'declining' | 'at_risk' | 'churned'
+}
+
+/**
+ * Compute CLV using a retention-adjusted DCF model.
+ *
+ * CLV = historical (actual spend) + predicted (forward-looking 12-month value)
+ *
+ * Predicted CLV = AOV × monthly_frequency × retention_months
+ *   retention_months = 1 / monthly_churn_rate (capped at 36)
+ *   churn = ML score if available, else heuristic based on overdue ratio
+ */
+export function computeClv(input: ClvInput): ClvResult {
+  const { totalSpent, totalOrders, firstOrderDate, lastOrderDate, churnRiskScore } = input
+  const now = new Date()
+
+  // No orders → zero CLV
+  if (totalOrders === 0 || !firstOrderDate) {
+    return {
+      clv_historical: 0,
+      clv_predicted: 0,
+      clv_total: 0,
+      clv_monthly_frequency: 0,
+      clv_retention_months: 0,
+      clv_churn_probability: 1,
+      clv_health: 'churned',
+    }
+  }
+
+  const historical = totalSpent
+  const aov = totalSpent / totalOrders
+
+  // Tenure in months (min 1 to avoid division by zero)
+  const tenureDays = Math.max(1, (now.getTime() - firstOrderDate.getTime()) / (1000 * 60 * 60 * 24))
+  const tenureMonths = Math.max(1, tenureDays / 30.44)
+
+  // Monthly purchase frequency
+  const monthlyFrequency = totalOrders / tenureMonths
+
+  // Days since last order
+  const daysSinceLastOrder = lastOrderDate
+    ? (now.getTime() - lastOrderDate.getTime()) / (1000 * 60 * 60 * 24)
+    : tenureDays
+
+  // Average gap between orders (for repeat buyers)
+  const avgGapDays = totalOrders > 1
+    ? (((lastOrderDate ?? now).getTime() - firstOrderDate.getTime()) / (1000 * 60 * 60 * 24)) / (totalOrders - 1)
+    : tenureDays // single buyers: assume gap = entire tenure
+
+  // Overdue ratio: how far past their expected next order
+  const overdueRatio = avgGapDays > 0 ? daysSinceLastOrder / avgGapDays : 999
+
+  // Churn probability
+  let churnProb: number
+  if (churnRiskScore !== undefined && churnRiskScore > 0) {
+    // Use ML score (0-100 → 0-1), but floor at 0.02 for active customers
+    churnProb = Math.max(0.02, churnRiskScore / 100)
+  } else {
+    // Heuristic based on overdue ratio
+    if (totalOrders === 1) {
+      churnProb = 0.6 // single buyers have high churn
+    } else if (overdueRatio <= 1) {
+      churnProb = 0.05 // on schedule
+    } else if (overdueRatio <= 2) {
+      churnProb = 0.15 + (overdueRatio - 1) * 0.2
+    } else if (overdueRatio <= 3) {
+      churnProb = 0.35 + (overdueRatio - 2) * 0.3
+    } else {
+      churnProb = Math.min(0.95, 0.65 + (overdueRatio - 3) * 0.1)
+    }
+  }
+
+  // Monthly churn rate → retention months (capped at 36)
+  const monthlyChurnRate = Math.max(0.01, 1 - Math.pow(1 - churnProb, 1 / 12))
+  const retentionMonths = Math.min(36, 1 / monthlyChurnRate)
+
+  // Predicted CLV = AOV × monthly_frequency × retention_months
+  const predicted = Math.round(aov * monthlyFrequency * retentionMonths * 100) / 100
+
+  // CLV Health
+  let health: ClvResult['clv_health']
+  if (daysSinceLastOrder > 180) {
+    health = 'churned'
+  } else if (overdueRatio > 3) {
+    health = 'at_risk'
+  } else if (overdueRatio > 1.5) {
+    health = 'declining'
+  } else if (overdueRatio > 0.8) {
+    health = 'stable'
+  } else {
+    health = 'growing'
+  }
+
+  return {
+    clv_historical: Math.round(historical * 100) / 100,
+    clv_predicted: Math.max(0, predicted),
+    clv_total: Math.round((historical + Math.max(0, predicted)) * 100) / 100,
+    clv_monthly_frequency: Math.round(monthlyFrequency * 100) / 100,
+    clv_retention_months: Math.round(retentionMonths * 10) / 10,
+    clv_churn_probability: Math.round(churnProb * 1000) / 1000,
+    clv_health: health,
+  }
+}
+
+// ============ IDENTITY RESOLUTION ============
+
 type ResolveParams = {
   projectId: string
   externalId?: string
@@ -158,18 +281,43 @@ export async function updateCustomerAggregates(
   orderDate?: Date,
 ): Promise<void> {
   const ts = orderDate ?? new Date()
+  // Update order stats first, then recompute CLV from the updated row
   await db.execute(sql`
     UPDATE customers SET
       total_orders = total_orders + 1,
       total_spent = total_spent + ${orderTotal},
       avg_order_value = (total_spent + ${orderTotal}) / NULLIF(total_orders + 1, 0),
-      clv = total_spent + ${orderTotal},
       last_seen = NOW(),
       first_order_date = CASE WHEN first_order_date IS NULL THEN ${ts}::timestamptz ELSE LEAST(first_order_date, ${ts}::timestamptz) END,
       last_order_date = CASE WHEN last_order_date IS NULL THEN ${ts}::timestamptz ELSE GREATEST(last_order_date, ${ts}::timestamptz) END,
       updated_at = NOW()
     WHERE id = ${customerId}
   `)
+
+  // Recompute CLV from updated data using the JS model
+  const [row] = await db.select({
+    totalSpent: customers.totalSpent,
+    totalOrders: customers.totalOrders,
+    firstOrderDate: customers.firstOrderDate,
+    lastOrderDate: customers.lastOrderDate,
+    metrics: customers.metrics,
+  }).from(customers).where(eq(customers.id, customerId)).limit(1)
+
+  if (row) {
+    const metrics = (row.metrics ?? {}) as Record<string, unknown>
+    const clvResult = computeClv({
+      totalSpent: Number(row.totalSpent),
+      totalOrders: row.totalOrders,
+      firstOrderDate: row.firstOrderDate,
+      lastOrderDate: row.lastOrderDate,
+      churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+    })
+    await db.update(customers).set({
+      clv: String(clvResult.clv_total),
+      metrics: { ...metrics, ...clvResult },
+      updatedAt: new Date(),
+    }).where(eq(customers.id, customerId))
+  }
 }
 
 /**
@@ -189,10 +337,34 @@ export async function recalculateAggregates(
         THEN GREATEST(0, total_spent - ${orderTotal}) / GREATEST(1, total_orders - 1)
         ELSE 0
       END,
-      clv = GREATEST(0, total_spent - ${orderTotal}),
       updated_at = NOW()
     WHERE id = ${customerId}
   `)
+
+  // Recompute CLV from updated data
+  const [row] = await db.select({
+    totalSpent: customers.totalSpent,
+    totalOrders: customers.totalOrders,
+    firstOrderDate: customers.firstOrderDate,
+    lastOrderDate: customers.lastOrderDate,
+    metrics: customers.metrics,
+  }).from(customers).where(eq(customers.id, customerId)).limit(1)
+
+  if (row) {
+    const metrics = (row.metrics ?? {}) as Record<string, unknown>
+    const clvResult = computeClv({
+      totalSpent: Number(row.totalSpent),
+      totalOrders: row.totalOrders,
+      firstOrderDate: row.firstOrderDate,
+      lastOrderDate: row.lastOrderDate,
+      churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+    })
+    await db.update(customers).set({
+      clv: String(clvResult.clv_total),
+      metrics: { ...metrics, ...clvResult },
+      updatedAt: new Date(),
+    }).where(eq(customers.id, customerId))
+  }
 }
 
 /**
@@ -302,26 +474,33 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       AND (total_orders != 0 OR total_spent::numeric != 0)
   `)
 
-  // Sync metrics JSONB with corrected column values
-  // (import scripts may have written stale total_spent/total_orders into metrics)
-  await db.execute(sql`
-    UPDATE customers SET
-      metrics = jsonb_set(
-        jsonb_set(
-          COALESCE(metrics, '{}'::jsonb),
-          '{total_orders}',
-          to_jsonb(total_orders)
-        ),
-        '{total_spent}',
-        to_jsonb(total_spent::numeric)
-      )
-    WHERE project_id = ${projectId}
-      AND metrics IS NOT NULL
-      AND (
-        (metrics->>'total_orders')::int IS DISTINCT FROM total_orders
-        OR (metrics->>'total_spent')::numeric IS DISTINCT FROM total_spent::numeric
-      )
-  `)
+  // Recompute CLV for all buyers using the JS model
+  const buyers = await db.select({
+    id: customers.id,
+    totalSpent: customers.totalSpent,
+    totalOrders: customers.totalOrders,
+    firstOrderDate: customers.firstOrderDate,
+    lastOrderDate: customers.lastOrderDate,
+    metrics: customers.metrics,
+  }).from(customers).where(
+    and(eq(customers.projectId, projectId), sql`total_orders > 0`),
+  )
+
+  for (const row of buyers) {
+    const metrics = (row.metrics ?? {}) as Record<string, unknown>
+    const clvResult = computeClv({
+      totalSpent: Number(row.totalSpent),
+      totalOrders: row.totalOrders,
+      firstOrderDate: row.firstOrderDate,
+      lastOrderDate: row.lastOrderDate,
+      churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+    })
+    await db.update(customers).set({
+      clv: String(clvResult.clv_total),
+      metrics: { ...metrics, ...clvResult, total_orders: row.totalOrders, total_spent: Number(row.totalSpent) },
+      updatedAt: new Date(),
+    }).where(eq(customers.id, row.id))
+  }
 
   return eventUpdated
 }
