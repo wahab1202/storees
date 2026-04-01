@@ -29,6 +29,7 @@ import verticalPackRoutes from './routes/verticalPacks.js'
 import wizardRoutes from './routes/wizard.js'
 import analyticsRoutes from './routes/analytics.js'
 import predictionRoutes from './routes/predictions.js'
+import sendTimeRoutes from './routes/sendTime.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { startSyncWorker } from './workers/syncWorker.js'
 import { startTriggerWorker } from './workers/triggerWorker.js'
@@ -109,6 +110,7 @@ app.use('/api/packs', verticalPackRoutes)
 app.use('/api/wizard', wizardRoutes)
 app.use('/api/analytics', analyticsRoutes)
 app.use('/api/predictions', predictionRoutes)
+app.use('/api/send-time', sendTimeRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)

@@ -119,6 +119,7 @@ const customDomain: DomainConfig = {
 // ============ AI & PREDICTIONS (shared across all domains) ============
 
 const predictionFields: DomainFieldDef[] = [
+  { field: 'engagement_score', label: 'Engagement Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'engagement_score' },
   { field: 'churn_risk', label: 'Churn Risk Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'churn_risk' },
   { field: 'conversion_score', label: 'Conversion Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'conversion_score' },
   { field: 'dormancy_risk', label: 'Dormancy Risk Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'dormancy_risk' },

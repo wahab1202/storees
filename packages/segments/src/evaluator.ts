@@ -306,6 +306,8 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`COALESCE((metrics->>'portfolio_value')::numeric, 0)`
 
     // AI & Prediction scores (0-100, stored in customers.metrics JSONB)
+    case 'engagement_score':
+      return sql`COALESCE((metrics->>'engagement_score')::numeric, 0)`
     case 'churn_risk':
       return sql`COALESCE((metrics->>'churn_risk')::numeric, 0)`
     case 'conversion_score':
@@ -475,6 +477,7 @@ function getFieldValue(field: string, customer: Customer): unknown {
     case 'days_since_signup':
     case 'mrr':
     case 'portfolio_value':
+    case 'engagement_score':
     case 'churn_risk':
     case 'conversion_score':
     case 'dormancy_risk':

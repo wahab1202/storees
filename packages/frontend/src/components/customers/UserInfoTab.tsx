@@ -39,6 +39,17 @@ function formatShortDate(date: Date | string): string {
   })
 }
 
+function formatHour(hour: number): string {
+  if (hour === 0) return '12am'
+  if (hour < 12) return `${hour}am`
+  if (hour === 12) return '12pm'
+  return `${hour - 12}pm`
+}
+
+function formatDow(dow: number): string {
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dow] ?? ''
+}
+
 function snakeToTitle(str: string): string {
   return str
     .split('_')
@@ -96,12 +107,13 @@ function getMetricGroups(customer: CustomerDetail, domain: string): MetricGroup[
           ],
         },
         {
-          title: 'Acquisition',
+          title: 'AI Intelligence',
           icon: TrendingUp,
           items: [
-            { label: 'First Seen', value: formatShortDate(customer.firstSeen) },
-            { label: 'Retention Estimate', value: m.clv_retention_months ? `${m.clv_retention_months} months` : '—' },
-            { label: 'Churn Risk', value: m.clv_churn_probability != null ? `${Math.round(Number(m.clv_churn_probability) * 100)}%` : '—' },
+            { label: 'Engagement Score', value: m.engagement_score != null ? `${m.engagement_score}/100` : '—' },
+            { label: 'Churn Risk', value: m.churn_risk != null ? `${m.churn_risk}%` : (m.clv_churn_probability != null ? `${Math.round(Number(m.clv_churn_probability) * 100)}%` : '—') },
+            { label: 'Best Send Time', value: m.best_send_hour != null ? `${formatHour(Number(m.best_send_hour))}${m.best_send_dow != null ? ` ${formatDow(Number(m.best_send_dow))}` : ''}` : '—' },
+            { label: 'Best Channel', value: m.best_channel ? String(m.best_channel).charAt(0).toUpperCase() + String(m.best_channel).slice(1) : '—' },
           ],
         },
       ]

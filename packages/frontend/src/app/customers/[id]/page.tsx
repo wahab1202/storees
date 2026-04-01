@@ -13,6 +13,7 @@ import { JourneysTab } from '@/components/customers/JourneysTab'
 import { MessagesTab } from '@/components/customers/MessagesTab'
 import { PredictionsTab } from '@/components/customers/PredictionsTab'
 import { JourneyTimelineTab } from '@/components/customers/JourneyTimelineTab'
+import { NextBestActionCard } from '@/components/customers/NextBestActionCard'
 import { cn } from '@/lib/utils'
 
 const TABS = ['User Info', 'Journey', 'Activity', 'Orders', 'Journeys', 'Messages', 'Predictions'] as const
@@ -152,7 +153,10 @@ export default function CustomerProfilePage() {
 
       {/* Tab Content */}
       {activeTab === 'User Info' && (
-        <UserInfoTab customer={customer} domain={domain} />
+        <div className="space-y-6">
+          <UserInfoTab customer={customer} domain={domain} />
+          <NextBestActionCard customerId={id} />
+        </div>
       )}
       {activeTab === 'Journey' && (
         <JourneyTimelineTab customerId={id} />

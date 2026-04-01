@@ -212,6 +212,8 @@ async function computeEcommerceMetrics(
     orders_in_last_30_days: Number(oRow?.orders_last_30d ?? 0),
     orders_in_last_90_days: Number(oRow?.orders_last_90d ?? 0),
     ...clvResult,
+    // Churn risk as 0-100 integer (used by segment evaluator + predictions)
+    churn_risk: Math.round(clvResult.clv_churn_probability * 100),
   }
 }
 
@@ -371,6 +373,7 @@ async function computeEngagementMetrics(
   projectId: string,
   customerId: string,
 ): Promise<Record<string, unknown>> {
+  // Query 1: SDK engagement metrics
   const result = await db.execute(sql`
     SELECT
       COUNT(*) FILTER (WHERE event_name = 'page_viewed') AS total_page_views,
@@ -385,21 +388,57 @@ async function computeEngagementMetrics(
       AND event_name IN ('page_viewed', 'session_started', 'session_ended', 'element_clicked')
   `)
 
+  // Query 2: Engagement score inputs (all events, not just SDK)
+  const scoreResult = await db.execute(sql`
+    SELECT
+      MAX(timestamp) AS last_event_at,
+      COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '30 days') AS events_last_30d,
+      COUNT(DISTINCT event_name) FILTER (WHERE timestamp > NOW() - INTERVAL '30 days') AS unique_events_last_30d
+    FROM events
+    WHERE project_id = ${projectId} AND customer_id = ${customerId}
+  `)
+
   const row = result.rows[0] as Record<string, unknown> | undefined
+  const sRow = scoreResult.rows[0] as Record<string, unknown> | undefined
   const pageViews = Number(row?.total_page_views ?? 0)
   const sessions = Number(row?.total_sessions ?? 0)
+  const avgSessionMs = row?.avg_session_duration_ms ? Number(row.avg_session_duration_ms) : 0
 
-  // Only return engagement metrics if there's SDK activity
-  if (pageViews === 0 && sessions === 0) return {}
+  // ── Engagement Score (0-100) ──
+  // Works for ALL customers (not just SDK users) — uses event recency + frequency
+  const lastEventAt = sRow?.last_event_at ? new Date(sRow.last_event_at as string) : null
+  const daysSinceLastEvent = lastEventAt
+    ? (Date.now() - lastEventAt.getTime()) / (1000 * 60 * 60 * 24)
+    : 999
+  const eventsLast30d = Number(sRow?.events_last_30d ?? 0)
+  const uniqueEventsLast30d = Number(sRow?.unique_events_last_30d ?? 0)
 
-  return {
-    total_page_views: pageViews,
-    total_sessions: sessions,
-    total_clicks: Number(row?.total_clicks ?? 0),
-    avg_session_duration_ms: row?.avg_session_duration_ms ? Math.round(Number(row.avg_session_duration_ms)) : null,
-    pages_per_session: sessions > 0 ? Math.round((pageViews / sessions) * 10) / 10 : null,
-    last_page_viewed: row?.last_page_viewed ?? null,
+  const recencyScore = Math.max(0, 1 - daysSinceLastEvent / 90)
+  const frequencyScore = Math.min(1, eventsLast30d / 20)
+  const depthScore = Math.min(1, avgSessionMs / 300000) // 5min session = 1.0
+  const breadthScore = Math.min(1, uniqueEventsLast30d / 6)
+
+  const engagementScore = Math.round(
+    (recencyScore * 0.35 + frequencyScore * 0.25 + depthScore * 0.20 + breadthScore * 0.20) * 100
+  )
+
+  const baseMetrics: Record<string, unknown> = {
+    engagement_score: engagementScore,
+    events_last_30d: eventsLast30d,
+    unique_events_last_30d: uniqueEventsLast30d,
   }
+
+  // Only add SDK-specific metrics if there's SDK activity
+  if (pageViews > 0 || sessions > 0) {
+    baseMetrics.total_page_views = pageViews
+    baseMetrics.total_sessions = sessions
+    baseMetrics.total_clicks = Number(row?.total_clicks ?? 0)
+    baseMetrics.avg_session_duration_ms = avgSessionMs > 0 ? Math.round(avgSessionMs) : null
+    baseMetrics.pages_per_session = sessions > 0 ? Math.round((pageViews / sessions) * 10) / 10 : null
+    baseMetrics.last_page_viewed = row?.last_page_viewed ?? null
+  }
+
+  return baseMetrics
 }
 
 // ============ ENGAGEMENT-ONLY UPDATE ============
