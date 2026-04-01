@@ -21,6 +21,10 @@ import {
   ChevronRight,
   Filter,
   ChevronsUpDown,
+  Eye,
+  Heart,
+  ShoppingBag,
+  LayoutGrid,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TrackedEvent } from '@storees/shared'
@@ -42,6 +46,10 @@ const EVENT_ICONS: Record<string, typeof ShoppingCart> = {
   checkout_started: CreditCard,
   customer_created: UserPlus,
   customer_updated: UserCog,
+  product_viewed: Eye,
+  added_to_cart: ShoppingBag,
+  added_to_wishlist: Heart,
+  collection_viewed: LayoutGrid,
   // Fintech
   transaction_completed: ArrowRightLeft,
   bill_payment_completed: Wallet,
@@ -69,6 +77,10 @@ const EVENT_COLORS: Record<string, string> = {
   cart_created: 'bg-amber-500',
   checkout_started: 'bg-indigo-500',
   customer_created: 'bg-emerald-500',
+  product_viewed: 'bg-violet-500',
+  added_to_cart: 'bg-orange-500',
+  added_to_wishlist: 'bg-pink-500',
+  collection_viewed: 'bg-cyan-500',
   transaction_completed: 'bg-blue-500',
   kyc_verified: 'bg-green-500',
   kyc_expired: 'bg-red-500',
@@ -107,7 +119,13 @@ function summarizeProperties(props: Record<string, unknown>): string {
   // Page views
   if (props.page) parts.push(String(props.page))
   if (props.url && !props.page) parts.push(String(props.url))
-  // Ecommerce
+  // Product browsing / wishlist / cart
+  if (props.product_name) parts.push(String(props.product_name))
+  if (props.product_type) parts.push(String(props.product_type))
+  if (props.collection_name) parts.push(String(props.collection_name))
+  if (props.variant_title) parts.push(String(props.variant_title))
+  if (props.price !== undefined && !props.total) parts.push(`₹${Number(props.price).toLocaleString('en-IN')}`)
+  // Ecommerce orders
   if (props.total !== undefined) parts.push(`₹${Number(props.total).toLocaleString('en-IN')}`)
   if (props.item_count !== undefined) parts.push(`${props.item_count} items`)
   if (props.order_id) parts.push(`Order #${props.order_id}`)

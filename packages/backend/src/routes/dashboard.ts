@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq, and, sql, count, desc, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { customers, orders, events, projects } from '../db/schema.js'
+import { customers, orders, events, projects, segments, flows, emailTemplates, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 
 const router = Router()
@@ -270,6 +270,40 @@ router.get('/trends', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Dashboard trends error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch trends' })
+  }
+})
+
+// GET /api/dashboard/counts?projectId=...
+router.get('/counts', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const [
+      [{ customersCount }],
+      [{ segmentsCount }],
+      [{ flowsCount }],
+      [{ templatesCount }],
+      [{ campaignsCount }],
+    ] = await Promise.all([
+      db.select({ customersCount: count() }).from(customers).where(eq(customers.projectId, projectId)),
+      db.select({ segmentsCount: count() }).from(segments).where(eq(segments.projectId, projectId)),
+      db.select({ flowsCount: count() }).from(flows).where(eq(flows.projectId, projectId)),
+      db.select({ templatesCount: count() }).from(emailTemplates).where(eq(emailTemplates.projectId, projectId)),
+      db.select({ campaignsCount: count() }).from(campaigns).where(eq(campaigns.projectId, projectId)),
+    ])
+
+    res.json({
+      success: true,
+      data: {
+        customers: customersCount,
+        segments: segmentsCount,
+        flows: flowsCount,
+        templates: templatesCount,
+        campaigns: campaignsCount,
+      },
+    })
+  } catch (err) {
+    console.error('Dashboard counts error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch counts' })
   }
 })
 

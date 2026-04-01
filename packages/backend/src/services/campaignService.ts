@@ -54,13 +54,22 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   const recipients = await getCampaignRecipients(campaign.segmentId)
   if (recipients.length === 0) throw new Error('Target segment has no customers with email addresses')
 
-  // Create pending send records
+  // Assign A/B variants if enabled
+  const isAb = campaign.abTestEnabled ?? false
+  const splitPct = campaign.abSplitPct ?? 50
+
+  // Shuffle recipients for random split
+  const shuffled = [...recipients].sort(() => Math.random() - 0.5)
+  const splitIndex = isAb ? Math.round(shuffled.length * (splitPct / 100)) : shuffled.length
+
+  // Create pending send records with variant assignment
   await db.insert(campaignSends).values(
-    recipients.map(r => ({
+    shuffled.map((r, i) => ({
       campaignId,
       customerId: r.customerId,
       email: r.email,
       status: 'pending' as const,
+      variant: isAb ? (i < splitIndex ? 'A' : 'B') : null,
     })),
   )
 
@@ -119,8 +128,17 @@ export async function processCampaign(campaignId: string): Promise<void> {
       store_name: 'Storees Store',
     }
 
-    const subject = interpolateTemplate(campaign.subject ?? '', templateContext)
-    const html = interpolateTemplate(campaign.htmlBody ?? '', templateContext)
+    // Use variant B content if A/B enabled and this is variant B
+    const useVariantB = send.variant === 'B' && campaign.abTestEnabled
+    const rawSubject = useVariantB && campaign.abVariantBSubject
+      ? campaign.abVariantBSubject
+      : campaign.subject ?? ''
+    const rawHtml = useVariantB && campaign.abVariantBHtmlBody
+      ? campaign.abVariantBHtmlBody
+      : campaign.htmlBody ?? ''
+
+    const subject = interpolateTemplate(rawSubject, templateContext)
+    const html = interpolateTemplate(rawHtml, templateContext)
 
     const messageId = await sendEmail({ to: send.email, subject, html })
 

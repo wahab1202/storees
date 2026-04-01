@@ -1,13 +1,14 @@
 'use client'
 
 import Link from 'next/link'
-import { useTemplates, useDeleteTemplate } from '@/hooks/useTemplates'
+import { useTemplates, useDeleteTemplate, useSeedTemplates } from '@/hooks/useTemplates'
+import { toast } from 'sonner'
 import { TemplatePreviewCard } from '@/components/shared/TemplatePreviewCard'
 import { SlidePanel } from '@/components/shared/SlidePanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil } from 'lucide-react'
+import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import type { EmailTemplate, TemplateChannel } from '@storees/shared'
 
@@ -29,6 +30,7 @@ const CHANNEL_CONFIG = {
 export default function TemplatesPage() {
   const { data, isLoading, isError } = useTemplates()
   const deleteTemplate = useDeleteTemplate()
+  const seedTemplates = useSeedTemplates()
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [channelFilter, setChannelFilter] = useState<TemplateChannel | 'all'>('all')
   const [search, setSearch] = useState('')
@@ -64,13 +66,30 @@ export default function TemplatesPage() {
       <PageHeader
         title="Templates"
         actions={
-          <Link
-            href="/templates/create"
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            New Template
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => seedTemplates.mutate({ force: true }, {
+                onSuccess: (res) => {
+                  const seeded = res.data?.seeded ?? 0
+                  if (seeded > 0) toast.success(`Added ${seeded} starter templates`)
+                  else toast.info(res.data?.message ?? 'Templates already loaded')
+                },
+                onError: () => toast.error('Failed to load starter templates'),
+              })}
+              disabled={seedTemplates.isPending}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-secondary rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+            >
+              {seedTemplates.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              Starter Templates
+            </button>
+            <Link
+              href="/templates/create"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              New Template
+            </Link>
+          </div>
         }
       />
 
@@ -136,13 +155,29 @@ export default function TemplatesPage() {
               : 'Try adjusting your search or channel filter.'}
           </p>
           {templates.length === 0 && (
-            <Link
-              href="/templates/create"
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              New Template
-            </Link>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={() => seedTemplates.mutate({}, {
+                  onSuccess: (res) => {
+                    const seeded = res.data?.seeded ?? 0
+                    if (seeded > 0) toast.success(`Added ${seeded} starter templates`)
+                  },
+                  onError: () => toast.error('Failed to load starter templates'),
+                })}
+                disabled={seedTemplates.isPending}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50"
+              >
+                {seedTemplates.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                Load Starter Templates
+              </button>
+              <Link
+                href="/templates/create"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-secondary rounded-lg hover:bg-surface transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                Create from Scratch
+              </Link>
+            </div>
           )}
         </div>
       ) : (

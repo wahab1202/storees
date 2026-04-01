@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
+import { SegmentPreviewPanel } from '@/components/segments/SegmentPreviewPanel'
 import { AiChatPanel } from '@/components/segments/AiChatPanel'
 import { useSegmentDetail, useUpdateSegment, useDeleteSegment } from '@/hooks/useSegments'
 import { ArrowLeft, Users, Filter, Loader2, Trash2 } from 'lucide-react'
@@ -210,9 +211,10 @@ export default function EditSegmentPage() {
           )}
         </div>
 
-        {/* Right: AI Chat Panel */}
+        {/* Right: Preview + AI Chat Panel */}
         <div className="hidden lg:block">
-          <div className="sticky top-6">
+          <div className="sticky top-6 space-y-4">
+            <SegmentPreviewPanel filters={filters} />
             <AiChatPanel onApplyFilters={setFilters} />
           </div>
         </div>

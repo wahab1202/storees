@@ -35,6 +35,9 @@ import {
   Layout,
   CalendarClock,
   Repeat,
+  FlaskConical,
+  SplitSquareHorizontal,
+  Trophy,
 } from 'lucide-react'
 
 type Step = 1 | 2 | 3
@@ -149,6 +152,16 @@ function CreateCampaignContent() {
   const [bodyText, setBodyText] = useState('')
   const [pushTitle, setPushTitle] = useState('')
 
+  // A/B Testing
+  const [abTestEnabled, setAbTestEnabled] = useState(false)
+  const [abSplitPct, setAbSplitPct] = useState(50)
+  const [abVariantBSubject, setAbVariantBSubject] = useState('')
+  const [abVariantBHtmlBody, setAbVariantBHtmlBody] = useState('')
+  const [abVariantBBodyText, setAbVariantBBodyText] = useState('')
+  const [abWinnerMetric, setAbWinnerMetric] = useState<string>('open_rate')
+  const [abAutoSendWinner, setAbAutoSendWinner] = useState(false)
+  const [abTestDurationHours, setAbTestDurationHours] = useState(4)
+
   // Step 3
   const [sendTiming, setSendTiming] = useState<SendTiming>('asap')
   const [scheduledDate, setScheduledDate] = useState('')
@@ -223,6 +236,15 @@ function CreateCampaignContent() {
         scheduledAt: !isPeriodic && sendTiming === 'scheduled' && scheduledDate && scheduledTime
           ? new Date(`${scheduledDate}T${scheduledTime}`).toISOString()
           : undefined,
+        // A/B Testing
+        abTestEnabled: abTestEnabled || undefined,
+        abSplitPct: abTestEnabled ? abSplitPct : undefined,
+        abVariantBSubject: abTestEnabled && isEmail ? abVariantBSubject || undefined : undefined,
+        abVariantBHtmlBody: abTestEnabled && isEmail ? abVariantBHtmlBody || undefined : undefined,
+        abVariantBBodyText: abTestEnabled && !isEmail ? abVariantBBodyText || undefined : undefined,
+        abWinnerMetric: abTestEnabled ? abWinnerMetric : undefined,
+        abAutoSendWinner: abTestEnabled ? abAutoSendWinner : undefined,
+        abTestDurationHours: abTestEnabled ? abTestDurationHours : undefined,
       },
       { onSuccess: (res) => router.push(`/campaigns/${res.data?.id}`) },
     )
@@ -315,30 +337,46 @@ function CreateCampaignContent() {
           />
         )}
         {step === 2 && (
-          isEmail ? (
-            <Step2EmailContent
-              subject={subject} setSubject={setSubject}
-              previewText={previewText} setPreviewText={setPreviewText}
-              fromName={fromName} setFromName={setFromName}
-              htmlBody={htmlBody} setHtmlBody={setHtmlBody}
-              selectedTemplateId={selectedTemplateId}
-              selectedLayout={selectedLayout}
-              editorMode={editorMode} setEditorMode={setEditorMode}
-              templates={templates}
-              onSelectLayout={(key, html) => { setSelectedLayout(key); setSelectedTemplateId(null); setHtmlBody(html) }}
-              onSelectTemplate={(id, html) => { setSelectedTemplateId(id); setSelectedLayout(''); setHtmlBody(html) }}
-              onPreviewTemplate={setPreviewTemplate}
-              inputClass={inputClass}
+          <div className="space-y-6">
+            {isEmail ? (
+              <Step2EmailContent
+                subject={subject} setSubject={setSubject}
+                previewText={previewText} setPreviewText={setPreviewText}
+                fromName={fromName} setFromName={setFromName}
+                htmlBody={htmlBody} setHtmlBody={setHtmlBody}
+                selectedTemplateId={selectedTemplateId}
+                selectedLayout={selectedLayout}
+                editorMode={editorMode} setEditorMode={setEditorMode}
+                templates={templates}
+                onSelectLayout={(key, html) => { setSelectedLayout(key); setSelectedTemplateId(null); setHtmlBody(html) }}
+                onSelectTemplate={(id, html) => { setSelectedTemplateId(id); setSelectedLayout(''); setHtmlBody(html) }}
+                onPreviewTemplate={setPreviewTemplate}
+                inputClass={inputClass}
+              />
+            ) : (
+              <Step2TextContent
+                channel={channel}
+                bodyText={bodyText} setBodyText={setBodyText}
+                pushTitle={pushTitle} setPushTitle={setPushTitle}
+                templates={templates}
+                inputClass={inputClass}
+              />
+            )}
+
+            {/* A/B Testing Section */}
+            <AbTestSection
+              enabled={abTestEnabled} setEnabled={setAbTestEnabled}
+              isEmail={isEmail} channel={channel}
+              splitPct={abSplitPct} setSplitPct={setAbSplitPct}
+              variantBSubject={abVariantBSubject} setVariantBSubject={setAbVariantBSubject}
+              variantBHtmlBody={abVariantBHtmlBody} setVariantBHtmlBody={setAbVariantBHtmlBody}
+              variantBBodyText={abVariantBBodyText} setVariantBBodyText={setAbVariantBBodyText}
+              winnerMetric={abWinnerMetric} setWinnerMetric={setAbWinnerMetric}
+              autoSendWinner={abAutoSendWinner} setAutoSendWinner={setAbAutoSendWinner}
+              testDurationHours={abTestDurationHours} setTestDurationHours={setAbTestDurationHours}
+              inputClass={inputClass} selectClass={selectClass}
             />
-          ) : (
-            <Step2TextContent
-              channel={channel}
-              bodyText={bodyText} setBodyText={setBodyText}
-              pushTitle={pushTitle} setPushTitle={setPushTitle}
-              templates={templates}
-              inputClass={inputClass}
-            />
-          )
+          </div>
         )}
         {step === 3 && (
           <Step3ScheduleGoals
@@ -767,6 +805,172 @@ function Step2TextContent({
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─── A/B Test Section ─── */
+
+function AbTestSection({
+  enabled, setEnabled, isEmail, channel,
+  splitPct, setSplitPct,
+  variantBSubject, setVariantBSubject,
+  variantBHtmlBody, setVariantBHtmlBody,
+  variantBBodyText, setVariantBBodyText,
+  winnerMetric, setWinnerMetric,
+  autoSendWinner, setAutoSendWinner,
+  testDurationHours, setTestDurationHours,
+  inputClass, selectClass,
+}: {
+  enabled: boolean; setEnabled: (v: boolean) => void
+  isEmail: boolean; channel: CampaignChannel
+  splitPct: number; setSplitPct: (v: number) => void
+  variantBSubject: string; setVariantBSubject: (v: string) => void
+  variantBHtmlBody: string; setVariantBHtmlBody: (v: string) => void
+  variantBBodyText: string; setVariantBBodyText: (v: string) => void
+  winnerMetric: string; setWinnerMetric: (v: string) => void
+  autoSendWinner: boolean; setAutoSendWinner: (v: boolean) => void
+  testDurationHours: number; setTestDurationHours: (v: number) => void
+  inputClass: string; selectClass: string
+}) {
+  return (
+    <div className="bg-white border border-border rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border">
+        <div className="flex items-center gap-2">
+          <FlaskConical className="h-4 w-4 text-purple-500" />
+          <h2 className="text-sm font-semibold text-text-primary">A/B Testing</h2>
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-50 text-purple-600">Optional</span>
+        </div>
+        <button
+          onClick={() => setEnabled(!enabled)}
+          className={cn('relative w-10 h-5 rounded-full transition-colors', enabled ? 'bg-purple-500' : 'bg-gray-200')}
+        >
+          <div className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', enabled ? 'translate-x-5' : 'translate-x-0.5')} />
+        </button>
+      </div>
+
+      {enabled && (
+        <div className="p-5 space-y-5">
+          {/* Split ratio */}
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-2">Traffic Split</label>
+            <div className="flex items-center gap-4">
+              <div className="flex-1">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-blue-600">Variant A — {splitPct}%</span>
+                  <span className="text-xs font-semibold text-purple-600">Variant B — {100 - splitPct}%</span>
+                </div>
+                <div className="relative h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="absolute inset-y-0 left-0 bg-blue-400 rounded-l-full" style={{ width: `${splitPct}%` }} />
+                  <div className="absolute inset-y-0 right-0 bg-purple-400 rounded-r-full" style={{ width: `${100 - splitPct}%` }} />
+                </div>
+                <input
+                  type="range"
+                  min={10} max={90} step={5}
+                  value={splitPct}
+                  onChange={e => setSplitPct(parseInt(e.target.value))}
+                  className="w-full mt-1 accent-purple-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Variant B content */}
+          <div className="p-4 bg-purple-50/50 rounded-lg border border-purple-100">
+            <div className="flex items-center gap-2 mb-3">
+              <SplitSquareHorizontal className="h-4 w-4 text-purple-500" />
+              <h3 className="text-sm font-semibold text-text-primary">Variant B Content</h3>
+            </div>
+            <p className="text-xs text-text-muted mb-3">
+              Variant A uses the main content above. Configure what Variant B recipients will see.
+            </p>
+
+            {isEmail ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1">Subject Line (B)</label>
+                  <input
+                    value={variantBSubject}
+                    onChange={e => setVariantBSubject(e.target.value)}
+                    placeholder="Alternative subject line for testing..."
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1">HTML Body (B)</label>
+                  <textarea
+                    value={variantBHtmlBody}
+                    onChange={e => setVariantBHtmlBody(e.target.value)}
+                    rows={8}
+                    placeholder="Paste alternative HTML for Variant B..."
+                    className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-purple-300/50 focus:border-purple-400 resize-none"
+                    spellCheck={false}
+                  />
+                  <p className="text-xs text-text-muted mt-1">Leave empty to only test the subject line</p>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-1">Message Body (B)</label>
+                <textarea
+                  value={variantBBodyText}
+                  onChange={e => setVariantBBodyText(e.target.value)}
+                  rows={4}
+                  placeholder="Alternative message text for Variant B..."
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-purple-300/50 focus:border-purple-400 resize-none"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Winner selection config */}
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-text-secondary mb-1">Winner Metric</label>
+              <select value={winnerMetric} onChange={e => setWinnerMetric(e.target.value)} className={selectClass}>
+                <option value="open_rate">Open Rate</option>
+                <option value="click_rate">Click Rate</option>
+                <option value="conversion_rate">Conversion Rate</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-text-secondary mb-1">Test Duration</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={testDurationHours}
+                  onChange={e => setTestDurationHours(parseInt(e.target.value) || 4)}
+                  min={1} max={72}
+                  className="w-20 h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/30"
+                />
+                <span className="text-xs text-text-secondary">hours</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-text-secondary mb-1">Auto-send winner</label>
+              <button
+                onClick={() => setAutoSendWinner(!autoSendWinner)}
+                className={cn('relative w-10 h-5 rounded-full transition-colors mt-2', autoSendWinner ? 'bg-accent' : 'bg-gray-200')}
+              >
+                <div className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', autoSendWinner ? 'translate-x-5' : 'translate-x-0.5')} />
+              </button>
+              <p className="text-[10px] text-text-muted mt-1">
+                {autoSendWinner ? 'Winner sent to remaining audience' : 'Manual selection required'}
+              </p>
+            </div>
+          </div>
+
+          {/* Summary */}
+          <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg flex items-start gap-2">
+            <Trophy className="h-4 w-4 text-purple-500 mt-0.5 flex-shrink-0" />
+            <p className="text-xs text-purple-700">
+              <strong>{splitPct}%</strong> of recipients get Variant A, <strong>{100 - splitPct}%</strong> get Variant B.
+              Winner determined by <strong>{winnerMetric.replace(/_/g, ' ')}</strong> after <strong>{testDurationHours}h</strong>.
+              {autoSendWinner && ' Winning variant auto-sent to remaining audience.'}
+            </p>
+          </div>
         </div>
       )}
     </div>

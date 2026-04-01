@@ -18,12 +18,30 @@ import v1ApiKeyRoutes from './routes/v1ApiKeys.js'
 import v1SchemaRoutes from './routes/v1Schema.js'
 import onboardingRoutes from './routes/v1Onboarding.js'
 import resendWebhookRoutes from './routes/resendWebhook.js'
+import catalogueRoutes from './routes/catalogues.js'
+import itemRoutes from './routes/items.js'
+import interactionConfigRoutes from './routes/interactionConfig.js'
+import predictionGoalRoutes from './routes/predictionGoals.js'
+import consentRoutes from './routes/consent.js'
+import verticalPackRoutes from './routes/verticalPacks.js'
+import wizardRoutes from './routes/wizard.js'
+import analyticsRoutes from './routes/analytics.js'
+import predictionRoutes from './routes/predictions.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { startSyncWorker } from './workers/syncWorker.js'
 import { startTriggerWorker } from './workers/triggerWorker.js'
 import { startFlowWorker } from './workers/flowWorker.js'
 import { startCampaignWorker } from './workers/campaignWorker.js'
 import { startMetricsWorker } from './workers/metricsWorker.js'
+import { startDeliveryWorker } from './workers/deliveryWorker.js'
+import { startInteractionWorker } from './workers/interactionWorker.js'
+import { startScoringWorker } from './workers/scoringWorker.js'
+import { startScoringScheduler } from './workers/scoringScheduler.js'
+import { startTrainingWorker } from './workers/trainingWorker.js'
+import { startCampaignScheduler } from './workers/campaignScheduler.js'
+import { registerProvider } from './services/deliveryService.js'
+import { resendProvider } from './services/resendProvider.js'
+import { pinnacleProvider } from './services/pinnacleProvider.js'
 
 const app = express()
 const port = process.env.PORT ?? 3001
@@ -72,8 +90,25 @@ app.use('/api/api-keys', v1ApiKeyRoutes)
 app.use('/api/schema', v1SchemaRoutes)
 app.use('/api/onboarding', onboardingRoutes)
 
+// Phase 2: Item Catalogue + Interaction Engine
+app.use('/api/catalogues', catalogueRoutes)
+app.use('/api/items', itemRoutes)
+app.use('/api/interaction-config', interactionConfigRoutes)
+app.use('/api/prediction-goals', predictionGoalRoutes)
+app.use('/api/consent', consentRoutes)
+app.use('/api/packs', verticalPackRoutes)
+app.use('/api/wizard', wizardRoutes)
+app.use('/api/analytics', analyticsRoutes)
+app.use('/api/predictions', predictionRoutes)
+
 // Error handler — must be last
 app.use(errorHandler)
+
+// Register delivery providers
+registerProvider('resend', resendProvider)
+if (process.env.PINNACLE_API_URL) {
+  registerProvider('pinnacle', pinnacleProvider)
+}
 
 // Start workers
 startSyncWorker()
@@ -81,6 +116,12 @@ startTriggerWorker()
 startFlowWorker()
 startCampaignWorker()
 startMetricsWorker()
+startDeliveryWorker()
+startInteractionWorker()
+startScoringWorker()
+startScoringScheduler()
+startTrainingWorker()
+startCampaignScheduler()
 
 app.listen(port, () => {
   console.log(`Storees backend running on port ${port}`)

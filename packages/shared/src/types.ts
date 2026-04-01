@@ -34,6 +34,8 @@ export type Customer = {
   smsSubscribed: boolean
   pushSubscribed: boolean
   whatsappSubscribed: boolean
+  firstOrderDate: Date | null
+  lastOrderDate: Date | null
   customAttributes: Record<string, unknown>
   metrics: Record<string, unknown> // Precomputed domain-specific metrics
   createdAt: Date
@@ -134,6 +136,17 @@ export type Campaign = {
   clickedCount: number
   bouncedCount: number
   complainedCount: number
+  convertedCount: number
+  // A/B testing
+  abTestEnabled: boolean
+  abSplitPct: number
+  abVariantBSubject: string | null
+  abVariantBHtmlBody: string | null
+  abVariantBBodyText: string | null
+  abWinner: 'A' | 'B' | null
+  abWinnerMetric: 'open_rate' | 'click_rate' | 'conversion_rate'
+  abAutoSendWinner: boolean
+  abTestDurationHours: number
   createdAt: Date
   updatedAt: Date
 }
@@ -151,6 +164,7 @@ export type CampaignSend = {
   bouncedAt: Date | null
   complainedAt: Date | null
   resendMessageId: string | null
+  variant: 'A' | 'B' | null
   createdAt: Date
 }
 
@@ -261,6 +275,8 @@ export type FilterOperator =
   | 'is_true' | 'is_false'
   | 'in_month' | 'in_year' | 'before_date' | 'after_date'
   | 'has_purchased' | 'has_not_purchased'
+  | 'has_viewed' | 'has_not_viewed'
+  | 'has_wishlisted' | 'has_not_wishlisted'
 
 export type TriggerConfig = {
   event: string
@@ -350,6 +366,13 @@ export type CustomerListParams = {
   sortBy?: 'lastSeen' | 'totalSpent' | 'clv' | 'name'
   sortOrder?: 'asc' | 'desc'
   segmentId?: string
+  rfm?: string
+}
+
+export type LifecycleDistributionBucket = {
+  label: string
+  count: number
+  percentage: number
 }
 
 export type LifecycleChartData = {
@@ -359,7 +382,12 @@ export type LifecycleChartData = {
     avgPurchaseFrequency: number
     avgPurchaseValue: number
     avgClv: number
+    noPurchaseCount: number
+    buyerCount: number
   }
+  frequencyDistribution: LifecycleDistributionBucket[]
+  monetaryDistribution: LifecycleDistributionBucket[]
+  recencyDistribution: LifecycleDistributionBucket[]
 }
 
 export type LifecycleSegment = {
@@ -449,6 +477,132 @@ export type CommunicationLogEntry = {
   createdAt: Date
 }
 
+// ============ GENERIC ITEM CATALOGUE ============
+
+export type Catalogue = {
+  id: string
+  projectId: string
+  name: string
+  itemTypeLabel: string // "Product", "Loan", "Course", "Plan"
+  attributeSchema: CatalogueAttribute[]
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type CatalogueAttribute = {
+  name: string
+  type: 'string' | 'number' | 'boolean' | 'select'
+  values?: string[] // for select type
+  weight?: number // for recommendation attribute similarity
+}
+
+export type Item = {
+  id: string
+  projectId: string
+  catalogueId: string
+  externalId: string | null
+  type: string // "product", "gold_loan", "personal_loan", "course"
+  name: string
+  attributes: Record<string, unknown>
+  status: 'active' | 'inactive' | 'archived'
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type InteractionType = 'view' | 'engage' | 'intent' | 'strong_intent' | 'conversion'
+
+export type Interaction = {
+  id: string
+  projectId: string
+  customerId: string
+  itemId: string
+  interactionType: InteractionType
+  weight: number
+  sourceEventId: string | null
+  createdAt: Date
+}
+
+export type InteractionConfig = {
+  id: string
+  projectId: string
+  catalogueId: string
+  eventName: string
+  interactionType: InteractionType
+  weight: number
+  decayHalfLifeDays: number
+  createdAt: Date
+}
+
+// ============ DELIVERY & MESSAGING ============
+
+export type MessageChannel = 'email' | 'sms' | 'push' | 'whatsapp' | 'inapp'
+
+export type SendCommand = {
+  userId: string
+  channel: MessageChannel
+  templateId: string
+  variables: Record<string, string>
+  scheduledAt?: Date
+  messageType: 'promotional' | 'transactional'
+  flowTripId?: string
+  campaignId?: string
+  projectId: string
+}
+
+export type Message = {
+  id: string
+  projectId: string
+  customerId: string
+  channel: MessageChannel
+  messageType: 'promotional' | 'transactional'
+  templateId: string | null
+  variables: Record<string, string>
+  status: 'queued' | 'sent' | 'delivered' | 'read' | 'clicked' | 'failed' | 'blocked'
+  blockReason: string | null
+  provider: 'pinnacle' | 'resend' | null
+  providerMessageId: string | null
+  flowTripId: string | null
+  campaignId: string | null
+  scheduledAt: Date | null
+  sentAt: Date | null
+  deliveredAt: Date | null
+  readAt: Date | null
+  clickedAt: Date | null
+  failedAt: Date | null
+  createdAt: Date
+}
+
+export type ConsentAuditEntry = {
+  id: string
+  projectId: string
+  customerId: string
+  channel: string
+  messageType: string
+  action: 'opt_in' | 'opt_out'
+  source: 'sdk' | 'api' | 'admin' | 'webhook'
+  consentText: string | null
+  ipAddress: string | null
+  createdAt: Date
+}
+
+// ============ PREDICTION GOALS ============
+
+export type PredictionGoal = {
+  id: string
+  projectId: string
+  name: string
+  targetEvent: string
+  observationWindowDays: number
+  predictionWindowDays: number
+  minPositiveLabels: number
+  status: 'active' | 'paused' | 'insufficient_data'
+  lastTrainedAt: Date | null
+  currentMetric: number | null
+  origin: 'pack' | 'user'
+  createdAt: Date
+  updatedAt: Date
+}
+
 // ============ DOMAIN REGISTRY TYPES ============
 
 export type DomainFieldDef = {
@@ -500,4 +654,137 @@ export type CustomerUpsertPayload = {
     name?: string
     [key: string]: unknown
   }
+}
+
+// ============ ANALYTICS TYPES ============
+
+export type SavedAnalysis = {
+  id: string
+  projectId: string
+  name: string
+  type: 'funnel' | 'timeseries' | 'time_to_event' | 'product' | 'cohort'
+  config: Record<string, unknown>
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type TimeSeriesPoint = {
+  date: string
+  value: number
+  compareValue?: number
+}
+
+export type TimeSeriesResult = {
+  metric: string
+  granularity: 'day' | 'week' | 'month'
+  points: TimeSeriesPoint[]
+  total: number
+  compareTotal?: number
+  changePercent?: number
+}
+
+export type TimeToEventResult = {
+  startEvent: string
+  endEvent: string
+  medianSeconds: number
+  p75Seconds: number
+  p90Seconds: number
+  totalCompletions: number
+  distribution: { bucket: string; count: number }[]
+  breakdowns?: { key: string; medianSeconds: number; count: number }[]
+}
+
+export type ProductAnalyticsItem = {
+  itemId: string
+  name: string
+  category: string | null
+  views: number
+  conversions: number
+  conversionRate: number
+  revenue: number
+  abandonment: number
+}
+
+// ============ SEGMENT INTELLIGENCE TYPES ============
+
+export type SegmentTransition = {
+  fromSegmentId: string
+  fromSegmentName: string
+  toSegmentId: string
+  toSegmentName: string
+  count: number
+  percentage: number
+}
+
+export type TransitionResult = {
+  period1: string
+  period2: string
+  transitions: SegmentTransition[]
+  totalCustomers: number
+}
+
+export type SegmentTrendPoint = {
+  date: string
+  segmentId: string
+  segmentName: string
+  memberCount: number
+}
+
+// ============ PREDICTION SCORE TYPES ============
+
+export type PredictionFactor = {
+  feature: string
+  value: number
+  impact: number
+  direction: 'positive' | 'negative'
+  label: string
+}
+
+export type PredictionScore = {
+  id: string
+  customerId: string
+  goalId: string
+  goalName: string
+  score: number
+  confidence: number
+  bucket: 'High' | 'Medium' | 'Low'
+  factors: PredictionFactor[]
+  computedAt: Date
+}
+
+export type ReorderTiming = {
+  timingBucket: '0-3d' | '3-7d' | '7-14d' | '14d+' | null
+  expectedReorderDays: number
+  daysOverdue: number
+  avgCycleDays: number
+  isRepeatBuyer: boolean
+  regularity: number
+}
+
+export type CustomerPredictions = {
+  scores: PredictionScore[]
+  recommendations: PredictionRecommendation[]
+}
+
+export type PredictionRecommendation = {
+  type: 'action' | 'segment' | 'flow'
+  title: string
+  reason: string
+  confidence: number
+  metadata: Record<string, unknown>
+}
+
+export type PredictionQuality = {
+  auc: number
+  precision: number
+  recall: number
+  liftOverBaseline: number
+  calibrationQuality: 'excellent' | 'good' | 'needs_improvement'
+  label: 'Excellent' | 'Good' | 'Needs Improvement'
+}
+
+export type PredictionGoalDetail = PredictionGoal & {
+  quality: PredictionQuality | null
+  distribution: { bucket: string; count: number }[]
+  topFeatures: { name: string; importance: number }[]
 }

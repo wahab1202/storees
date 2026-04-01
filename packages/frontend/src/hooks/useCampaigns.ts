@@ -49,6 +49,14 @@ export function useCreateCampaign() {
       goalTrackingHours?: number
       deliveryLimit?: number | null
       periodicSchedule?: PeriodicSchedule
+      abTestEnabled?: boolean
+      abSplitPct?: number
+      abVariantBSubject?: string
+      abVariantBHtmlBody?: string
+      abVariantBBodyText?: string
+      abWinnerMetric?: string
+      abAutoSendWinner?: boolean
+      abTestDurationHours?: number
     }) => api.post<Campaign>(withProject('/api/campaigns'), data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
@@ -76,6 +84,14 @@ export function useUpdateCampaign() {
       goalTrackingHours?: number
       deliveryLimit?: number | null
       periodicSchedule?: PeriodicSchedule | null
+      abTestEnabled?: boolean
+      abSplitPct?: number
+      abVariantBSubject?: string | null
+      abVariantBHtmlBody?: string | null
+      abVariantBBodyText?: string | null
+      abWinnerMetric?: string
+      abAutoSendWinner?: boolean
+      abTestDurationHours?: number
     }) => api.patch<Campaign>(withProject(`/api/campaigns/${id}`), data),
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
@@ -112,5 +128,76 @@ export function useSendCampaign() {
       toast.success(res.data?.message ?? 'Campaign dispatched')
     },
     onError: (err) => toast.error(err.message ?? 'Failed to send campaign'),
+  })
+}
+
+// Campaign analytics types
+export type CampaignAnalytics = {
+  funnel: {
+    sent: number
+    delivered: number
+    opened: number
+    clicked: number
+    bounced: number
+    complained: number
+    converted: number
+    deliveryRate: number
+    openRate: number
+    clickRate: number
+    bounceRate: number
+    conversionRate: number
+  }
+  conversions: Array<{
+    goalName: string
+    eventName: string
+    conversions: number
+    conversionRate: number
+    totalRecipients: number
+    revenue: number
+  }>
+  timeline: Array<{
+    hour: string
+    delivered: number
+    opened: number
+    clicked: number
+  }>
+  topRecipients: Array<{
+    customerId: string
+    email: string
+    name: string | null
+    opened: boolean
+    clicked: boolean
+    converted: boolean
+    revenue: number
+  }>
+  summary: {
+    totalRevenue: number
+    avgRevenuePerRecipient: number
+    avgRevenuePerConversion: number
+    bestPerformingGoal: string | null
+  }
+}
+
+export type AbTestResults = {
+  variantA: { sent: number; opened: number; clicked: number; openRate: number; clickRate: number }
+  variantB: { sent: number; opened: number; clicked: number; openRate: number; clickRate: number }
+  winner: 'A' | 'B' | 'tie'
+  confidence: number
+}
+
+export function useCampaignAnalytics(id: string) {
+  return useQuery({
+    queryKey: ['campaigns', id, 'analytics'],
+    queryFn: () => api.get<CampaignAnalytics>(withProject(`/api/campaigns/${id}/analytics`)),
+    enabled: !!id,
+    refetchInterval: 30_000, // Refresh every 30s for live campaigns
+  })
+}
+
+export function useCampaignAbResults(id: string, enabled = false) {
+  return useQuery({
+    queryKey: ['campaigns', id, 'ab-results'],
+    queryFn: () => api.get<AbTestResults>(withProject(`/api/campaigns/${id}/ab-results`)),
+    enabled: !!id && enabled,
   })
 }

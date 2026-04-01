@@ -1,10 +1,11 @@
 import { Router } from 'express'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, count } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { segments } from '../db/schema.js'
+import { segments, customers } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { evaluateSegment, evaluateAllSegments, instantiateDefaultSegments } from '../services/segmentService.js'
-import { getLifecycleChart } from '@storees/segments'
+import { getLifecycleChart, filterToSql } from '@storees/segments'
+import type { FilterConfig } from '@storees/shared'
 
 const router = Router()
 
@@ -47,6 +48,47 @@ router.get('/lifecycle', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Lifecycle chart error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch lifecycle data' })
+  }
+})
+
+// POST /api/segments/preview?projectId=...
+// Body: { filters } — returns 10 sample matching customers + total count
+router.post('/preview', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const { filters } = req.body as { filters: FilterConfig }
+
+    if (!filters || !filters.logic || !Array.isArray(filters.rules) || filters.rules.length === 0) {
+      return res.json({ success: true, data: { total: 0, sample: [] } })
+    }
+
+    const filterSql = filterToSql(filters)
+
+    // Get total count
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(customers)
+      .where(and(eq(customers.projectId, projectId), filterSql))
+
+    // Get 10 sample customers
+    const sample = await db
+      .select({
+        id: customers.id,
+        name: customers.name,
+        email: customers.email,
+        totalOrders: customers.totalOrders,
+        totalSpent: customers.totalSpent,
+        lastSeen: customers.lastSeen,
+      })
+      .from(customers)
+      .where(and(eq(customers.projectId, projectId), filterSql))
+      .orderBy(customers.lastSeen)
+      .limit(10)
+
+    res.json({ success: true, data: { total, sample } })
+  } catch (err) {
+    console.error('Segment preview error:', err)
+    res.json({ success: true, data: { total: 0, sample: [], error: 'Filter evaluation failed' } })
   }
 })
 

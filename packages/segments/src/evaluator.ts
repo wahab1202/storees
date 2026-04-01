@@ -37,6 +37,19 @@ function ruleToSql(rule: FilterRule): SQL {
   // Product-based operators use special subqueries
   switch (rule.operator) {
     case 'has_purchased':
+      // For product_category field, match by product_type via products table
+      if (rule.field === 'product_category') {
+        return sql`EXISTS (
+          SELECT 1 FROM orders o
+          JOIN products p ON p.project_id = o.project_id
+          WHERE o.customer_id = customers.id
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
+            WHERE item->>'productId' = p.shopify_product_id
+          )
+          AND p.product_type = ${value}
+        )`
+      }
       // value is product name (string) — check if customer has any order with this product
       return sql`EXISTS (
         SELECT 1 FROM orders
@@ -44,10 +57,68 @@ function ruleToSql(rule: FilterRule): SQL {
         AND orders.line_items::jsonb @> ${JSON.stringify([{ productName: value }])}::jsonb
       )`
     case 'has_not_purchased':
+      // For product_category field, match by product_type via products table
+      if (rule.field === 'product_category') {
+        return sql`NOT EXISTS (
+          SELECT 1 FROM orders o
+          JOIN products p ON p.project_id = o.project_id
+          WHERE o.customer_id = customers.id
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
+            WHERE item->>'productId' = p.shopify_product_id
+          )
+          AND p.product_type = ${value}
+        )`
+      }
       return sql`NOT EXISTS (
         SELECT 1 FROM orders
         WHERE orders.customer_id = customers.id
         AND orders.line_items::jsonb @> ${JSON.stringify([{ productName: value }])}::jsonb
+      )`
+    case 'has_viewed':
+      // Check if customer has product_viewed events for a product name or category
+      if (rule.field === 'product_category') {
+        return sql`EXISTS (
+          SELECT 1 FROM events
+          WHERE events.customer_id = customers.id
+          AND events.event_name = 'product_viewed'
+          AND events.properties->>'product_type' = ${value}
+        )`
+      }
+      return sql`EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = 'product_viewed'
+        AND events.properties->>'product_name' = ${value}
+      )`
+    case 'has_not_viewed':
+      if (rule.field === 'product_category') {
+        return sql`NOT EXISTS (
+          SELECT 1 FROM events
+          WHERE events.customer_id = customers.id
+          AND events.event_name = 'product_viewed'
+          AND events.properties->>'product_type' = ${value}
+        )`
+      }
+      return sql`NOT EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = 'product_viewed'
+        AND events.properties->>'product_name' = ${value}
+      )`
+    case 'has_wishlisted':
+      return sql`EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = 'added_to_wishlist'
+        AND events.properties->>'product_name' = ${value}
+      )`
+    case 'has_not_wishlisted':
+      return sql`NOT EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = 'added_to_wishlist'
+        AND events.properties->>'product_name' = ${value}
       )`
     case 'in_month': {
       // value is month number (1-12)
@@ -67,11 +138,11 @@ function ruleToSql(rule: FilterRule): SQL {
     }
     case 'before_date': {
       const column = fieldToSqlExpression(rule.field)
-      return sql`${column} < ${value}::timestamptz`
+      return sql`${column} < ${new Date(String(value))}::timestamptz`
     }
     case 'after_date': {
       const column = fieldToSqlExpression(rule.field)
-      return sql`${column} > ${value}::timestamptz`
+      return sql`${column} > ${new Date(String(value))}::timestamptz`
     }
     default:
       break
@@ -136,10 +207,14 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`first_seen`
     case 'last_seen':
       return sql`last_seen`
+    case 'first_order_date':
+      return sql`first_order_date`
+    case 'last_order_date':
+      return sql`last_order_date`
 
     // Computed fields
     case 'days_since_last_order':
-      return sql`EXTRACT(DAY FROM NOW() - last_seen)`
+      return sql`EXTRACT(DAY FROM NOW() - COALESCE(last_order_date, first_seen))`
     case 'days_since_first_seen':
       return sql`EXTRACT(DAY FROM NOW() - first_seen)`
     case 'discount_order_percentage':
@@ -230,6 +305,26 @@ function fieldToSqlExpression(field: string): SQL {
     case 'portfolio_value':
       return sql`COALESCE((metrics->>'portfolio_value')::numeric, 0)`
 
+    // AI & Prediction scores (0-100, stored in customers.metrics JSONB)
+    case 'churn_risk':
+      return sql`COALESCE((metrics->>'churn_risk')::numeric, 0)`
+    case 'conversion_score':
+      return sql`COALESCE((metrics->>'conversion_score')::numeric, 0)`
+    case 'dormancy_risk':
+      return sql`COALESCE((metrics->>'dormancy_risk')::numeric, 0)`
+    case 'prediction_bucket':
+      return sql`COALESCE(metrics->>'prediction_bucket', 'low')`
+
+    // Reorder intelligence (written by batch_score.py for repeat purchase goals)
+    case 'days_overdue':
+      return sql`COALESCE((metrics->>'days_overdue')::numeric, 0)`
+    case 'expected_reorder_days':
+      return sql`COALESCE((metrics->>'expected_reorder_days')::numeric, 999)`
+    case 'avg_cycle_days':
+      return sql`COALESCE((metrics->>'avg_cycle_days')::numeric, 0)`
+    case 'reorder_timing':
+      return sql`COALESCE(metrics->>'reorder_timing', '')`
+
     default:
       // Fallback: try metrics JSONB, then custom_attributes JSONB
       // Validate field name to prevent unexpected values (defense-in-depth;
@@ -278,6 +373,10 @@ function evaluateRule(rule: FilterRule, customer: Customer): boolean {
   switch (rule.operator) {
     case 'has_purchased':
     case 'has_not_purchased':
+    case 'has_viewed':
+    case 'has_not_viewed':
+    case 'has_wishlisted':
+    case 'has_not_wishlisted':
     case 'in_month':
     case 'in_year':
       return false // Requires DB subquery — use SQL evaluation
@@ -349,8 +448,12 @@ function getFieldValue(field: string, customer: Customer): unknown {
       return customer.firstSeen
     case 'last_seen':
       return customer.lastSeen
+    case 'first_order_date':
+      return customer.firstOrderDate
+    case 'last_order_date':
+      return customer.lastOrderDate
     case 'days_since_last_order':
-      return daysSince(customer.lastSeen)
+      return customer.lastOrderDate ? daysSince(customer.lastOrderDate) : daysSince(customer.firstSeen)
     case 'days_since_first_seen':
       return daysSince(customer.firstSeen)
     case 'discount_order_percentage':
@@ -372,7 +475,16 @@ function getFieldValue(field: string, customer: Customer): unknown {
     case 'days_since_signup':
     case 'mrr':
     case 'portfolio_value':
+    case 'churn_risk':
+    case 'conversion_score':
+    case 'dormancy_risk':
+    case 'days_overdue':
+    case 'expected_reorder_days':
+    case 'avg_cycle_days':
       return Number(customer.metrics?.[field] ?? 0)
+
+    case 'prediction_bucket':
+      return customer.metrics?.prediction_bucket ?? 'low'
 
     case 'emi_overdue':
       return customer.metrics?.emi_overdue === true
@@ -382,6 +494,7 @@ function getFieldValue(field: string, customer: Customer): unknown {
     case 'plan':
     case 'trial_status':
     case 'transaction_channel':
+    case 'reorder_timing':
       return customer.metrics?.[field] ?? ''
 
     // Customer attributes

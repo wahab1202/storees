@@ -127,3 +127,41 @@
 - [x] Add `collection_name` field mappings to AI service system prompt
 - [ ] Run migration against database
 - [ ] Test Gemini API (pending billing propagation)
+
+---
+
+## Phase 2 — Intelligence Layer (Analytics + Segment Intelligence + Predictions)
+
+### Wave 1: Analytics Foundation (2A) — DONE
+- [x] Time series comparison (backend + frontend)
+- [x] Time-to-event reports (backend + frontend)
+- [x] Product analytics (backend + frontend)
+- [x] Saved analyses infrastructure
+- [x] Funnel enhancements (trends, time-in-stage, save/load)
+- [x] Analytics home upgrade
+
+### Wave 2: Segment Intelligence (2B)
+- [x] Segment snapshots table + snapshot worker
+- [x] Segment transition analysis (backend service + API)
+- [x] Transition matrix UI + movement table
+- [x] Segment size trend charts
+- [x] Configurable RFM + MoEngage-style tabbed interface (RFM Model | User Transitions | Recency | Frequency | Monetary)
+- [x] Fix: RFM tooltip clipping (overflow-hidden on parent container)
+- [x] Sankey diagram for segment transitions
+- [x] "Take Action" CTAs on transition cards (create rescue/nurture flow, view users)
+- [x] Automatic weekly segment snapshots via scheduler
+- [x] Analytics home upgrade (saved analyses, quick-create buttons)
+
+### Wave 3: Prediction Product (2C)
+- [x] Python ML package scaffold (shared infra: prepare, features, eval, config)
+- [x] Propensity model v1 (XGBoost + SHAP + serve.py)
+- [x] Recommendation models (co-occurrence, attribute, trending, collaborative)
+- [x] Unified recommendation API with context-aware model selection
+- [x] Autoresearch runner (Karpathy loop)
+- [x] Backend ML proxy service + scoring worker + scheduler
+- [x] Prediction management page (list, create wizard, detail, quality)
+- [x] Customer 360 Predictions tab (scores + SHAP explainability)
+- [x] Synthetic data seeder (5000 customers, 538K events)
+- [x] Prediction-based segment conditions (churn_risk, conversion_score, dormancy_risk in segment builder)
+- [x] Prediction score dashboard widget (AI Predictions card with quality scores)
+- [ ] End-to-end ML pipeline test (train → score → display in UI) — needs real data

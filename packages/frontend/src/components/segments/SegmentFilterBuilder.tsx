@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useProducts, useCollections } from '@/hooks/useProducts'
+import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
 import type { FilterConfig, FilterRule, FilterOperator, DomainFieldDef } from '@storees/shared'
 
@@ -37,10 +37,20 @@ const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }
   product: [
     { value: 'has_purchased', label: 'has purchased' },
     { value: 'has_not_purchased', label: 'has not purchased' },
+    { value: 'has_viewed', label: 'has viewed' },
+    { value: 'has_not_viewed', label: 'has not viewed' },
+    { value: 'has_wishlisted', label: 'has wishlisted' },
+    { value: 'has_not_wishlisted', label: 'has not wishlisted' },
   ],
   collection: [
     { value: 'has_purchased', label: 'has purchased from' },
     { value: 'has_not_purchased', label: 'has not purchased from' },
+  ],
+  product_category: [
+    { value: 'has_purchased', label: 'has purchased from' },
+    { value: 'has_not_purchased', label: 'has not purchased from' },
+    { value: 'has_viewed', label: 'has viewed in' },
+    { value: 'has_not_viewed', label: 'has not viewed in' },
   ],
 }
 
@@ -136,6 +146,31 @@ function CollectionDropdown({ value, onChange }: { value: string; onChange: (val
       <option value="">Select collection...</option>
       {collections.map(c => (
         <option key={c.id} value={c.title}>{c.title}</option>
+      ))}
+    </select>
+  )
+}
+
+// ============ Product Category Dropdown ============
+
+function ProductCategoryDropdown({ value, onChange }: { value: string; onChange: (val: string) => void }) {
+  const { data, isLoading } = useProductCategories()
+  const categories = data?.data ?? []
+
+  if (isLoading) {
+    return (
+      <div className={cn(inputClass, 'w-full sm:w-52 flex items-center gap-2')}>
+        <Loader2 className="h-3.5 w-3.5 text-text-muted animate-spin" />
+        <span className="text-sm text-text-muted">Loading...</span>
+      </div>
+    )
+  }
+
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} className={cn(selectClass, 'w-full sm:w-52')}>
+      <option value="">Select category...</option>
+      {categories.map(cat => (
+        <option key={cat} value={cat}>{cat}</option>
       ))}
     </select>
   )
@@ -292,6 +327,11 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
                 {needsValue(rule.operator) && (
                   fieldType === 'product' ? (
                     <ProductSearchDropdown
+                      value={rule.value as string}
+                      onChange={val => updateRule(index, { value: val })}
+                    />
+                  ) : fieldType === 'product_category' ? (
+                    <ProductCategoryDropdown
                       value={rule.value as string}
                       onChange={val => updateRule(index, { value: val })}
                     />

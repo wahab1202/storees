@@ -59,3 +59,12 @@ export function useDeleteTemplate() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }),
   })
 }
+
+export function useSeedTemplates() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (opts?: { force?: boolean }) =>
+      api.post<{ seeded: number; message: string }>(withProject('/api/templates/seed'), opts ?? {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}

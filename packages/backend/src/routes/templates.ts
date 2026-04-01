@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import { db } from '../db/connection.js'
 import { emailTemplates } from '../db/schema.js'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, count } from 'drizzle-orm'
 import { requireProjectId } from '../middleware/projectId.js'
+import { SEED_TEMPLATES } from '../data/seedTemplates.js'
 
 const router = Router()
 
@@ -20,6 +21,48 @@ router.get('/', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('[Templates] List error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch templates' })
+  }
+})
+
+// POST /api/templates/seed?projectId=...
+// Seeds starter templates (skips if project already has templates)
+router.post('/seed', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.query.projectId as string
+    const force = req.body.force === true
+
+    if (!force) {
+      const [existing] = await db
+        .select({ total: count() })
+        .from(emailTemplates)
+        .where(eq(emailTemplates.projectId, projectId))
+
+      if (existing && existing.total > 0) {
+        return res.json({
+          success: true,
+          data: { seeded: 0, message: `Project already has ${existing.total} templates. Use force: true to add anyway.` },
+        })
+      }
+    }
+
+    const rows = SEED_TEMPLATES.map(t => ({
+      projectId,
+      name: t.name,
+      channel: t.channel,
+      subject: t.subject ?? null,
+      htmlBody: t.htmlBody ?? null,
+      bodyText: t.bodyText ?? null,
+    }))
+
+    await db.insert(emailTemplates).values(rows)
+
+    res.status(201).json({
+      success: true,
+      data: { seeded: rows.length, message: `Created ${rows.length} templates (${rows.filter(r => r.channel === 'email').length} email, ${rows.filter(r => r.channel === 'sms').length} SMS)` },
+    })
+  } catch (err) {
+    console.error('[Templates] Seed error:', err)
+    res.status(500).json({ success: false, error: 'Failed to seed templates' })
   }
 })
 

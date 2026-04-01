@@ -1,0 +1,147 @@
+{
+  "id": "ecommerce",
+  "name": "Ecommerce",
+  "icon": "🛍️",
+  "description": "Online retail stores — product-centric, order-driven engagement",
+  "catalogue": {
+    "name": "Products",
+    "item_type_label": "Product",
+    "attribute_schema": [
+      { "name": "category", "type": "select", "values": ["Electronics", "Fashion", "Home", "Beauty", "Food", "Sports", "Books", "Other"], "weight": 0.3 },
+      { "name": "brand", "type": "text", "weight": 0.2 },
+      { "name": "price", "type": "number", "weight": 0.15 },
+      { "name": "collection", "type": "select", "values": ["New Arrivals", "Best Sellers", "Sale", "Premium", "Seasonal"], "weight": 0.15 },
+      { "name": "in_stock", "type": "boolean", "weight": 0.0 },
+      { "name": "rating", "type": "number", "weight": 0.1 },
+      { "name": "tags", "type": "text", "weight": 0.1 }
+    ],
+    "default_items": []
+  },
+  "interaction_config": [
+    { "event_name": "product_viewed", "interaction_type": "view", "weight": 1.0, "decay_half_life_days": 14 },
+    { "event_name": "added_to_cart", "interaction_type": "intent", "weight": 3.0, "decay_half_life_days": 7 },
+    { "event_name": "added_to_wishlist", "interaction_type": "engage", "weight": 2.0, "decay_half_life_days": 30 },
+    { "event_name": "checkout_started", "interaction_type": "strong_intent", "weight": 4.0, "decay_half_life_days": 3 },
+    { "event_name": "order_completed", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 60 },
+    { "event_name": "product_reviewed", "interaction_type": "engage", "weight": 2.5, "decay_half_life_days": 90 },
+    { "event_name": "product_shared", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 30 },
+    { "event_name": "collection_viewed", "interaction_type": "view", "weight": 0.5, "decay_half_life_days": 14 }
+  ],
+  "prediction_goals": [
+    {
+      "name": "Propensity to Purchase",
+      "target_event": "order_completed",
+      "observation_window_days": 30,
+      "prediction_window_days": 7,
+      "min_positive_labels": 200,
+      "priority": 1,
+      "default_status": "active",
+      "description": "Predict which customers are likely to place an order in the next 7 days"
+    },
+    {
+      "name": "Predict Dormancy",
+      "target_event": "dormancy",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 100,
+      "priority": 2,
+      "default_status": "active",
+      "description": "Identify active customers who are likely to become inactive in the next 30 days"
+    },
+    {
+      "name": "Predict Cart Abandonment",
+      "target_event": "cart_abandoned",
+      "observation_window_days": 30,
+      "prediction_window_days": 7,
+      "min_positive_labels": 150,
+      "priority": 3,
+      "default_status": "active",
+      "description": "Predict which customers will add to cart but not complete checkout"
+    },
+    {
+      "name": "Repeat Purchase Propensity",
+      "target_event": "order_completed",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 300,
+      "priority": 4,
+      "default_status": "paused",
+      "description": "Predict which existing buyers are likely to purchase again within 30 days"
+    },
+    {
+      "name": "Churn Risk",
+      "target_event": "churn",
+      "observation_window_days": 90,
+      "prediction_window_days": 60,
+      "min_positive_labels": 100,
+      "priority": 5,
+      "default_status": "paused",
+      "description": "Predict which customers are at risk of leaving permanently (60-day inactivity)"
+    }
+  ],
+  "segment_templates": [
+    {
+      "name": "High Value Customers",
+      "description": "Customers with total spend above ₹5,000",
+      "icon": "💎",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_spent", "operator": "greater_than", "value": 500000 }] }
+    },
+    {
+      "name": "Cart Abandoners",
+      "description": "Added to cart recently but haven't purchased in 7+ days",
+      "icon": "🛒",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_order", "operator": "greater_than", "value": 7 }, { "field": "total_orders", "operator": "greater_than", "value": 0 }] }
+    },
+    {
+      "name": "Repeat Buyers",
+      "description": "Customers with 2+ orders",
+      "icon": "🔄",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_orders", "operator": "greater_than", "value": 1 }] }
+    },
+    {
+      "name": "At Risk",
+      "description": "No orders in 30+ days",
+      "icon": "⚠️",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_order", "operator": "greater_than", "value": 30 }] }
+    },
+    {
+      "name": "New Customers",
+      "description": "First seen in last 7 days",
+      "icon": "🆕",
+      "filter": { "logic": "AND", "rules": [{ "field": "first_seen", "operator": "within_last", "value": 7, "unit": "days" }] }
+    },
+    {
+      "name": "Discount Shoppers",
+      "description": "Customers where 20%+ of orders used discounts",
+      "icon": "🏷️",
+      "filter": { "logic": "AND", "rules": [{ "field": "discount_order_percentage", "operator": "greater_than", "value": 20 }] }
+    },
+    {
+      "name": "Email Subscribers",
+      "description": "Customers opted into email",
+      "icon": "📧",
+      "filter": { "logic": "AND", "rules": [{ "field": "email_subscribed", "operator": "is_true", "value": true }] }
+    },
+    {
+      "name": "Dormant",
+      "description": "No activity in 60+ days",
+      "icon": "💤",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_seen", "operator": "greater_than", "value": 60 }] }
+    }
+  ],
+  "flow_templates": [],
+  "dashboard_templates": [],
+  "wizard_questions": {
+    "products_label": "What do you sell?",
+    "products_options": ["Physical Products", "Digital Products", "Subscriptions", "Services", "Mixed"],
+    "journey_steps": ["Browse Products", "Add to Cart", "Checkout", "Purchase", "Review", "Refer Friend"],
+    "priorities": [
+      { "label": "Increase repeat purchases", "maps_to": "Propensity to Purchase" },
+      { "label": "Reduce customer dormancy", "maps_to": "Predict Dormancy" },
+      { "label": "Recover abandoned carts", "maps_to": "Predict Cart Abandonment" },
+      { "label": "Drive repeat purchases", "maps_to": "Repeat Purchase Propensity" },
+      { "label": "Reduce customer churn", "maps_to": "Churn Risk" },
+      { "label": "Improve email engagement", "maps_to": null }
+    ]
+  }
+}

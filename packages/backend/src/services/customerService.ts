@@ -1,6 +1,6 @@
 import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { customers } from '../db/schema.js'
+import { customers, orders, events } from '../db/schema.js'
 
 type ResolveParams = {
   projectId: string
@@ -155,7 +155,9 @@ async function updateLastSeen(
 export async function updateCustomerAggregates(
   customerId: string,
   orderTotal: number,
+  orderDate?: Date,
 ): Promise<void> {
+  const ts = orderDate ?? new Date()
   await db.execute(sql`
     UPDATE customers SET
       total_orders = total_orders + 1,
@@ -163,6 +165,8 @@ export async function updateCustomerAggregates(
       avg_order_value = (total_spent + ${orderTotal}) / NULLIF(total_orders + 1, 0),
       clv = total_spent + ${orderTotal},
       last_seen = NOW(),
+      first_order_date = CASE WHEN first_order_date IS NULL THEN ${ts}::timestamptz ELSE LEAST(first_order_date, ${ts}::timestamptz) END,
+      last_order_date = CASE WHEN last_order_date IS NULL THEN ${ts}::timestamptz ELSE GREATEST(last_order_date, ${ts}::timestamptz) END,
       updated_at = NOW()
     WHERE id = ${customerId}
   `)
@@ -189,4 +193,135 @@ export async function recalculateAggregates(
       updated_at = NOW()
     WHERE id = ${customerId}
   `)
+}
+
+/**
+ * Recalculate all customer aggregates from real data.
+ * Uses order_completed events (which contain line_items with unit_price)
+ * as the source of truth, falling back to orders table if no events exist.
+ */
+export async function recalculateAllAggregates(projectId: string): Promise<number> {
+  // Primary: compute from order_completed events (real GoWelmart data)
+  const result = await db.execute(sql`
+    UPDATE customers c SET
+      total_orders = agg.order_count,
+      total_spent  = agg.total_revenue,
+      avg_order_value = CASE
+        WHEN agg.order_count > 0 THEN agg.total_revenue / agg.order_count
+        ELSE 0
+      END,
+      clv = agg.total_revenue,
+      updated_at = NOW()
+    FROM (
+      SELECT
+        e.customer_id,
+        COUNT(*)::integer AS order_count,
+        COALESCE(SUM(
+          (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
+           FROM jsonb_array_elements(e.properties->'line_items') item)
+        ), 0)::numeric(12,2) AS total_revenue
+      FROM events e
+      WHERE e.project_id = ${projectId}
+        AND e.event_name = 'order_completed'
+      GROUP BY e.customer_id
+      HAVING COALESCE(SUM(
+        (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
+         FROM jsonb_array_elements(e.properties->'line_items') item)
+      ), 0) > 0
+    ) agg
+    WHERE c.id = agg.customer_id
+      AND c.project_id = ${projectId}
+  `)
+
+  const eventUpdated = Number((result as { rowCount?: number }).rowCount ?? 0)
+
+  // Fallback: for customers not covered by events, use orders table
+  if (eventUpdated === 0) {
+    await db.execute(sql`
+      UPDATE customers c SET
+        total_orders = COALESCE(agg.order_count, 0),
+        total_spent  = COALESCE(agg.total_spent, 0),
+        avg_order_value = CASE
+          WHEN COALESCE(agg.order_count, 0) > 0
+          THEN COALESCE(agg.total_spent, 0) / agg.order_count
+          ELSE 0
+        END,
+        clv = COALESCE(agg.total_spent, 0),
+        updated_at = NOW()
+      FROM (
+        SELECT
+          customer_id,
+          COUNT(*)::integer AS order_count,
+          SUM(total::numeric)::numeric(12,2) AS total_spent
+        FROM orders
+        WHERE project_id = ${projectId}
+          AND status != 'cancelled'
+        GROUP BY customer_id
+      ) agg
+      WHERE c.id = agg.customer_id
+        AND c.project_id = ${projectId}
+    `)
+  }
+
+  // Backfill first_order_date and last_order_date from orders table
+  await db.execute(sql`
+    UPDATE customers c SET
+      first_order_date = agg.first_order_at,
+      last_order_date = agg.last_order_at
+    FROM (
+      SELECT
+        customer_id,
+        MIN(created_at) AS first_order_at,
+        MAX(created_at) AS last_order_at
+      FROM orders
+      WHERE project_id = ${projectId} AND status != 'cancelled'
+      GROUP BY customer_id
+    ) agg
+    WHERE c.id = agg.customer_id
+      AND c.project_id = ${projectId}
+  `)
+
+  // Zero out customers with no orders from either source
+  await db.execute(sql`
+    UPDATE customers SET
+      total_orders = 0,
+      total_spent = 0,
+      avg_order_value = 0,
+      clv = 0,
+      first_order_date = NULL,
+      last_order_date = NULL,
+      updated_at = NOW()
+    WHERE project_id = ${projectId}
+      AND id NOT IN (
+        SELECT DISTINCT customer_id FROM events
+        WHERE project_id = ${projectId} AND event_name = 'order_completed'
+        UNION
+        SELECT DISTINCT customer_id FROM orders
+        WHERE project_id = ${projectId} AND status != 'cancelled'
+      )
+      AND (total_orders != 0 OR total_spent::numeric != 0)
+  `)
+
+  // Sync metrics JSONB with corrected column values
+  // (import scripts may have written stale total_spent/total_orders into metrics)
+  await db.execute(sql`
+    UPDATE customers SET
+      metrics = jsonb_set(
+        jsonb_set(
+          COALESCE(metrics, '{}'::jsonb),
+          '{total_orders}',
+          to_jsonb(total_orders)
+        ),
+        '{total_spent}',
+        to_jsonb(total_spent::numeric)
+      )
+    WHERE project_id = ${projectId}
+      AND metrics IS NOT NULL
+      AND (
+        (metrics->>'total_orders')::int IS DISTINCT FROM total_orders
+        OR (metrics->>'total_spent')::numeric IS DISTINCT FROM total_spent::numeric
+      )
+  `)
+
+  return eventUpdated
 }

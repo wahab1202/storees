@@ -4,7 +4,20 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
-import type { Segment, LifecycleChartData } from '@storees/shared'
+import type { Segment, LifecycleChartData, FilterConfig } from '@storees/shared'
+
+type SegmentPreviewResult = {
+  total: number
+  sample: {
+    id: string
+    name: string | null
+    email: string | null
+    totalOrders: number
+    totalSpent: string
+    lastSeen: string
+  }[]
+  error?: string
+}
 
 export function useSegments() {
   return useQuery({
@@ -70,6 +83,13 @@ export function useDeleteSegment() {
     onError: (err) => {
       toast.error(err.message ?? 'Failed to delete segment')
     },
+  })
+}
+
+export function useSegmentPreview() {
+  return useMutation({
+    mutationFn: (filters: FilterConfig) =>
+      api.post<SegmentPreviewResult>(withProject('/api/segments/preview'), { filters }),
   })
 }
 

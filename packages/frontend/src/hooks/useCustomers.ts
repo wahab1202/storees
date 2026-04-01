@@ -10,10 +10,10 @@ type CustomerWithSegments = Customer & {
 }
 
 export function useCustomers(params: CustomerListParams = {}) {
-  const { page = 1, pageSize = 25, search, sortBy, sortOrder, segmentId } = params
+  const { page = 1, pageSize = 25, search, sortBy, sortOrder, segmentId, rfm } = params
 
   return useQuery({
-    queryKey: ['customers', { page, pageSize, search, sortBy, sortOrder, segmentId }],
+    queryKey: ['customers', { page, pageSize, search, sortBy, sortOrder, segmentId, rfm }],
     queryFn: () =>
       api.getPaginated<CustomerWithSegments>(
         withProject('/api/customers', {
@@ -23,6 +23,7 @@ export function useCustomers(params: CustomerListParams = {}) {
           sortBy,
           sortOrder,
           segmentId,
+          rfm,
         }),
       ),
   })

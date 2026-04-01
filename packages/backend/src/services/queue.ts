@@ -53,6 +53,32 @@ export const metricsQueue = new Queue('metrics', {
   },
 })
 
+export const deliveryQueue = new Queue('delivery', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 1000,
+    },
+    removeOnComplete: true,
+    removeOnFail: { count: 200 },
+  },
+})
+
+export const interactionQueue = new Queue('interactions', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 1000,
+    },
+    removeOnComplete: true,
+    removeOnFail: { count: 100 },
+  },
+})
+
 export const campaignQueue = new Queue('campaigns', {
   connection: redisConnection,
   defaultJobOptions: {

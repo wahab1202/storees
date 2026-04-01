@@ -22,16 +22,19 @@ import {
   ShoppingBag,
   Monitor,
   Globe,
+  BarChart3,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
 import { useProjects } from '@/hooks/useProjects'
 import { useSwitchProject } from '@/lib/projectContext'
+import { useSidebarCounts } from '@/hooks/useDashboard'
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/customers', label: 'Customers', icon: Users },
   { href: '/segments', label: 'Segments', icon: PieChart },
+  { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
   { href: '/templates', label: 'Templates', icon: FileText },
   { href: '/flows', label: 'Flows', icon: Workflow },
@@ -128,6 +131,8 @@ function ProjectSwitcher() {
 export function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const pathname = usePathname()
+  const { data: countsData } = useSidebarCounts()
+  const counts = countsData?.data
 
   // Close mobile drawer on route change
   useEffect(() => {
@@ -166,9 +171,18 @@ export function Sidebar() {
       <ProjectSwitcher />
 
       <nav className="flex-1 flex flex-col gap-1 py-2">
-        {navItems.map((item) => (
-          <SidebarItem key={item.href} {...item} />
-        ))}
+        {navItems.map((item) => {
+          const countMap: Record<string, number | undefined> = {
+            '/customers': counts?.customers,
+            '/segments': counts?.segments,
+            '/campaigns': counts?.campaigns,
+            '/templates': counts?.templates,
+            '/flows': counts?.flows,
+          }
+          return (
+            <SidebarItem key={item.href} {...item} count={countMap[item.href]} />
+          )
+        })}
       </nav>
 
       <div className="border-t border-white/10 py-2">

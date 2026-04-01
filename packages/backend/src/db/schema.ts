@@ -49,6 +49,8 @@ export const customers = pgTable('customers', {
   smsSubscribed: boolean('sms_subscribed').notNull().default(false),
   pushSubscribed: boolean('push_subscribed').notNull().default(false),
   whatsappSubscribed: boolean('whatsapp_subscribed').notNull().default(false),
+  firstOrderDate: timestamp('first_order_date', { withTimezone: true }),
+  lastOrderDate: timestamp('last_order_date', { withTimezone: true }),
   customAttributes: jsonb('custom_attributes').default('{}'),
   metrics: jsonb('metrics').default('{}'), // Precomputed domain-specific metrics
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -129,6 +131,7 @@ export const products = pgTable('products', {
 }, (table) => [
   uniqueIndex('idx_products_shopify').on(table.projectId, table.shopifyProductId),
   index('idx_products_project').on(table.projectId),
+  index('idx_products_project_type').on(table.projectId, table.productType),
 ])
 
 // ============ COLLECTIONS ============
@@ -253,6 +256,17 @@ export const campaigns = pgTable('campaigns', {
   clickedCount: integer('clicked_count').notNull().default(0),
   bouncedCount: integer('bounced_count').notNull().default(0),
   complainedCount: integer('complained_count').notNull().default(0),
+  convertedCount: integer('converted_count').notNull().default(0),
+  // A/B testing
+  abTestEnabled: boolean('ab_test_enabled').notNull().default(false),
+  abSplitPct: integer('ab_split_pct').notNull().default(50),
+  abVariantBSubject: varchar('ab_variant_b_subject', { length: 500 }),
+  abVariantBHtmlBody: text('ab_variant_b_html_body'),
+  abVariantBBodyText: text('ab_variant_b_body_text'),
+  abWinner: varchar('ab_winner', { length: 1 }),
+  abWinnerMetric: varchar('ab_winner_metric', { length: 20 }).default('open_rate'),
+  abAutoSendWinner: boolean('ab_auto_send_winner').notNull().default(false),
+  abTestDurationHours: integer('ab_test_duration_hours').notNull().default(4),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -275,11 +289,13 @@ export const campaignSends = pgTable('campaign_sends', {
   bouncedAt: timestamp('bounced_at', { withTimezone: true }),
   complainedAt: timestamp('complained_at', { withTimezone: true }),
   resendMessageId: varchar('resend_message_id', { length: 255 }),
+  variant: varchar('variant', { length: 1 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_campaign_sends_campaign').on(table.campaignId, table.status),
   index('idx_campaign_sends_customer').on(table.customerId),
   index('idx_campaign_sends_resend_id').on(table.resendMessageId),
+  index('idx_campaign_sends_variant').on(table.campaignId, table.variant),
 ])
 
 // ============ EMAIL TEMPLATES ============
@@ -372,6 +388,146 @@ export const consents = pgTable('consents', {
   index('idx_consents_customer').on(table.projectId, table.customerId, table.channel),
 ])
 
+// ============ CATALOGUES (generic item type definitions per project) ============
+
+export const catalogues = pgTable('catalogues', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  name: varchar('name', { length: 255 }).notNull(),
+  itemTypeLabel: varchar('item_type_label', { length: 100 }).notNull(), // "Product", "Loan", "Course", "Plan"
+  attributeSchema: jsonb('attribute_schema').default('[]'), // [{name, type, values?, weight?}]
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_catalogues_project').on(table.projectId),
+  uniqueIndex('idx_catalogues_name').on(table.projectId, table.name),
+])
+
+// ============ ITEMS (generic: products, loans, courses, plans) ============
+
+export const items = pgTable('items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  catalogueId: uuid('catalogue_id').notNull().references(() => catalogues.id),
+  externalId: varchar('external_id', { length: 255 }),
+  type: varchar('type', { length: 100 }).notNull(), // "product", "gold_loan", "personal_loan", "course"
+  name: varchar('name', { length: 500 }).notNull(),
+  attributes: jsonb('attributes').default('{}'), // JSONB for flexible schema
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_items_external').on(table.projectId, table.catalogueId, table.externalId),
+  index('idx_items_project').on(table.projectId, table.type),
+  index('idx_items_catalogue').on(table.catalogueId),
+])
+
+// ============ INTERACTIONS (computed user-item relationships) ============
+
+export const interactions = pgTable('interactions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  itemId: uuid('item_id').notNull().references(() => items.id),
+  interactionType: varchar('interaction_type', { length: 30 }).notNull(),
+  // 'view' | 'engage' | 'intent' | 'strong_intent' | 'conversion'
+  weight: decimal('weight', { precision: 6, scale: 3 }).notNull(),
+  sourceEventId: uuid('source_event_id').references(() => events.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_interactions_customer').on(table.projectId, table.customerId, table.createdAt),
+  index('idx_interactions_item').on(table.projectId, table.itemId, table.createdAt),
+  index('idx_interactions_type').on(table.projectId, table.interactionType, table.createdAt),
+])
+
+// ============ INTERACTION CONFIGS (event → interaction weight mapping) ============
+
+export const interactionConfigs = pgTable('interaction_configs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  catalogueId: uuid('catalogue_id').notNull().references(() => catalogues.id),
+  eventName: varchar('event_name', { length: 100 }).notNull(),
+  interactionType: varchar('interaction_type', { length: 30 }).notNull(),
+  weight: decimal('weight', { precision: 6, scale: 3 }).notNull(),
+  decayHalfLifeDays: integer('decay_half_life_days').notNull().default(30),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_interaction_configs_unique').on(table.projectId, table.catalogueId, table.eventName),
+  index('idx_interaction_configs_project').on(table.projectId),
+])
+
+// ============ MESSAGES (unified delivery tracking) ============
+
+export const messages = pgTable('messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  channel: varchar('channel', { length: 20 }).notNull(), // 'email' | 'sms' | 'push' | 'whatsapp' | 'inapp'
+  messageType: varchar('message_type', { length: 20 }).notNull(), // 'promotional' | 'transactional'
+  templateId: varchar('template_id', { length: 255 }),
+  variables: jsonb('variables').default('{}'),
+  status: varchar('status', { length: 20 }).notNull().default('queued'),
+  // 'queued' | 'sent' | 'delivered' | 'read' | 'clicked' | 'failed' | 'blocked'
+  blockReason: varchar('block_reason', { length: 50 }),
+  // 'consent_blocked' | 'frequency_capped' | 'user_inactive' | 'no_channel_reachability'
+  provider: varchar('provider', { length: 20 }), // 'pinnacle' | 'resend'
+  providerMessageId: varchar('provider_message_id', { length: 255 }),
+  flowTripId: uuid('flow_trip_id').references(() => flowTrips.id),
+  campaignId: uuid('campaign_id').references(() => campaigns.id),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  readAt: timestamp('read_at', { withTimezone: true }),
+  clickedAt: timestamp('clicked_at', { withTimezone: true }),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_messages_customer').on(table.projectId, table.customerId, table.createdAt),
+  index('idx_messages_status').on(table.projectId, table.status, table.createdAt),
+  index('idx_messages_provider').on(table.providerMessageId),
+  index('idx_messages_campaign').on(table.campaignId),
+  index('idx_messages_flow').on(table.flowTripId),
+])
+
+// ============ CONSENT AUDIT LOG (append-only, immutable) ============
+
+export const consentAuditLog = pgTable('consent_audit_log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  channel: varchar('channel', { length: 20 }).notNull(),
+  messageType: varchar('message_type', { length: 20 }).notNull(),
+  action: varchar('action', { length: 20 }).notNull(), // 'opt_in' | 'opt_out'
+  source: varchar('source', { length: 20 }).notNull(), // 'sdk' | 'api' | 'admin' | 'webhook'
+  consentText: text('consent_text'), // exact text shown (for regulated industries)
+  ipAddress: varchar('ip_address', { length: 45 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_consent_audit_customer').on(table.projectId, table.customerId, table.createdAt),
+])
+
+// ============ PREDICTION GOALS ============
+
+export const predictionGoals = pgTable('prediction_goals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  name: varchar('name', { length: 255 }).notNull(),
+  targetEvent: varchar('target_event', { length: 100 }).notNull(),
+  observationWindowDays: integer('observation_window_days').notNull().default(90),
+  predictionWindowDays: integer('prediction_window_days').notNull().default(14),
+  minPositiveLabels: integer('min_positive_labels').notNull().default(200),
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  // 'active' | 'paused' | 'insufficient_data'
+  lastTrainedAt: timestamp('last_trained_at', { withTimezone: true }),
+  currentMetric: decimal('current_metric', { precision: 6, scale: 4 }),
+  origin: varchar('origin', { length: 20 }).notNull().default('user'), // 'pack' | 'user'
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_prediction_goals_project').on(table.projectId),
+  uniqueIndex('idx_prediction_goals_name').on(table.projectId, table.name),
+])
+
 // ============ COMMUNICATION LOG ============
 
 export const communicationLog = pgTable('communication_log', {
@@ -391,4 +547,52 @@ export const communicationLog = pgTable('communication_log', {
 }, (table) => [
   index('idx_comlog_customer').on(table.projectId, table.customerId, table.createdAt),
   index('idx_comlog_channel').on(table.projectId, table.channel, table.createdAt),
+])
+
+// ============ SAVED ANALYSES ============
+
+export const savedAnalyses = pgTable('saved_analyses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  name: varchar('name', { length: 255 }).notNull(),
+  type: varchar('type', { length: 30 }).notNull(),
+  // 'funnel' | 'timeseries' | 'time_to_event' | 'product' | 'cohort'
+  config: jsonb('config').notNull().default('{}'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_saved_analyses_project').on(table.projectId, table.type),
+])
+
+// ============ SEGMENT SNAPSHOTS ============
+
+export const segmentSnapshots = pgTable('segment_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  segmentId: uuid('segment_id').notNull().references(() => segments.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  snapshotDate: timestamp('snapshot_date', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_segment_snapshots_lookup').on(table.projectId, table.snapshotDate),
+  index('idx_segment_snapshots_segment').on(table.segmentId, table.snapshotDate),
+])
+
+// ============ PREDICTION SCORES ============
+
+export const predictionScores = pgTable('prediction_scores', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  customerId: uuid('customer_id').notNull().references(() => customers.id),
+  goalId: uuid('goal_id').notNull().references(() => predictionGoals.id),
+  score: decimal('score', { precision: 5, scale: 2 }).notNull(), // 0-100
+  confidence: decimal('confidence', { precision: 4, scale: 3 }).notNull(), // 0-1
+  bucket: varchar('bucket', { length: 10 }).notNull(), // 'High' | 'Medium' | 'Low'
+  factors: jsonb('factors').notNull().default('[]'),
+  modelVersion: varchar('model_version', { length: 50 }),
+  computedAt: timestamp('computed_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_prediction_scores_customer').on(table.projectId, table.customerId),
+  index('idx_prediction_scores_goal').on(table.goalId, table.computedAt),
 ])

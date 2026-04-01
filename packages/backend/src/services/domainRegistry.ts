@@ -7,7 +7,6 @@ const ecommerceFields: DomainFieldDef[] = [
   { field: 'email', label: 'Email', type: 'string', category: 'Customer Info', operators: ['is', 'is_not', 'contains', 'begins_with', 'ends_with'] as FilterOperator[] },
   { field: 'name', label: 'Name', type: 'string', category: 'Customer Info', operators: ['is', 'is_not', 'contains'] as FilterOperator[] },
   { field: 'phone', label: 'Phone', type: 'string', category: 'Customer Info', operators: ['is', 'is_not'] as FilterOperator[] },
-  { field: 'city', label: 'City', type: 'string', category: 'Customer Info', operators: ['is', 'is_not'] as FilterOperator[] },
   { field: 'email_subscribed', label: 'Email Subscribed', type: 'boolean', category: 'Customer Info', operators: ['is_true', 'is_false'] as FilterOperator[] },
 
   // Purchase History
@@ -19,10 +18,17 @@ const ecommerceFields: DomainFieldDef[] = [
   // Engagement
   { field: 'days_since_last_order', label: 'Days Since Last Order', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than', 'is'] as FilterOperator[], metricKey: 'days_since_last_order' },
   { field: 'first_order_date', label: 'First Order Date', type: 'date', category: 'Engagement', operators: ['before_date', 'after_date'] as FilterOperator[] },
+  { field: 'last_order_date', label: 'Last Order Date', type: 'date', category: 'Engagement', operators: ['before_date', 'after_date'] as FilterOperator[] },
+  { field: 'days_since_first_seen', label: 'Days Since First Seen', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than'] as FilterOperator[] },
+  { field: 'orders_in_last_30_days', label: 'Orders in Last 30 Days', type: 'number', category: 'Engagement', operators: ['is', 'greater_than', 'less_than'] as FilterOperator[] },
+  { field: 'orders_in_last_90_days', label: 'Orders in Last 90 Days', type: 'number', category: 'Engagement', operators: ['is', 'greater_than', 'less_than'] as FilterOperator[] },
+  { field: 'discount_order_percentage', label: 'Discount Order %', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than'] as FilterOperator[] },
+  { field: 'sms_subscribed', label: 'SMS Subscribed', type: 'boolean', category: 'Customer Info', operators: ['is_true', 'is_false'] as FilterOperator[] },
 
   // Product Filters
-  { field: 'product_name', label: 'Product', type: 'product', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased'] as FilterOperator[] },
+  { field: 'product_name', label: 'Product', type: 'product', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased', 'has_viewed', 'has_not_viewed', 'has_wishlisted', 'has_not_wishlisted'] as FilterOperator[] },
   { field: 'collection_name', label: 'Collection', type: 'collection', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased'] as FilterOperator[] },
+  { field: 'product_category', label: 'Product Category', type: 'product_category', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased', 'has_viewed', 'has_not_viewed'] as FilterOperator[] },
 ]
 
 const ecommerceDomain: DomainConfig = {
@@ -109,6 +115,21 @@ const customDomain: DomainConfig = {
   fields: customFields,
   channels: ['email'],
 }
+
+// ============ AI & PREDICTIONS (shared across all domains) ============
+
+const predictionFields: DomainFieldDef[] = [
+  { field: 'churn_risk', label: 'Churn Risk Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'churn_risk' },
+  { field: 'conversion_score', label: 'Conversion Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'conversion_score' },
+  { field: 'dormancy_risk', label: 'Dormancy Risk Score', type: 'number', category: 'AI & Predictions', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'dormancy_risk' },
+  { field: 'prediction_bucket', label: 'Risk Bucket', type: 'select', category: 'AI & Predictions', operators: ['is', 'is_not'] as FilterOperator[], options: ['high', 'medium', 'low'], metricKey: 'prediction_bucket' },
+]
+
+// Append prediction fields to all domains
+ecommerceDomain.fields = [...ecommerceFields, ...predictionFields]
+fintechDomain.fields = [...fintechFields, ...predictionFields]
+saasDomain.fields = [...saasFields, ...predictionFields]
+customDomain.fields = [...customFields, ...predictionFields]
 
 // ============ REGISTRY ============
 

@@ -2,6 +2,7 @@ import { eq, and, sql, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { segments, customers, customerSegments } from '../db/schema.js'
 import { SEGMENT_TEMPLATE_DEFINITIONS, filterToSql } from '@storees/segments'
+import { eventsQueue } from './queue.js'
 import type { FilterConfig } from '@storees/shared'
 
 /**
@@ -95,6 +96,30 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
         inArray(customerSegments.customerId, toRemove),
       ),
     )
+  }
+
+  // Emit enters_segment events for newly added members
+  for (const customerId of toAdd) {
+    await eventsQueue.add('enters_segment', {
+      projectId: segment.projectId,
+      customerId,
+      eventName: 'enters_segment',
+      properties: { segmentId, segmentName: segment.name },
+      platform: 'system',
+      timestamp: new Date().toISOString(),
+    })
+  }
+
+  // Emit exits_segment events for removed members
+  for (const customerId of toRemove) {
+    await eventsQueue.add('exits_segment', {
+      projectId: segment.projectId,
+      customerId,
+      eventName: 'exits_segment',
+      properties: { segmentId, segmentName: segment.name },
+      platform: 'system',
+      timestamp: new Date().toISOString(),
+    })
   }
 
   // Update member count

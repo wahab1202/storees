@@ -1,0 +1,180 @@
+{
+  "id": "nbfc",
+  "name": "NBFC / Lending",
+  "icon": "🏦",
+  "description": "Non-banking financial companies — loan products, EMIs, collections",
+  "catalogue": {
+    "name": "Loan Products",
+    "item_type_label": "Loan Product",
+    "attribute_schema": [
+      { "name": "category", "type": "select", "values": ["Personal Loan", "Gold Loan", "Home Loan", "Vehicle Loan", "Business Loan", "Education Loan", "Credit Line"], "weight": 0.3 },
+      { "name": "interest_min", "type": "number", "weight": 0.15 },
+      { "name": "interest_max", "type": "number", "weight": 0.15 },
+      { "name": "tenure_months_min", "type": "number", "weight": 0.1 },
+      { "name": "tenure_months_max", "type": "number", "weight": 0.1 },
+      { "name": "min_amount", "type": "number", "weight": 0.05 },
+      { "name": "max_amount", "type": "number", "weight": 0.05 },
+      { "name": "secured", "type": "boolean", "weight": 0.1 }
+    ],
+    "default_items": [
+      { "name": "Personal Loan", "type": "loan_product", "attributes": { "category": "Personal Loan", "interest_min": 12, "interest_max": 24, "tenure_months_min": 6, "tenure_months_max": 60, "secured": false } },
+      { "name": "Gold Loan", "type": "loan_product", "attributes": { "category": "Gold Loan", "interest_min": 9, "interest_max": 15, "tenure_months_min": 3, "tenure_months_max": 24, "secured": true } },
+      { "name": "Home Loan", "type": "loan_product", "attributes": { "category": "Home Loan", "interest_min": 8, "interest_max": 12, "tenure_months_min": 60, "tenure_months_max": 360, "secured": true } }
+    ]
+  },
+  "interaction_config": [
+    { "event_name": "loan_page_viewed", "interaction_type": "view", "weight": 1.0, "decay_half_life_days": 14 },
+    { "event_name": "emi_calculator_used", "interaction_type": "engage", "weight": 2.0, "decay_half_life_days": 7 },
+    { "event_name": "loan_application_started", "interaction_type": "intent", "weight": 3.0, "decay_half_life_days": 7 },
+    { "event_name": "documents_uploaded", "interaction_type": "strong_intent", "weight": 4.0, "decay_half_life_days": 14 },
+    { "event_name": "loan_disbursed", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 180 },
+    { "event_name": "emi_paid", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 30 },
+    { "event_name": "pre_approved_viewed", "interaction_type": "view", "weight": 1.5, "decay_half_life_days": 14 },
+    { "event_name": "top_up_inquiry", "interaction_type": "intent", "weight": 3.0, "decay_half_life_days": 14 }
+  ],
+  "prediction_goals": [
+    {
+      "name": "Loan Conversion Propensity",
+      "target_event": "loan_disbursed",
+      "observation_window_days": 60,
+      "prediction_window_days": 14,
+      "min_positive_labels": 150,
+      "priority": 1,
+      "default_status": "active",
+      "description": "Predict which leads are likely to complete loan disbursement"
+    },
+    {
+      "name": "EMI Default Risk",
+      "target_event": "emi_missed",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 100,
+      "priority": 2,
+      "default_status": "active",
+      "description": "Identify borrowers likely to miss EMI payments in the next 30 days"
+    },
+    {
+      "name": "App Churn Risk",
+      "target_event": "churn",
+      "observation_window_days": 60,
+      "prediction_window_days": 30,
+      "min_positive_labels": 80,
+      "priority": 3,
+      "default_status": "active",
+      "description": "Predict which customers will stop using the app (no login in 30 days)"
+    },
+    {
+      "name": "Cross-sell Propensity",
+      "target_event": "loan_application_started",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 200,
+      "priority": 4,
+      "default_status": "paused",
+      "description": "Identify existing customers likely to apply for a new loan product"
+    },
+    {
+      "name": "Pre-closure Likelihood",
+      "target_event": "loan_pre_closed",
+      "observation_window_days": 60,
+      "prediction_window_days": 14,
+      "min_positive_labels": 100,
+      "priority": 5,
+      "default_status": "paused",
+      "description": "Predict which borrowers are likely to close their loan early"
+    },
+    {
+      "name": "Top-up Interest",
+      "target_event": "top_up_inquiry",
+      "observation_window_days": 30,
+      "prediction_window_days": 7,
+      "min_positive_labels": 80,
+      "priority": 6,
+      "default_status": "paused",
+      "description": "Identify customers likely to inquire about loan top-ups"
+    }
+  ],
+  "segment_templates": [
+    {
+      "name": "Active Borrowers",
+      "description": "Customers with at least one active loan",
+      "icon": "💰",
+      "filter": { "logic": "AND", "rules": [{ "field": "active_loans", "operator": "greater_than", "value": 0 }] }
+    },
+    {
+      "name": "EMI Overdue",
+      "description": "Customers with overdue EMI payments",
+      "icon": "🔴",
+      "filter": { "logic": "AND", "rules": [{ "field": "emi_overdue", "operator": "is_true", "value": true }] }
+    },
+    {
+      "name": "Pre-Approved Leads",
+      "description": "Customers eligible for pre-approved offers",
+      "icon": "✅",
+      "filter": { "logic": "AND", "rules": [{ "field": "pre_approved", "operator": "is_true", "value": true }] }
+    },
+    {
+      "name": "KYC Pending",
+      "description": "Customers with incomplete KYC",
+      "icon": "📋",
+      "filter": { "logic": "AND", "rules": [{ "field": "kyc_status", "operator": "is", "value": "pending" }] }
+    },
+    {
+      "name": "High Net Worth",
+      "description": "Customers with high total disbursement",
+      "icon": "💎",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_disbursed", "operator": "greater_than", "value": 1000000 }] }
+    },
+    {
+      "name": "Dormant Leads",
+      "description": "Started application but didn't complete in 14+ days",
+      "icon": "💤",
+      "filter": { "logic": "AND", "rules": [{ "field": "application_status", "operator": "is", "value": "incomplete" }, { "field": "days_since_last_seen", "operator": "greater_than", "value": 14 }] }
+    },
+    {
+      "name": "Repeat Borrowers",
+      "description": "Customers with 2+ loans",
+      "icon": "🔄",
+      "filter": { "logic": "AND", "rules": [{ "field": "total_loans", "operator": "greater_than", "value": 1 }] }
+    },
+    {
+      "name": "Collection Bucket 1",
+      "description": "1-30 days past due",
+      "icon": "⏰",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_past_due", "operator": "between", "value": [1, 30] }] }
+    },
+    {
+      "name": "Collection Bucket 2",
+      "description": "31-60 days past due",
+      "icon": "⚠️",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_past_due", "operator": "between", "value": [31, 60] }] }
+    },
+    {
+      "name": "NPA Risk",
+      "description": "60+ days past due",
+      "icon": "🚨",
+      "filter": { "logic": "AND", "rules": [{ "field": "days_past_due", "operator": "greater_than", "value": 60 }] }
+    },
+    {
+      "name": "Top-up Eligible",
+      "description": "Paid 50%+ EMIs, good repayment track record",
+      "icon": "📈",
+      "filter": { "logic": "AND", "rules": [{ "field": "emi_completion_pct", "operator": "greater_than", "value": 50 }, { "field": "emi_overdue", "operator": "is_false", "value": false }] }
+    }
+  ],
+  "flow_templates": [],
+  "dashboard_templates": [],
+  "wizard_questions": {
+    "products_label": "What loan products do you offer?",
+    "products_options": ["Personal Loan", "Gold Loan", "Home Loan", "Vehicle Loan", "Business Loan", "Education Loan", "Credit Line", "Micro Finance"],
+    "journey_steps": ["Browse Products", "EMI Calculator", "Application", "Document Upload", "Verification", "Disbursement", "Repayment", "Pre-closure"],
+    "priorities": [
+      { "label": "Convert more loan leads", "maps_to": "Loan Conversion Propensity" },
+      { "label": "Reduce EMI defaults", "maps_to": "EMI Default Risk" },
+      { "label": "Reduce app churn", "maps_to": "App Churn Risk" },
+      { "label": "Cross-sell loan products", "maps_to": "Cross-sell Propensity" },
+      { "label": "Identify pre-closure risk", "maps_to": "Pre-closure Likelihood" },
+      { "label": "Drive top-up loans", "maps_to": "Top-up Interest" }
+    ]
+  }
+}

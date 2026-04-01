@@ -3,6 +3,7 @@ import { eq, and, sql, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flows, flowTrips } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
 
 const router = Router()
 
@@ -244,6 +245,61 @@ router.delete('/:id', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Flow delete error:', err)
     res.status(500).json({ success: false, error: 'Failed to delete flow' })
+  }
+})
+
+// GET /api/flows/:id/analytics?projectId=...
+router.get('/:id/analytics', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+
+    const [flow] = await db
+      .select({ projectId: flows.projectId })
+      .from(flows)
+      .where(eq(flows.id, id))
+      .limit(1)
+
+    if (!flow || flow.projectId !== req.projectId) {
+      return res.status(404).json({ success: false, error: 'Flow not found' })
+    }
+
+    const analytics = await getFlowAnalytics(id)
+    res.json({ success: true, data: analytics })
+  } catch (err) {
+    console.error('Flow analytics error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch flow analytics' })
+  }
+})
+
+// POST /api/flows/:id/clone?projectId=...
+router.post('/:id/clone', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+
+    const [existing] = await db
+      .select()
+      .from(flows)
+      .where(and(eq(flows.id, id), eq(flows.projectId, projectId)))
+
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Flow not found' })
+    }
+
+    const [cloned] = await db.insert(flows).values({
+      projectId,
+      name: `${existing.name} (Copy)`,
+      description: existing.description,
+      triggerConfig: existing.triggerConfig,
+      exitConfig: existing.exitConfig,
+      nodes: existing.nodes,
+      status: 'draft',
+    }).returning()
+
+    res.status(201).json({ success: true, data: cloned })
+  } catch (err) {
+    console.error('Flow clone error:', err)
+    res.status(500).json({ success: false, error: 'Failed to clone flow' })
   }
 })
 
