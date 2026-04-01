@@ -66,8 +66,8 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
     description: 'Remind repeat buyers when they\'re overdue for a reorder — escalate from email to discount to WhatsApp',
     domainTypes: ['ecommerce'],
     triggerConfig: {
-      segment: 'overdue_reorders',
       event: 'enters_segment',
+      filters: { logic: 'AND', rules: [{ field: 'days_overdue', operator: 'greater_than', value: 0 }] },
     },
     exitConfig: {
       event: 'order_completed',
