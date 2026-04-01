@@ -76,6 +76,72 @@ export function useDeleteFlow() {
   })
 }
 
+// Flow analytics types
+export type FlowAnalytics = {
+  overview: {
+    totalTrips: number
+    activeTrips: number
+    completedTrips: number
+    exitedTrips: number
+    completionRate: number
+    avgTimeToCompleteHours: number | null
+  }
+  nodeFunnel: Array<{
+    nodeId: string
+    nodeType: string
+    label: string
+    entered: number
+    exited: number
+    dropOffRate: number
+  }>
+  weeklyTrips: Array<{
+    week: string
+    entered: number
+    completed: number
+    exited: number
+  }>
+  recentTrips: Array<{
+    tripId: string
+    customerId: string
+    customerName: string | null
+    customerEmail: string | null
+    status: string
+    currentNodeId: string
+    enteredAt: string
+    exitedAt: string | null
+  }>
+  messageStats: {
+    totalSent: number
+    delivered: number
+    failed: number
+    deliveryRate: number
+  }
+}
+
+export function useFlowAnalytics(id: string) {
+  return useQuery({
+    queryKey: ['flows', id, 'analytics'],
+    queryFn: () => api.get<FlowAnalytics>(withProject(`/api/flows/${id}/analytics`)),
+    enabled: !!id,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useCloneFlow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<Flow>(withProject(`/api/flows/${id}/clone`), {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['flows'] })
+      toast.success('Flow cloned')
+    },
+    onError: (err) => {
+      toast.error(err.message ?? 'Failed to clone flow')
+    },
+  })
+}
+
 export function useUpdateFlow() {
   const queryClient = useQueryClient()
   return useMutation({

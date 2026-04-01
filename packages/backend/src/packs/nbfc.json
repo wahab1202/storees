@@ -40,7 +40,8 @@
       "prediction_window_days": 14,
       "min_positive_labels": 150,
       "priority": 1,
-      "default_status": "active"
+      "default_status": "active",
+      "description": "Predict which leads are likely to complete loan disbursement"
     },
     {
       "name": "EMI Default Risk",
@@ -49,7 +50,18 @@
       "prediction_window_days": 30,
       "min_positive_labels": 100,
       "priority": 2,
-      "default_status": "active"
+      "default_status": "active",
+      "description": "Identify borrowers likely to miss EMI payments in the next 30 days"
+    },
+    {
+      "name": "App Churn Risk",
+      "target_event": "churn",
+      "observation_window_days": 60,
+      "prediction_window_days": 30,
+      "min_positive_labels": 80,
+      "priority": 3,
+      "default_status": "active",
+      "description": "Predict which customers will stop using the app (no login in 30 days)"
     },
     {
       "name": "Cross-sell Propensity",
@@ -57,8 +69,9 @@
       "observation_window_days": 90,
       "prediction_window_days": 30,
       "min_positive_labels": 200,
-      "priority": 3,
-      "default_status": "active"
+      "priority": 4,
+      "default_status": "paused",
+      "description": "Identify existing customers likely to apply for a new loan product"
     },
     {
       "name": "Pre-closure Likelihood",
@@ -66,8 +79,9 @@
       "observation_window_days": 60,
       "prediction_window_days": 14,
       "min_positive_labels": 100,
-      "priority": 4,
-      "default_status": "paused"
+      "priority": 5,
+      "default_status": "paused",
+      "description": "Predict which borrowers are likely to close their loan early"
     },
     {
       "name": "Top-up Interest",
@@ -75,8 +89,9 @@
       "observation_window_days": 30,
       "prediction_window_days": 7,
       "min_positive_labels": 80,
-      "priority": 5,
-      "default_status": "paused"
+      "priority": 6,
+      "default_status": "paused",
+      "description": "Identify customers likely to inquire about loan top-ups"
     }
   ],
   "segment_templates": [
@@ -156,6 +171,7 @@
     "priorities": [
       { "label": "Convert more loan leads", "maps_to": "Loan Conversion Propensity" },
       { "label": "Reduce EMI defaults", "maps_to": "EMI Default Risk" },
+      { "label": "Reduce app churn", "maps_to": "App Churn Risk" },
       { "label": "Cross-sell loan products", "maps_to": "Cross-sell Propensity" },
       { "label": "Identify pre-closure risk", "maps_to": "Pre-closure Likelihood" },
       { "label": "Drive top-up loans", "maps_to": "Top-up Interest" }

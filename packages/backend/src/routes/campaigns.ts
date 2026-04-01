@@ -8,6 +8,10 @@ import {
   getCampaignWithSegment,
   dispatchCampaign,
 } from '../services/campaignService.js'
+import {
+  getCampaignAnalytics,
+  compareAbVariants,
+} from '../services/campaignAnalyticsService.js'
 
 const router = Router()
 
@@ -44,7 +48,9 @@ router.post('/', requireProjectId, async (req, res) => {
       name, channel, deliveryType, subject, htmlBody, bodyText,
       segmentId, fromName, scheduledAt, contentType, previewText,
       templateId, conversionGoals, goalTrackingHours, deliveryLimit,
-      periodicSchedule,
+      periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject,
+      abVariantBHtmlBody, abVariantBBodyText, abWinnerMetric,
+      abAutoSendWinner, abTestDurationHours,
     } = req.body as {
       name: string
       channel?: string
@@ -62,6 +68,14 @@ router.post('/', requireProjectId, async (req, res) => {
       goalTrackingHours?: number
       deliveryLimit?: number | null
       periodicSchedule?: unknown
+      abTestEnabled?: boolean
+      abSplitPct?: number
+      abVariantBSubject?: string
+      abVariantBHtmlBody?: string
+      abVariantBBodyText?: string
+      abWinnerMetric?: string
+      abAutoSendWinner?: boolean
+      abTestDurationHours?: number
     }
 
     if (!name?.trim()) {
@@ -95,6 +109,14 @@ router.post('/', requireProjectId, async (req, res) => {
       periodicSchedule: periodicSchedule ?? null,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
       status: scheduledAt ? 'scheduled' : 'draft',
+      abTestEnabled: abTestEnabled ?? false,
+      abSplitPct: abSplitPct ?? 50,
+      abVariantBSubject: abVariantBSubject?.trim() ?? null,
+      abVariantBHtmlBody: abVariantBHtmlBody ?? null,
+      abVariantBBodyText: abVariantBBodyText?.trim() ?? null,
+      abWinnerMetric: abWinnerMetric ?? 'open_rate',
+      abAutoSendWinner: abAutoSendWinner ?? false,
+      abTestDurationHours: abTestDurationHours ?? 4,
     }).returning()
 
     res.status(201).json({ success: true, data: campaign })
@@ -111,7 +133,8 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     const {
       name, subject, htmlBody, bodyText, segmentId, fromName, scheduledAt,
       contentType, previewText, conversionGoals, goalTrackingHours, deliveryLimit,
-      periodicSchedule,
+      periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject, abVariantBHtmlBody,
+      abVariantBBodyText, abWinnerMetric, abAutoSendWinner, abTestDurationHours,
     } = req.body as {
       name?: string
       subject?: string
@@ -126,6 +149,14 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       goalTrackingHours?: number
       deliveryLimit?: number | null
       periodicSchedule?: unknown | null
+      abTestEnabled?: boolean
+      abSplitPct?: number
+      abVariantBSubject?: string | null
+      abVariantBHtmlBody?: string | null
+      abVariantBBodyText?: string | null
+      abWinnerMetric?: string
+      abAutoSendWinner?: boolean
+      abTestDurationHours?: number
     }
 
     const [existing] = await db
@@ -159,6 +190,14 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       updates.scheduledAt = scheduledAt ? new Date(scheduledAt) : null
       updates.status = scheduledAt ? 'scheduled' : 'draft'
     }
+    if (abTestEnabled !== undefined) updates.abTestEnabled = abTestEnabled
+    if (abSplitPct !== undefined) updates.abSplitPct = abSplitPct
+    if (abVariantBSubject !== undefined) updates.abVariantBSubject = abVariantBSubject
+    if (abVariantBHtmlBody !== undefined) updates.abVariantBHtmlBody = abVariantBHtmlBody
+    if (abVariantBBodyText !== undefined) updates.abVariantBBodyText = abVariantBBodyText
+    if (abWinnerMetric !== undefined) updates.abWinnerMetric = abWinnerMetric
+    if (abAutoSendWinner !== undefined) updates.abAutoSendWinner = abAutoSendWinner
+    if (abTestDurationHours !== undefined) updates.abTestDurationHours = abTestDurationHours
 
     const [updated] = await db
       .update(campaigns)
@@ -239,6 +278,52 @@ router.get('/:id/sends', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Campaign sends error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch campaign sends' })
+  }
+})
+
+// GET /api/campaigns/:id/analytics?projectId=
+router.get('/:id/analytics', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+
+    const [campaign] = await db
+      .select({ projectId: campaigns.projectId })
+      .from(campaigns)
+      .where(eq(campaigns.id, id))
+      .limit(1)
+
+    if (!campaign || campaign.projectId !== req.projectId) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
+
+    const analytics = await getCampaignAnalytics(id)
+    res.json({ success: true, data: analytics })
+  } catch (err) {
+    console.error('Campaign analytics error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch campaign analytics' })
+  }
+})
+
+// GET /api/campaigns/:id/ab-results?projectId=
+router.get('/:id/ab-results', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+
+    const [campaign] = await db
+      .select({ projectId: campaigns.projectId })
+      .from(campaigns)
+      .where(eq(campaigns.id, id))
+      .limit(1)
+
+    if (!campaign || campaign.projectId !== req.projectId) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
+
+    const results = await compareAbVariants(id)
+    res.json({ success: true, data: results })
+  } catch (err) {
+    console.error('Campaign A/B results error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch A/B results' })
   }
 })
 

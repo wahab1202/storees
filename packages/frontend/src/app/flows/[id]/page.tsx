@@ -1,21 +1,27 @@
 'use client'
 
+import { useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useFlowDetail, useUpdateFlow, useUpdateFlowStatus } from '@/hooks/useFlows'
+import { useFlowDetail, useUpdateFlow, useUpdateFlowStatus, useCloneFlow } from '@/hooks/useFlows'
 import { useDashboardStats } from '@/hooks/useDashboard'
 import { StructuredFlowBuilder } from '@/components/flows/StructuredFlowBuilder'
-import { Loader2, ArrowLeft, Play, Pause } from 'lucide-react'
+import { FlowAnalyticsPanel } from '@/components/flows/FlowAnalyticsPanel'
+import { Loader2, ArrowLeft, Play, Pause, GitBranch, BarChart3, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { FlowNode, ExitConfig } from '@storees/shared'
+
+type FlowTab = 'builder' | 'analytics'
 
 export default function FlowDetailPage() {
   const params = useParams()
   const router = useRouter()
   const id = params.id as string
+  const [activeTab, setActiveTab] = useState<FlowTab>('builder')
   const { data, isLoading, isError } = useFlowDetail(id)
   const { data: statsData } = useDashboardStats()
   const updateFlow = useUpdateFlow()
   const updateStatus = useUpdateFlowStatus()
+  const cloneFlow = useCloneFlow()
 
   const handleSave = (nodes: FlowNode[], exitConfig: ExitConfig | null) => {
     updateFlow.mutate({ id, nodes, exitConfig })
@@ -39,10 +45,6 @@ export default function FlowDetailPage() {
 
   const flow = data.data
 
-  // Full-bleed: negate horizontal + bottom padding from AppShell
-  // AppShell: p-4 sm:p-6, pt-14 lg:pt-0
-  // On desktop (lg): parent has p-6 pt-0 → available height = 100vh - 2*24px (top+bottom padding)
-  // On mobile: parent has p-4 pt-14 → available height = 100vh - 56px - 2*16px
   return (
     <div className="-mx-4 sm:-mx-6 -mb-4 sm:-mb-6 flex flex-col h-[calc(100vh-56px-2rem)] lg:h-[calc(100vh-3rem)]">
       {/* Top bar */}
@@ -56,8 +58,44 @@ export default function FlowDetailPage() {
           </button>
           <h1 className="text-base font-bold text-gray-900">{flow.name}</h1>
           <StatusBadge status={flow.status} />
+
+          {/* Tab switcher */}
+          <div className="flex items-center gap-0.5 ml-3 bg-gray-100 rounded-lg p-0.5">
+            <button
+              onClick={() => setActiveTab('builder')}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+                activeTab === 'builder' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              )}
+            >
+              <GitBranch className="h-3.5 w-3.5" />
+              Builder
+            </button>
+            <button
+              onClick={() => setActiveTab('analytics')}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+                activeTab === 'analytics' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              )}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              Analytics
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => cloneFlow.mutate(id, {
+              onSuccess: (result) => {
+                if (result.data?.id) router.push(`/flows/${result.data.id}`)
+              },
+            })}
+            disabled={cloneFlow.isPending}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            Clone
+          </button>
           {flow.status === 'draft' && (
             <StatusButton
               onClick={() => updateStatus.mutate({ id, status: 'active' })}
@@ -85,15 +123,19 @@ export default function FlowDetailPage() {
         </div>
       </div>
 
-      {/* Flow builder — fills remaining space */}
+      {/* Tab content */}
       <div className="flex-1 min-h-0">
-        <StructuredFlowBuilder
-          flowNodes={flow.nodes as FlowNode[]}
-          exitConfig={flow.exitConfig as ExitConfig | null}
-          onSave={handleSave}
-          saving={updateFlow.isPending}
-          domainType={statsData?.data.domainType}
-        />
+        {activeTab === 'builder' ? (
+          <StructuredFlowBuilder
+            flowNodes={flow.nodes as FlowNode[]}
+            exitConfig={flow.exitConfig as ExitConfig | null}
+            onSave={handleSave}
+            saving={updateFlow.isPending}
+            domainType={statsData?.data.domainType}
+          />
+        ) : (
+          <FlowAnalyticsPanel flowId={id} />
+        )}
       </div>
     </div>
   )

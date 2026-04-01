@@ -1,3 +1,4 @@
+
 # Storees
 
 Shopify marketing automation platform — CDP + segmentation engine + flow builder + multi-channel notifications.

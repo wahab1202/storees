@@ -22,3 +22,10 @@ export function useCollections() {
     queryFn: () => api.get<Collection[]>(withProject('/api/products/collections')),
   })
 }
+
+export function useProductCategories() {
+  return useQuery({
+    queryKey: ['product-categories'],
+    queryFn: () => api.get<string[]>(withProject('/api/products/categories')),
+  })
+}

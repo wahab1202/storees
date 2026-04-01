@@ -38,7 +38,8 @@
       "prediction_window_days": 7,
       "min_positive_labels": 100,
       "priority": 1,
-      "default_status": "active"
+      "default_status": "active",
+      "description": "Predict which trial users are likely to convert to paid"
     },
     {
       "name": "Churn Risk",
@@ -47,7 +48,18 @@
       "prediction_window_days": 14,
       "min_positive_labels": 80,
       "priority": 2,
-      "default_status": "active"
+      "default_status": "active",
+      "description": "Predict which paid customers are likely to cancel their subscription"
+    },
+    {
+      "name": "Predict Dormancy",
+      "target_event": "dormancy",
+      "observation_window_days": 30,
+      "prediction_window_days": 14,
+      "min_positive_labels": 80,
+      "priority": 3,
+      "default_status": "active",
+      "description": "Identify active users who are likely to become inactive"
     },
     {
       "name": "Expansion Revenue",
@@ -55,8 +67,19 @@
       "observation_window_days": 90,
       "prediction_window_days": 30,
       "min_positive_labels": 150,
-      "priority": 3,
-      "default_status": "paused"
+      "priority": 4,
+      "default_status": "paused",
+      "description": "Predict which customers are likely to upgrade their plan"
+    },
+    {
+      "name": "Trial Expiration Risk",
+      "target_event": "trial_expired",
+      "observation_window_days": 14,
+      "prediction_window_days": 7,
+      "min_positive_labels": 80,
+      "priority": 5,
+      "default_status": "paused",
+      "description": "Predict which trial users will let their trial expire without converting"
     },
     {
       "name": "Feature Adoption",
@@ -64,8 +87,9 @@
       "observation_window_days": 30,
       "prediction_window_days": 7,
       "min_positive_labels": 200,
-      "priority": 4,
-      "default_status": "paused"
+      "priority": 6,
+      "default_status": "paused",
+      "description": "Predict which users are likely to adopt new features"
     }
   ],
   "segment_templates": [
@@ -127,7 +151,9 @@
     "priorities": [
       { "label": "Convert trial users to paid", "maps_to": "Trial to Paid Conversion" },
       { "label": "Reduce churn", "maps_to": "Churn Risk" },
+      { "label": "Prevent user dormancy", "maps_to": "Predict Dormancy" },
       { "label": "Drive plan upgrades", "maps_to": "Expansion Revenue" },
+      { "label": "Reduce trial expiration", "maps_to": "Trial Expiration Risk" },
       { "label": "Improve feature adoption", "maps_to": "Feature Adoption" },
       { "label": "Increase team seat usage", "maps_to": null }
     ]

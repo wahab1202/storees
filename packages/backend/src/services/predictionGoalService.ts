@@ -1,6 +1,7 @@
 import { eq, and } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { predictionGoals } from '../db/schema.js'
+import { enqueueTrainingJob } from '../workers/trainingWorker.js'
 
 export async function createPredictionGoal(
   projectId: string,
@@ -23,6 +24,11 @@ export async function createPredictionGoal(
     origin: data.origin ?? 'user',
     status: 'active',
   }).returning()
+
+  // Enqueue train + score pipeline (non-blocking)
+  enqueueTrainingJob(projectId, goal.id).catch(err => {
+    console.error(`[prediction-goal] Failed to enqueue training for ${goal.id}:`, err)
+  })
 
   return goal
 }

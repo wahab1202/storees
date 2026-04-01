@@ -8,7 +8,7 @@ import { useDashboardStats } from '@/hooks/useDashboard'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CustomerTable } from '@/components/customers/CustomerTable'
 import { Pagination } from '@/components/customers/Pagination'
-import { Search, X, Users, UserCheck, UserPlus, DollarSign } from 'lucide-react'
+import { Search, X, Users, UserCheck, UserPlus, DollarSign, Grid3X3 } from 'lucide-react'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import type { CustomerListParams } from '@storees/shared'
 
@@ -23,6 +23,7 @@ export default function CustomersPage() {
 function CustomersContent() {
   const searchParams = useSearchParams()
   const initialSegmentId = searchParams.get('segmentId') ?? undefined
+  const initialRfm = searchParams.get('rfm') ?? undefined
 
   const [params, setParams] = useState<CustomerListParams>({
     page: 1,
@@ -30,12 +31,34 @@ function CustomersContent() {
     sortBy: 'lastSeen',
     sortOrder: 'desc',
     segmentId: initialSegmentId,
+    rfm: initialRfm,
   })
   const [searchInput, setSearchInput] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const { data: segmentsData } = useSegments()
   const { data: statsData } = useDashboardStats()
   const domain = statsData?.data.domainType
+
+  const RFM_LABELS: Record<string, string> = {
+    // Full grid cells (recency × value)
+    recent_low: 'Recent × Low Value',
+    recent_medium: 'Recent × Medium Value',
+    recent_high: 'Champions (Recent × High Value)',
+    medium_low: 'Medium × Low Value',
+    medium_medium: 'Medium × Medium Value',
+    medium_high: 'Medium × High Value',
+    lapsed_low: 'Lapsed × Low Value',
+    lapsed_medium: 'Lapsed × Medium Value',
+    lapsed_high: "Can't Lose (Lapsed × High Value)",
+    // Recency-only filters
+    recent: 'Recent Buyers (0–30 days)',
+    medium: 'Medium Recency (31–90 days)',
+    lapsed: 'Lapsed Buyers (90+ days)',
+    // Value-only filters
+    _low: 'Low Value Buyers',
+    _medium: 'Medium Value Buyers',
+    _high: 'High Value Buyers',
+  }
 
   const { data, isLoading, isError } = useCustomers(params)
 
@@ -150,6 +173,24 @@ function CustomersContent() {
           )}
         </div>
       </div>
+
+      {/* Active RFM filter badge */}
+      {params.rfm && (
+        <div className="mb-4 flex items-center gap-2">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-violet-50 border border-violet-200 rounded-lg text-sm">
+            <Grid3X3 className="h-3.5 w-3.5 text-violet-600" />
+            <span className="text-violet-700 font-medium">
+              {RFM_LABELS[params.rfm] ?? params.rfm}
+            </span>
+            <button
+              onClick={() => setParams(p => ({ ...p, page: 1, rfm: undefined }))}
+              className="ml-1 p-0.5 rounded hover:bg-violet-100 transition-colors text-violet-400 hover:text-violet-600"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Table */}
       {isLoading ? (

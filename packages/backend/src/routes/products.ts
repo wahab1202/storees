@@ -30,6 +30,28 @@ router.get('/', requireProjectId, async (req, res) => {
   }
 })
 
+// GET /api/products/categories?projectId=... — distinct product types
+router.get('/categories', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+
+    const rows = await db
+      .selectDistinct({ productType: products.productType })
+      .from(products)
+      .where(and(eq(products.projectId, projectId), eq(products.status, 'active')))
+      .orderBy(products.productType)
+
+    const categories = rows
+      .map(r => r.productType)
+      .filter((t): t is string => !!t && t.trim() !== '')
+
+    res.json({ success: true, data: categories })
+  } catch (err) {
+    console.error('Product categories error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch product categories' })
+  }
+})
+
 // GET /api/products/collections?projectId=...
 router.get('/collections', requireProjectId, async (req, res) => {
   try {

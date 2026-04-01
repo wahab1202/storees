@@ -60,6 +60,76 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
     emailTemplateId: 'abandoned_cart_default',
   },
 
+  {
+    name: 'Reorder Reminder',
+    slug: 'reorder_reminder',
+    description: 'Remind repeat buyers when they\'re overdue for a reorder — escalate from email to discount to WhatsApp',
+    domainTypes: ['ecommerce'],
+    triggerConfig: {
+      segment: 'overdue_reorders',
+      event: 'enters_segment',
+    },
+    exitConfig: {
+      event: 'order_completed',
+      scope: 'any',
+    },
+    nodes: [
+      { id: 'trigger', type: 'trigger' },
+      {
+        id: 'send_reminder',
+        type: 'action',
+        config: {
+          actionType: 'send_email',
+          templateId: 'reorder_reminder',
+          dynamicData: ['customer_name', 'days_overdue', 'avg_cycle_days', 'last_order_date'],
+        },
+      },
+      { id: 'delay_3d', type: 'delay', config: { value: 3, unit: 'days' } },
+      {
+        id: 'check_ordered_1',
+        type: 'condition',
+        config: {
+          check: 'event_occurred',
+          event: 'order_completed',
+          since: 'trip_start',
+          branches: { yes: 'end_reordered', no: 'send_discount' },
+        },
+      },
+      {
+        id: 'send_discount',
+        type: 'action',
+        config: {
+          actionType: 'send_email',
+          templateId: 'reorder_discount_offer',
+          dynamicData: ['customer_name', 'days_overdue', 'discount_code'],
+        },
+      },
+      { id: 'delay_2d', type: 'delay', config: { value: 2, unit: 'days' } },
+      {
+        id: 'check_ordered_2',
+        type: 'condition',
+        config: {
+          check: 'event_occurred',
+          event: 'order_completed',
+          since: 'trip_start',
+          branches: { yes: 'end_reordered', no: 'send_whatsapp' },
+        },
+      },
+      {
+        id: 'send_whatsapp',
+        type: 'action',
+        config: {
+          actionType: 'send_whatsapp',
+          templateId: 'reorder_whatsapp_nudge',
+          dynamicData: ['customer_name', 'days_overdue'],
+        },
+      },
+      { id: 'end_reordered', type: 'end', label: 'Reordered' },
+      { id: 'end_nudged', type: 'end', label: 'All Channels Sent' },
+    ],
+    emailTemplateId: 'reorder_reminder',
+  },
+
   // ============ FINTECH ============
   {
     name: 'EMI Overdue Reminder',

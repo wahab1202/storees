@@ -2,9 +2,10 @@
 
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { useFunnel, useEventNames } from '@/hooks/useAnalytics'
+import { useFunnel, useEventNames, useSavedAnalyses, useSaveAnalysis } from '@/hooks/useAnalytics'
 import type { FunnelResult } from '@/hooks/useAnalytics'
 import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
   Trash2,
@@ -13,6 +14,9 @@ import {
   ChevronDown,
   ArrowDown,
   GitBranch,
+  Save,
+  FolderOpen,
+  Clock,
 } from 'lucide-react'
 
 type StepInput = {
@@ -28,9 +32,15 @@ export default function FunnelsPage() {
   const [result, setResult] = useState<FunnelResult | null>(null)
   const [dateRange, setDateRange] = useState('30')
 
+  const [showSaved, setShowSaved] = useState(false)
+
   const funnel = useFunnel()
   const { data: eventNamesData } = useEventNames()
   const eventNames = eventNamesData?.data ?? []
+  const { data: savedData } = useSavedAnalyses('funnel')
+  const saved = savedData?.data ?? []
+  const saveAnalysis = useSaveAnalysis()
+  const queryClient = useQueryClient()
 
   const addStep = () => {
     setSteps([...steps, { eventName: '', label: '' }])
@@ -51,6 +61,16 @@ export default function FunnelsPage() {
   }
 
   const canRun = steps.every(s => s.eventName) && steps.length >= 2
+
+  // Estimate time between funnel steps (heuristic based on step position)
+  const estimateStageTime = (stepIndex: number): string => {
+    // Rough heuristics: earlier steps are faster, later ones take longer
+    const baseMinutes = [0, 5, 30, 120, 1440, 4320]
+    const mins = baseMinutes[Math.min(stepIndex, baseMinutes.length - 1)]
+    if (mins < 60) return `${mins} min`
+    if (mins < 1440) return `${Math.round(mins / 60)}h`
+    return `${Math.round(mins / 1440)}d`
+  }
 
   const runFunnel = async () => {
     if (!canRun) return
@@ -75,7 +95,65 @@ export default function FunnelsPage() {
           <h1 className="text-xl font-semibold text-heading">Funnel Builder</h1>
           <p className="text-sm text-text-secondary mt-1">Define event steps to measure conversion drop-off</p>
         </div>
+        <div className="flex items-center gap-2">
+          {saved.length > 0 && (
+            <button
+              onClick={() => setShowSaved(!showSaved)}
+              className="flex items-center gap-1.5 px-3 py-2 border border-border rounded-lg text-sm text-text-secondary hover:text-text-primary hover:border-accent/30"
+            >
+              <FolderOpen className="w-4 h-4" /> Saved ({saved.length})
+            </button>
+          )}
+          {result && (
+            <button
+              onClick={async () => {
+                const name = prompt('Name this funnel:')
+                if (!name) return
+                try {
+                  await saveAnalysis.mutateAsync({
+                    name,
+                    type: 'funnel',
+                    config: { steps, dateRange },
+                  })
+                  queryClient.invalidateQueries({ queryKey: ['saved-analyses'] })
+                  toast.success('Funnel saved')
+                } catch {
+                  toast.error('Failed to save funnel')
+                }
+              }}
+              disabled={saveAnalysis.isPending}
+              className="flex items-center gap-1.5 px-3 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent-hover"
+            >
+              <Save className="w-4 h-4" /> Save
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Saved funnels dropdown */}
+      {showSaved && saved.length > 0 && (
+        <div className="bg-white border border-border rounded-xl p-4 mb-4">
+          <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-3">Saved Funnels</h3>
+          <div className="space-y-2">
+            {saved.map(s => (
+              <button
+                key={s.id}
+                onClick={() => {
+                  const config = s.config as { steps?: StepInput[]; dateRange?: string }
+                  if (config.steps) setSteps(config.steps)
+                  if (config.dateRange) setDateRange(config.dateRange)
+                  setShowSaved(false)
+                  toast.success(`Loaded "${s.name}"`)
+                }}
+                className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface text-sm text-text-primary flex items-center justify-between"
+              >
+                <span className="font-medium">{s.name}</span>
+                <span className="text-xs text-text-muted">{new Date(s.createdAt).toLocaleDateString()}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Builder */}
       <div className="bg-white border border-border rounded-xl p-6 mb-6">
@@ -204,9 +282,17 @@ export default function FunnelsPage() {
                   />
                 </div>
                 {i > 0 && step.dropoff > 0 && (
-                  <p className="text-xs text-red-500 mt-1 ml-7">
-                    -{step.dropoff.toLocaleString()} dropped ({step.dropoffPercentage}% drop-off)
-                  </p>
+                  <div className="flex items-center gap-3 mt-1 ml-7">
+                    <p className="text-xs text-red-500">
+                      -{step.dropoff.toLocaleString()} dropped ({step.dropoffPercentage}% drop-off)
+                    </p>
+                    {i > 0 && (
+                      <span className="inline-flex items-center gap-1 text-xs text-text-muted">
+                        <Clock className="w-3 h-3" />
+                        ~{estimateStageTime(i)} between steps
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             ))}

@@ -2,8 +2,10 @@
 
 import { useState, useMemo } from 'react'
 import { useDashboardStats, useDashboardActivity, useDashboardTrends } from '@/hooks/useDashboard'
+import { usePredictionGoals } from '@/hooks/usePredictions'
 import { formatCurrency } from '@storees/shared'
-import { Info, Activity, ChevronUp, ChevronDown } from 'lucide-react'
+import { Info, Activity, ChevronUp, ChevronDown, Brain, ArrowRight } from 'lucide-react'
+import Link from 'next/link'
 import { Skeleton } from '@/components/ui/Skeleton'
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -17,6 +19,9 @@ export default function DashboardPage() {
   const { data: stats, isLoading: statsLoading, isError: statsError } = useDashboardStats()
   const { data: activity, isLoading: activityLoading, isError: activityError } = useDashboardActivity()
   const { data: trends, isLoading: trendsLoading, isError: trendsError } = useDashboardTrends(range)
+  const { data: predictionGoalsData } = usePredictionGoals()
+  const predictionGoals = predictionGoalsData?.data ?? []
+  const activeGoals = predictionGoals.filter(g => g.status === 'active')
 
   const domain = stats?.data.domainType ?? 'ecommerce'
   const chartData = useMemo(() => ({
@@ -156,6 +161,68 @@ export default function DashboardPage() {
           </ResponsiveContainer>
         </DashboardChart>
       </div>
+
+      {/* Prediction Scores Widget */}
+      {activeGoals.length > 0 && (
+        <div className="bg-white border border-border rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Brain className="w-4 h-4 text-violet-600" />
+              <h3 className="text-sm font-semibold text-heading">AI Predictions</h3>
+              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-violet-100 text-violet-700 uppercase">AI</span>
+            </div>
+            <Link href="/analytics/predictions" className="flex items-center gap-1 text-xs text-accent hover:text-accent-hover font-medium">
+              View All <ArrowRight className="w-3 h-3" />
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border">
+            {activeGoals.slice(0, 3).map(goal => {
+              const quality = goal.currentMetric
+              const targetLower = (goal.targetEvent ?? '').toLowerCase()
+              const nameLower = (goal.name ?? '').toLowerCase()
+              const isBehavior = ['dormancy','dormant','churn','cancel','default','missed','expired','abandon'].some(
+                k => targetLower.includes(k) || nameLower.includes(k)
+              )
+              const qualityLabel = quality === null ? 'Not trained'
+                : isBehavior ? (quality >= 0.90 ? 'Strong' : quality >= 0.78 ? 'Good' : 'Needs Data')
+                : quality >= 0.95 ? 'Cycle-Based'
+                : quality >= 0.90 ? 'Strong'
+                : quality >= 0.78 ? 'Good'
+                : 'Needs Data'
+              const qualityColor = quality === null ? 'text-text-muted'
+                : qualityLabel === 'Cycle-Based' ? 'text-violet-600'
+                : quality >= 0.90 ? 'text-emerald-600'
+                : quality >= 0.78 ? 'text-blue-600'
+                : 'text-amber-600'
+
+              return (
+                <Link
+                  key={goal.id}
+                  href={`/analytics/predictions/${goal.id}`}
+                  className="px-4 py-3 hover:bg-gray-50/50 transition-colors block"
+                >
+                  <p className="text-xs text-text-muted font-medium">{goal.name}</p>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    {quality !== null ? (
+                      <span className="text-lg font-bold text-heading tabular-nums">
+                        {(quality * 100).toFixed(0)}%
+                      </span>
+                    ) : (
+                      <span className="text-lg font-bold text-text-muted">—</span>
+                    )}
+                    <span className={`text-[11px] font-medium ${qualityColor}`}>{qualityLabel}</span>
+                  </div>
+                  <p className="text-[10px] text-text-muted mt-1">
+                    {goal.lastTrainedAt
+                      ? `Trained ${new Date(goal.lastTrainedAt).toLocaleDateString()}`
+                      : 'Awaiting training'}
+                  </p>
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Chart Row 2 — Domain + Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

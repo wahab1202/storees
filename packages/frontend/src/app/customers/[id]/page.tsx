@@ -1,6 +1,7 @@
 'use client'
 
-import { use, useState } from 'react'
+import { useState } from 'react'
+import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { useCustomerDetail, useCustomerOrders, useCustomerEvents, useCustomerTrips, useCustomerMessages } from '@/hooks/useCustomerDetail'
@@ -10,9 +11,11 @@ import { ActivityTab } from '@/components/customers/ActivityTab'
 import { OrdersTab } from '@/components/customers/OrdersTab'
 import { JourneysTab } from '@/components/customers/JourneysTab'
 import { MessagesTab } from '@/components/customers/MessagesTab'
+import { PredictionsTab } from '@/components/customers/PredictionsTab'
+import { JourneyTimelineTab } from '@/components/customers/JourneyTimelineTab'
 import { cn } from '@/lib/utils'
 
-const TABS = ['User Info', 'Activity', 'Orders', 'Journeys', 'Messages'] as const
+const TABS = ['User Info', 'Journey', 'Activity', 'Orders', 'Journeys', 'Messages', 'Predictions'] as const
 type Tab = (typeof TABS)[number]
 
 function getInitials(name: string | null, email: string | null): string {
@@ -37,12 +40,9 @@ function formatDate(date: Date | string): string {
   })
 }
 
-export default function CustomerProfilePage({
-  params,
-}: {
-  params: Promise<{ id: string }>
-}) {
-  const { id } = use(params)
+export default function CustomerProfilePage() {
+  const params = useParams()
+  const id = params.id as string
   const [activeTab, setActiveTab] = useState<Tab>('User Info')
 
   const { data: customerRes, isLoading } = useCustomerDetail(id)
@@ -154,6 +154,9 @@ export default function CustomerProfilePage({
       {activeTab === 'User Info' && (
         <UserInfoTab customer={customer} domain={domain} />
       )}
+      {activeTab === 'Journey' && (
+        <JourneyTimelineTab customerId={id} />
+      )}
       {activeTab === 'Activity' && (
         <ActivityTab events={eventsRes?.data ?? []} isLoading={eventsLoading} />
       )}
@@ -165,6 +168,9 @@ export default function CustomerProfilePage({
       )}
       {activeTab === 'Messages' && (
         <MessagesTab messages={messagesRes?.data ?? []} isLoading={messagesLoading} />
+      )}
+      {activeTab === 'Predictions' && (
+        <PredictionsTab customerId={id} />
       )}
     </div>
   )

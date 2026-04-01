@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
+import { SegmentPreviewPanel } from '@/components/segments/SegmentPreviewPanel'
 import { AiChatPanel } from '@/components/segments/AiChatPanel'
 import { useCreateSegment } from '@/hooks/useSegments'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
@@ -133,9 +134,10 @@ export default function CreateSegmentPage() {
           </div>
         </div>
 
-        {/* Right: AI Chat Panel */}
+        {/* Right: Preview + AI Chat Panel */}
         <div className="hidden lg:block">
-          <div className="sticky top-6">
+          <div className="sticky top-6 space-y-4">
+            <SegmentPreviewPanel filters={filters} />
             <AiChatPanel onApplyFilters={setFilters} />
           </div>
         </div>

@@ -26,6 +26,7 @@ import consentRoutes from './routes/consent.js'
 import verticalPackRoutes from './routes/verticalPacks.js'
 import wizardRoutes from './routes/wizard.js'
 import analyticsRoutes from './routes/analytics.js'
+import predictionRoutes from './routes/predictions.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { startSyncWorker } from './workers/syncWorker.js'
 import { startTriggerWorker } from './workers/triggerWorker.js'
@@ -34,6 +35,10 @@ import { startCampaignWorker } from './workers/campaignWorker.js'
 import { startMetricsWorker } from './workers/metricsWorker.js'
 import { startDeliveryWorker } from './workers/deliveryWorker.js'
 import { startInteractionWorker } from './workers/interactionWorker.js'
+import { startScoringWorker } from './workers/scoringWorker.js'
+import { startScoringScheduler } from './workers/scoringScheduler.js'
+import { startTrainingWorker } from './workers/trainingWorker.js'
+import { startCampaignScheduler } from './workers/campaignScheduler.js'
 import { registerProvider } from './services/deliveryService.js'
 import { resendProvider } from './services/resendProvider.js'
 import { pinnacleProvider } from './services/pinnacleProvider.js'
@@ -94,6 +99,7 @@ app.use('/api/consent', consentRoutes)
 app.use('/api/packs', verticalPackRoutes)
 app.use('/api/wizard', wizardRoutes)
 app.use('/api/analytics', analyticsRoutes)
+app.use('/api/predictions', predictionRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)
@@ -112,6 +118,10 @@ startCampaignWorker()
 startMetricsWorker()
 startDeliveryWorker()
 startInteractionWorker()
+startScoringWorker()
+startScoringScheduler()
+startTrainingWorker()
+startCampaignScheduler()
 
 app.listen(port, () => {
   console.log(`Storees backend running on port ${port}`)

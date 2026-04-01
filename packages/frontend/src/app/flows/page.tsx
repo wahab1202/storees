@@ -4,8 +4,8 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow } from '@/hooks/useFlows'
-import { Zap, Pause, FileEdit, Play, Square, ExternalLink, Plus, X, Workflow, Loader2, Trash2, LayoutTemplate } from 'lucide-react'
+import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow, useCloneFlow } from '@/hooks/useFlows'
+import { Zap, Pause, FileEdit, Play, Square, ExternalLink, Plus, X, Workflow, Loader2, Trash2, LayoutTemplate, TrendingUp, Users, Copy } from 'lucide-react'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { useDashboardStats } from '@/hooks/useDashboard'
@@ -58,6 +58,7 @@ export default function FlowsPage() {
   const updateStatus = useUpdateFlowStatus()
   const createFlow = useCreateFlow()
   const deleteFlow = useDeleteFlow()
+  const cloneFlow = useCloneFlow()
 
   const domain = statsData?.data.domainType ?? 'ecommerce'
   const domainConfig = DOMAIN_EVENTS[domain] ?? DOMAIN_EVENTS.ecommerce
@@ -331,6 +332,18 @@ export default function FlowsPage() {
                       <StatusIcon className="h-3 w-3" />
                       {status.label}
                     </span>
+                    <button
+                      onClick={() => cloneFlow.mutate(flow.id, {
+                        onSuccess: (result) => {
+                          if (result.data?.id) router.push(`/flows/${result.data.id}`)
+                        },
+                      })}
+                      disabled={cloneFlow.isPending}
+                      className="p-1.5 rounded-md text-text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+                      title="Clone flow"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
                     {flow.status !== 'active' && (
                       <button
                         onClick={() => setDeleteConfirm(deleteConfirm === flow.id ? null : flow.id)}
@@ -366,47 +379,9 @@ export default function FlowsPage() {
                   </div>
                 )}
 
-                {/* Trip counts + status distribution bar */}
+                {/* Trip counts + performance */}
                 <div className="mt-4 pt-3 border-t border-border">
-                  {flow.tripCounts.total > 0 && (
-                    <div className="flex h-2 rounded-full overflow-hidden mb-3">
-                      {flow.tripCounts.active > 0 && (
-                        <div
-                          className="bg-emerald-500 transition-all"
-                          style={{ width: `${(flow.tripCounts.active / flow.tripCounts.total) * 100}%` }}
-                          title={`Active: ${flow.tripCounts.active}`}
-                        />
-                      )}
-                      {flow.tripCounts.waiting > 0 && (
-                        <div
-                          className="bg-amber-400 transition-all"
-                          style={{ width: `${(flow.tripCounts.waiting / flow.tripCounts.total) * 100}%` }}
-                          title={`Waiting: ${flow.tripCounts.waiting}`}
-                        />
-                      )}
-                      {flow.tripCounts.completed > 0 && (
-                        <div
-                          className="bg-blue-500 transition-all"
-                          style={{ width: `${(flow.tripCounts.completed / flow.tripCounts.total) * 100}%` }}
-                          title={`Completed: ${flow.tripCounts.completed}`}
-                        />
-                      )}
-                      {flow.tripCounts.exited > 0 && (
-                        <div
-                          className="bg-gray-300 transition-all"
-                          style={{ width: `${(flow.tripCounts.exited / flow.tripCounts.total) * 100}%` }}
-                          title={`Exited: ${flow.tripCounts.exited}`}
-                        />
-                      )}
-                    </div>
-                  )}
-                  <div className="flex gap-6 text-sm">
-                    <Stat label="Active" value={flow.tripCounts.active} dotColor="bg-emerald-500" />
-                    <Stat label="Waiting" value={flow.tripCounts.waiting} dotColor="bg-amber-400" />
-                    <Stat label="Completed" value={flow.tripCounts.completed} dotColor="bg-blue-500" />
-                    <Stat label="Exited" value={flow.tripCounts.exited} dotColor="bg-gray-300" />
-                    <Stat label="Total" value={flow.tripCounts.total} highlight />
-                  </div>
+                  <FlowCardStats flow={flow} />
                 </div>
               </div>
             )
@@ -414,6 +389,63 @@ export default function FlowsPage() {
         </div>
       ) : null}
     </div>
+  )
+}
+
+function FlowCardStats({ flow }: { flow: import('@/hooks/useFlows').FlowWithCounts }) {
+  const tc = flow.tripCounts ?? { active: 0, waiting: 0, completed: 0, exited: 0, total: 0 }
+  const triggerEvent = (flow.triggerConfig && typeof flow.triggerConfig === 'object' && 'event' in (flow.triggerConfig as Record<string, unknown>))
+    ? String((flow.triggerConfig as Record<string, unknown>).event)
+    : null
+
+  return (
+    <>
+      {/* Badges row */}
+      <div className="flex items-center flex-wrap gap-2 mb-3">
+        {triggerEvent && (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium bg-surface text-text-secondary rounded-md border border-border">
+            <Zap className="h-3 w-3 text-accent" />
+            {formatEventLabel(triggerEvent)}
+          </span>
+        )}
+        {tc.total > 0 && (
+          <span className={cn(
+            'inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold rounded-md',
+            (tc.completed / tc.total) * 100 >= 50 ? 'bg-green-50 text-green-700'
+              : (tc.completed / tc.total) * 100 >= 20 ? 'bg-amber-50 text-amber-700'
+              : 'bg-red-50 text-red-600',
+          )}>
+            <TrendingUp className="h-3 w-3" />
+            {((tc.completed / tc.total) * 100).toFixed(0)}% completion
+          </span>
+        )}
+        {tc.active + tc.waiting > 0 && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium bg-blue-50 text-blue-600 rounded-md">
+            <Users className="h-3 w-3" />
+            {tc.active + tc.waiting} in progress
+          </span>
+        )}
+      </div>
+
+      {/* Distribution bar */}
+      {tc.total > 0 && (
+        <div className="flex h-2 rounded-full overflow-hidden mb-3">
+          {tc.active > 0 && <div className="bg-emerald-500" style={{ width: `${(tc.active / tc.total) * 100}%` }} />}
+          {tc.waiting > 0 && <div className="bg-amber-400" style={{ width: `${(tc.waiting / tc.total) * 100}%` }} />}
+          {tc.completed > 0 && <div className="bg-blue-500" style={{ width: `${(tc.completed / tc.total) * 100}%` }} />}
+          {tc.exited > 0 && <div className="bg-gray-300" style={{ width: `${(tc.exited / tc.total) * 100}%` }} />}
+        </div>
+      )}
+
+      {/* Stat row */}
+      <div className="flex gap-6 text-sm">
+        <Stat label="Active" value={tc.active} dotColor="bg-emerald-500" />
+        <Stat label="Waiting" value={tc.waiting} dotColor="bg-amber-400" />
+        <Stat label="Completed" value={tc.completed} dotColor="bg-blue-500" />
+        <Stat label="Exited" value={tc.exited} dotColor="bg-gray-300" />
+        <Stat label="Total" value={tc.total} highlight />
+      </div>
+    </>
   )
 }
 

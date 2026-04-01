@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq'
-import { eq, and, sql, count, sum, max, min } from 'drizzle-orm'
+import { eq, and, sql, count, max, min } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { customers, events, entities } from '../db/schema.js'
@@ -136,30 +136,62 @@ async function computeEcommerceMetrics(
   projectId: string,
   customerId: string,
 ): Promise<Record<string, unknown>> {
-  const agg = await db.execute(sql`
+  // Query 1: Event aggregates
+  const eventAgg = await db.execute(sql`
     SELECT
       COUNT(*) AS total_events,
       MAX(timestamp) AS last_event_at,
       MIN(timestamp) AS first_event_at,
-      COUNT(*) FILTER (WHERE event_name = 'order_placed') AS order_count,
+      COUNT(*) FILTER (WHERE event_name IN ('order_placed', 'order_completed')) AS order_event_count,
       COUNT(*) FILTER (WHERE event_name = 'cart_created') AS cart_count
     FROM events
     WHERE project_id = ${projectId} AND customer_id = ${customerId}
   `)
 
-  const row = agg.rows[0] as Record<string, unknown> | undefined
-  const lastEvent = row?.last_event_at ? new Date(row.last_event_at as string) : null
-  const daysSinceLastOrder = lastEvent
-    ? Math.floor((Date.now() - lastEvent.getTime()) / (1000 * 60 * 60 * 24))
+  // Query 2: Real order-based metrics (source of truth for order dates)
+  const orderAgg = await db.execute(sql`
+    SELECT
+      COUNT(*) AS order_count,
+      MIN(created_at) AS first_order_at,
+      MAX(created_at) AS last_order_at,
+      COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE discount::numeric > 0) / NULLIF(COUNT(*), 0)), 0) AS discount_pct,
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') AS orders_last_30d,
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '90 days') AS orders_last_90d
+    FROM orders
+    WHERE project_id = ${projectId} AND customer_id = ${customerId} AND status != 'cancelled'
+  `)
+
+  const eRow = eventAgg.rows[0] as Record<string, unknown> | undefined
+  const oRow = orderAgg.rows[0] as Record<string, unknown> | undefined
+
+  const lastOrderAt = oRow?.last_order_at ? new Date(oRow.last_order_at as string) : null
+  const firstOrderAt = oRow?.first_order_at ? new Date(oRow.first_order_at as string) : null
+  const daysSinceLastOrder = lastOrderAt
+    ? Math.floor((Date.now() - lastOrderAt.getTime()) / (1000 * 60 * 60 * 24))
     : null
 
+  // Update first_order_date and last_order_date columns
+  if (firstOrderAt || lastOrderAt) {
+    await db.update(customers)
+      .set({
+        firstOrderDate: firstOrderAt,
+        lastOrderDate: lastOrderAt,
+      })
+      .where(eq(customers.id, customerId))
+  }
+
   return {
-    total_events: Number(row?.total_events ?? 0),
-    order_count: Number(row?.order_count ?? 0),
-    cart_count: Number(row?.cart_count ?? 0),
+    total_events: Number(eRow?.total_events ?? 0),
+    order_count: Number(oRow?.order_count ?? 0),
+    cart_count: Number(eRow?.cart_count ?? 0),
     days_since_last_order: daysSinceLastOrder,
-    last_event_at: row?.last_event_at ?? null,
-    first_event_at: row?.first_event_at ?? null,
+    first_order_date: firstOrderAt?.toISOString() ?? null,
+    last_order_date: lastOrderAt?.toISOString() ?? null,
+    last_event_at: eRow?.last_event_at ?? null,
+    first_event_at: eRow?.first_event_at ?? null,
+    discount_order_percentage: Number(oRow?.discount_pct ?? 0),
+    orders_in_last_30_days: Number(oRow?.orders_last_30d ?? 0),
+    orders_in_last_90_days: Number(oRow?.orders_last_90d ?? 0),
   }
 }
 

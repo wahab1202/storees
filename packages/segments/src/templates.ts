@@ -10,7 +10,7 @@ type SegmentTemplate = {
 
 export const SEGMENT_TEMPLATE_DEFINITIONS: SegmentTemplate[] = [
   {
-    name: 'Champion Customers',
+    name: 'Champions',
     slug: 'champion_customers',
     type: 'default',
     description: 'Highest value customers — ordered recently, frequently, and spent the most.',
@@ -37,15 +37,29 @@ export const SEGMENT_TEMPLATE_DEFINITIONS: SegmentTemplate[] = [
     },
   },
   {
-    name: 'Discount Shoppers',
-    slug: 'discount_shoppers',
+    name: 'New Buyers',
+    slug: 'new_buyers',
     type: 'default',
-    description: 'Customers who predominantly buy during sales or with coupons.',
+    description: 'Customers who started purchasing recently — 1 to 3 orders, active within last 60 days.',
     filters: {
       logic: 'AND',
       rules: [
-        { field: 'discount_order_percentage', operator: 'greater_than', value: 50 },
-        { field: 'total_orders', operator: 'greater_than', value: 2 },
+        { field: 'total_orders', operator: 'greater_than', value: 0 },
+        { field: 'total_orders', operator: 'less_than', value: 4 },
+        { field: 'days_since_last_order', operator: 'less_than', value: 60 },
+      ],
+    },
+  },
+  {
+    name: 'At Risk',
+    slug: 'at_risk',
+    type: 'default',
+    description: 'Previously active buyers who haven\'t ordered in 60+ days.',
+    filters: {
+      logic: 'AND',
+      rules: [
+        { field: 'total_orders', operator: 'greater_than', value: 0 },
+        { field: 'days_since_last_order', operator: 'greater_than', value: 59 },
       ],
     },
   },
@@ -53,12 +67,24 @@ export const SEGMENT_TEMPLATE_DEFINITIONS: SegmentTemplate[] = [
     name: 'Window Shoppers',
     slug: 'window_shoppers',
     type: 'default',
-    description: 'Registered customers with no purchases.',
+    description: 'Registered contacts with no purchases yet.',
     filters: {
       logic: 'AND',
       rules: [
         { field: 'total_orders', operator: 'is', value: 0 },
-        { field: 'days_since_first_seen', operator: 'greater_than', value: 7 },
+      ],
+    },
+  },
+  {
+    name: 'Overdue Reorders',
+    slug: 'overdue_reorders',
+    type: 'default',
+    description: 'Repeat buyers past their expected reorder date.',
+    filters: {
+      logic: 'AND',
+      rules: [
+        { field: 'days_overdue', operator: 'greater_than', value: 0 },
+        { field: 'total_orders', operator: 'greater_than', value: 1 },
       ],
     },
   },

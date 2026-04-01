@@ -35,34 +35,48 @@
       "prediction_window_days": 7,
       "min_positive_labels": 200,
       "priority": 1,
-      "default_status": "active"
+      "default_status": "active",
+      "description": "Predict which customers are likely to place an order in the next 7 days"
     },
     {
-      "name": "Churn Risk",
-      "target_event": "order_completed",
+      "name": "Predict Dormancy",
+      "target_event": "dormancy",
       "observation_window_days": 90,
       "prediction_window_days": 30,
       "min_positive_labels": 100,
       "priority": 2,
-      "default_status": "active"
+      "default_status": "active",
+      "description": "Identify active customers who are likely to become inactive in the next 30 days"
     },
     {
-      "name": "Upsell Likelihood",
-      "target_event": "order_completed",
-      "observation_window_days": 60,
-      "prediction_window_days": 14,
-      "min_positive_labels": 300,
-      "priority": 3,
-      "default_status": "paused"
-    },
-    {
-      "name": "Cart Abandonment Recovery",
-      "target_event": "added_to_cart",
-      "observation_window_days": 14,
-      "prediction_window_days": 1,
+      "name": "Predict Cart Abandonment",
+      "target_event": "cart_abandoned",
+      "observation_window_days": 30,
+      "prediction_window_days": 7,
       "min_positive_labels": 150,
+      "priority": 3,
+      "default_status": "active",
+      "description": "Predict which customers will add to cart but not complete checkout"
+    },
+    {
+      "name": "Repeat Purchase Propensity",
+      "target_event": "order_completed",
+      "observation_window_days": 90,
+      "prediction_window_days": 30,
+      "min_positive_labels": 300,
       "priority": 4,
-      "default_status": "paused"
+      "default_status": "paused",
+      "description": "Predict which existing buyers are likely to purchase again within 30 days"
+    },
+    {
+      "name": "Churn Risk",
+      "target_event": "churn",
+      "observation_window_days": 90,
+      "prediction_window_days": 60,
+      "min_positive_labels": 100,
+      "priority": 5,
+      "default_status": "paused",
+      "description": "Predict which customers are at risk of leaving permanently (60-day inactivity)"
     }
   ],
   "segment_templates": [
@@ -74,9 +88,9 @@
     },
     {
       "name": "Cart Abandoners",
-      "description": "Added to cart in last 7 days but didn't purchase",
+      "description": "Added to cart recently but haven't purchased in 7+ days",
       "icon": "🛒",
-      "filter": { "logic": "AND", "rules": [{ "field": "last_event", "operator": "is", "value": "added_to_cart" }, { "field": "days_since_last_order", "operator": "greater_than", "value": 7 }] }
+      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_order", "operator": "greater_than", "value": 7 }, { "field": "total_orders", "operator": "greater_than", "value": 0 }] }
     },
     {
       "name": "Repeat Buyers",
@@ -98,9 +112,9 @@
     },
     {
       "name": "Discount Shoppers",
-      "description": "Customers who primarily buy on discount",
+      "description": "Customers where 20%+ of orders used discounts",
       "icon": "🏷️",
-      "filter": { "logic": "AND", "rules": [{ "field": "avg_discount_rate", "operator": "greater_than", "value": 20 }] }
+      "filter": { "logic": "AND", "rules": [{ "field": "discount_order_percentage", "operator": "greater_than", "value": 20 }] }
     },
     {
       "name": "Email Subscribers",
@@ -123,9 +137,10 @@
     "journey_steps": ["Browse Products", "Add to Cart", "Checkout", "Purchase", "Review", "Refer Friend"],
     "priorities": [
       { "label": "Increase repeat purchases", "maps_to": "Propensity to Purchase" },
+      { "label": "Reduce customer dormancy", "maps_to": "Predict Dormancy" },
+      { "label": "Recover abandoned carts", "maps_to": "Predict Cart Abandonment" },
+      { "label": "Drive repeat purchases", "maps_to": "Repeat Purchase Propensity" },
       { "label": "Reduce customer churn", "maps_to": "Churn Risk" },
-      { "label": "Increase average order value", "maps_to": "Upsell Likelihood" },
-      { "label": "Recover abandoned carts", "maps_to": "Cart Abandonment Recovery" },
       { "label": "Improve email engagement", "maps_to": null }
     ]
   }

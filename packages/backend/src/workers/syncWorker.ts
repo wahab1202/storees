@@ -116,7 +116,7 @@ export function startSyncWorker(): Worker {
             const total = Number(shopifyOrder.total_price)
             const discount = Number(shopifyOrder.total_discounts)
 
-            await db.insert(orders).values({
+            const inserted = await db.insert(orders).values({
               projectId,
               customerId,
               externalOrderId: String(shopifyOrder.id),
@@ -133,9 +133,12 @@ export function startSyncWorker(): Worker {
               })),
               createdAt: new Date(shopifyOrder.created_at),
               fulfilledAt: shopifyOrder.fulfillment_status === 'fulfilled' ? new Date() : null,
-            }).onConflictDoNothing()
+            }).onConflictDoNothing().returning({ id: orders.id })
 
-            await updateCustomerAggregates(customerId, total)
+            // Only update aggregates if the order was actually inserted (not a duplicate)
+            if (inserted.length > 0) {
+              await updateCustomerAggregates(customerId, total, new Date(shopifyOrder.created_at))
+            }
 
             // Create historical event (does NOT trigger flows)
             await processHistoricalEvent(
@@ -274,8 +277,17 @@ async function syncCollections(projectId: string, shop: string, token: string): 
   }
 
   // Sync product-collection mappings via collects API
-  const allCollections = [...customData.custom_collections, ...smartData.smart_collections]
-  for (const col of allCollections) {
+  // Batch-load lookup maps to avoid N+1 queries
+  const allProducts = await db.select({ id: products.id, shopifyProductId: products.shopifyProductId })
+    .from(products).where(eq(products.projectId, projectId))
+  const productMap = new Map(allProducts.map(p => [p.shopifyProductId, p.id]))
+
+  const allCols = await db.select({ id: collections.id, shopifyCollectionId: collections.shopifyCollectionId })
+    .from(collections).where(eq(collections.projectId, projectId))
+  const collectionMap = new Map(allCols.map(c => [c.shopifyCollectionId, c.id]))
+
+  const allShopifyCollections = [...customData.custom_collections, ...smartData.smart_collections]
+  for (const col of allShopifyCollections) {
     try {
       const collectsData = await fetchShopifyApi<{ collects: ShopifyCollect[] }>(
         shop, token, `/collects.json?collection_id=${col.id}&limit=250`,
@@ -283,25 +295,13 @@ async function syncCollections(projectId: string, shop: string, token: string): 
       await delay(SHOPIFY_API_DELAY_MS)
 
       for (const collect of collectsData.collects) {
-        // Find internal IDs
-        const [product] = await db.select({ id: products.id })
-          .from(products)
-          .where(
-            eq(products.shopifyProductId, String(collect.product_id)),
-          )
-          .limit(1)
+        const productId = productMap.get(String(collect.product_id))
+        const collectionId = collectionMap.get(String(collect.collection_id))
 
-        const [collection] = await db.select({ id: collections.id })
-          .from(collections)
-          .where(
-            eq(collections.shopifyCollectionId, String(collect.collection_id)),
-          )
-          .limit(1)
-
-        if (product && collection) {
+        if (productId && collectionId) {
           await db.insert(productCollections).values({
-            productId: product.id,
-            collectionId: collection.id,
+            productId,
+            collectionId,
           }).onConflictDoNothing()
         }
       }

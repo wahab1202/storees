@@ -9,6 +9,12 @@ export const STANDARD_EVENTS = {
   CUSTOMER_CREATED: 'customer_created',
   CUSTOMER_UPDATED: 'customer_updated',
 
+  // Storefront / SDK-sourced product events
+  PRODUCT_VIEWED: 'product_viewed',
+  ADDED_TO_CART: 'added_to_cart',
+  ADDED_TO_WISHLIST: 'added_to_wishlist',
+  COLLECTION_VIEWED: 'collection_viewed',
+
   // Segment engine-sourced
   ENTERS_SEGMENT: 'enters_segment',
   EXITS_SEGMENT: 'exits_segment',
