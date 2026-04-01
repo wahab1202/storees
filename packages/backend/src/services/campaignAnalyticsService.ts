@@ -205,7 +205,7 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
       LIMIT 72
     `)
 
-    timeline = (timelineRows as { rows?: Array<{ hour: string; delivered: string; opened: string; clicked: string }> }).rows?.map(r => ({
+    timeline = (timelineRows as unknown as { rows?: Array<{ hour: string; delivered: string; opened: string; clicked: string }> }).rows?.map(r => ({
       hour: r.hour,
       delivered: Number(r.delivered),
       opened: Number(r.opened),
@@ -268,6 +268,7 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
       )
 
     for (const e of convEvents) {
+      if (!e.customerId) continue
       convertedSet.add(e.customerId)
       revenueMap.set(e.customerId, (revenueMap.get(e.customerId) ?? 0) + Number(e.revenue ?? 0))
     }
@@ -327,7 +328,7 @@ export async function compareAbVariants(campaignId: string): Promise<{
     GROUP BY 1
   `)
 
-  const variants = (rows as { rows?: Array<{ variant: string; sent: string; opened: string; clicked: string }> }).rows ?? []
+  const variants = (rows as unknown as { rows?: Array<{ variant: string; sent: string; opened: string; clicked: string }> }).rows ?? []
   const a = variants.find(v => v.variant === 'A')
   const b = variants.find(v => v.variant === 'B')
 
