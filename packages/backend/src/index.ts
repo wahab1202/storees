@@ -1,4 +1,6 @@
 import 'dotenv/config'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import express from 'express'
 import cors from 'cors'
 import compression from 'compression'
@@ -61,6 +63,13 @@ app.use(cors({
   origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   credentials: true,
 }))
+
+// Serve SDK static files at /sdk/ (e.g., /sdk/storees.min.js)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+app.use('/sdk', cors({ origin: '*' }), express.static(
+  path.resolve(__dirname, '../../sdk/dist'),
+  { maxAge: '1h', setHeaders: (res) => { res.setHeader('Access-Control-Allow-Origin', '*') } },
+))
 
 // Health check
 app.get('/api/health', (_req, res) => {
