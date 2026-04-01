@@ -214,6 +214,14 @@ async function computeEcommerceMetrics(
     ...clvResult,
     // Churn risk as 0-100 integer (used by segment evaluator + predictions)
     churn_risk: Math.round(clvResult.clv_churn_probability * 100),
+    // Reorder intelligence (for repeat buyers)
+    ...(totalOrders > 1 && firstOrderAt && lastOrderAt ? (() => {
+      const avgCycleDays = Math.round(
+        ((lastOrderAt.getTime() - firstOrderAt.getTime()) / (1000 * 60 * 60 * 24)) / (totalOrders - 1)
+      )
+      const daysOverdue = Math.max(0, Math.round(daysSinceLastOrder! - avgCycleDays))
+      return { days_overdue: daysOverdue, avg_cycle_days: avgCycleDays, expected_reorder_days: avgCycleDays }
+    })() : {}),
   }
 }
 
