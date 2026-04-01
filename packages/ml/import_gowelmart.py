@@ -518,14 +518,28 @@ def import_data(project_id: str, clean: bool = False):
             if done % 2000 == 0 or done == len(customer_rows):
                 print(f"  Customers: {done}/{len(customer_rows)}")
 
-        print(f"Inserting {len(event_rows)} events...")
-        for i in range(0, len(event_rows), BATCH_SIZE):
-            batch = event_rows[i:i + BATCH_SIZE]
-            session.execute(events_table.insert(), batch)
+        # Deduplicate events by idempotency_key before insert
+        seen_keys: set[str] = set()
+        deduped_events: list[dict] = []
+        for ev in event_rows:
+            key = ev.get("idempotency_key", "")
+            if key and key in seen_keys:
+                continue
+            if key:
+                seen_keys.add(key)
+            deduped_events.append(ev)
+        print(f"Inserting {len(deduped_events)} events (deduped from {len(event_rows)})...")
+        for i in range(0, len(deduped_events), BATCH_SIZE):
+            batch = deduped_events[i:i + BATCH_SIZE]
+            stmt = pg_insert(events_table).values(batch)
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["project_id", "idempotency_key"],
+            )
+            session.execute(stmt)
             session.flush()
-            done = min(i + BATCH_SIZE, len(event_rows))
-            if done % 5000 == 0 or done == len(event_rows):
-                print(f"  Events: {done}/{len(event_rows)}")
+            done = min(i + BATCH_SIZE, len(deduped_events))
+            if done % 5000 == 0 or done == len(deduped_events):
+                print(f"  Events: {done}/{len(deduped_events)}")
 
         session.commit()
 
