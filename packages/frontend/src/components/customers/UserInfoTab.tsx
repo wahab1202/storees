@@ -83,6 +83,7 @@ function getMetricGroups(customer: CustomerDetail, domain: string): MetricGroup[
           items: [
             { label: 'Last Active', value: formatShortDate(customer.lastSeen) },
             { label: 'Days Since Last Order', value: m.days_since_last_order != null ? String(m.days_since_last_order) : '—' },
+            { label: 'Purchase Frequency', value: m.clv_monthly_frequency ? `${m.clv_monthly_frequency}/mo` : '—' },
           ],
         },
         {
@@ -90,7 +91,8 @@ function getMetricGroups(customer: CustomerDetail, domain: string): MetricGroup[
           icon: ShoppingCart,
           items: [
             { label: 'Orders', value: String(customer.totalOrders) },
-            { label: 'Lifetime Value', value: formatCurrency(customer.clv) },
+            { label: 'Total Spend', value: formatCurrency(Number(m.clv_historical ?? customer.totalSpent)) },
+            { label: 'Avg Order Value', value: formatCurrency(customer.avgOrderValue) },
           ],
         },
         {
@@ -98,7 +100,8 @@ function getMetricGroups(customer: CustomerDetail, domain: string): MetricGroup[
           icon: TrendingUp,
           items: [
             { label: 'First Seen', value: formatShortDate(customer.firstSeen) },
-            { label: 'Avg Order Value', value: formatCurrency(customer.avgOrderValue) },
+            { label: 'Retention Estimate', value: m.clv_retention_months ? `${m.clv_retention_months} months` : '—' },
+            { label: 'Churn Risk', value: m.clv_churn_probability != null ? `${Math.round(Number(m.clv_churn_probability) * 100)}%` : '—' },
           ],
         },
       ]
@@ -233,8 +236,61 @@ export function UserInfoTab({ customer, domain }: Props) {
     ([, v]) => v !== null && v !== undefined && v !== '',
   )
 
+  const clvHistorical = Number(metrics.clv_historical ?? 0)
+  const clvPredicted = Number(metrics.clv_predicted ?? 0)
+  const clvTotal = Number(metrics.clv_total ?? customer.clv ?? 0)
+  const clvHealth = (metrics.clv_health as string) ?? null
+  const hasCLV = customer.totalOrders > 0 && domain === 'ecommerce'
+
+  const healthConfig: Record<string, { label: string; color: string; bg: string }> = {
+    growing: { label: 'Growing', color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200' },
+    stable: { label: 'Stable', color: 'text-blue-700', bg: 'bg-blue-50 border-blue-200' },
+    declining: { label: 'Declining', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' },
+    at_risk: { label: 'At Risk', color: 'text-orange-700', bg: 'bg-orange-50 border-orange-200' },
+    churned: { label: 'Churned', color: 'text-red-700', bg: 'bg-red-50 border-red-200' },
+  }
+
   return (
     <div className="space-y-6">
+      {/* CLV Card (ecommerce only) */}
+      {hasCLV && (
+        <div className="bg-white border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-surface">
+                <TrendingUp className="h-4 w-4 text-text-muted" />
+              </div>
+              <h3 className="text-sm font-semibold text-text-primary">Customer Lifetime Value</h3>
+            </div>
+            {clvHealth && healthConfig[clvHealth] && (
+              <span className={cn(
+                'px-2.5 py-0.5 text-xs font-medium rounded-full border',
+                healthConfig[clvHealth].bg,
+                healthConfig[clvHealth].color,
+              )}>
+                {healthConfig[clvHealth].label}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-baseline gap-2 mb-4">
+            <span className="text-2xl font-bold text-text-primary">{formatCurrency(clvTotal)}</span>
+            <span className="text-xs text-text-muted">total estimated value</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-surface rounded-lg p-3">
+              <div className="text-xs text-text-muted mb-1">Historical (actual spend)</div>
+              <div className="text-sm font-semibold text-text-primary">{formatCurrency(clvHistorical)}</div>
+            </div>
+            <div className="bg-surface rounded-lg p-3">
+              <div className="text-xs text-text-muted mb-1">Predicted (future value)</div>
+              <div className="text-sm font-semibold text-accent">{formatCurrency(clvPredicted)}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Metric Card Groups */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {metricGroups.map(group => {

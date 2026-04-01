@@ -3,6 +3,7 @@ import { eq, and, sql, count, max, min } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { customers, events, entities } from '../db/schema.js'
+import { computeClv } from '../services/customerService.js'
 import type { DomainType } from '@storees/shared'
 
 type EventJob = {
@@ -170,15 +171,33 @@ async function computeEcommerceMetrics(
     ? Math.floor((Date.now() - lastOrderAt.getTime()) / (1000 * 60 * 60 * 24))
     : null
 
-  // Update first_order_date and last_order_date columns
-  if (firstOrderAt || lastOrderAt) {
-    await db.update(customers)
-      .set({
-        firstOrderDate: firstOrderAt,
-        lastOrderDate: lastOrderAt,
-      })
-      .where(eq(customers.id, customerId))
-  }
+  // Fetch current customer data for CLV calculation
+  const [custRow] = await db.select({
+    totalSpent: customers.totalSpent,
+    totalOrders: customers.totalOrders,
+    metrics: customers.metrics,
+  }).from(customers).where(eq(customers.id, customerId)).limit(1)
+
+  const totalSpent = Number(custRow?.totalSpent ?? 0)
+  const totalOrders = custRow?.totalOrders ?? 0
+  const existingMetrics = (custRow?.metrics ?? {}) as Record<string, unknown>
+
+  // Compute CLV
+  const clvResult = computeClv({
+    totalSpent,
+    totalOrders,
+    firstOrderDate: firstOrderAt,
+    lastOrderDate: lastOrderAt,
+    churnRiskScore: existingMetrics.churn_risk ? Number(existingMetrics.churn_risk) : undefined,
+  })
+
+  // Update first_order_date, last_order_date, and CLV column
+  await db.update(customers)
+    .set({
+      ...(firstOrderAt || lastOrderAt ? { firstOrderDate: firstOrderAt, lastOrderDate: lastOrderAt } : {}),
+      clv: String(clvResult.clv_total),
+    })
+    .where(eq(customers.id, customerId))
 
   return {
     total_events: Number(eRow?.total_events ?? 0),
@@ -192,6 +211,7 @@ async function computeEcommerceMetrics(
     discount_order_percentage: Number(oRow?.discount_pct ?? 0),
     orders_in_last_30_days: Number(oRow?.orders_last_30d ?? 0),
     orders_in_last_90_days: Number(oRow?.orders_last_90d ?? 0),
+    ...clvResult,
   }
 }
 
