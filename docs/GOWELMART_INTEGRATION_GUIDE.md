@@ -250,7 +250,165 @@ async function onCustomerCreated(customer) {
 
 ---
 
-## 5. SDK Hosting
+## 5. One-Time Historical Sync
+
+Before webhooks go live, push all existing customers, orders, and carts into Storees. This is a one-time bulk import using the same APIs.
+
+### Step 1: Push all existing customers
+
+```
+POST /api/v1/customers
+```
+
+Iterate through your entire customer database and push each one:
+
+```javascript
+// Node.js example — run once
+const STOREES_URL = 'https://api.storees.io/api/v1';
+const HEADERS = {
+  'X-API-Key': process.env.STOREES_API_KEY,
+  'X-API-Secret': process.env.STOREES_API_SECRET,
+  'Content-Type': 'application/json',
+};
+
+// Fetch all customers from your database (paginate as needed)
+const customers = await getAllCustomers(); // your Medusa query
+
+for (const customer of customers) {
+  await fetch(`${STOREES_URL}/customers`, {
+    method: 'POST',
+    headers: HEADERS,
+    body: JSON.stringify({
+      customer_id: customer.id,
+      attributes: {
+        email: customer.email,
+        phone: customer.phone,
+        name: `${customer.first_name || ''} ${customer.last_name || ''}`.trim(),
+        company_name: customer.metadata?.shop_name,
+        dealer_id: customer.metadata?.dealer_id,
+        city: customer.metadata?.city,
+      },
+    }),
+  });
+}
+```
+
+### Step 2: Push all historical orders (batch)
+
+```
+POST /api/v1/events/batch
+```
+
+Push orders in batches of up to 1,000:
+
+```javascript
+const orders = await getAllOrders(); // your Medusa query
+const BATCH_SIZE = 500;
+
+for (let i = 0; i < orders.length; i += BATCH_SIZE) {
+  const batch = orders.slice(i, i + BATCH_SIZE);
+
+  await fetch(`${STOREES_URL}/events/batch`, {
+    method: 'POST',
+    headers: HEADERS,
+    body: JSON.stringify({
+      events: batch.map(order => ({
+        event_name: 'order_completed',
+        customer_id: order.customer_id,
+        customer_email: order.email,
+        timestamp: order.created_at,
+        idempotency_key: `order_${order.id}`,
+        properties: {
+          order_id: order.id,
+          display_id: order.display_id,
+          order_total: order.total / 100,
+          discount_total: order.discount_total / 100,
+          currency: order.currency_code,
+          status: order.status,
+          line_items: order.items.map(item => ({
+            product_id: item.variant?.product_id,
+            product_name: item.title,
+            variant_sku: item.variant?.sku,
+            unit_price: item.unit_price / 100,
+            quantity: item.quantity,
+          })),
+          city: order.shipping_address?.city,
+          province: order.shipping_address?.province,
+        },
+      })),
+    }),
+  });
+
+  console.log(`Pushed orders ${i + 1} to ${Math.min(i + BATCH_SIZE, orders.length)} of ${orders.length}`);
+}
+```
+
+### Step 3: Push abandoned carts
+
+```javascript
+const abandonedCarts = await getAbandonedCarts(); // carts where completed = false
+
+for (let i = 0; i < abandonedCarts.length; i += BATCH_SIZE) {
+  const batch = abandonedCarts.slice(i, i + BATCH_SIZE);
+
+  await fetch(`${STOREES_URL}/events/batch`, {
+    method: 'POST',
+    headers: HEADERS,
+    body: JSON.stringify({
+      events: batch.flatMap(cart => [
+        {
+          event_name: 'added_to_cart',
+          customer_id: cart.customer_id,
+          timestamp: cart.created_at,
+          idempotency_key: `cart_add_${cart.id}`,
+          properties: {
+            cart_id: cart.id,
+            total: cart.total / 100,
+            line_items: cart.items.map(item => ({
+              product_id: item.variant?.product_id,
+              product_name: item.title,
+              unit_price: item.unit_price / 100,
+              quantity: item.quantity,
+            })),
+          },
+        },
+        {
+          event_name: 'cart_abandoned',
+          customer_id: cart.customer_id,
+          timestamp: cart.updated_at,
+          idempotency_key: `cart_abandon_${cart.id}`,
+          properties: {
+            cart_id: cart.id,
+            total: cart.total / 100,
+          },
+        },
+      ]),
+    }),
+  });
+}
+```
+
+### Sync Order
+
+Run the steps in this order:
+1. **Customers first** — so identity resolution works when events arrive
+2. **Orders** — creates order history and CLV
+3. **Carts** — abandoned cart data for recovery flows
+
+### Idempotency
+
+All events use `idempotency_key` — if you run the sync twice, duplicates are silently ignored. Safe to re-run.
+
+### After Sync
+
+Once the historical sync is complete:
+- Customer profiles, order history, and CLV will appear in the Storees dashboard
+- Segments will auto-evaluate and assign customers
+- Then switch on webhooks for real-time events going forward
+
+---
+
+## 6. SDK Hosting
 
 The Storees JavaScript SDK is served from the backend. There is no separate CDN — the backend exposes the built SDK file at:
 
@@ -269,7 +427,7 @@ https://api.storees.io/sdk/storees.min.js
 
 ---
 
-## 6. Web Frontend SDK (JavaScript)
+## 7. Web Frontend SDK (JavaScript)
 
 Install the Storees SDK on GoWelmart's customer-facing website to capture browsing behavior.
 
@@ -390,7 +548,7 @@ Storees.track('collection_viewed', {
 
 ---
 
-## 7. Flutter SDK Integration
+## 8. Flutter SDK Integration
 
 No native Flutter SDK yet — use the REST API directly. Create a lightweight wrapper:
 
@@ -519,7 +677,7 @@ dependencies:
 
 ---
 
-## 8. Android SDK Integration (Kotlin)
+## 9. Android SDK Integration (Kotlin)
 
 ```kotlin
 // StoreesSdk.kt
@@ -651,7 +809,7 @@ implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 
 ---
 
-## 9. iOS SDK Integration (Swift)
+## 10. iOS SDK Integration (Swift)
 
 ```swift
 // Storees.swift
@@ -795,7 +953,7 @@ No external dependencies required — uses Foundation's `URLSession`.
 
 ---
 
-## 10. What Storees Does With This Data
+## 11. What Storees Does With This Data
 
 | Data Source | Storees Feature |
 |-------------|----------------|
@@ -809,7 +967,7 @@ No external dependencies required — uses Foundation's `URLSession`.
 
 ---
 
-## 11. Testing the Integration
+## 12. Testing the Integration
 
 ### Test a single event via cURL
 
@@ -842,7 +1000,7 @@ curl -X POST https://api.storees.io/api/v1/events \
 
 ---
 
-## 12. Rate Limits
+## 13. Rate Limits
 
 | Limit | Value |
 |-------|-------|
@@ -852,7 +1010,7 @@ curl -X POST https://api.storees.io/api/v1/events \
 
 ---
 
-## 13. Idempotency
+## 14. Idempotency
 
 Use `idempotency_key` to prevent duplicate events:
 
