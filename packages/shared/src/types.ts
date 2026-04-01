@@ -608,7 +608,7 @@ export type PredictionGoal = {
 export type DomainFieldDef = {
   field: string
   label: string
-  type: 'number' | 'string' | 'date' | 'boolean' | 'select' | 'product' | 'collection'
+  type: 'number' | 'string' | 'date' | 'boolean' | 'select' | 'product' | 'collection' | 'product_category'
   category: string
   operators: FilterOperator[]
   options?: string[]
