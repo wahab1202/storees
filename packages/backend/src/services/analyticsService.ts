@@ -73,7 +73,7 @@ export async function computeFunnel(
           SELECT customer_id
           FROM events
           WHERE project_id = ${projectId}
-            AND event_name = ANY(${requiredEvents})
+            AND event_name IN (${sql.join(requiredEvents.map(e => sql`${e}`), sql`, `)})
             AND timestamp >= ${startDate}
             AND timestamp <= ${endDate}
             AND customer_id IS NOT NULL
