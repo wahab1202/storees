@@ -65,7 +65,7 @@ app.use(cors({
   credentials: true,
 }))
 
-// Serve SDK static files at /sdk/ (e.g., /sdk/storees.min.js)
+// Serve SDK static files at /sdk/ (e.g., /sdk/storees.min.js) — CORS enabled for all origins
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 app.use('/sdk', cors({ origin: '*' }), express.static(
   path.resolve(__dirname, '../../sdk/dist'),
