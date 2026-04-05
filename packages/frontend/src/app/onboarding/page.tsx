@@ -274,7 +274,7 @@ export default function OnboardingPage() {
               value={projectName}
               onChange={(e) => setProjectName(e.target.value)}
               placeholder="My Awesome App"
-              className="w-full px-4 py-2.5 border border-border rounded-lg text-text-primary focus:outline-none focus:border-border-focus"
+              className="w-full px-4 py-2.5 border border-border rounded-lg text-text-primary focus:outline-none focus:border-accent"
             />
           </div>
 

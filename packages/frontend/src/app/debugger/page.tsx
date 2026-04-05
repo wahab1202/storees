@@ -37,7 +37,7 @@ export default function DebuggerPage() {
         value={filter}
         onChange={e => setFilter(e.target.value)}
         className="w-full max-w-md mb-4 px-4 py-2 text-sm border border-border rounded-lg bg-surface-elevated
-                   focus:outline-none focus:ring-2 focus:ring-border-focus placeholder:text-text-muted"
+                   focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
       />
 
       {isLoading ? (
