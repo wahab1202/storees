@@ -286,8 +286,158 @@ Storees.identify('user-123', {
             ))}
           </div>
         </div>
+        {/* Channel Provider Configuration */}
+        <ChannelProviderSettings />
+
         {/* AI Provider Configuration */}
         <AiProviderSettings />
+      </div>
+    </div>
+  )
+}
+
+// ─── Channel Provider Settings ───────────────────────────
+
+const CHANNEL_PROVIDERS: Record<string, Array<{ value: string; label: string; fields: Array<{ key: string; label: string; type?: string }> }>> = {
+  sms: [
+    { value: 'twilio', label: 'Twilio', fields: [{ key: 'accountSid', label: 'Account SID' }, { key: 'authToken', label: 'Auth Token', type: 'password' }, { key: 'fromNumber', label: 'From Number' }] },
+    { value: 'gupshup', label: 'Gupshup', fields: [{ key: 'userid', label: 'User ID' }, { key: 'password', label: 'Password', type: 'password' }] },
+    { value: 'bird', label: 'Bird (MessageBird)', fields: [{ key: 'accessKey', label: 'Access Key', type: 'password' }, { key: 'originator', label: 'Originator' }] },
+    { value: 'vonage', label: 'Vonage (Nexmo)', fields: [{ key: 'apiKey', label: 'API Key' }, { key: 'apiSecret', label: 'API Secret', type: 'password' }, { key: 'from', label: 'From Name' }] },
+    { value: 'pinnacle', label: 'Pinnacle', fields: [{ key: 'apiKey', label: 'API Key', type: 'password' }, { key: 'fromNumber', label: 'From Number' }] },
+  ],
+  whatsapp: [
+    { value: 'meta', label: 'WhatsApp Cloud API (Meta)', fields: [{ key: 'phoneNumberId', label: 'Phone Number ID' }, { key: 'accessToken', label: 'Access Token', type: 'password' }] },
+    { value: 'twilio', label: 'Twilio', fields: [{ key: 'accountSid', label: 'Account SID' }, { key: 'authToken', label: 'Auth Token', type: 'password' }, { key: 'fromNumber', label: 'WhatsApp Number' }] },
+    { value: 'gupshup', label: 'Gupshup', fields: [{ key: 'apiKey', label: 'API Key', type: 'password' }, { key: 'appName', label: 'App Name' }, { key: 'sourceNumber', label: 'Source Number' }] },
+    { value: 'bird', label: 'Bird (MessageBird)', fields: [{ key: 'accessKey', label: 'Access Key', type: 'password' }, { key: 'channelId', label: 'WA Channel ID' }] },
+    { value: 'vonage', label: 'Vonage (Nexmo)', fields: [{ key: 'apiKey', label: 'API Key' }, { key: 'apiSecret', label: 'API Secret', type: 'password' }, { key: 'from', label: 'From Number' }] },
+  ],
+  push: [
+    { value: 'fcm', label: 'Firebase Cloud Messaging', fields: [{ key: 'projectId', label: 'Firebase Project ID' }, { key: 'serviceAccountKey', label: 'Service Account JSON', type: 'password' }] },
+  ],
+}
+
+const CHANNEL_ICONS: Record<string, string> = { sms: '💬', whatsapp: '📱', push: '🔔' }
+
+function ChannelProviderSettings() {
+  const queryClient = useQueryClient()
+  const [activeChannel, setActiveChannel] = useState<string | null>(null)
+  const [selectedProvider, setSelectedProvider] = useState<Record<string, string>>({})
+  const [configValues, setConfigValues] = useState<Record<string, Record<string, string>>>({})
+  const [saveStatus, setSaveStatus] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({})
+
+  const saveMutation = useMutation({
+    mutationFn: (data: { channel: string; provider: string; config: Record<string, string> }) =>
+      api.post(withProject('/api/ai/config'), {
+        provider: 'channel_update',
+        apiKey: 'na',
+        model: '',
+        channelConfig: { [data.channel]: { provider: data.provider, config: data.config } },
+      }),
+  })
+
+  const handleSaveChannel = async (channel: string) => {
+    const provider = selectedProvider[channel]
+    const config = configValues[channel] ?? {}
+    if (!provider) return
+
+    setSaveStatus(prev => ({ ...prev, [channel]: 'saving' }))
+
+    try {
+      // Save channel config to project settings
+      await api.post(withProject('/api/ai/config'), {
+        provider: 'channel_config',
+        apiKey: 'na',
+        channelConfig: { [channel]: { provider, config } },
+      })
+      setSaveStatus(prev => ({ ...prev, [channel]: 'saved' }))
+      setTimeout(() => setSaveStatus(prev => ({ ...prev, [channel]: 'idle' })), 2000)
+    } catch {
+      setSaveStatus(prev => ({ ...prev, [channel]: 'error' }))
+    }
+  }
+
+  return (
+    <div className="bg-surface-elevated border border-border rounded-lg p-6">
+      <h3 className="font-semibold text-text-primary mb-2">Channel Providers</h3>
+      <p className="text-sm text-text-secondary mb-4">
+        Configure messaging providers for SMS, WhatsApp, and Push notifications.
+      </p>
+
+      <div className="space-y-3">
+        {Object.entries(CHANNEL_PROVIDERS).map(([channel, providers]) => {
+          const isActive = activeChannel === channel
+          const currentProvider = selectedProvider[channel]
+          const providerDef = providers.find(p => p.value === currentProvider)
+          const status = saveStatus[channel] ?? 'idle'
+
+          return (
+            <div key={channel} className="border border-border rounded-lg overflow-hidden">
+              <button
+                onClick={() => setActiveChannel(isActive ? null : channel)}
+                className="w-full flex items-center justify-between p-4 hover:bg-surface transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-lg">{CHANNEL_ICONS[channel]}</span>
+                  <div className="text-left">
+                    <div className="text-sm font-medium text-text-primary capitalize">{channel}</div>
+                    <div className="text-xs text-text-muted">
+                      {currentProvider ? `${providers.find(p => p.value === currentProvider)?.label}` : 'Not configured'}
+                    </div>
+                  </div>
+                </div>
+                <span className={cn(
+                  'px-2 py-0.5 text-xs rounded-full',
+                  currentProvider ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500',
+                )}>
+                  {currentProvider ? 'Active' : 'Setup'}
+                </span>
+              </button>
+
+              {isActive && (
+                <div className="border-t border-border p-4 bg-surface/50 space-y-3">
+                  <select
+                    value={currentProvider ?? ''}
+                    onChange={e => setSelectedProvider(prev => ({ ...prev, [channel]: e.target.value }))}
+                    className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary"
+                  >
+                    <option value="">Select provider...</option>
+                    {providers.map(p => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+
+                  {providerDef && providerDef.fields.map(field => (
+                    <div key={field.key}>
+                      <label className="block text-xs font-medium text-text-muted mb-1">{field.label}</label>
+                      <input
+                        type={field.type ?? 'text'}
+                        value={configValues[channel]?.[field.key] ?? ''}
+                        onChange={e => setConfigValues(prev => ({
+                          ...prev,
+                          [channel]: { ...prev[channel], [field.key]: e.target.value },
+                        }))}
+                        className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary placeholder:text-text-muted"
+                        placeholder={field.label}
+                      />
+                    </div>
+                  ))}
+
+                  {currentProvider && (
+                    <button
+                      onClick={() => handleSaveChannel(channel)}
+                      disabled={status === 'saving'}
+                      className="px-4 py-2 text-sm font-medium text-white bg-accent rounded-lg hover:bg-accent/90 transition-colors disabled:opacity-50"
+                    >
+                      {status === 'saving' ? 'Saving...' : status === 'saved' ? 'Saved!' : 'Save'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

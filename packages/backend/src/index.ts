@@ -30,6 +30,8 @@ import wizardRoutes from './routes/wizard.js'
 import analyticsRoutes from './routes/analytics.js'
 import predictionRoutes from './routes/predictions.js'
 import sendTimeRoutes from './routes/sendTime.js'
+import channelWebhookRoutes from './routes/channelWebhooks.js'
+import urlTrackerRoutes from './routes/urlTracker.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { startSyncWorker } from './workers/syncWorker.js'
 import { startTriggerWorker } from './workers/triggerWorker.js'
@@ -45,6 +47,7 @@ import { startCampaignScheduler } from './workers/campaignScheduler.js'
 import { registerProvider } from './services/deliveryService.js'
 import { resendProvider } from './services/resendProvider.js'
 import { pinnacleProvider } from './services/pinnacleProvider.js'
+import { registerAllProviders } from './services/providers/index.js'
 
 const app = express()
 const port = process.env.PORT ?? 3001
@@ -111,6 +114,8 @@ app.use('/api/wizard', wizardRoutes)
 app.use('/api/analytics', analyticsRoutes)
 app.use('/api/predictions', predictionRoutes)
 app.use('/api/send-time', sendTimeRoutes)
+app.use('/api/webhooks/channel', channelWebhookRoutes)
+app.use('/api/t', urlTrackerRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)
@@ -120,6 +125,9 @@ registerProvider('resend', resendProvider)
 if (process.env.PINNACLE_API_URL) {
   registerProvider('pinnacle', pinnacleProvider)
 }
+
+// Register all channel providers (SMS, WhatsApp, Push)
+registerAllProviders()
 
 // Start workers
 startSyncWorker()

@@ -5,6 +5,8 @@ import { deliveryQueue } from './queue.js'
 import { redis } from './redis.js'
 import type { SendCommand, MessageChannel } from '@storees/shared'
 
+import { getChannelProvider } from './channelProviderRegistry.js'
+
 type DeliveryProvider = {
   name: string
   send(command: SendCommand): Promise<{ messageId: string; status: string; error?: string }>
@@ -15,12 +17,6 @@ const providers = new Map<string, DeliveryProvider>()
 
 export function registerProvider(name: string, provider: DeliveryProvider): void {
   providers.set(name, provider)
-}
-
-function getProvider(projectId: string): DeliveryProvider {
-  // TODO: look up project-level provider config from DB/Redis
-  // For now: use pinnacle if registered, otherwise resend
-  return providers.get('pinnacle') ?? providers.get('resend')!
 }
 
 /**
@@ -74,15 +70,37 @@ export async function send(command: SendCommand): Promise<string | null> {
  * Actually send via provider — called by deliveryWorker.
  */
 export async function executeSend(messageId: string, command: SendCommand): Promise<void> {
-  const provider = getProvider(command.projectId)
-
   try {
-    const result = await provider.send(command)
+    // Try channel provider registry first (project-level config)
+    const channelResult = await getChannelProvider(command.projectId, command.channel)
+
+    let providerName: string
+    let sendResult: { messageId: string; status: string; error?: string }
+
+    if (channelResult) {
+      providerName = channelResult.provider.name
+      sendResult = await channelResult.provider.send(command, channelResult.config)
+    } else {
+      // Fallback to legacy registered providers
+      const legacy = providers.get('pinnacle') ?? providers.get('resend')
+      if (!legacy) throw new Error(`No provider configured for channel ${command.channel}`)
+      providerName = legacy.name
+      sendResult = await legacy.send(command)
+    }
+
+    if (sendResult.error) {
+      console.error(`Delivery failed for message ${messageId}:`, sendResult.error)
+      await db.update(messages).set({
+        status: 'failed',
+        failedAt: new Date(),
+      }).where(eq(messages.id, messageId))
+      return
+    }
 
     await db.update(messages).set({
       status: 'sent',
-      provider: provider.name,
-      providerMessageId: result.messageId,
+      provider: providerName,
+      providerMessageId: sendResult.messageId,
       sentAt: new Date(),
     }).where(eq(messages.id, messageId))
   } catch (err) {
