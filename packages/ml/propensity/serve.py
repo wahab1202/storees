@@ -164,7 +164,7 @@ class TrainResponse(BaseModel):
 @app.post("/train", response_model=TrainResponse)
 def train_model(req: TrainRequest):
     """Train a propensity model for a prediction goal."""
-    from train_propensity import train
+    from propensity.train_propensity import train
 
     result = train(
         project_id=req.project_id,

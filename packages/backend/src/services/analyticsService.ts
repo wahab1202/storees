@@ -73,7 +73,7 @@ export async function computeFunnel(
           SELECT customer_id
           FROM events
           WHERE project_id = ${projectId}
-            AND event_name = ANY(${requiredEvents})
+            AND event_name IN (${sql.join(requiredEvents.map(e => sql`${e}`), sql`, `)})
             AND timestamp >= ${startDate}
             AND timestamp <= ${endDate}
             AND customer_id IS NOT NULL
@@ -150,11 +150,15 @@ export async function computeCohorts(
     ? sql`AND e.event_name = ${opts.returnEvent}`
     : sql``
 
+  const periodExtract = granularity === 'week'
+    ? sql.raw(`EXTRACT(DAYS FROM (ca.activity_period - ca.cohort_period)) / 7`)
+    : sql.raw(`EXTRACT(MONTH FROM AGE(ca.activity_period, ca.cohort_period))`)
+
   const result = await db.execute(sql`
     WITH cohort_customers AS (
       SELECT
         id AS customer_id,
-        date_trunc(${truncFn}, first_seen) AS cohort_period
+        date_trunc(${sql.raw(`'${truncFn}'`)}, first_seen) AS cohort_period
       FROM customers
       WHERE project_id = ${projectId}
         AND first_seen >= ${startDate.toISOString()}
@@ -164,7 +168,7 @@ export async function computeCohorts(
       SELECT
         cc.cohort_period,
         cc.customer_id,
-        date_trunc(${truncFn}, e.timestamp) AS activity_period
+        date_trunc(${sql.raw(`'${truncFn}'`)}, e.timestamp) AS activity_period
       FROM cohort_customers cc
       INNER JOIN events e ON e.customer_id = cc.customer_id AND e.project_id = ${projectId}
       WHERE e.timestamp >= ${startDate.toISOString()}
@@ -179,7 +183,7 @@ export async function computeCohorts(
     retention AS (
       SELECT
         ca.cohort_period,
-        EXTRACT(${sql.raw(granularity === 'week' ? 'DAYS' : 'MONTH')} FROM (ca.activity_period - ca.cohort_period))${sql.raw(granularity === 'week' ? ' / 7' : '')} AS period_number,
+        ${periodExtract} AS period_number,
         count(DISTINCT ca.customer_id) AS active_customers
       FROM cohort_activity ca
       GROUP BY ca.cohort_period, period_number
@@ -195,7 +199,7 @@ export async function computeCohorts(
   `)
 
   // Process results into cohort structure
-  const rows = result as unknown as {
+  const rows = result.rows as {
     cohort_period: string
     cohort_size: string
     period_number: string | null
@@ -555,19 +559,19 @@ export async function computeProductAnalytics(
   const result = await db.execute(sql`
     WITH item_stats AS (
       SELECT
-        i.item_id,
-        COALESCE(it.name, i.item_id) AS name,
+        i.item_id::text,
+        COALESCE(it.name, i.item_id::text) AS name,
         it.attributes->>'category' AS category,
-        COUNT(*) FILTER (WHERE i.type = 'view') AS views,
-        COUNT(*) FILTER (WHERE i.type IN ('purchase', 'conversion')) AS conversions,
-        COUNT(*) FILTER (WHERE i.type = 'add_to_cart') -
-          COUNT(*) FILTER (WHERE i.type IN ('purchase', 'conversion')) AS abandonment,
-        COALESCE(SUM(i.weight) FILTER (WHERE i.type IN ('purchase', 'conversion')), 0) AS revenue
+        COUNT(*) FILTER (WHERE i.interaction_type = 'view') AS views,
+        COUNT(*) FILTER (WHERE i.interaction_type IN ('conversion', 'strong_intent')) AS conversions,
+        COUNT(*) FILTER (WHERE i.interaction_type = 'intent') -
+          COUNT(*) FILTER (WHERE i.interaction_type IN ('conversion', 'strong_intent')) AS abandonment,
+        COALESCE(SUM(i.weight::numeric) FILTER (WHERE i.interaction_type IN ('conversion', 'strong_intent')), 0) AS revenue
       FROM interactions i
       LEFT JOIN items it ON it.id = i.item_id AND it.project_id = ${projectId}
       WHERE i.project_id = ${projectId}
-        AND i.timestamp >= ${startDate}
-        AND i.timestamp <= ${endDate}
+        AND i.created_at >= ${startDate}
+        AND i.created_at <= ${endDate}
       GROUP BY i.item_id, it.name, it.attributes->>'category'
     )
     SELECT

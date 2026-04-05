@@ -293,58 +293,94 @@ async function executeAction(
   trip: Record<string, unknown>,
 ): Promise<void> {
   const { actionType, templateId, subjectOverride } = node.config
+  const customerId = trip.customerId as string
+  const projectId = trip.projectId as string ?? ''
+  const context = (trip.context ?? {}) as Record<string, unknown>
 
-  if (actionType !== 'send_email') {
-    console.warn(`Action type "${actionType}" not yet implemented`)
+  // Map action type to channel
+  const channelMap: Record<string, string> = {
+    send_email: 'email',
+    send_sms: 'sms',
+    send_push: 'push',
+    send_whatsapp: 'whatsapp',
+  }
+  const channel = channelMap[actionType]
+
+  if (!channel) {
+    console.warn(`Unknown action type: ${actionType}`)
     return
   }
 
-  const customerId = trip.customerId as string
-  const context = (trip.context ?? {}) as Record<string, unknown>
+  // For email, use the existing direct send path (backward compatible)
+  if (channel === 'email') {
+    const [customer] = await db
+      .select({ email: customers.email, name: customers.name })
+      .from(customers)
+      .where(eq(customers.id, customerId))
+      .limit(1)
 
-  // Get customer email
-  const [customer] = await db
-    .select({ email: customers.email, name: customers.name })
+    if (!customer?.email) {
+      console.warn(`Cannot send email: customer ${customerId} has no email`)
+      return
+    }
+
+    const templateContext: Record<string, unknown> = {
+      customer_name: customer.name ?? 'there',
+      customer_email: customer.email,
+      ...(context.triggerProperties as Record<string, unknown> ?? {}),
+    }
+
+    const [template] = await db
+      .select()
+      .from(emailTemplates)
+      .where(eq(emailTemplates.name, templateId))
+      .limit(1)
+
+    let subject: string
+    let html: string
+
+    if (template) {
+      subject = subjectOverride
+        ? interpolateTemplate(subjectOverride, templateContext)
+        : interpolateTemplate(template.subject ?? '', templateContext)
+      html = interpolateTemplate(template.htmlBody ?? '', templateContext)
+    } else {
+      subject = subjectOverride
+        ? interpolateTemplate(subjectOverride, templateContext)
+        : 'You left something behind!'
+      html = `<p>Hi {{customer_name}},</p><p>Come back and complete your purchase!</p>`
+      html = interpolateTemplate(html, templateContext)
+    }
+
+    await sendEmail({ to: customer.email, subject, html })
+    console.log(`Action executed: sent email to ${customer.email} (template: ${templateId})`)
+    return
+  }
+
+  // For SMS, Push, WhatsApp — use the delivery service
+  const { send } = await import('./deliveryService.js')
+  const variables: Record<string, string> = {
+    customer_name: '',
+    ...(context.triggerProperties as Record<string, string> ?? {}),
+  }
+
+  // Get customer name for variables
+  const [cust] = await db
+    .select({ name: customers.name })
     .from(customers)
     .where(eq(customers.id, customerId))
     .limit(1)
+  variables.customer_name = cust?.name ?? 'there'
 
-  if (!customer?.email) {
-    console.warn(`Cannot send email: customer ${customerId} has no email`)
-    return
-  }
+  const messageId = await send({
+    projectId,
+    userId: customerId,
+    channel: channel as 'sms' | 'push' | 'whatsapp',
+    templateId,
+    variables,
+    messageType: 'promotional',
+    flowTripId: trip.id as string,
+  })
 
-  // Build template context
-  const templateContext: Record<string, unknown> = {
-    customer_name: customer.name ?? 'there',
-    customer_email: customer.email,
-    ...(context.triggerProperties as Record<string, unknown> ?? {}),
-  }
-
-  // Try to find template in DB
-  const [template] = await db
-    .select()
-    .from(emailTemplates)
-    .where(eq(emailTemplates.name, templateId))
-    .limit(1)
-
-  let subject: string
-  let html: string
-
-  if (template) {
-    subject = subjectOverride
-      ? interpolateTemplate(subjectOverride, templateContext)
-      : interpolateTemplate(template.subject ?? '', templateContext)
-    html = interpolateTemplate(template.htmlBody ?? '', templateContext)
-  } else {
-    // Fallback for missing template
-    subject = subjectOverride
-      ? interpolateTemplate(subjectOverride, templateContext)
-      : 'You left something behind!'
-    html = `<p>Hi {{customer_name}},</p><p>Come back and complete your purchase!</p>`
-    html = interpolateTemplate(html, templateContext)
-  }
-
-  await sendEmail({ to: customer.email, subject, html })
-  console.log(`Action executed: sent email to ${customer.email} (template: ${templateId})`)
+  console.log(`Action executed: ${actionType} for customer ${customerId} (message: ${messageId ?? 'blocked'})`)
 }
