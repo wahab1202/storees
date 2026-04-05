@@ -8,6 +8,10 @@ import { useTemplates } from '@/hooks/useTemplates'
 import { SlidePanel } from '@/components/shared/SlidePanel'
 import { TemplatePreviewCard } from '@/components/shared/TemplatePreviewCard'
 import { cn } from '@/lib/utils'
+import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
+import { compileToHtml } from '@/lib/emailCompiler'
+import { DEFAULT_TEMPLATE } from '@/lib/emailTypes'
+import type { EmailTemplate } from '@/lib/emailTypes'
 import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule } from '@storees/shared'
 import {
   ArrowLeft,
@@ -38,11 +42,12 @@ import {
   FlaskConical,
   SplitSquareHorizontal,
   Trophy,
+  Layers,
 } from 'lucide-react'
 
 type Step = 1 | 2 | 3
 type SendTiming = 'asap' | 'scheduled'
-type EditorMode = 'templates' | 'html' | 'preview'
+type EditorMode = 'templates' | 'visual' | 'html' | 'preview'
 
 const STEPS = [
   { num: 1 as Step, label: 'Target Users' },
@@ -147,6 +152,7 @@ function CreateCampaignContent() {
   const [selectedLayout, setSelectedLayout] = useState<string>('blank')
   const [editorMode, setEditorMode] = useState<EditorMode>('templates')
   const [previewTemplate, setPreviewTemplate] = useState<{ name: string; html: string } | null>(null)
+  const [emailTemplate, setEmailTemplate] = useState<EmailTemplate>(DEFAULT_TEMPLATE)
 
   // Step 2 — SMS / Push
   const [bodyText, setBodyText] = useState('')
@@ -344,6 +350,7 @@ function CreateCampaignContent() {
                 previewText={previewText} setPreviewText={setPreviewText}
                 fromName={fromName} setFromName={setFromName}
                 htmlBody={htmlBody} setHtmlBody={setHtmlBody}
+                emailTemplate={emailTemplate} setEmailTemplate={setEmailTemplate}
                 selectedTemplateId={selectedTemplateId}
                 selectedLayout={selectedLayout}
                 editorMode={editorMode} setEditorMode={setEditorMode}
@@ -541,7 +548,7 @@ type TemplateItem = { id: string; name: string; htmlBody?: string | null; subjec
 
 function Step2EmailContent({
   subject, setSubject, previewText, setPreviewText,
-  fromName, setFromName, htmlBody, setHtmlBody,
+  fromName, setFromName, htmlBody, setHtmlBody, emailTemplate, setEmailTemplate,
   selectedTemplateId, selectedLayout,
   editorMode, setEditorMode,
   templates, onSelectLayout, onSelectTemplate, onPreviewTemplate,
@@ -551,6 +558,7 @@ function Step2EmailContent({
   previewText: string; setPreviewText: (v: string) => void
   fromName: string; setFromName: (v: string) => void
   htmlBody: string; setHtmlBody: (v: string) => void
+  emailTemplate: EmailTemplate; setEmailTemplate: (v: EmailTemplate) => void
   selectedTemplateId: string | null
   selectedLayout: string
   editorMode: EditorMode; setEditorMode: (v: EditorMode) => void
@@ -566,6 +574,7 @@ function Step2EmailContent({
       <div className="flex items-center gap-1 border-b border-border">
         {([
           { key: 'templates' as EditorMode, label: 'My Templates', icon: Layout },
+          { key: 'visual' as EditorMode, label: 'Visual Builder', icon: Layers },
           { key: 'html' as EditorMode, label: 'Custom HTML', icon: Mail },
           { key: 'preview' as EditorMode, label: 'Preview', icon: Eye },
         ]).map(tab => (
@@ -625,6 +634,16 @@ function Step2EmailContent({
             </div>
           )}
         </div>
+      )}
+
+      {editorMode === 'visual' && (
+        <EmailBuilder
+          value={emailTemplate}
+          onChange={(t) => {
+            setEmailTemplate(t)
+            setHtmlBody(compileToHtml(t))
+          }}
+        />
       )}
 
       {editorMode === 'html' && (
