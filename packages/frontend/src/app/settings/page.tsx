@@ -1,10 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { getProjectId } from '@/lib/project'
+import { getProjectId, withProject } from '@/lib/project'
+import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { cn } from '@/lib/utils'
+import { Loader2, CheckCircle2, XCircle, Sparkles } from 'lucide-react'
 
 type TabId = 'script' | 'npm' | 'api'
 
@@ -283,6 +286,186 @@ Storees.identify('user-123', {
             ))}
           </div>
         </div>
+        {/* AI Provider Configuration */}
+        <AiProviderSettings />
+      </div>
+    </div>
+  )
+}
+
+// ─── AI Provider Settings ────────────────────────────────
+
+const AI_PROVIDERS = [
+  { value: 'groq', label: 'Groq', models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'] },
+  { value: 'openai', label: 'OpenAI', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
+  { value: 'anthropic', label: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-opus-4-20250514'] },
+]
+
+type AiConfig = {
+  configured: boolean
+  provider?: string
+  model?: string
+  apiKey?: string
+}
+
+function AiProviderSettings() {
+  const queryClient = useQueryClient()
+  const { data: configData, isLoading } = useQuery({
+    queryKey: ['ai-config'],
+    queryFn: () => api.get<AiConfig>(withProject('/api/ai/config')),
+    staleTime: 60_000,
+  })
+
+  const config = configData?.data
+  const [provider, setProvider] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [model, setModel] = useState('')
+  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
+
+  useEffect(() => {
+    if (config?.configured) {
+      setProvider(config.provider ?? '')
+      setModel(config.model ?? '')
+    }
+  }, [config])
+
+  const selectedProvider = AI_PROVIDERS.find(p => p.value === provider)
+
+  const saveMutation = useMutation({
+    mutationFn: () => api.post(withProject('/api/ai/config'), { provider, apiKey, model }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ai-config'] })
+      setApiKey('')
+    },
+  })
+
+  const testMutation = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; error?: string; model: string }>(withProject('/api/ai/test-connection'), {}),
+    onSuccess: (data) => setTestResult(data.data),
+  })
+
+  if (isLoading) {
+    return (
+      <div className="bg-surface-elevated border border-border rounded-lg p-6">
+        <div className="flex items-center gap-2 text-sm text-text-muted">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading AI config...
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-surface-elevated border border-border rounded-lg p-6">
+      <div className="flex items-center gap-2 mb-4">
+        <Sparkles className="h-5 w-5 text-purple-500" />
+        <h3 className="font-semibold text-text-primary">AI Provider</h3>
+        {config?.configured && (
+          <span className="px-2 py-0.5 text-xs font-medium bg-green-500/10 text-green-600 rounded-full">
+            Connected
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-text-secondary mb-4">
+        Configure an LLM provider for AI features like Next Best Action, smart segments, and natural language queries.
+      </p>
+
+      <div className="space-y-4">
+        {/* Provider Select */}
+        <div>
+          <label className="block text-sm font-medium text-text-primary mb-1">Provider</label>
+          <select
+            value={provider}
+            onChange={e => { setProvider(e.target.value); setModel(''); setTestResult(null) }}
+            className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus"
+          >
+            <option value="">Select provider...</option>
+            {AI_PROVIDERS.map(p => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* API Key */}
+        {provider && (
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1">API Key</label>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              placeholder={config?.configured && config.provider === provider ? `Current: ${config.apiKey}` : `Enter ${selectedProvider?.label} API key...`}
+              className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus placeholder:text-text-muted"
+            />
+          </div>
+        )}
+
+        {/* Model Select */}
+        {provider && selectedProvider && (
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1">Model</label>
+            <select
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus"
+            >
+              <option value="">Default ({selectedProvider.models[0]})</option>
+              {selectedProvider.models.map(m => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Actions */}
+        {provider && (
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              onClick={() => saveMutation.mutate()}
+              disabled={!provider || saveMutation.isPending}
+              className="px-4 py-2 text-sm font-medium text-white bg-accent rounded-lg hover:bg-accent/90 transition-colors disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving...' : 'Save Configuration'}
+            </button>
+            {config?.configured && (
+              <button
+                onClick={() => testMutation.mutate()}
+                disabled={testMutation.isPending}
+                className="px-4 py-2 text-sm font-medium text-text-primary bg-surface border border-border rounded-lg hover:bg-border/50 transition-colors disabled:opacity-50"
+              >
+                {testMutation.isPending ? 'Testing...' : 'Test Connection'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Save success */}
+        {saveMutation.isSuccess && (
+          <div className="flex items-center gap-2 text-sm text-green-600">
+            <CheckCircle2 className="h-4 w-4" />
+            Configuration saved successfully.
+          </div>
+        )}
+
+        {/* Test result */}
+        {testResult && (
+          <div className={cn(
+            'flex items-center gap-2 text-sm',
+            testResult.ok ? 'text-green-600' : 'text-red-600'
+          )}>
+            {testResult.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+            {testResult.ok ? 'Connection successful!' : `Failed: ${testResult.error}`}
+          </div>
+        )}
+
+        {/* Current config info */}
+        {config?.configured && !provider && (
+          <div className="bg-surface rounded-lg p-3 text-sm">
+            <div className="flex justify-between"><span className="text-text-muted">Provider</span><span className="font-medium capitalize">{config.provider}</span></div>
+            <div className="flex justify-between mt-1"><span className="text-text-muted">Model</span><span className="font-medium">{config.model}</span></div>
+            <div className="flex justify-between mt-1"><span className="text-text-muted">API Key</span><span className="font-mono text-xs">{config.apiKey}</span></div>
+          </div>
+        )}
       </div>
     </div>
   )

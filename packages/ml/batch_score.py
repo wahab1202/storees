@@ -122,7 +122,7 @@ def batch_score(project_id: str):
                     features[col] = 0
             features = features[expected_cols]
 
-            X = scaler.transform(features.values)
+            X = scaler.transform(features)
             probs = model.predict_proba(X)[:, 1]
 
             for cid, prob in zip(features.index, probs):
