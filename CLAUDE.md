@@ -111,3 +111,23 @@ type(scope): brief description
 ```
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 Scopes: `backend`, `frontend`, `segments`, `flows`, `shared`, `docs`
+
+## Design Context
+
+### Users
+Enterprise marketing teams managing customer segments, automated flows, multi-channel campaigns, and engagement analytics. They need sophisticated, reliable tools — not toys.
+
+### Brand Personality
+Professional, intelligent, reliable — like MoEngage or HubSpot. Clean, serious, trustworthy.
+
+### Aesthetic Direction
+Refined minimalism. Indigo accent (#4F46E5) on soft blue-gray (#F5F6FF). Light mode. Inter font. No decorative elements, no dark-mode-everything, no bouncy animations.
+
+### Design Principles
+1. **Information density over decoration** — enterprise users want data, not whitespace
+2. **Consistency is trust** — same patterns everywhere
+3. **Quiet confidence** — smooth 150-250ms transitions, no flash
+4. **Every pixel earns its place** — icons convey meaning, color signals status
+5. **Show, don't tell** — data viz over text, inline metrics over modals
+
+See `.impeccable.md` for full design context and token reference.
