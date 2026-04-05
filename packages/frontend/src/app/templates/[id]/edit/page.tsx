@@ -6,7 +6,7 @@ import { useTemplateDetail, useUpdateTemplate } from '@/hooks/useTemplates'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted'
+const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
 
 const CHANNEL_LABELS: Record<string, string> = {
   email: 'Email', sms: 'SMS', push: 'Push', whatsapp: 'WhatsApp',
@@ -140,7 +140,7 @@ export default function EditTemplatePage() {
                 value={htmlBody}
                 onChange={e => setHtmlBody(e.target.value)}
                 rows={24}
-                className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus resize-none"
+                className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
                 spellCheck={false}
               />
               <p className="text-xs text-text-muted mt-2">Variables: {'{{customer_name}}'}, {'{{customer_email}}'}</p>
@@ -169,7 +169,7 @@ export default function EditTemplatePage() {
               value={bodyText}
               onChange={e => setBodyText(e.target.value)}
               rows={6}
-              className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus resize-none placeholder:text-text-muted"
+              className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none placeholder:text-text-muted"
             />
             <div className="flex items-center justify-between mt-2">
               <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>

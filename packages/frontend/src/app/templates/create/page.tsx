@@ -111,7 +111,7 @@ const LAYOUT_STARTERS = [
   { label: '4 Columns', icon: Columns4, html: FOUR_COL_HTML },
 ]
 
-const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted'
+const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
 
 export default function CreateTemplatePage() {
   const router = useRouter()
@@ -266,7 +266,7 @@ export default function CreateTemplatePage() {
                       value={htmlBody}
                       onChange={e => setHtmlBody(e.target.value)}
                       rows={18}
-                      className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus resize-none"
+                      className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
                       spellCheck={false}
                     />
                     <p className="text-xs text-text-muted mt-2">
@@ -296,7 +296,7 @@ export default function CreateTemplatePage() {
                         ? 'Your SIP of ₹{{amount}} has been debited successfully.'
                         : 'Hi {{customer_name}}, we have an update for your account.'
                     }
-                    className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus resize-none placeholder:text-text-muted"
+                    className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none placeholder:text-text-muted"
                   />
                   <div className="flex items-center justify-between mt-2">
                     <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>

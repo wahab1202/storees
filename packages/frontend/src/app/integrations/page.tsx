@@ -76,7 +76,7 @@ export default function IntegrationsPage() {
                     value={shopDomain}
                     onChange={e => setShopDomain(e.target.value)}
                     className="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-white
-                               focus:outline-none focus:ring-2 focus:ring-border-focus placeholder:text-text-muted"
+                               focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
                   />
                   <span className="flex items-center text-sm text-text-muted">.myshopify.com</span>
                 </div>

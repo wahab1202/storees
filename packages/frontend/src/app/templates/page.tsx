@@ -131,7 +131,7 @@ export default function TemplatesPage() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search templates..."
-          className="w-full h-10 pl-9 pr-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus placeholder:text-text-muted"
+          className="w-full h-10 pl-9 pr-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
         />
       </div>
 

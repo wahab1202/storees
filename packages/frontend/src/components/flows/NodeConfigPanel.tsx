@@ -69,7 +69,7 @@ function TriggerForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (
             setEvent(e.target.value)
             onUpdate(node.id, { ...d, event: e.target.value })
           }}
-          className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
         >
           <option value="">Select event...</option>
           {eventOptions.map((ev: string) => (
@@ -150,7 +150,7 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
             setCheck(e.target.value)
             onUpdate(node.id, { ...d, check: e.target.value })
           }}
-          className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
         >
           <option value="event_occurred">Event Occurred</option>
           <option value="attribute_check">Attribute Check</option>
@@ -165,7 +165,7 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
               setEvent(e.target.value)
               onUpdate(node.id, { ...d, check, event: e.target.value })
             }}
-            className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+            className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
           >
             <option value="">Select event...</option>
             {eventOptions.map((ev: string) => (
@@ -183,7 +183,7 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
               setField(e.target.value)
               onUpdate(node.id, { ...d, check, field: e.target.value })
             }}
-            className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+            className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
           />
         </FieldLabel>
       )}
@@ -215,7 +215,7 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
             setActionType(e.target.value)
             onUpdate(node.id, { ...d, actionType: e.target.value })
           }}
-          className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
         >
           <option value="send_email">Email</option>
           <option value="send_sms">SMS</option>
@@ -232,7 +232,7 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
             setTemplateId(e.target.value)
             onUpdate(node.id, { ...d, actionType, templateId: e.target.value })
           }}
-          className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
         />
       </FieldLabel>
     </div>
@@ -257,7 +257,7 @@ function EndForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: 
             setLabel(e.target.value)
             onUpdate(node.id, { ...d, label: e.target.value })
           }}
-          className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-border-focus"
+          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
         />
       </FieldLabel>
     </div>

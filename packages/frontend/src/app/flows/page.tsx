@@ -176,7 +176,7 @@ export default function FlowsPage() {
                   onChange={e => setNewName(e.target.value)}
                   placeholder="e.g. Welcome Series, Post-Purchase Follow-up"
                   autoFocus
-                  className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted"
+                  className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted"
                   onKeyDown={e => e.key === 'Enter' && handleCreate()}
                 />
               </div>
@@ -190,7 +190,7 @@ export default function FlowsPage() {
                   onChange={e => setNewDescription(e.target.value)}
                   placeholder="What does this flow do?"
                   rows={2}
-                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted resize-none"
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted resize-none"
                 />
               </div>
               <div>
