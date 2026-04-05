@@ -514,9 +514,9 @@ function ChannelProviderSettings() {
 // ─── AI Provider Settings ────────────────────────────────
 
 const AI_PROVIDERS = [
-  { value: 'groq', label: 'Groq', models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'] },
-  { value: 'openai', label: 'OpenAI', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
-  { value: 'anthropic', label: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-opus-4-20250514'] },
+  { value: 'groq', label: 'Groq', initials: 'Gq', color: 'bg-orange-500', description: 'Ultra-fast inference with Llama & Mixtral models', models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'] },
+  { value: 'openai', label: 'OpenAI', initials: 'OA', color: 'bg-emerald-600', description: 'GPT-4o and GPT-4 Turbo — highest capability', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
+  { value: 'anthropic', label: 'Anthropic', initials: 'An', color: 'bg-amber-700', description: 'Claude models — thoughtful, safe, and capable', models: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-opus-4-20250514'] },
 ]
 
 type AiConfig = {
@@ -575,116 +575,155 @@ function AiProviderSettings() {
 
   return (
     <div className="bg-surface-elevated border border-border rounded-lg p-6">
-      <div className="flex items-center gap-2 mb-4">
-        <Sparkles className="h-5 w-5 text-purple-500" />
+      <div className="flex items-center gap-2 mb-1">
+        <div className="p-1.5 rounded-lg bg-purple-50">
+          <Sparkles className="h-4 w-4 text-purple-600" />
+        </div>
         <h3 className="font-semibold text-text-primary">AI Provider</h3>
         {config?.configured && (
-          <span className="px-2 py-0.5 text-xs font-medium bg-green-500/10 text-green-600 rounded-full">
+          <span className="px-2 py-0.5 text-xs font-medium bg-green-50 text-green-700 border border-green-200 rounded-full">
             Connected
           </span>
         )}
       </div>
-      <p className="text-sm text-text-secondary mb-4">
-        Configure an LLM provider for AI features like Next Best Action, smart segments, and natural language queries.
+      <p className="text-sm text-text-secondary mb-5">
+        Powers Next Best Action, smart segments, and natural language queries.
       </p>
 
-      <div className="space-y-4">
-        {/* Provider Select */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-1">Provider</label>
-          <select
-            value={provider}
-            onChange={e => { setProvider(e.target.value); setModel(''); setTestResult(null) }}
-            className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus"
-          >
-            <option value="">Select provider...</option>
-            {AI_PROVIDERS.map(p => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* API Key */}
-        {provider && (
-          <div>
-            <label className="block text-sm font-medium text-text-primary mb-1">API Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              placeholder={config?.configured && config.provider === provider ? `Current: ${config.apiKey}` : `Enter ${selectedProvider?.label} API key...`}
-              className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus placeholder:text-text-muted"
-            />
-          </div>
-        )}
-
-        {/* Model Select */}
-        {provider && selectedProvider && (
-          <div>
-            <label className="block text-sm font-medium text-text-primary mb-1">Model</label>
-            <select
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              className="w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus"
+      {/* Provider Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-5">
+        {AI_PROVIDERS.map(p => {
+          const isSelected = provider === p.value
+          return (
+            <button
+              key={p.value}
+              onClick={() => { setProvider(p.value); setModel(''); setTestResult(null) }}
+              className={cn(
+                'flex items-center gap-3 p-3.5 rounded-xl border text-left transition-all',
+                isSelected
+                  ? 'border-accent bg-accent/5 ring-1 ring-accent/20'
+                  : 'border-border hover:border-border-focus hover:bg-white',
+              )}
             >
-              <option value="">Default ({selectedProvider.models[0]})</option>
-              {selectedProvider.models.map(m => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </div>
-        )}
+              <div className={cn('w-9 h-9 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0', p.color)}>
+                {p.initials}
+              </div>
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-text-primary">{p.label}</div>
+                <div className="text-[10px] text-text-muted leading-tight">{p.description}</div>
+              </div>
+              {isSelected && <CheckCircle2 className="h-4 w-4 text-accent flex-shrink-0 ml-auto" />}
+            </button>
+          )
+        })}
+      </div>
 
-        {/* Actions */}
-        {provider && (
-          <div className="flex items-center gap-3 pt-2">
+      {/* Config Panel */}
+      {selectedProvider && (
+        <div className="border border-border rounded-xl p-4 space-y-4">
+          <div className="flex items-center gap-2 mb-1">
+            <div className={cn('w-6 h-6 rounded flex items-center justify-center text-white text-[10px] font-bold', selectedProvider.color)}>
+              {selectedProvider.initials}
+            </div>
+            <span className="text-sm font-medium text-text-primary">{selectedProvider.label} Configuration</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* API Key */}
+            <div>
+              <label className="block text-xs font-medium text-text-secondary mb-1.5">API Key</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder={config?.configured && config.provider === provider ? `Current: ${config.apiKey}` : `Enter ${selectedProvider.label} API key...`}
+                className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted/50"
+              />
+            </div>
+
+            {/* Model Select */}
+            <div>
+              <label className="block text-xs font-medium text-text-secondary mb-1.5">Model</label>
+              <select
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus appearance-none"
+              >
+                <option value="">Default ({selectedProvider.models[0]})</option>
+                {selectedProvider.models.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-3 pt-1">
             <button
               onClick={() => saveMutation.mutate()}
               disabled={!provider || saveMutation.isPending}
-              className="px-4 py-2 text-sm font-medium text-white bg-accent rounded-lg hover:bg-accent/90 transition-colors disabled:opacity-50"
+              className={cn(
+                'px-5 py-2 text-sm font-medium rounded-lg transition-colors',
+                saveMutation.isSuccess
+                  ? 'bg-green-500 text-white'
+                  : 'bg-accent text-white hover:bg-accent/90 disabled:opacity-50',
+              )}
             >
-              {saveMutation.isPending ? 'Saving...' : 'Save Configuration'}
+              {saveMutation.isPending ? (
+                <span className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving...</span>
+              ) : saveMutation.isSuccess ? (
+                <span className="flex items-center gap-2"><CheckCircle2 className="h-3.5 w-3.5" />Saved</span>
+              ) : 'Save Configuration'}
             </button>
+
             {config?.configured && (
               <button
                 onClick={() => testMutation.mutate()}
                 disabled={testMutation.isPending}
-                className="px-4 py-2 text-sm font-medium text-text-primary bg-surface border border-border rounded-lg hover:bg-border/50 transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm font-medium text-text-primary bg-white border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
               >
-                {testMutation.isPending ? 'Testing...' : 'Test Connection'}
+                {testMutation.isPending ? (
+                  <span className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />Testing...</span>
+                ) : 'Test Connection'}
               </button>
             )}
           </div>
-        )}
 
-        {/* Save success */}
-        {saveMutation.isSuccess && (
-          <div className="flex items-center gap-2 text-sm text-green-600">
-            <CheckCircle2 className="h-4 w-4" />
-            Configuration saved successfully.
-          </div>
-        )}
+          {/* Test result */}
+          {testResult && (
+            <div className={cn(
+              'flex items-center gap-2 text-sm px-3 py-2 rounded-lg',
+              testResult.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700',
+            )}>
+              {testResult.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+              {testResult.ok ? 'Connection successful — LLM is reachable.' : `Failed: ${testResult.error}`}
+            </div>
+          )}
+        </div>
+      )}
 
-        {/* Test result */}
-        {testResult && (
-          <div className={cn(
-            'flex items-center gap-2 text-sm',
-            testResult.ok ? 'text-green-600' : 'text-red-600'
-          )}>
-            {testResult.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-            {testResult.ok ? 'Connection successful!' : `Failed: ${testResult.error}`}
+      {/* Current config summary (when no provider is actively selected) */}
+      {config?.configured && !provider && (
+        <div className="bg-surface rounded-xl p-4">
+          <div className="flex items-center gap-3">
+            <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold',
+              AI_PROVIDERS.find(p => p.value === config.provider)?.color ?? 'bg-gray-500',
+            )}>
+              {AI_PROVIDERS.find(p => p.value === config.provider)?.initials ?? '?'}
+            </div>
+            <div>
+              <div className="text-sm font-medium text-text-primary capitalize">{config.provider}</div>
+              <div className="text-xs text-text-muted">{config.model} &middot; Key: {config.apiKey}</div>
+            </div>
+            <button
+              onClick={() => setProvider(config.provider ?? '')}
+              className="ml-auto text-xs text-accent hover:text-accent/80 font-medium"
+            >
+              Change
+            </button>
           </div>
-        )}
-
-        {/* Current config info */}
-        {config?.configured && !provider && (
-          <div className="bg-surface rounded-lg p-3 text-sm">
-            <div className="flex justify-between"><span className="text-text-muted">Provider</span><span className="font-medium capitalize">{config.provider}</span></div>
-            <div className="flex justify-between mt-1"><span className="text-text-muted">Model</span><span className="font-medium">{config.model}</span></div>
-            <div className="flex justify-between mt-1"><span className="text-text-muted">API Key</span><span className="font-mono text-xs">{config.apiKey}</span></div>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
