@@ -259,8 +259,8 @@ function CreateCampaignContent() {
   const goNext = () => setStep(s => Math.min(s + 1, 3) as Step)
   const goPrev = () => setStep(s => Math.max(s - 1, 1) as Step)
 
-  const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent placeholder:text-text-muted'
-  const selectClass = cn(inputClass, 'appearance-none cursor-pointer')
+  const inputClass = 'w-full h-10 px-3.5 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/60 transition-colors duration-150'
+  const selectClass = cn(inputClass, 'appearance-none cursor-pointer pr-10 bg-[length:16px] bg-[right_12px_center] bg-no-repeat bg-[url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E")]')
 
   const channelLabel = CHANNEL_LABELS[channel] ?? 'Email'
   const typeLabel = isPeriodic ? 'Periodic' : 'One-time'
@@ -301,26 +301,39 @@ function CreateCampaignContent() {
       </div>
 
       {/* Step Progress Bar */}
-      <div className="flex items-center mb-8">
+      <div className="flex items-center mb-8 px-2">
         {STEPS.map((s, i) => {
           const isActive = step === s.num
           const isCompleted = completedSteps.has(s.num) && step > s.num
+          const isPast = step > s.num
           return (
             <div key={s.num} className="flex items-center flex-1">
-              <button onClick={() => setStep(s.num)} className="flex items-center gap-2 group">
+              <button onClick={() => setStep(s.num)} className="flex items-center gap-2.5 group">
                 <span className={cn(
-                  'w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors',
-                  isActive ? 'bg-accent text-white' : isCompleted ? 'bg-accent/10 text-accent' : 'bg-gray-100 text-text-muted',
+                  'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-200',
+                  isActive
+                    ? 'bg-accent text-white shadow-sm shadow-accent/25'
+                    : isCompleted
+                      ? 'bg-accent/10 text-accent'
+                      : 'bg-surface text-text-muted',
                 )}>
                   {isCompleted ? <Check className="h-3.5 w-3.5" /> : s.num}
                 </span>
-                <span className={cn('text-sm font-medium transition-colors', isActive ? 'text-heading' : 'text-text-muted group-hover:text-text-secondary')}>
-                  {s.label}
-                </span>
+                <div className="text-left">
+                  <span className={cn(
+                    'text-sm font-medium transition-colors duration-150 block',
+                    isActive ? 'text-text-primary' : isPast ? 'text-text-secondary' : 'text-text-muted group-hover:text-text-secondary',
+                  )}>
+                    {s.label}
+                  </span>
+                </div>
               </button>
               {i < STEPS.length - 1 && (
                 <div className="flex-1 mx-4">
-                  <div className={cn('h-0.5 rounded-full', completedSteps.has(s.num) ? 'bg-accent/30' : 'bg-gray-100')} />
+                  <div className={cn(
+                    'h-px transition-colors duration-300',
+                    isPast ? 'bg-accent/40' : 'bg-border',
+                  )} />
                 </div>
               )}
             </div>
@@ -407,17 +420,31 @@ function CreateCampaignContent() {
       </div>
 
       {/* Footer navigation */}
-      <div className="flex items-center justify-between mt-8 pt-6 border-t border-border">
-        <button onClick={goPrev} disabled={step === 1} className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-          <ArrowLeft className="h-4 w-4" /> Previous
+      <div className="flex items-center justify-between mt-8 pt-5 border-t border-border">
+        <button
+          onClick={goPrev}
+          disabled={step === 1}
+          className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-text-secondary border border-border rounded-lg hover:bg-surface hover:border-text-muted/30 transition-all duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {step > 1 ? STEPS[step - 2]?.label ?? 'Previous' : 'Previous'}
         </button>
         <div className="flex items-center gap-3">
           {step < 3 ? (
-            <button onClick={goNext} disabled={(step === 1 && !step1Valid) || (step === 2 && !step2Valid)} className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              Next <ArrowRight className="h-4 w-4" />
+            <button
+              onClick={goNext}
+              disabled={(step === 1 && !step1Valid) || (step === 2 && !step2Valid)}
+              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm shadow-accent/10 hover:shadow-md hover:shadow-accent/15"
+            >
+              {STEPS[step]?.label ?? 'Next'}
+              <ArrowRight className="h-4 w-4" />
             </button>
           ) : (
-            <button onClick={handleSaveDraft} disabled={!canSave || createCampaign.isPending} className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button
+              onClick={handleSaveDraft}
+              disabled={!canSave || createCampaign.isPending}
+              className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm shadow-accent/10 hover:shadow-md hover:shadow-accent/15"
+            >
               {createCampaign.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Create Campaign
             </button>
@@ -477,65 +504,104 @@ function Step1TargetUsers({
         <input value={name} onChange={e => setName(e.target.value)} placeholder={`e.g. Summer Sale 2024 ${channelLabel}`} className={inputClass} autoFocus />
       </div>
 
-      {/* Content Type — inline radios */}
+      {/* Content Type — selectable cards */}
       <div className="bg-white border border-border rounded-xl p-6">
-        <label className="block text-sm font-medium text-text-primary mb-1">
-          Campaign Content Type<span className="text-red-400">*</span>
+        <label className="block text-sm font-medium text-text-primary mb-3">
+          Content type
         </label>
-        <p className="text-xs text-text-muted mb-3">Promotional messages follow frequency capping. Transactional messages are always delivered.</p>
-        <div className="flex gap-6">
+        <div className="grid grid-cols-2 gap-3">
           {([
-            { value: 'promotional' as const, label: 'Promotional/Marketing', icon: Zap },
-            { value: 'transactional' as const, label: 'Transactional', icon: ShieldCheck },
+            { value: 'promotional' as const, label: 'Promotional', description: 'Marketing messages with frequency capping', icon: Zap },
+            { value: 'transactional' as const, label: 'Transactional', description: 'Always delivered, bypasses frequency caps', icon: ShieldCheck },
           ]).map(opt => (
-            <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-              <div className={cn('w-4 h-4 rounded-full border-2 flex items-center justify-center', contentType === opt.value ? 'border-accent' : 'border-gray-300')}>
-                {contentType === opt.value && <div className="w-2 h-2 rounded-full bg-accent" />}
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setContentType(opt.value)}
+              className={cn(
+                'flex items-start gap-3 p-4 rounded-lg border text-left transition-all duration-150',
+                contentType === opt.value
+                  ? 'border-accent bg-accent/[0.03] ring-1 ring-accent/20'
+                  : 'border-border hover:border-text-muted/30',
+              )}
+            >
+              <div className={cn(
+                'mt-0.5 p-2 rounded-lg transition-colors duration-150',
+                contentType === opt.value ? 'bg-accent/10' : 'bg-surface',
+              )}>
+                <opt.icon className={cn('h-4 w-4', contentType === opt.value ? 'text-accent' : 'text-text-muted')} />
               </div>
-              <opt.icon className={cn('h-3.5 w-3.5', contentType === opt.value ? 'text-accent' : 'text-text-muted')} />
-              <span className="text-sm text-text-primary">{opt.label}</span>
-            </label>
+              <div>
+                <div className="text-sm font-medium text-text-primary">{opt.label}</div>
+                <div className="text-xs text-text-muted mt-0.5 leading-relaxed">{opt.description}</div>
+              </div>
+            </button>
           ))}
         </div>
       </div>
 
       {/* Audience */}
       <div className="bg-white border border-border rounded-xl p-6">
-        <label className="block text-sm font-medium text-text-primary mb-3">Select Audience<span className="text-red-400">*</span></label>
-        <div className="flex gap-4 mb-4">
-          {([{ value: 'all' as const, label: 'All users' }, { value: 'segment' as const, label: 'Filter users by' }]).map(opt => (
-            <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-              <div className={cn('w-4 h-4 rounded-full border-2 flex items-center justify-center', audienceMode === opt.value ? 'border-accent' : 'border-gray-300')}>
-                {audienceMode === opt.value && <div className="w-2 h-2 rounded-full bg-accent" />}
+        <label className="block text-sm font-medium text-text-primary mb-3">Audience</label>
+
+        {/* Audience mode — card toggle */}
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          {([
+            { value: 'all' as const, label: 'All users', description: 'Send to everyone in your project', icon: Users },
+            { value: 'segment' as const, label: 'Segment', description: 'Target a specific customer segment', icon: Target },
+          ]).map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setAudienceMode(opt.value)}
+              className={cn(
+                'flex items-start gap-3 p-4 rounded-lg border text-left transition-all duration-150',
+                audienceMode === opt.value
+                  ? 'border-accent bg-accent/[0.03] ring-1 ring-accent/20'
+                  : 'border-border hover:border-text-muted/30',
+              )}
+            >
+              <div className={cn(
+                'mt-0.5 p-2 rounded-lg transition-colors duration-150',
+                audienceMode === opt.value ? 'bg-accent/10' : 'bg-surface',
+              )}>
+                <opt.icon className={cn('h-4 w-4', audienceMode === opt.value ? 'text-accent' : 'text-text-muted')} />
               </div>
-              <span className="text-sm text-text-primary">{opt.label}</span>
-            </label>
+              <div>
+                <div className="text-sm font-medium text-text-primary">{opt.label}</div>
+                <div className="text-xs text-text-muted mt-0.5">{opt.description}</div>
+              </div>
+            </button>
           ))}
         </div>
 
+        {/* Segment selector */}
         {audienceMode === 'segment' && (
-          <>
-            <select value={segmentId} onChange={e => { setSegmentId(e.target.value); setShowReachability(false) }} className={selectClass}>
-              <option value="">Select a segment...</option>
-              {segments.map(s => <option key={s.id} value={s.id}>{s.name} ({s.memberCount.toLocaleString()} members)</option>)}
+          <div className="space-y-3">
+            <select value={segmentId} onChange={e => { setSegmentId(e.target.value); setShowReachability(true) }} className={selectClass}>
+              <option value="">Choose a segment...</option>
+              {segments.map(s => <option key={s.id} value={s.id}>{s.name} — {s.memberCount.toLocaleString()} members</option>)}
             </select>
 
-            {segmentId && (
-              <div className="mt-3">
-                {!showReachability ? (
-                  <button onClick={() => setShowReachability(true)} className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors">
-                    <BarChart3 className="h-4 w-4" /> Show count
-                  </button>
-                ) : (
-                  <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                    <p className="text-xs font-medium text-text-secondary mb-1">{channelLabel} reachable users</p>
-                    <p className="text-2xl font-bold text-heading">{reachable.toLocaleString()}</p>
-                    <p className="text-xs text-text-muted">{reachablePct}% of total user count</p>
+            {/* Reachability — show automatically when segment selected */}
+            {segmentId && selectedSegment && (
+              <div className="flex items-center gap-4 p-4 bg-surface rounded-lg">
+                <div className="flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-bold text-text-primary tabular-nums">{reachable.toLocaleString()}</span>
+                    <span className="text-xs text-text-muted">reachable via {channelLabel}</span>
                   </div>
-                )}
+                  <div className="mt-1.5 h-1.5 bg-border rounded-full overflow-hidden">
+                    <div className="h-full bg-accent rounded-full transition-all duration-500" style={{ width: `${reachablePct}%` }} />
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-semibold text-accent tabular-nums">{reachablePct}%</div>
+                  <div className="text-[11px] text-text-muted">of {selectedSegment.memberCount.toLocaleString()}</div>
+                </div>
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
     </div>
