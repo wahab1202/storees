@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import { useLifecycleChart } from '@/hooks/useSegments'
 import { useSnapshotDates, useTransitions } from '@/hooks/useAnalytics'
@@ -150,6 +151,46 @@ export function LifecycleChart() {
 const RECENCY_KEYS = ['recent', 'medium', 'lapsed'] as const
 const VALUE_KEYS = ['low', 'medium', 'high'] as const
 
+function RFMTooltip({ cellName, row, tactics }: { cellName: string; row: number; tactics: string[] }) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+
+  useEffect(() => {
+    const el = document.querySelector(`[data-rfm-cell="${cellName}"]`)
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (row === 2) {
+      setPos({ top: rect.top - 4, left: rect.left })
+    } else {
+      setPos({ top: rect.bottom + 4, left: rect.left })
+    }
+  }, [cellName, row])
+
+  if (!pos) return null
+
+  return createPortal(
+    <div
+      className="fixed z-[9999] w-56 bg-heading text-white rounded-lg shadow-xl p-3 pointer-events-none"
+      style={{
+        left: pos.left,
+        ...(row === 2 ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
+      }}
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-white/70 mb-1.5">
+        Retention Tactics
+      </p>
+      <ul className="space-y-1">
+        {tactics.map((tactic, i) => (
+          <li key={i} className="text-xs text-white/90 flex items-start gap-1.5">
+            <span className="text-white/40 mt-0.5">•</span>
+            {tactic}
+          </li>
+        ))}
+      </ul>
+    </div>,
+    document.body,
+  )
+}
+
 function RFMGrid({ segments, domain }: { segments: { name: string; label: string; percentage: number; contactCount: number; position: { row: number; col: number }; color: string; retentionTactics: string[] }[]; domain: string }) {
   const router = useRouter()
   const ROW_LABELS = ROW_LABELS_BY_DOMAIN[domain] ?? ROW_LABELS_BY_DOMAIN.ecommerce
@@ -188,6 +229,7 @@ function RFMGrid({ segments, domain }: { segments: { name: string; label: string
             return (
               <div
                 key={col}
+                data-rfm-cell={cell.name}
                 onMouseEnter={() => setHoveredCell(cell.name)}
                 onMouseLeave={() => setHoveredCell(null)}
                 onClick={() => {
@@ -215,22 +257,7 @@ function RFMGrid({ segments, domain }: { segments: { name: string; label: string
                 <p className="text-[11px] text-text-muted tabular-nums">{cell.percentage}%</p>
 
                 {isHovered && cell.retentionTactics.length > 0 && (
-                  <div className={cn(
-                    'absolute z-20 left-0 w-56 bg-heading text-white rounded-lg shadow-xl p-3',
-                    row === 2 ? 'bottom-full mb-1' : 'top-full mt-1',
-                  )}>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-white/70 mb-1.5">
-                      Retention Tactics
-                    </p>
-                    <ul className="space-y-1">
-                      {cell.retentionTactics.map((tactic, i) => (
-                        <li key={i} className="text-xs text-white/90 flex items-start gap-1.5">
-                          <span className="text-white/40 mt-0.5">•</span>
-                          {tactic}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                  <RFMTooltip cellName={cell.name} row={row} tactics={cell.retentionTactics} />
                 )}
               </div>
             )
