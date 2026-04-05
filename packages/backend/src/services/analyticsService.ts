@@ -199,7 +199,7 @@ export async function computeCohorts(
   `)
 
   // Process results into cohort structure
-  const rows = result as unknown as {
+  const rows = result.rows as {
     cohort_period: string
     cohort_size: string
     period_number: string | null
