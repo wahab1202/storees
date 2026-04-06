@@ -1,10 +1,10 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { useDashboardStats, useDashboardActivity, useDashboardTrends } from '@/hooks/useDashboard'
+import { useDashboardStats, useDashboardActivity, useDashboardTrends, useDashboardSegments } from '@/hooks/useDashboard'
 import { usePredictionGoals } from '@/hooks/usePredictions'
 import { formatCurrency } from '@storees/shared'
-import { Info, Activity, ChevronUp, ChevronDown, Brain, ArrowRight } from 'lucide-react'
+import { Info, Activity, ChevronUp, ChevronDown, Brain, ArrowRight, Users, PieChart, Megaphone, Workflow } from 'lucide-react'
 import Link from 'next/link'
 import { Skeleton } from '@/components/ui/Skeleton'
 import {
@@ -19,6 +19,7 @@ export default function DashboardPage() {
   const { data: stats, isLoading: statsLoading, isError: statsError } = useDashboardStats()
   const { data: activity, isLoading: activityLoading, isError: activityError } = useDashboardActivity()
   const { data: trends, isLoading: trendsLoading, isError: trendsError } = useDashboardTrends(range)
+  const { data: segmentsData } = useDashboardSegments()
   const { data: predictionGoalsData } = usePredictionGoals()
   const predictionGoals = predictionGoalsData?.data ?? []
   const activeGoals = predictionGoals.filter(g => g.status === 'active')
@@ -223,6 +224,76 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
+      {/* Quick Actions + Segment Overview */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Quick Actions */}
+        <div className="bg-white border border-border rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-heading mb-3">Quick Actions</h3>
+          <div className="space-y-2">
+            {[
+              { label: 'Create Campaign', href: '/campaigns/create?channel=email&type=one-time', icon: Megaphone, color: 'bg-accent/10 text-accent' },
+              { label: 'Build Segment', href: '/segments/create', icon: PieChart, color: 'bg-emerald-50 text-emerald-600' },
+              { label: 'Create Flow', href: '/flows', icon: Workflow, color: 'bg-violet-50 text-violet-600' },
+              { label: 'View Customers', href: '/customers', icon: Users, color: 'bg-blue-50 text-blue-600' },
+            ].map(action => (
+              <Link
+                key={action.href}
+                href={action.href}
+                className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-surface transition-colors group"
+              >
+                <div className={`p-2 rounded-lg ${action.color}`}>
+                  <action.icon className="h-4 w-4" />
+                </div>
+                <span className="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">{action.label}</span>
+                <ArrowRight className="h-3.5 w-3.5 text-text-muted ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        {/* Segment Overview */}
+        <div className="lg:col-span-2 bg-white border border-border rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <PieChart className="w-4 h-4 text-text-muted" />
+              <h3 className="text-sm font-semibold text-heading">Segment Overview</h3>
+            </div>
+            <Link href="/segments" className="flex items-center gap-1 text-xs text-accent hover:text-accent-hover font-medium">
+              View All <ArrowRight className="w-3 h-3" />
+            </Link>
+          </div>
+          {segmentsData?.data && segmentsData.data.length > 0 ? (
+            <div className="p-4">
+              <div className="space-y-2.5">
+                {segmentsData.data.slice(0, 6).map((seg: { id: string; name: string; memberCount: number }) => {
+                  const maxCount = Math.max(...segmentsData.data.map((s: { memberCount: number }) => s.memberCount), 1)
+                  const pct = (seg.memberCount / maxCount) * 100
+                  return (
+                    <Link key={seg.id} href={`/customers?segmentId=${seg.id}`} className="group block">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-medium text-text-primary group-hover:text-accent transition-colors">{seg.name}</span>
+                        <span className="text-xs tabular-nums text-text-muted">{seg.memberCount.toLocaleString()}</span>
+                      </div>
+                      <div className="h-1.5 bg-surface rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent/60 rounded-full transition-all duration-500 group-hover:bg-accent"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="p-8 text-center">
+              <PieChart className="h-8 w-8 text-text-muted/30 mx-auto mb-2" />
+              <p className="text-sm text-text-muted">No segments created yet</p>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Chart Row 2 — Domain + Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

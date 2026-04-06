@@ -47,24 +47,59 @@ router.get('/stats', requireProjectId, async (req, res) => {
     let domainChanges: Record<string, number> = {}
 
     if (domainType === 'ecommerce') {
+      // Try orders table first, fall back to order_completed events
       const orderResult = await db.execute(sql`
         SELECT
           COUNT(*) AS total_orders,
-          COALESCE(SUM(total), 0) AS total_revenue,
+          COALESCE(SUM(total::numeric), 0) AS total_revenue,
           COUNT(*) FILTER (WHERE created_at >= ${sevenDaysAgo}) AS orders_7d,
           COUNT(*) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}) AS orders_prev_7d,
-          COALESCE(SUM(total) FILTER (WHERE created_at >= ${sevenDaysAgo}), 0) AS revenue_7d,
-          COALESCE(SUM(total) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}), 0) AS revenue_prev_7d
+          COALESCE(SUM(total::numeric) FILTER (WHERE created_at >= ${sevenDaysAgo}), 0) AS revenue_7d,
+          COALESCE(SUM(total::numeric) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}), 0) AS revenue_prev_7d
         FROM orders WHERE project_id = ${projectId}
       `)
       const o = orderResult.rows[0] as Record<string, string>
-      domainStats = {
-        totalOrders: Number(o.total_orders),
-        totalRevenue: Number(o.total_revenue),
+      let totalOrders = Number(o.total_orders)
+      let totalRevenue = Number(o.total_revenue)
+      let orders7d = Number(o.orders_7d)
+      let ordersPrev7d = Number(o.orders_prev_7d)
+      let revenue7d = Number(o.revenue_7d)
+      let revenuePrev7d = Number(o.revenue_prev_7d)
+
+      // Fallback: if orders table is empty, compute from order_completed events
+      if (totalOrders === 0) {
+        const evtResult = await db.execute(sql`
+          SELECT
+            COUNT(*) AS total_orders,
+            COALESCE(SUM(
+              (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
+               FROM jsonb_array_elements(properties->'line_items') item)
+            ), 0) AS total_revenue,
+            COUNT(*) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS orders_7d,
+            COUNT(*) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS orders_prev_7d,
+            COALESCE(SUM(
+              (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
+               FROM jsonb_array_elements(properties->'line_items') item)
+            ) FILTER (WHERE timestamp >= ${sevenDaysAgo}), 0) AS revenue_7d,
+            COALESCE(SUM(
+              (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
+               FROM jsonb_array_elements(properties->'line_items') item)
+            ) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
+          FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed'
+        `)
+        const ev = evtResult.rows[0] as Record<string, string>
+        totalOrders = Number(ev.total_orders)
+        totalRevenue = Number(ev.total_revenue)
+        orders7d = Number(ev.orders_7d)
+        ordersPrev7d = Number(ev.orders_prev_7d)
+        revenue7d = Number(ev.revenue_7d)
+        revenuePrev7d = Number(ev.revenue_prev_7d)
       }
+
+      domainStats = { totalOrders, totalRevenue }
       domainChanges = {
-        ordersChange: pctChange(Number(o.orders_7d), Number(o.orders_prev_7d)),
-        revenueChange: pctChange(Number(o.revenue_7d), Number(o.revenue_prev_7d)),
+        ordersChange: pctChange(orders7d, ordersPrev7d),
+        revenueChange: pctChange(revenue7d, revenuePrev7d),
       }
     } else if (domainType === 'fintech') {
       const txResult = await db.execute(sql`
@@ -228,19 +263,41 @@ router.get('/trends', requireProjectId, async (req, res) => {
     let domainTrends: Record<string, unknown>[] = []
 
     if (domainType === 'ecommerce') {
-      const result = await db.execute(sql`
-        SELECT
-          d.day::date AS date,
-          COALESCE(o.order_count, 0) AS orders,
-          COALESCE(o.revenue, 0) AS revenue
-        FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
-        LEFT JOIN (
-          SELECT created_at::date AS day, COUNT(*) AS order_count, SUM(total) AS revenue
-          FROM orders WHERE project_id = ${projectId} AND created_at >= ${startDate}
-          GROUP BY created_at::date
-        ) o ON o.day = d.day::date
-        ORDER BY d.day
-      `)
+      // Check if orders table has data, else use events
+      const [orderCheck] = await db.execute(sql`SELECT COUNT(*) AS c FROM orders WHERE project_id = ${projectId} LIMIT 1`).then(r => r.rows as Record<string, string>[])
+      const hasOrders = Number(orderCheck?.c ?? 0) > 0
+
+      const result = hasOrders
+        ? await db.execute(sql`
+            SELECT
+              d.day::date AS date,
+              COALESCE(o.order_count, 0) AS orders,
+              COALESCE(o.revenue, 0) AS revenue
+            FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
+            LEFT JOIN (
+              SELECT created_at::date AS day, COUNT(*) AS order_count, SUM(total::numeric) AS revenue
+              FROM orders WHERE project_id = ${projectId} AND created_at >= ${startDate}
+              GROUP BY created_at::date
+            ) o ON o.day = d.day::date
+            ORDER BY d.day
+          `)
+        : await db.execute(sql`
+            SELECT
+              d.day::date AS date,
+              COALESCE(o.order_count, 0) AS orders,
+              COALESCE(o.revenue, 0) AS revenue
+            FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
+            LEFT JOIN (
+              SELECT timestamp::date AS day, COUNT(*) AS order_count,
+                COALESCE(SUM(
+                  (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
+                   FROM jsonb_array_elements(properties->'line_items') item)
+                ), 0) AS revenue
+              FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed' AND timestamp >= ${startDate}
+              GROUP BY timestamp::date
+            ) o ON o.day = d.day::date
+            ORDER BY d.day
+          `)
       domainTrends = result.rows as Record<string, unknown>[]
     } else if (domainType === 'fintech') {
       const result = await db.execute(sql`
@@ -304,6 +361,28 @@ router.get('/counts', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Dashboard counts error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch counts' })
+  }
+})
+
+// GET /api/dashboard/segments?projectId=...
+router.get('/segments', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const rows = await db
+      .select({
+        id: segments.id,
+        name: segments.name,
+        memberCount: segments.memberCount,
+      })
+      .from(segments)
+      .where(and(eq(segments.projectId, projectId), eq(segments.isActive, true)))
+      .orderBy(desc(segments.memberCount))
+      .limit(10)
+
+    res.json({ success: true, data: rows })
+  } catch (err) {
+    console.error('Dashboard segments error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch segments' })
   }
 })
 
