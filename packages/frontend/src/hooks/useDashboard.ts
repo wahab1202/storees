@@ -92,6 +92,14 @@ export function useSidebarCounts() {
   })
 }
 
+export function useDashboardSegments() {
+  return useQuery({
+    queryKey: ['dashboard-segments'],
+    queryFn: () => api.get<Array<{ id: string; name: string; memberCount: number }>>(withProject('/api/dashboard/segments')),
+    staleTime: 120_000,
+  })
+}
+
 export function useDashboardTrends(range: '7d' | '14d' | '30d' = '7d') {
   return useQuery({
     queryKey: ['dashboard-trends', range],
