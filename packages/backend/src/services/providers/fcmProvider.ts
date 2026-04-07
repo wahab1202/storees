@@ -1,18 +1,21 @@
+import crypto from 'crypto'
 import type { ChannelProvider } from '../channelProviderRegistry.js'
 import type { SendCommand } from '@storees/shared'
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
 
-// Simple JWT signing for Google service account (no SDK needed)
+// JWT signing for Google service account OAuth2
 async function getAccessToken(serviceAccountKey: string): Promise<string> {
-  // serviceAccountKey may be a JSON string or already an object stringified with escaped chars
   let sa: { client_email: string; private_key: string; token_uri: string }
   try {
     sa = JSON.parse(serviceAccountKey)
-  } catch {
-    // Try double-parse (if stored as escaped JSON string inside JSONB)
-    sa = JSON.parse(JSON.parse(`"${serviceAccountKey.replace(/"/g, '\\"')}""`))
+  } catch (e) {
+    throw new Error(`Failed to parse service account JSON: ${(e as Error).message}`)
+  }
+
+  if (!sa.private_key || !sa.client_email) {
+    throw new Error('Service account JSON missing private_key or client_email')
   }
 
   const now = Math.floor(Date.now() / 1000)
@@ -20,18 +23,18 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
   const payload = Buffer.from(JSON.stringify({
     iss: sa.client_email,
     scope: 'https://www.googleapis.com/auth/firebase.messaging',
-    aud: sa.token_uri,
+    aud: sa.token_uri ?? 'https://oauth2.googleapis.com/token',
     iat: now,
     exp: now + 3600,
   })).toString('base64url')
 
-  const { createSign } = await import('crypto')
-  const sign = createSign('RSA-SHA256')
+  const sign = crypto.createSign('RSA-SHA256')
   sign.update(`${header}.${payload}`)
   const signature = sign.sign(sa.private_key, 'base64url')
   const jwt = `${header}.${payload}.${signature}`
 
-  const resp = await fetch(sa.token_uri, {
+  const tokenUri = sa.token_uri ?? 'https://oauth2.googleapis.com/token'
+  const resp = await fetch(tokenUri, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -40,7 +43,15 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
     }),
   })
 
-  const data = await resp.json() as { access_token: string }
+  if (!resp.ok) {
+    const errText = await resp.text()
+    throw new Error(`Google OAuth2 token request failed (${resp.status}): ${errText}`)
+  }
+
+  const data = await resp.json() as { access_token?: string; error?: string }
+  if (!data.access_token) {
+    throw new Error(`No access_token in Google response: ${JSON.stringify(data)}`)
+  }
   return data.access_token
 }
 
@@ -93,8 +104,13 @@ export const fcmProvider: ChannelProvider = {
       }),
     })
 
-    const data = await resp.json() as { name?: string; error?: { message: string } }
-    if (!resp.ok) return { messageId: '', status: 'failed', error: data.error?.message ?? `HTTP ${resp.status}` }
+    const data = await resp.json() as { name?: string; error?: { message: string; code?: number; status?: string } }
+    if (!resp.ok) {
+      const errMsg = data.error?.message ?? `HTTP ${resp.status}`
+      console.error(`[FCM] Push send failed for ${command.userId}: ${errMsg}`)
+      return { messageId: '', status: 'failed', error: errMsg }
+    }
+    console.log(`[FCM] Push sent: ${data.name} to customer ${command.userId}`)
     return { messageId: data.name ?? '', status: 'sent' }
   },
 }
