@@ -71,15 +71,34 @@ router.get('/config', requireProjectId, async (req, res) => {
   }
 })
 
-// POST /api/ai/config — Save AI provider config
+// POST /api/ai/config — Save AI provider config OR channel provider config
 router.post('/config', requireProjectId, async (req, res) => {
   try {
-    const { provider, apiKey, model } = req.body as {
+    const { provider, apiKey, model, channelConfig } = req.body as {
       provider: string
       apiKey: string
       model?: string
+      channelConfig?: Record<string, { provider: string; config: Record<string, string> }>
     }
 
+    // Channel config save (SMS/WhatsApp/Push provider settings)
+    if (channelConfig) {
+      // Merge into projects.settings.channels JSONB
+      const channelJson = JSON.stringify(channelConfig)
+      await db.execute(sql`
+        UPDATE projects SET
+          settings = jsonb_set(
+            COALESCE(settings, '{}'::jsonb),
+            '{channels}',
+            COALESCE(settings->'channels', '{}'::jsonb) || ${channelJson}::jsonb
+          ),
+          updated_at = NOW()
+        WHERE id = ${req.projectId!}
+      `)
+      return res.json({ success: true })
+    }
+
+    // AI provider config save
     if (!provider || !apiKey) {
       return res.status(400).json({ success: false, error: 'provider and apiKey are required' })
     }
