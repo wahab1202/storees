@@ -1055,3 +1055,17 @@ If the same `idempotency_key` is sent twice, the second request is silently igno
 - [ ] Add `added_to_wishlist` on wishlist button tap
 - [ ] Call `reset()` on logout
 - [ ] Test: open product → check customer activity in Storees dashboard
+
+### Push Notification Token Sync
+- [ ] On app launch, get FCM token and send to Storees:
+  ```
+  POST /api/v1/customers
+  { "customer_id": "<medusa_customer_id>", "attributes": { "fcm_token": "<token>", "push_subscribed": true } }
+  ```
+- [ ] Handle `onTokenRefresh` — resend updated token to Storees
+- [ ] On notification tap, track event:
+  ```
+  Storees.track('push_clicked', { message_id: '<from notification data>' })
+  ```
+- [ ] GoWelmart stores tokens in `metadata.device_id` — Storees reads from `custom_attributes.fcm_token`
+- [ ] 6,123 existing tokens already synced from historical backfill

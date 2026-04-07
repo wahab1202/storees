@@ -33,6 +33,8 @@ import {
   FlaskConical,
   Trophy,
   BarChart3,
+  Bell,
+  MessageSquare,
 } from 'lucide-react'
 import Link from 'next/link'
 import type { Campaign } from '@storees/shared'
@@ -130,13 +132,18 @@ export default function CampaignDetailPage() {
               <span className={cn('px-2.5 py-0.5 text-xs font-semibold rounded-full', STATUS_COLORS[campaign.status])}>
                 {campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1)}
               </span>
+              <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-gray-100 text-text-secondary capitalize">
+                {campaign.channel ?? 'email'}
+              </span>
               {campaign.abTestEnabled && (
                 <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-purple-50 text-purple-600">
                   A/B Test
                 </span>
               )}
             </div>
-            <p className="text-sm text-text-secondary mt-0.5">{campaign.subject}</p>
+            <p className="text-sm text-text-secondary mt-0.5">
+              {campaign.channel === 'email' ? campaign.subject : campaign.channel === 'push' ? (campaign.subject ?? campaign.bodyText) : campaign.bodyText ?? '—'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -226,28 +233,72 @@ export default function CampaignDetailPage() {
         </div>
       )}
 
-      {/* Email preview panel */}
+      {/* Content preview panel — adapts to channel */}
       {showPreview && (
         <div className="mb-6 bg-white border border-border rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border">
-            <h2 className="text-sm font-semibold text-text-primary">Email Preview</h2>
+            <h2 className="text-sm font-semibold text-text-primary">
+              {campaign.channel === 'push' ? 'Push Notification Preview' : campaign.channel === 'sms' ? 'SMS Preview' : 'Email Preview'}
+            </h2>
             <button onClick={() => setShowPreview(false)} className="text-xs text-text-muted hover:text-text-primary">
               Close
             </button>
           </div>
           <div className="p-5">
-            <div className="text-xs text-text-muted mb-3 flex items-center gap-4">
-              <span><strong>From:</strong> {campaign.fromName ?? 'Storees'}</span>
-              <span><strong>Subject:</strong> {campaign.subject}</span>
-            </div>
-            <div className="border border-border rounded-lg overflow-hidden">
-              <iframe
-                srcDoc={campaign.htmlBody ?? ''}
-                title="Email Preview"
-                className="w-full h-[400px]"
-                sandbox="allow-same-origin"
-              />
-            </div>
+            {campaign.channel === 'email' ? (
+              <>
+                <div className="text-xs text-text-muted mb-3 flex items-center gap-4">
+                  <span><strong>From:</strong> {campaign.fromName ?? 'Storees'}</span>
+                  <span><strong>Subject:</strong> {campaign.subject}</span>
+                </div>
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <iframe
+                    srcDoc={campaign.htmlBody ?? ''}
+                    title="Email Preview"
+                    className="w-full h-[400px]"
+                    sandbox="allow-same-origin"
+                  />
+                </div>
+              </>
+            ) : campaign.channel === 'push' ? (
+              <div className="max-w-sm mx-auto">
+                {/* Mobile push notification mockup */}
+                <div className="bg-surface rounded-2xl p-4 shadow-sm border border-border">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center flex-shrink-0">
+                      <Bell className="h-5 w-5 text-accent" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-text-primary">Storees</span>
+                        <span className="text-[10px] text-text-muted">now</span>
+                      </div>
+                      <p className="text-sm font-semibold text-text-primary mt-0.5">{campaign.subject || 'Notification Title'}</p>
+                      <p className="text-xs text-text-secondary mt-0.5 line-clamp-2">{campaign.bodyText || 'Notification body text'}</p>
+                    </div>
+                  </div>
+                </div>
+                <p className="text-center text-[10px] text-text-muted mt-3">Push notification preview</p>
+              </div>
+            ) : (
+              /* SMS / WhatsApp preview */
+              <div className="max-w-sm mx-auto">
+                <div className="bg-surface rounded-2xl p-4 shadow-sm border border-border">
+                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-border">
+                    <div className="w-8 h-8 rounded-full bg-accent/10 flex items-center justify-center">
+                      <MessageSquare className="h-4 w-4 text-accent" />
+                    </div>
+                    <span className="text-xs font-semibold text-text-primary">
+                      {campaign.channel === 'sms' ? 'SMS' : 'WhatsApp'}
+                    </span>
+                  </div>
+                  <div className="bg-white rounded-lg px-3 py-2 border border-border">
+                    <p className="text-sm text-text-primary whitespace-pre-wrap">{campaign.bodyText || 'Message body'}</p>
+                  </div>
+                </div>
+                <p className="text-center text-[10px] text-text-muted mt-3">{campaign.channel === 'sms' ? 'SMS' : 'WhatsApp'} message preview</p>
+              </div>
+            )}
           </div>
         </div>
       )}
