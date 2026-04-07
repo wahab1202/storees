@@ -777,11 +777,59 @@ class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate, UNUserNot
 }
 ```
 
+### Syncing Existing FCM Tokens (Historical Backfill)
+
+If your platform already has FCM tokens stored per customer (e.g., in a `device_id` or `fcm_token` field), push them to Storees during the historical sync:
+
+```javascript
+// Batch sync existing tokens
+const customers = await getAllCustomersFromYourDB();
+const BATCH_SIZE = 200;
+
+for (let i = 0; i < customers.length; i += BATCH_SIZE) {
+  const batch = customers.slice(i, i + BATCH_SIZE);
+
+  for (const customer of batch) {
+    if (!customer.fcm_token && !customer.device_id) continue;
+
+    await fetch('https://api.storees.io/api/v1/customers', {
+      method: 'POST',
+      headers: HEADERS,
+      body: JSON.stringify({
+        customer_id: customer.id,
+        attributes: {
+          fcm_token: customer.fcm_token || customer.device_id,
+          push_subscribed: true,
+        },
+      }),
+    });
+  }
+
+  console.log(`Synced ${Math.min(i + BATCH_SIZE, customers.length)}/${customers.length} tokens`);
+}
+```
+
+**Where Storees stores the token:** `customers.custom_attributes.fcm_token`
+
+**Important:** The FCM token is the key that links a customer to their device. Without it, push notifications cannot be delivered — the campaign will show "Failed" for customers missing tokens.
+
+### Real-Time Token Updates
+
+After the initial sync, keep tokens updated by calling the Storees API whenever:
+
+| Event | When | What to send |
+|-------|------|-------------|
+| App first launch | User opens app for the first time | `fcm_token` + `push_subscribed: true` |
+| Token refresh | Firebase calls `onTokenRefresh` | Updated `fcm_token` |
+| User login | Customer authenticates | Link `fcm_token` to `customer_id` |
+| User logout | Customer signs out | `push_subscribed: false` (optional) |
+| Uninstall detected | Token becomes invalid | FCM returns error → Storees auto-disables |
+
 ### How Push Delivery Works
 
 ```
 Storees sends push campaign/flow
-  → Reads customer.customAttributes.fcm_token
+  → Reads customer.custom_attributes.fcm_token
   → Calls FCM API: POST fcm.googleapis.com/v1/projects/{id}/messages:send
   → FCM delivers to device
   → Device shows notification
