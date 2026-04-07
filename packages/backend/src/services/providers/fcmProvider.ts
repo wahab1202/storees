@@ -100,7 +100,21 @@ export const fcmProvider: ChannelProvider = {
       body: JSON.stringify({
         message: {
           token: fcmToken,
-          notification: { title, body },
+          notification: {
+            title,
+            body,
+            ...(command.variables.image ? { image: command.variables.image } : {}),
+          },
+          android: {
+            notification: {
+              ...(command.variables.image ? { image: command.variables.image } : {}),
+              click_action: 'FLUTTER_NOTIFICATION_CLICK',
+            },
+          },
+          apns: {
+            payload: { aps: { 'mutable-content': 1, sound: 'default' } },
+            ...(command.variables.image ? { fcm_options: { image: command.variables.image } } : {}),
+          },
           data: Object.fromEntries(Object.entries(command.variables).map(([k, v]) => [k, String(v)])),
         },
       }),

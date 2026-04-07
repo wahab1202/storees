@@ -157,6 +157,7 @@ function CreateCampaignContent() {
   // Step 2 — SMS / Push
   const [bodyText, setBodyText] = useState('')
   const [pushTitle, setPushTitle] = useState('')
+  const [pushImageUrl, setPushImageUrl] = useState('')
 
   // A/B Testing
   const [abTestEnabled, setAbTestEnabled] = useState(false)
@@ -226,7 +227,7 @@ function CreateCampaignContent() {
         // Email fields
         subject: isEmail ? subject : (channel === 'push' ? pushTitle : undefined),
         htmlBody: isEmail ? htmlBody : undefined,
-        previewText: isEmail ? (previewText || undefined) : undefined,
+        previewText: isEmail ? (previewText || undefined) : (channel === 'push' ? (pushImageUrl || undefined) : undefined),
         fromName: isEmail ? (fromName || undefined) : undefined,
         templateId: isEmail ? (selectedTemplateId || undefined) : undefined,
         // SMS/Push fields
@@ -378,6 +379,7 @@ function CreateCampaignContent() {
                 channel={channel}
                 bodyText={bodyText} setBodyText={setBodyText}
                 pushTitle={pushTitle} setPushTitle={setPushTitle}
+                pushImageUrl={pushImageUrl} setPushImageUrl={setPushImageUrl}
                 templates={templates}
                 inputClass={inputClass}
               />
@@ -778,11 +780,12 @@ function Step2EmailContent({
 /* ─── Step 2: SMS / Push Content ─── */
 
 function Step2TextContent({
-  channel, bodyText, setBodyText, pushTitle, setPushTitle, templates, inputClass,
+  channel, bodyText, setBodyText, pushTitle, setPushTitle, pushImageUrl, setPushImageUrl, templates, inputClass,
 }: {
   channel: CampaignChannel
   bodyText: string; setBodyText: (v: string) => void
   pushTitle: string; setPushTitle: (v: string) => void
+  pushImageUrl: string; setPushImageUrl: (v: string) => void
   templates: TemplateItem[]
   inputClass: string
 }) {
@@ -815,19 +818,33 @@ function Step2TextContent({
         </div>
       )}
 
-      {/* Push: Title */}
+      {/* Push: Title + Image */}
       {isPush && (
-        <div className="bg-white border border-border rounded-xl p-6">
-          <label className="block text-sm font-medium text-text-primary mb-1.5">
-            Notification Title<span className="text-red-400">*</span>
-          </label>
-          <input
-            value={pushTitle}
-            onChange={e => setPushTitle(e.target.value)}
-            placeholder="e.g. 🔔 Your order has shipped!"
-            className={inputClass}
-          />
-          <p className="text-xs text-text-muted mt-1">Variables: {'{{customer_name}}'}, {'{{store_name}}'}</p>
+        <div className="bg-white border border-border rounded-xl p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1.5">
+              Notification Title<span className="text-red-400">*</span>
+            </label>
+            <input
+              value={pushTitle}
+              onChange={e => setPushTitle(e.target.value)}
+              placeholder="e.g. 🔔 Your order has shipped!"
+              className={inputClass}
+            />
+            <p className="text-xs text-text-muted mt-1">Variables: {'{{customer_name}}'}, {'{{store_name}}'}</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1.5">
+              Image URL <span className="text-text-muted font-normal">(optional)</span>
+            </label>
+            <input
+              value={pushImageUrl}
+              onChange={e => setPushImageUrl(e.target.value)}
+              placeholder="https://example.com/banner.jpg"
+              className={inputClass}
+            />
+            <p className="text-xs text-text-muted mt-1">Shown as a large image in the push notification (Android + iOS)</p>
+          </div>
         </div>
       )}
 
