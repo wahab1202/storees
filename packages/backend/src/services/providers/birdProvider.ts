@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 
 async function resolveBody(command: SendCommand): Promise<{ to: string; body: string }> {
   const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
-  const [template] = await db.select({ bodyText: emailTemplates.bodyText }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1)
+  const template = command.templateId ? (await db.select({ bodyText: emailTemplates.bodyText }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0] : undefined
 
   let body = template?.bodyText ?? ''
   for (const [key, val] of Object.entries(command.variables)) {

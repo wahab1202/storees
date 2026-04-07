@@ -11,7 +11,7 @@ export const metaWhatsappProvider: ChannelProvider = {
     const { phoneNumberId, accessToken } = config
 
     const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
-    const [template] = await db.select({ bodyText: emailTemplates.bodyText, subject: emailTemplates.subject }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1)
+    const template = command.templateId ? (await db.select({ bodyText: emailTemplates.bodyText, subject: emailTemplates.subject }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0] : undefined
 
     const to = customer?.phone
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }

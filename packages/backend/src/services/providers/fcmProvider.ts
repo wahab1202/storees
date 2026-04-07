@@ -65,7 +65,9 @@ export const fcmProvider: ChannelProvider = {
     const { projectId, serviceAccountKey } = config
 
     const [customer] = await db.select({ customAttributes: customers.customAttributes }).from(customers).where(eq(customers.id, command.userId)).limit(1)
-    const [template] = await db.select({ subject: emailTemplates.subject, bodyText: emailTemplates.bodyText }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1)
+    const template = command.templateId
+      ? (await db.select({ subject: emailTemplates.subject, bodyText: emailTemplates.bodyText }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0]
+      : undefined
 
     // FCM device token stored in customer.customAttributes.fcm_token
     const fcmToken = (customer?.customAttributes as Record<string, unknown>)?.fcm_token as string
