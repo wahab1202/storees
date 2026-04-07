@@ -131,6 +131,24 @@ export function useSendCampaign() {
   })
 }
 
+export function useRetryCampaign() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ message: string; retryCount: number }>(
+        withProject(`/api/campaigns/${id}/retry`),
+        {},
+      ),
+    onSuccess: (res, id) => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['campaigns', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-sends', id] })
+      toast.success(res.data?.message ?? 'Retrying failed recipients')
+    },
+    onError: (err) => toast.error(err.message ?? 'Failed to retry'),
+  })
+}
+
 // Campaign analytics types
 export type CampaignAnalytics = {
   funnel: {

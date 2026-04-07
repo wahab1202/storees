@@ -6,6 +6,7 @@ import {
   useCampaignDetail,
   useCampaignSends,
   useSendCampaign,
+  useRetryCampaign,
   useDeleteCampaign,
   useCampaignAnalytics,
   useCampaignAbResults,
@@ -64,6 +65,7 @@ export default function CampaignDetailPage() {
   const { data: sendsData } = useCampaignSends(id)
   const { data: analyticsData } = useCampaignAnalytics(id)
   const sendCampaign = useSendCampaign()
+  const retryCampaign = useRetryCampaign()
   const deleteCampaign = useDeleteCampaign()
 
   const [showPreview, setShowPreview] = useState(false)
@@ -183,6 +185,20 @@ export default function CampaignDetailPage() {
                 <Send className="h-4 w-4" />
               )}
               Send Now
+            </button>
+          )}
+          {campaign.failedCount > 0 && (
+            <button
+              onClick={() => retryCampaign.mutate(id)}
+              disabled={retryCampaign.isPending}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50"
+            >
+              {retryCampaign.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <XCircle className="h-4 w-4" />
+              )}
+              Retry {campaign.failedCount} Failed
             </button>
           )}
         </div>

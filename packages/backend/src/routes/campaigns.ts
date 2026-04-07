@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, desc } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { campaigns, campaignSends } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -249,6 +249,43 @@ router.post('/:id/send', requireProjectId, async (req, res) => {
     const msg = err instanceof Error ? err.message : 'Failed to dispatch campaign'
     console.error('Campaign send error:', err)
     res.status(400).json({ success: false, error: msg })
+  }
+})
+
+// POST /api/campaigns/:id/retry?projectId= — Retry failed recipients
+router.post('/:id/retry', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+
+    // Reset failed sends back to pending
+    const result = await db.update(campaignSends).set({
+      status: 'pending',
+    }).where(
+      and(
+        eq(campaignSends.campaignId, id),
+        eq(campaignSends.status, 'failed'),
+      ),
+    )
+
+    const retryCount = (result as { rowCount?: number }).rowCount ?? 0
+    if (retryCount === 0) {
+      return res.json({ success: true, data: { message: 'No failed recipients to retry', retryCount: 0 } })
+    }
+
+    // Reset campaign status to sending
+    await db.update(campaigns).set({
+      status: 'sending',
+      updatedAt: new Date(),
+    }).where(eq(campaigns.id, id))
+
+    // Re-enqueue the campaign worker job
+    const { campaignQueue } = await import('../services/queue.js')
+    await campaignQueue.add('send-campaign', { campaignId: id })
+
+    res.json({ success: true, data: { message: `Retrying ${retryCount} failed recipients`, retryCount } })
+  } catch (err) {
+    console.error('Campaign retry error:', err)
+    res.status(500).json({ success: false, error: 'Failed to retry campaign' })
   }
 })
 
