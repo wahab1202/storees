@@ -70,16 +70,20 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   const shuffled = [...recipients].sort(() => Math.random() - 0.5)
   const splitIndex = isAb ? Math.round(shuffled.length * (splitPct / 100)) : shuffled.length
 
-  // Create pending send records with variant assignment
-  await db.insert(campaignSends).values(
-    shuffled.map((r, i) => ({
-      campaignId,
-      customerId: r.customerId,
-      email: r.email,
-      status: 'pending' as const,
-      variant: isAb ? (i < splitIndex ? 'A' : 'B') : null,
-    })),
-  )
+  // Create pending send records with variant assignment (batched to avoid Postgres param limit)
+  const BATCH_SIZE = 500
+  const sendRows = shuffled.map((r, i) => ({
+    campaignId,
+    customerId: r.customerId,
+    email: r.email,
+    status: 'pending' as const,
+    variant: isAb ? (i < splitIndex ? 'A' : 'B') : null,
+  }))
+
+  for (let i = 0; i < sendRows.length; i += BATCH_SIZE) {
+    const batch = sendRows.slice(i, i + BATCH_SIZE)
+    await db.insert(campaignSends).values(batch)
+  }
 
   // Update campaign status and recipient count
   await db.update(campaigns).set({
