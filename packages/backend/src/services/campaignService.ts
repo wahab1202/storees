@@ -48,11 +48,19 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   if (!['draft', 'scheduled'].includes(campaign.status)) {
     throw new Error(`Campaign cannot be sent: current status is "${campaign.status}"`)
   }
-  if (!campaign.segmentId) throw new Error('Campaign has no target segment')
-
-  // Fetch recipients
-  const recipients = await getCampaignRecipients(campaign.segmentId)
-  if (recipients.length === 0) throw new Error('Target segment has no customers with email addresses')
+  // Fetch recipients — from segment or all project customers
+  let recipients: Array<{ customerId: string; email: string; name: string | null }>
+  if (campaign.segmentId) {
+    recipients = await getCampaignRecipients(campaign.segmentId)
+  } else {
+    // All users in the project
+    const allCustomers = await db
+      .select({ customerId: customers.id, email: customers.email, name: customers.name })
+      .from(customers)
+      .where(eq(customers.projectId, campaign.projectId))
+    recipients = allCustomers.filter((c): c is typeof c & { email: string } => !!c.email)
+  }
+  if (recipients.length === 0) throw new Error('No reachable customers found for this campaign')
 
   // Assign A/B variants if enabled
   const isAb = campaign.abTestEnabled ?? false

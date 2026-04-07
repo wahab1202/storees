@@ -92,7 +92,7 @@ export default function CampaignDetailPage() {
   const campaign = data.data
   const sends = sendsData?.data ?? []
   const analytics = analyticsData?.data ?? null
-  const canSend = ['draft', 'scheduled'].includes(campaign.status) && !!campaign.segmentId
+  const canSend = ['draft', 'scheduled'].includes(campaign.status)
   const hasSent = campaign.status === 'sent' || campaign.status === 'sending'
 
   const handleSend = () => {
