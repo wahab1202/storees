@@ -48,19 +48,46 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   if (!['draft', 'scheduled'].includes(campaign.status)) {
     throw new Error(`Campaign cannot be sent: current status is "${campaign.status}"`)
   }
+  const channel = campaign.channel ?? 'email'
+
   // Fetch recipients — from segment or all project customers
-  let recipients: Array<{ customerId: string; email: string; name: string | null }>
+  // Filter by channel reachability: email needs email, sms/whatsapp needs phone, push needs pushSubscribed
+  let allCustomerRows: Array<{ customerId: string; email: string | null; name: string | null; phone: string | null; pushSubscribed: boolean }>
+
   if (campaign.segmentId) {
-    recipients = await getCampaignRecipients(campaign.segmentId)
+    const members = await db
+      .select({
+        customerId: customerSegments.customerId,
+        email: customers.email,
+        name: customers.name,
+        phone: customers.phone,
+        pushSubscribed: customers.pushSubscribed,
+      })
+      .from(customerSegments)
+      .innerJoin(customers, eq(customers.id, customerSegments.customerId))
+      .where(eq(customerSegments.segmentId, campaign.segmentId))
+    allCustomerRows = members
   } else {
-    // All users in the project
-    const allCustomers = await db
-      .select({ customerId: customers.id, email: customers.email, name: customers.name })
+    const rows = await db
+      .select({ customerId: customers.id, email: customers.email, name: customers.name, phone: customers.phone, pushSubscribed: customers.pushSubscribed })
       .from(customers)
       .where(eq(customers.projectId, campaign.projectId))
-    recipients = allCustomers.filter((c): c is typeof c & { email: string } => !!c.email)
+    allCustomerRows = rows
   }
-  if (recipients.length === 0) throw new Error('No reachable customers found for this campaign')
+
+  // Filter by channel reachability
+  const recipients = allCustomerRows.filter(c => {
+    if (channel === 'email') return !!c.email
+    if (channel === 'sms' || channel === 'whatsapp') return !!c.phone
+    if (channel === 'push') return true // push token checked at delivery time
+    return !!c.email
+  }).map(c => ({
+    customerId: c.customerId,
+    email: c.email ?? '',
+    name: c.name,
+  }))
+
+  if (recipients.length === 0) throw new Error(`No reachable customers found for ${channel} campaign`)
 
   // Assign A/B variants if enabled
   const isAb = campaign.abTestEnabled ?? false
@@ -100,7 +127,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
 }
 
 /**
- * Process a campaign: send emails to all pending recipients.
+ * Process a campaign: route to correct channel (email, SMS, push, WhatsApp).
  * Called by the campaign worker.
  */
 export async function processCampaign(campaignId: string): Promise<void> {
@@ -111,6 +138,8 @@ export async function processCampaign(campaignId: string): Promise<void> {
     .limit(1)
 
   if (!campaign || campaign.status !== 'sending') return
+
+  const channel = campaign.channel ?? 'email'
 
   // Fetch all pending sends
   const pendingSends = await db
@@ -127,9 +156,9 @@ export async function processCampaign(campaignId: string): Promise<void> {
   let failedCount = campaign.failedCount
 
   for (const send of pendingSends) {
-    // Get customer name for personalization
+    // Get customer for personalization
     const [customer] = await db
-      .select({ name: customers.name })
+      .select({ name: customers.name, phone: customers.phone, customAttributes: customers.customAttributes })
       .from(customers)
       .where(eq(customers.id, send.customerId))
       .limit(1)
@@ -140,38 +169,77 @@ export async function processCampaign(campaignId: string): Promise<void> {
       store_name: 'Storees Store',
     }
 
-    // Use variant B content if A/B enabled and this is variant B
-    const useVariantB = send.variant === 'B' && campaign.abTestEnabled
-    const rawSubject = useVariantB && campaign.abVariantBSubject
-      ? campaign.abVariantBSubject
-      : campaign.subject ?? ''
-    const rawHtml = useVariantB && campaign.abVariantBHtmlBody
-      ? campaign.abVariantBHtmlBody
-      : campaign.htmlBody ?? ''
+    let success = false
 
-    const subject = interpolateTemplate(rawSubject, templateContext)
-    const html = interpolateTemplate(rawHtml, templateContext)
+    if (channel === 'email') {
+      // Email: use Resend directly
+      const useVariantB = send.variant === 'B' && campaign.abTestEnabled
+      const rawSubject = useVariantB && campaign.abVariantBSubject
+        ? campaign.abVariantBSubject
+        : campaign.subject ?? ''
+      const rawHtml = useVariantB && campaign.abVariantBHtmlBody
+        ? campaign.abVariantBHtmlBody
+        : campaign.htmlBody ?? ''
 
-    const messageId = await sendEmail({ to: send.email, subject, html })
+      const subject = interpolateTemplate(rawSubject, templateContext)
+      const html = interpolateTemplate(rawHtml, templateContext)
 
-    if (messageId) {
-      await db.update(campaignSends).set({
-        status: 'sent',
-        sentAt: new Date(),
-        resendMessageId: messageId,
-      }).where(eq(campaignSends.id, send.id))
-      sentCount++
+      const messageId = await sendEmail({ to: send.email, subject, html })
+      if (messageId) {
+        await db.update(campaignSends).set({
+          status: 'sent', sentAt: new Date(), resendMessageId: messageId,
+        }).where(eq(campaignSends.id, send.id))
+        success = true
+      }
     } else {
+      // SMS, Push, WhatsApp: use delivery service
+      try {
+        const { send: deliverySend } = await import('./deliveryService.js')
+        const templateId = campaign.templateId ?? ''
+
+        // Build variables from campaign content
+        const variables: Record<string, string> = {
+          ...templateContext,
+          // For SMS/push: use bodyText as the message
+          message: interpolateTemplate(campaign.bodyText ?? '', templateContext),
+          // For push: subject is the title
+          title: interpolateTemplate(campaign.subject ?? '', templateContext),
+        }
+
+        const msgId = await deliverySend({
+          projectId: campaign.projectId,
+          userId: send.customerId,
+          channel: channel as 'sms' | 'push' | 'whatsapp',
+          templateId,
+          variables,
+          messageType: (campaign.contentType ?? 'promotional') as 'promotional' | 'transactional',
+          campaignId,
+        })
+
+        if (msgId) {
+          await db.update(campaignSends).set({
+            status: 'sent', sentAt: new Date(),
+          }).where(eq(campaignSends.id, send.id))
+          success = true
+        }
+      } catch (err) {
+        console.error(`Campaign ${channel} send failed for ${send.customerId}:`, err)
+      }
+    }
+
+    if (!success) {
       await db.update(campaignSends).set({ status: 'failed' }).where(eq(campaignSends.id, send.id))
       failedCount++
+    } else {
+      sentCount++
     }
 
     // Update campaign counts periodically
-    await db.update(campaigns).set({
-      sentCount,
-      failedCount,
-      updatedAt: new Date(),
-    }).where(eq(campaigns.id, campaignId))
+    if ((sentCount + failedCount) % 50 === 0 || sentCount + failedCount === pendingSends.length) {
+      await db.update(campaigns).set({
+        sentCount, failedCount, updatedAt: new Date(),
+      }).where(eq(campaigns.id, campaignId))
+    }
   }
 
   // Mark campaign as sent
@@ -183,7 +251,7 @@ export async function processCampaign(campaignId: string): Promise<void> {
     updatedAt: new Date(),
   }).where(eq(campaigns.id, campaignId))
 
-  console.log(`Campaign "${campaign.name}" completed — ${sentCount} sent, ${failedCount} failed`)
+  console.log(`Campaign "${campaign.name}" [${channel}] completed — ${sentCount} sent, ${failedCount} failed`)
 }
 
 /**
