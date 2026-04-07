@@ -468,16 +468,50 @@ function ChannelProviderSettings() {
                       <div key={field.key} className={isLargeField ? 'sm:col-span-2' : ''}>
                         <label className="block text-xs font-medium text-text-secondary mb-1.5">{field.label}</label>
                         {isLargeField ? (
-                          <textarea
-                            value={configValues[activeChannel]?.[field.key] ?? ''}
-                            onChange={e => setConfigValues(prev => ({
-                              ...prev,
-                              [activeChannel]: { ...prev[activeChannel], [field.key]: e.target.value },
-                            }))}
-                            placeholder="Paste the entire JSON content from your Firebase service account key file"
-                            rows={6}
-                            className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/50 resize-y"
-                          />
+                          <div className="space-y-2">
+                            {/* File upload */}
+                            <label className="flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-accent/40 hover:bg-accent/[0.02] transition-colors">
+                              <svg className="h-4 w-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                              <span className="text-sm text-text-secondary">
+                                {configValues[activeChannel]?.[field.key] ? 'JSON file loaded' : 'Upload .json file'}
+                              </span>
+                              <input
+                                type="file"
+                                accept=".json,application/json"
+                                className="hidden"
+                                onChange={e => {
+                                  const file = e.target.files?.[0]
+                                  if (!file) return
+                                  const reader = new FileReader()
+                                  reader.onload = () => {
+                                    const content = reader.result as string
+                                    setConfigValues(prev => ({
+                                      ...prev,
+                                      [activeChannel]: { ...prev[activeChannel], [field.key]: content },
+                                    }))
+                                  }
+                                  reader.readAsText(file)
+                                }}
+                              />
+                            </label>
+                            {/* Or paste manually */}
+                            <textarea
+                              value={configValues[activeChannel]?.[field.key] ?? ''}
+                              onChange={e => setConfigValues(prev => ({
+                                ...prev,
+                                [activeChannel]: { ...prev[activeChannel], [field.key]: e.target.value },
+                              }))}
+                              placeholder="Or paste the JSON content here"
+                              rows={4}
+                              className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/50 resize-y"
+                            />
+                            {configValues[activeChannel]?.[field.key] && (
+                              <p className="text-[11px] text-emerald-600 flex items-center gap-1">
+                                <CheckCircle2 className="h-3 w-3" />
+                                JSON loaded ({Math.round((configValues[activeChannel][field.key]?.length ?? 0) / 1024 * 10) / 10} KB)
+                              </p>
+                            )}
+                          </div>
                         ) : (
                           <input
                             type={field.type ?? 'text'}
