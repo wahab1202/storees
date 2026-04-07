@@ -462,21 +462,37 @@ function ChannelProviderSettings() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {providerDef.fields.map(field => (
-                    <div key={field.key} className={field.key === 'serviceAccountKey' ? 'sm:col-span-2' : ''}>
-                      <label className="block text-xs font-medium text-text-secondary mb-1.5">{field.label}</label>
-                      <input
-                        type={field.type ?? 'text'}
-                        value={configValues[activeChannel]?.[field.key] ?? ''}
-                        onChange={e => setConfigValues(prev => ({
-                          ...prev,
-                          [activeChannel]: { ...prev[activeChannel], [field.key]: e.target.value },
-                        }))}
-                        placeholder={field.placeholder ?? field.label}
-                        className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus placeholder:text-text-muted/50"
-                      />
-                    </div>
-                  ))}
+                  {providerDef.fields.map(field => {
+                    const isLargeField = field.key === 'serviceAccountKey'
+                    return (
+                      <div key={field.key} className={isLargeField ? 'sm:col-span-2' : ''}>
+                        <label className="block text-xs font-medium text-text-secondary mb-1.5">{field.label}</label>
+                        {isLargeField ? (
+                          <textarea
+                            value={configValues[activeChannel]?.[field.key] ?? ''}
+                            onChange={e => setConfigValues(prev => ({
+                              ...prev,
+                              [activeChannel]: { ...prev[activeChannel], [field.key]: e.target.value },
+                            }))}
+                            placeholder="Paste the entire JSON content from your Firebase service account key file"
+                            rows={6}
+                            className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/50 resize-y"
+                          />
+                        ) : (
+                          <input
+                            type={field.type ?? 'text'}
+                            value={configValues[activeChannel]?.[field.key] ?? ''}
+                            onChange={e => setConfigValues(prev => ({
+                              ...prev,
+                              [activeChannel]: { ...prev[activeChannel], [field.key]: e.target.value },
+                            }))}
+                            placeholder={field.placeholder ?? field.label}
+                            className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/50"
+                          />
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
 
                 <div className="flex items-center gap-3 pt-1">
