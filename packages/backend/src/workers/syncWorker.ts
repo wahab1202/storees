@@ -4,6 +4,7 @@ import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { projects, orders, products, collections, productCollections } from '../db/schema.js'
 import { fetchShopifyApi } from '../services/shopifyService.js'
+import { decrypt } from '../services/encryption.js'
 import { resolveCustomer, updateCustomerAggregates } from '../services/customerService.js'
 import { processHistoricalEvent } from '../services/eventProcessor.js'
 import { SHOPIFY_API_DELAY_MS } from '@storees/shared'
@@ -75,7 +76,7 @@ export function startSyncWorker(): Worker {
       }
 
       const shop = project.shopifyDomain
-      const token = project.shopifyAccessToken
+      const token = decrypt(project.shopifyAccessToken)
 
       // Fetch customers (limit to 100 for demo speed)
       let customerUrl = '/customers.json?limit=100&order=created_at+desc'

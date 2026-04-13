@@ -12,16 +12,18 @@ import {
   generateWebhookSecret,
   getCallbackRedirectUrl,
 } from '../services/shopifyService.js'
+import { encrypt } from '../services/encryption.js'
+import { redis } from '../services/redis.js'
 import { instantiateDefaultSegments } from '../services/segmentService.js'
 import { instantiateDefaultFlows } from '../services/flowService.js'
 
 const router = Router()
 
-// In-memory nonce store. TODO: move to Redis with 10-min TTL
-const nonceStore = new Map<string, { shop: string; expiresAt: number }>()
+const NONCE_TTL = 600 // 10 minutes
+const NONCE_PREFIX = 'shopify-nonce:'
 
 // GET /api/integrations/shopify/install?shop=mystore.myshopify.com
-router.get('/shopify/install', (req, res) => {
+router.get('/shopify/install', async (req, res) => {
   const shop = req.query.shop as string
 
   if (!shop || !shop.endsWith('.myshopify.com')) {
@@ -30,7 +32,7 @@ router.get('/shopify/install', (req, res) => {
   }
 
   const nonce = generateNonce()
-  nonceStore.set(nonce, { shop, expiresAt: Date.now() + 10 * 60 * 1000 })
+  await redis.set(`${NONCE_PREFIX}${nonce}`, shop, 'EX', NONCE_TTL)
 
   const installUrl = getInstallUrl(shop, nonce)
   res.redirect(installUrl)
@@ -41,13 +43,13 @@ router.get('/shopify/callback', async (req, res) => {
   try {
     const { code, shop, state } = req.query as Record<string, string>
 
-    // Verify state nonce
-    const stored = nonceStore.get(state)
-    if (!stored || stored.shop !== shop || stored.expiresAt < Date.now()) {
+    // Verify state nonce from Redis
+    const storedShop = await redis.get(`${NONCE_PREFIX}${state}`)
+    if (!storedShop || storedShop !== shop) {
       res.status(400).json({ success: false, error: 'Invalid or expired state parameter' })
       return
     }
-    nonceStore.delete(state)
+    await redis.del(`${NONCE_PREFIX}${state}`)
 
     // Verify HMAC
     if (!verifyOAuthHmac(req.query as Record<string, string>)) {
@@ -58,6 +60,7 @@ router.get('/shopify/callback', async (req, res) => {
     // Exchange code for access token
     const accessToken = await exchangeCodeForToken(shop, code)
     const webhookSecret = generateWebhookSecret()
+    const encryptedToken = encrypt(accessToken)
 
     // Upsert project
     const existing = await db.select().from(projects).where(eq(projects.shopifyDomain, shop)).limit(1)
@@ -67,7 +70,7 @@ router.get('/shopify/callback', async (req, res) => {
     if (existing.length > 0) {
       projectId = existing[0].id
       await db.update(projects).set({
-        shopifyAccessToken: accessToken,
+        shopifyAccessToken: encryptedToken,
         webhookSecret,
         updatedAt: new Date(),
       }).where(eq(projects.id, projectId))
@@ -75,7 +78,7 @@ router.get('/shopify/callback', async (req, res) => {
       const [created] = await db.insert(projects).values({
         name: shop.replace('.myshopify.com', ''),
         shopifyDomain: shop,
-        shopifyAccessToken: accessToken,
+        shopifyAccessToken: encryptedToken,
         businessType: 'ecommerce',
         webhookSecret,
       }).returning()
