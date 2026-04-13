@@ -32,7 +32,9 @@ import predictionRoutes from './routes/predictions.js'
 import sendTimeRoutes from './routes/sendTime.js'
 import channelWebhookRoutes from './routes/channelWebhooks.js'
 import urlTrackerRoutes from './routes/urlTracker.js'
+import authRoutes from './routes/auth.js'
 import { errorHandler } from './middleware/errorHandler.js'
+import { requireAuth } from './middleware/requireAuth.js'
 import { startSyncWorker } from './workers/syncWorker.js'
 import { startTriggerWorker } from './workers/triggerWorker.js'
 import { startFlowWorker } from './workers/flowWorker.js'
@@ -80,42 +82,44 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
-// Routes
-app.use('/api/integrations', integrationRoutes)
+// Auth routes — no admin auth required (login, register, etc.)
+app.use('/api/auth', authRoutes)
+
+// Webhook routes — no admin auth (authenticated by HMAC / provider signature)
 app.use('/api/webhooks', webhookRoutes)
 app.use('/api/webhooks/resend', resendWebhookRoutes)
-app.use('/api/customers', customerRoutes)
+app.use('/api/webhooks/channel', channelWebhookRoutes)
 
-app.use('/api/segments', segmentRoutes)
-app.use('/api/dashboard', dashboardRoutes)
-app.use('/api/flows', flowRoutes)
-app.use('/api/events', eventRoutes)
-app.use('/api/ai', aiRoutes)
-app.use('/api/products', productRoutes)
-app.use('/api/campaigns', campaignRoutes)
-app.use('/api/templates', templateRoutes)
-
-// v1 API — generic event ingestion (API key auth)
+// v1 API — generic event ingestion (API key auth, not admin auth)
 app.use('/api/v1', v1EventRoutes)
 
-// Admin panel routes (projectId auth)
-app.use('/api/api-keys', v1ApiKeyRoutes)
-app.use('/api/schema', v1SchemaRoutes)
-app.use('/api/onboarding', onboardingRoutes)
-
-// Phase 2: Item Catalogue + Interaction Engine
-app.use('/api/catalogues', catalogueRoutes)
-app.use('/api/items', itemRoutes)
-app.use('/api/interaction-config', interactionConfigRoutes)
-app.use('/api/prediction-goals', predictionGoalRoutes)
-app.use('/api/consent', consentRoutes)
-app.use('/api/packs', verticalPackRoutes)
-app.use('/api/wizard', wizardRoutes)
-app.use('/api/analytics', analyticsRoutes)
-app.use('/api/predictions', predictionRoutes)
-app.use('/api/send-time', sendTimeRoutes)
-app.use('/api/webhooks/channel', channelWebhookRoutes)
+// URL tracker — public (redirect links)
 app.use('/api/t', urlTrackerRoutes)
+
+// Admin panel routes — protected by requireAuth middleware
+app.use('/api/integrations', requireAuth, integrationRoutes)
+app.use('/api/customers', requireAuth, customerRoutes)
+app.use('/api/segments', requireAuth, segmentRoutes)
+app.use('/api/dashboard', requireAuth, dashboardRoutes)
+app.use('/api/flows', requireAuth, flowRoutes)
+app.use('/api/events', requireAuth, eventRoutes)
+app.use('/api/ai', requireAuth, aiRoutes)
+app.use('/api/products', requireAuth, productRoutes)
+app.use('/api/campaigns', requireAuth, campaignRoutes)
+app.use('/api/templates', requireAuth, templateRoutes)
+app.use('/api/api-keys', requireAuth, v1ApiKeyRoutes)
+app.use('/api/schema', requireAuth, v1SchemaRoutes)
+app.use('/api/onboarding', requireAuth, onboardingRoutes)
+app.use('/api/catalogues', requireAuth, catalogueRoutes)
+app.use('/api/items', requireAuth, itemRoutes)
+app.use('/api/interaction-config', requireAuth, interactionConfigRoutes)
+app.use('/api/prediction-goals', requireAuth, predictionGoalRoutes)
+app.use('/api/consent', requireAuth, consentRoutes)
+app.use('/api/packs', requireAuth, verticalPackRoutes)
+app.use('/api/wizard', requireAuth, wizardRoutes)
+app.use('/api/analytics', requireAuth, analyticsRoutes)
+app.use('/api/predictions', requireAuth, predictionRoutes)
+app.use('/api/send-time', requireAuth, sendTimeRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)

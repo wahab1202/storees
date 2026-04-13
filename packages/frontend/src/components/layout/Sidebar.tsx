@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { usePathname } from 'next/navigation'
+import { useSession, signOut } from 'next-auth/react'
+import Link from 'next/link'
 import {
   LayoutDashboard,
   Users,
@@ -23,6 +25,9 @@ import {
   Monitor,
   Globe,
   BarChart3,
+  LogOut,
+  ShieldCheck,
+  UserCircle,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -128,6 +133,74 @@ function ProjectSwitcher() {
   )
 }
 
+function UserMenu() {
+  const { data: session } = useSession()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  if (!session?.user) return null
+
+  const initials = (session.user.name ?? session.user.email ?? '?')
+    .split(' ')
+    .map(s => s[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+
+  return (
+    <div ref={ref} className="relative px-3 py-3 border-t border-white/10">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors text-left"
+      >
+        <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0">
+          <span className="text-[10px] font-semibold text-white">{initials}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-white truncate">{session.user.name}</p>
+          <p className="text-[10px] text-sidebar-muted truncate">{session.user.email}</p>
+        </div>
+      </button>
+
+      {open && (
+        <div className="absolute left-3 right-3 bottom-full mb-1 bg-[#1e293b] border border-white/10 rounded-lg shadow-xl overflow-hidden z-50">
+          <Link
+            href="/settings/account"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5 transition-colors"
+          >
+            <UserCircle size={14} />
+            Account
+          </Link>
+          <Link
+            href="/settings/security"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5 transition-colors"
+          >
+            <ShieldCheck size={14} />
+            Security
+          </Link>
+          <button
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-red-400 hover:bg-white/5 transition-colors"
+          >
+            <LogOut size={14} />
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const pathname = usePathname()
@@ -190,6 +263,8 @@ export function Sidebar() {
           <SidebarItem key={item.href} {...item} />
         ))}
       </div>
+
+      <UserMenu />
     </>
   )
 
