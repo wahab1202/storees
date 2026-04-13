@@ -543,6 +543,45 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
   }
 })
 
+// ── PATCH /me ── (requires auth, update user profile/projectId)
+
+router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.adminUser!.userId
+    const { projectId, name } = req.body
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() }
+    if (projectId !== undefined) updates.projectId = projectId
+    if (name !== undefined) updates.name = name
+
+    const [user] = await db
+      .update(adminUsers)
+      .set(updates)
+      .where(eq(adminUsers.id, userId))
+      .returning({
+        id: adminUsers.id,
+        email: adminUsers.email,
+        name: adminUsers.name,
+        projectId: adminUsers.projectId,
+      })
+
+    // Return a fresh JWT with updated projectId
+    const token = generateJwt({
+      userId: user.id,
+      email: user.email,
+      projectId: user.projectId,
+    })
+
+    res.json({
+      success: true,
+      data: { user, token },
+    })
+  } catch (err) {
+    console.error('Update me error:', err)
+    res.status(500).json({ success: false, error: 'Failed to update profile' })
+  }
+})
+
 // ── POST /change-password ── (requires auth)
 
 router.post('/change-password', requireAuth, async (req: AuthenticatedRequest, res: Response) => {

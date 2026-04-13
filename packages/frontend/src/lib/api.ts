@@ -29,6 +29,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
+    // Auto sign-out on expired/invalid JWT
+    if (response.status === 401 && typeof window !== 'undefined') {
+      const { signOut } = await import('next-auth/react')
+      await signOut({ callbackUrl: '/login' })
+      throw new Error('Session expired')
+    }
     const error = await response.json().catch(() => ({ error: 'Request failed' }))
     throw new Error((error as { error: string }).error ?? `HTTP ${response.status}`)
   }
