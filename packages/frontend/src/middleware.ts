@@ -5,7 +5,7 @@ export default auth((req) => {
   const { pathname } = req.nextUrl
 
   // Public routes — no auth required
-  const publicRoutes = ['/login', '/register', '/forgot-password', '/reset-password', '/verify-2fa']
+  const publicRoutes = ['/login', '/register', '/forgot-password', '/reset-password', '/verify-2fa', '/oauth/shopify/callback']
   const isPublicRoute = publicRoutes.some(route => pathname.startsWith(route))
 
   if (!isLoggedIn && !isPublicRoute) {
