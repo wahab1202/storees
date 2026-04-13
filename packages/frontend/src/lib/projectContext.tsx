@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useSession } from 'next-auth/react'
 import { useQueryClient } from '@tanstack/react-query'
 
 type ProjectContextValue = {
@@ -19,22 +20,33 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [projectName, setProjectName] = useState<string | null>(null)
   const [hydrated, setHydrated] = useState(false)
   const queryClient = useQueryClient()
+  const { data: session, status } = useSession()
 
-  // Hydrate from localStorage, then fallback to env var
+  // Hydrate: localStorage > session.user.projectId > env var
   useEffect(() => {
+    if (status === 'loading') return
+
     const stored = localStorage.getItem(STORAGE_KEY)
     const storedName = localStorage.getItem(NAME_STORAGE_KEY)
+
     if (stored) {
       setProjectIdState(stored)
       setProjectName(storedName)
     } else {
-      const envId = process.env.NEXT_PUBLIC_PROJECT_ID
-      if (envId) {
-        setProjectIdState(envId)
+      // Fall back to projectId from auth session (JWT)
+      const sessionProjectId = (session?.user as Record<string, unknown> | undefined)?.projectId as string | undefined
+      if (sessionProjectId) {
+        setProjectIdState(sessionProjectId)
+        localStorage.setItem(STORAGE_KEY, sessionProjectId)
+      } else {
+        const envId = process.env.NEXT_PUBLIC_PROJECT_ID
+        if (envId) {
+          setProjectIdState(envId)
+        }
       }
     }
     setHydrated(true)
-  }, [])
+  }, [session, status])
 
   const setProjectId = useCallback((id: string, name?: string) => {
     setProjectIdState(id)
@@ -72,8 +84,6 @@ export function useProjectContext() {
 
 /** Setter that also stores the project name */
 export function useSwitchProject() {
-  const queryClient = useQueryClient()
-
   return (id: string, name?: string) => {
     localStorage.setItem(STORAGE_KEY, id)
     if (name) localStorage.setItem(NAME_STORAGE_KEY, name)
