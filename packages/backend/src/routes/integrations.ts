@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { projects } from '../db/schema.js'
+import { projects, adminUsers, oauthAccounts } from '../db/schema.js'
 import { shopifySyncQueue } from '../services/queue.js'
 import {
   getInstallUrl,
@@ -11,9 +11,12 @@ import {
   generateNonce,
   generateWebhookSecret,
   getCallbackRedirectUrl,
+  getCallbackErrorUrl,
+  fetchShopInfo,
 } from '../services/shopifyService.js'
 import { encrypt } from '../services/encryption.js'
 import { redis } from '../services/redis.js'
+import { generateJwt } from '../services/authService.js'
 import { instantiateDefaultSegments } from '../services/segmentService.js'
 import { instantiateDefaultFlows } from '../services/flowService.js'
 
@@ -46,14 +49,14 @@ router.get('/shopify/callback', async (req, res) => {
     // Verify state nonce from Redis
     const storedShop = await redis.get(`${NONCE_PREFIX}${state}`)
     if (!storedShop || storedShop !== shop) {
-      res.status(400).json({ success: false, error: 'Invalid or expired state parameter' })
+      res.redirect(getCallbackErrorUrl('Invalid or expired state parameter'))
       return
     }
     await redis.del(`${NONCE_PREFIX}${state}`)
 
     // Verify HMAC
     if (!verifyOAuthHmac(req.query as Record<string, string>)) {
-      res.status(401).json({ success: false, error: 'HMAC verification failed' })
+      res.redirect(getCallbackErrorUrl('HMAC verification failed'))
       return
     }
 
@@ -95,10 +98,58 @@ router.get('/shopify/callback', async (req, res) => {
     // Trigger historical sync
     await shopifySyncQueue.add('sync', { projectId })
 
-    res.redirect(getCallbackRedirectUrl(true))
+    // Fetch shop owner info to auto-create admin account
+    const shopInfo = await fetchShopInfo(shop, accessToken)
+    const ownerEmail = shopInfo.email.toLowerCase()
+
+    // Find or create admin user for the shop owner
+    const [existingUser] = await db
+      .select({ id: adminUsers.id, projectId: adminUsers.projectId })
+      .from(adminUsers)
+      .where(eq(adminUsers.email, ownerEmail))
+      .limit(1)
+
+    let userId: string
+
+    if (existingUser) {
+      userId = existingUser.id
+      // Link user to this project if they don't have one yet
+      if (!existingUser.projectId) {
+        await db.update(adminUsers).set({ projectId, updatedAt: new Date() }).where(eq(adminUsers.id, userId))
+      }
+    } else {
+      // Auto-register the shop owner as an admin user (no password — Shopify-authed)
+      const [newUser] = await db.insert(adminUsers).values({
+        email: ownerEmail,
+        name: shopInfo.shopOwner || shop.replace('.myshopify.com', ''),
+        projectId,
+        emailVerified: true,
+      }).returning({ id: adminUsers.id })
+      userId = newUser.id
+    }
+
+    // Link Shopify as an OAuth provider
+    const [existingOauth] = await db
+      .select({ id: oauthAccounts.id })
+      .from(oauthAccounts)
+      .where(eq(oauthAccounts.providerAccountId, shop))
+      .limit(1)
+
+    if (!existingOauth) {
+      await db.insert(oauthAccounts).values({
+        userId,
+        provider: 'shopify',
+        providerAccountId: shop,
+      })
+    }
+
+    // Generate JWT so the merchant is logged in immediately
+    const token = generateJwt({ userId, email: ownerEmail, projectId })
+
+    res.redirect(getCallbackRedirectUrl(token, projectId))
   } catch (err) {
     console.error('OAuth callback error:', err)
-    res.redirect(getCallbackRedirectUrl(false))
+    res.redirect(getCallbackErrorUrl('Connection failed — please try again'))
   }
 })
 

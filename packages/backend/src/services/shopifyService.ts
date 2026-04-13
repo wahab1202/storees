@@ -128,8 +128,25 @@ export async function fetchShopifyApi<T>(
   return response.json() as T
 }
 
-export function getCallbackRedirectUrl(connected: boolean): string {
-  return `${FRONTEND_URL}/integrations?connected=${connected}`
+export async function fetchShopInfo(shop: string, accessToken: string): Promise<{ name: string; email: string; shopOwner: string }> {
+  const data = await fetchShopifyApi<{ shop: { name: string; email: string; shop_owner: string } }>(
+    shop,
+    accessToken,
+    '/shop.json',
+  )
+  return {
+    name: data.shop.name,
+    email: data.shop.email,
+    shopOwner: data.shop.shop_owner,
+  }
+}
+
+export function getCallbackRedirectUrl(token: string, projectId: string): string {
+  return `${FRONTEND_URL}/oauth/shopify/callback?token=${encodeURIComponent(token)}&projectId=${encodeURIComponent(projectId)}`
+}
+
+export function getCallbackErrorUrl(error: string): string {
+  return `${FRONTEND_URL}/integrations?error=${encodeURIComponent(error)}`
 }
 
 function delay(ms: number): Promise<void> {
