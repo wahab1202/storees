@@ -1,12 +1,23 @@
 import crypto from 'node:crypto'
 import { SHOPIFY_API_VERSION, SHOPIFY_WEBHOOK_TOPICS, SHOPIFY_API_DELAY_MS } from '@storees/shared'
 
-const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY!
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET!
-const APP_URL = process.env.APP_URL!
-const FRONTEND_URL = process.env.FRONTEND_URL!
+// Support both old (SHOPIFY_API_KEY) and new (SHOPIFY_CLIENT_ID) env var names
+const SHOPIFY_API_KEY = process.env.SHOPIFY_CLIENT_ID ?? process.env.SHOPIFY_API_KEY!
+const SHOPIFY_API_SECRET = process.env.SHOPIFY_CLIENT_SECRET ?? process.env.SHOPIFY_API_SECRET!
+const APP_URL = process.env.SHOPIFY_APP_URL ?? process.env.APP_URL!
+const FRONTEND_URL = process.env.MERCHANT_PANEL_URL ?? process.env.FRONTEND_URL!
 
-const SCOPES = 'read_customers,read_orders,read_products,read_checkouts,read_draft_orders'
+const SCOPES = process.env.SHOPIFY_SCOPES ?? [
+  'read_products', 'write_products',
+  'read_customers', 'write_customers',
+  'read_orders', 'write_orders',
+  'read_inventory', 'read_locations',
+  'read_product_listings', 'read_shipping', 'read_fulfillments',
+  'unauthenticated_read_product_listings',
+  'unauthenticated_read_customers', 'unauthenticated_write_customers',
+  'unauthenticated_read_checkouts', 'unauthenticated_write_checkouts',
+  'unauthenticated_read_content', 'unauthenticated_read_product_tags',
+].join(',')
 
 export function getInstallUrl(shop: string, state: string): string {
   const redirectUri = `${APP_URL}/api/integrations/shopify/callback`

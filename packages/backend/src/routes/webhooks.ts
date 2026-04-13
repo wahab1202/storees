@@ -4,10 +4,14 @@ import { db } from '../db/connection.js'
 import { projects, customers, events, orders } from '../db/schema.js'
 import { verifyHmac } from '../services/shopifyService.js'
 import { processWebhookEvent } from '../services/eventProcessor.js'
+import { redis } from '../services/redis.js'
 
 const router = Router()
 
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET ?? ''
+const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET ?? process.env.SHOPIFY_CLIENT_SECRET ?? ''
+const WEBHOOK_DEDUP_TTL = 86400 // 24 hours
+const WEBHOOK_DEDUP_PREFIX = 'shopify-webhook:'
+const DLQ_PREFIX = 'shopify-dlq:'
 
 // Shopify webhook topic → standard event name mapping
 const TOPIC_EVENT_MAP: Record<string, string> = {
@@ -27,6 +31,7 @@ router.post('/shopify/:projectId', async (req, res) => {
   const { projectId } = req.params
   const hmacHeader = req.headers['x-shopify-hmac-sha256'] as string
   const topic = req.headers['x-shopify-topic'] as string
+  const webhookId = req.headers['x-shopify-webhook-id'] as string | undefined
   const rawBody = req.body as Buffer
 
   if (!hmacHeader || !topic) {
@@ -35,6 +40,17 @@ router.post('/shopify/:projectId', async (req, res) => {
   }
 
   try {
+    // Idempotency check — skip if we've already processed this webhook
+    if (webhookId) {
+      const dedupKey = `${WEBHOOK_DEDUP_PREFIX}${webhookId}`
+      const alreadyProcessed = await redis.set(dedupKey, '1', 'EX', WEBHOOK_DEDUP_TTL, 'NX')
+      if (!alreadyProcessed) {
+        console.log(`Duplicate webhook skipped: ${webhookId} (${topic})`)
+        res.status(200).json({ success: true })
+        return
+      }
+    }
+
     // Look up project for webhook secret
     const [project] = await db
       .select({ webhookSecret: projects.webhookSecret })
@@ -73,11 +89,22 @@ router.post('/shopify/:projectId', async (req, res) => {
     // Process asynchronously after responding
     processWebhookEvent(projectId, eventName, payload).catch(err => {
       console.error(`Async event processing failed for ${eventName}:`, err)
+      // Dead letter queue — store failed events in Redis for manual inspection
+      const dlqEntry = JSON.stringify({
+        webhookId,
+        projectId,
+        topic,
+        eventName,
+        error: err instanceof Error ? err.message : String(err),
+        payload,
+        failedAt: new Date().toISOString(),
+      })
+      redis.lpush(`${DLQ_PREFIX}${projectId}`, dlqEntry).catch(() => {})
+      redis.ltrim(`${DLQ_PREFIX}${projectId}`, 0, 999).catch(() => {}) // keep last 1000
     })
   } catch (err) {
     console.error('Webhook processing error:', err)
     // Still return 200 to prevent Shopify retries on our errors
-    // Log to dead_letter for manual inspection
     res.status(200).json({ success: true })
   }
 })
