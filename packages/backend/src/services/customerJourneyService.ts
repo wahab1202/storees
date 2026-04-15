@@ -307,10 +307,18 @@ export async function getActivitySummary(customerId: string): Promise<ActivitySu
       .from(events).where(eq(events.customerId, customerId))
       .then(r => r[0]?.count ?? 0),
 
-    // Total orders
-    db.select({ count: sql<number>`count(*)::int` })
-      .from(orders).where(eq(orders.customerId, customerId))
-      .then(r => r[0]?.count ?? 0),
+    // Total orders — check orders table first, fall back to order events
+    Promise.all([
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(orders).where(eq(orders.customerId, customerId))
+        .then(r => r[0]?.count ?? 0),
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(events).where(and(
+          eq(events.customerId, customerId),
+          sql`${events.eventName} IN ('order_placed', 'order_completed')`,
+        ))
+        .then(r => r[0]?.count ?? 0),
+    ]).then(([orderTableCount, orderEventCount]) => Math.max(orderTableCount, orderEventCount)),
 
     // Total campaign sends
     db.select({ count: sql<number>`count(*)::int` })
