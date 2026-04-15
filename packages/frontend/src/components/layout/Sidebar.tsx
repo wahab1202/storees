@@ -226,7 +226,7 @@ export function Sidebar() {
     <>
       <div className="px-4 py-5 flex items-center justify-between">
         <img
-          src="https://waioz.com/_next/image?url=https%3A%2F%2Fmosaic-waioz.s3.ap-south-1.amazonaws.com%2FStorees_logo_bf01e5c580.webp&w=384&q=75"
+          src="https://cdn.waioz.com/webpimg/imgi_19_image.webp"
           alt="Storees"
           className="h-8 w-auto object-contain brightness-0 invert"
         />
@@ -280,7 +280,7 @@ export function Sidebar() {
           <Menu size={22} />
         </button>
         <img
-          src="https://waioz.com/_next/image?url=https%3A%2F%2Fmosaic-waioz.s3.ap-south-1.amazonaws.com%2FStorees_logo_bf01e5c580.webp&w=384&q=75"
+          src="https://cdn.waioz.com/webpimg/imgi_19_image.webp"
           alt="Storees"
           className="h-6 w-auto object-contain brightness-0 invert"
         />
