@@ -474,6 +474,7 @@ router.get('/projects', async (_req: Request, res: Response) => {
         name: projects.name,
         domainType: projects.domainType,
         integrationType: projects.integrationType,
+        features: projects.features,
         createdAt: projects.createdAt,
       })
       .from(projects)
