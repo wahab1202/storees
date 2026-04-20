@@ -6,7 +6,19 @@ type Project = {
   name: string
   domainType: string
   integrationType: string
+  features?: { agentScopedAccess?: boolean; [key: string]: unknown } | null
   createdAt: string
+}
+
+/** Returns true if the currently-active project has agent-scoped access enabled. */
+export function useAgentRbacEnabled() {
+  const { data } = useProjects()
+  const projects = data?.data ?? []
+  const activeId = typeof window !== 'undefined'
+    ? localStorage.getItem('storees-active-project')
+    : null
+  const active = projects.find(p => p.id === activeId)
+  return !!active?.features?.agentScopedAccess
 }
 
 type ApiKey = {
