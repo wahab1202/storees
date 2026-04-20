@@ -13,6 +13,30 @@ export type Project = {
   integrationType: IntegrationType
   webhookSecret: string | null
   settings: Record<string, unknown>
+  features: ProjectFeatures
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type ProjectFeatures = {
+  agentScopedAccess?: boolean
+  [key: string]: unknown
+}
+
+export type AdminRole = 'admin' | 'manager' | 'agent'
+
+export type Agent = {
+  id: string
+  projectId: string
+  externalDealerId: string | null
+  name: string
+  email: string | null
+  phone: string | null
+  region: string | null
+  city: string | null
+  managerId: string | null
+  isActive: boolean
+  metadata: Record<string, unknown>
   createdAt: Date
   updatedAt: Date
 }
@@ -36,6 +60,9 @@ export type Customer = {
   whatsappSubscribed: boolean
   firstOrderDate: Date | null
   lastOrderDate: Date | null
+  agentId: string | null
+  region: string | null
+  city: string | null
   customAttributes: Record<string, unknown>
   metrics: Record<string, unknown> // Precomputed domain-specific metrics
   createdAt: Date

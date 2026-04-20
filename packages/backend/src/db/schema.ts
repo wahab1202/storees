@@ -26,9 +26,33 @@ export const projects = pgTable('projects', {
   // 'shopify' | 'api_key' | 'stripe' | 'custom'
   webhookSecret: varchar('webhook_secret', { length: 255 }),
   settings: jsonb('settings').default('{}'),
+  features: jsonb('features').notNull().default('{}'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// ============ AGENTS (B2B distributors / regional reps) ============
+
+export const agents = pgTable('agents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  externalDealerId: varchar('external_dealer_id', { length: 255 }),
+  name: varchar('name', { length: 255 }).notNull(),
+  email: varchar('email', { length: 255 }),
+  phone: varchar('phone', { length: 50 }),
+  region: varchar('region', { length: 64 }),
+  city: varchar('city', { length: 128 }),
+  managerId: uuid('manager_id').references((): any => agents.id),
+  isActive: boolean('is_active').notNull().default(true),
+  metadata: jsonb('metadata').notNull().default('{}'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_agents_project').on(table.projectId),
+  uniqueIndex('idx_agents_dealer').on(table.projectId, table.externalDealerId),
+  index('idx_agents_manager').on(table.managerId),
+  index('idx_agents_region').on(table.projectId, table.region),
+])
 
 // ============ CUSTOMERS ============
 
@@ -51,6 +75,9 @@ export const customers = pgTable('customers', {
   whatsappSubscribed: boolean('whatsapp_subscribed').notNull().default(false),
   firstOrderDate: timestamp('first_order_date', { withTimezone: true }),
   lastOrderDate: timestamp('last_order_date', { withTimezone: true }),
+  agentId: uuid('agent_id').references(() => agents.id),
+  region: varchar('region', { length: 64 }),
+  city: varchar('city', { length: 128 }),
   customAttributes: jsonb('custom_attributes').default('{}'),
   metrics: jsonb('metrics').default('{}'), // Precomputed domain-specific metrics
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -60,6 +87,8 @@ export const customers = pgTable('customers', {
   uniqueIndex('idx_customers_external').on(table.projectId, table.externalId),
   index('idx_customers_email').on(table.projectId, table.email),
   index('idx_customers_last_seen').on(table.projectId, table.lastSeen),
+  index('idx_customers_agent').on(table.projectId, table.agentId),
+  index('idx_customers_region').on(table.projectId, table.region),
 ])
 
 // ============ CUSTOMER SEGMENTS (junction table) ============
@@ -605,6 +634,8 @@ export const adminUsers = pgTable('admin_users', {
   passwordHash: varchar('password_hash', { length: 255 }), // nullable for OAuth-only users
   name: varchar('name', { length: 255 }).notNull(),
   role: varchar('role', { length: 20 }).notNull().default('admin'),
+  // 'admin' | 'manager' | 'agent' — only admin sees everything; manager/agent are scoped via agentId
+  agentId: uuid('agent_id').references(() => agents.id),
   projectId: uuid('project_id').references(() => projects.id),
   emailVerified: boolean('email_verified').notNull().default(false),
   totpSecret: varchar('totp_secret', { length: 255 }),
@@ -614,6 +645,7 @@ export const adminUsers = pgTable('admin_users', {
 }, (table) => [
   uniqueIndex('idx_admin_users_email').on(table.email),
   index('idx_admin_users_project').on(table.projectId),
+  index('idx_admin_users_agent').on(table.agentId),
 ])
 
 // ============ PASSWORD RESET TOKENS ============
