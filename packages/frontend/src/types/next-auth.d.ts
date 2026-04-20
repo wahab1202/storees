@@ -1,5 +1,7 @@
 import 'next-auth'
 
+type AdminRole = 'admin' | 'manager' | 'agent'
+
 declare module 'next-auth' {
   interface Session {
     backendJwt?: string
@@ -9,6 +11,8 @@ declare module 'next-auth' {
       email?: string | null
       image?: string | null
       projectId?: string | null
+      role?: AdminRole
+      agentId?: string | null
       totpEnabled?: boolean
     }
   }
@@ -19,6 +23,8 @@ declare module 'next-auth/jwt' {
     backendJwt?: string
     userId?: string
     projectId?: string | null
+    role?: AdminRole
+    agentId?: string | null
     totpEnabled?: boolean
   }
 }

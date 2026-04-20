@@ -40,6 +40,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             name: meData.data.name,
             backendJwt: jwt,
             projectId: meData.data.projectId,
+            role: meData.data.role,
+            agentId: meData.data.agentId,
             totpEnabled: meData.data.totpEnabled,
           }
         }
@@ -70,6 +72,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           name: data.data.user.name,
           backendJwt: data.data.token,
           projectId: data.data.user.projectId,
+          role: data.data.user.role,
+          agentId: data.data.user.agentId,
           totpEnabled: data.data.user.totpEnabled,
         }
       },
@@ -102,6 +106,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           // Attach backend JWT and project data to user object
           ;(user as Record<string, unknown>).backendJwt = data.data.token
           ;(user as Record<string, unknown>).projectId = data.data.user.projectId
+          ;(user as Record<string, unknown>).role = data.data.user.role
+          ;(user as Record<string, unknown>).agentId = data.data.user.agentId
           ;(user as Record<string, unknown>).totpEnabled = data.data.user.totpEnabled
           ;(user as Record<string, unknown>).id = data.data.user.id
         } catch {
@@ -116,6 +122,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.backendJwt = (user as Record<string, unknown>).backendJwt as string
         token.userId = user.id
         token.projectId = (user as Record<string, unknown>).projectId as string | null
+        token.role = (user as Record<string, unknown>).role as 'admin' | 'manager' | 'agent' | undefined
+        token.agentId = (user as Record<string, unknown>).agentId as string | null
         token.totpEnabled = (user as Record<string, unknown>).totpEnabled as boolean
       }
       return token
@@ -126,6 +134,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (session.user) {
         session.user.id = token.userId as string
         ;(session.user as unknown as Record<string, unknown>).projectId = token.projectId
+        ;(session.user as unknown as Record<string, unknown>).role = token.role
+        ;(session.user as unknown as Record<string, unknown>).agentId = token.agentId
         ;(session.user as unknown as Record<string, unknown>).totpEnabled = token.totpEnabled
       }
       return session

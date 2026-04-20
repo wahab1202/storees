@@ -35,23 +35,37 @@ import { useProjects } from '@/hooks/useProjects'
 import { useSwitchProject } from '@/lib/projectContext'
 import { useSidebarCounts } from '@/hooks/useDashboard'
 
-const navItems = [
+type AdminRole = 'admin' | 'manager' | 'agent'
+
+type NavItem = {
+  href: string
+  label: string
+  icon: typeof LayoutDashboard
+  adminOnly?: boolean
+}
+
+const navItems: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/customers', label: 'Customers', icon: Users },
   { href: '/segments', label: 'Segments', icon: PieChart },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
-  { href: '/templates', label: 'Templates', icon: FileText },
-  { href: '/flows', label: 'Flows', icon: Workflow },
-  { href: '/debugger', label: 'Event Debugger', icon: Radio },
+  { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
+  { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
+  { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
 ]
 
-const bottomItems = [
-  { href: '/projects', label: 'Projects', icon: FolderOpen },
-  { href: '/onboarding', label: 'New Project', icon: Plus },
+const bottomItems: NavItem[] = [
+  { href: '/projects', label: 'Projects', icon: FolderOpen, adminOnly: true },
+  { href: '/onboarding', label: 'New Project', icon: Plus, adminOnly: true },
   { href: '/settings', label: 'Settings', icon: Settings },
-  { href: '/integrations', label: 'Connected Stores', icon: Store },
+  { href: '/integrations', label: 'Connected Stores', icon: Store, adminOnly: true },
 ]
+
+function visibleFor(role: AdminRole | undefined, items: NavItem[]): NavItem[] {
+  const isAdmin = !role || role === 'admin'
+  return isAdmin ? items : items.filter(i => !i.adminOnly)
+}
 
 const DOMAIN_ICONS: Record<string, typeof Globe> = {
   ecommerce: ShoppingBag,
@@ -204,8 +218,13 @@ function UserMenu() {
 export function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const pathname = usePathname()
+  const { data: session } = useSession()
+  const role = session?.user?.role as AdminRole | undefined
   const { data: countsData } = useSidebarCounts()
   const counts = countsData?.data
+
+  const visibleNavItems = visibleFor(role, navItems)
+  const visibleBottomItems = visibleFor(role, bottomItems)
 
   // Close mobile drawer on route change
   useEffect(() => {
@@ -244,7 +263,7 @@ export function Sidebar() {
       <ProjectSwitcher />
 
       <nav className="flex-1 flex flex-col gap-1 py-2">
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const countMap: Record<string, number | undefined> = {
             '/customers': counts?.customers,
             '/segments': counts?.segments,
@@ -259,7 +278,7 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-white/10 py-2">
-        {bottomItems.map((item) => (
+        {visibleBottomItems.map((item) => (
           <SidebarItem key={item.href} {...item} />
         ))}
       </div>
