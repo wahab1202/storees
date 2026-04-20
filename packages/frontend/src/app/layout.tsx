@@ -1,7 +1,6 @@
 import type { Metadata } from 'next'
 import { Toaster } from 'sonner'
 import { Providers } from './providers'
-import { AppShell } from '@/components/layout/AppShell'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -18,9 +17,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <Providers>
-          <AppShell>
-            {children}
-          </AppShell>
+          {children}
           <Toaster position="bottom-right" richColors />
         </Providers>
       </body>

@@ -156,10 +156,23 @@ async function checkConsent(
     ))
     .limit(1)
 
-  // No record: transactional = allowed, promotional = blocked
-  const allowed = record
-    ? record.status === 'opted_in'
-    : messageType === 'transactional'
+  // No consent record: check customer subscription flags as fallback
+  let allowed: boolean
+  if (record) {
+    allowed = record.status === 'opted_in'
+  } else if (messageType === 'transactional') {
+    allowed = true // transactional always allowed
+  } else {
+    // Fallback: check customer.{channel}_subscribed flag
+    const subField: Record<string, string> = { email: 'email_subscribed', sms: 'sms_subscribed', push: 'push_subscribed', whatsapp: 'whatsapp_subscribed' }
+    const col = subField[channel]
+    if (col) {
+      const [cust] = await db.select({ subscribed: sql<boolean>`${sql.raw(col)}` }).from(customers).where(eq(customers.id, customerId)).limit(1)
+      allowed = cust?.subscribed ?? false
+    } else {
+      allowed = false
+    }
+  }
 
   await redis.set(cacheKey, allowed ? '1' : '0', 'EX', 300) // 5 min TTL
   return allowed

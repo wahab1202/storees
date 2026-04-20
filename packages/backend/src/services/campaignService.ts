@@ -202,8 +202,9 @@ export async function processCampaign(campaignId: string): Promise<void> {
           ...templateContext,
           // For SMS/push: use bodyText as the message
           message: interpolateTemplate(campaign.bodyText ?? '', templateContext),
-          // For push: subject is the title
+          // For push: subject is the title, previewText is the image URL
           title: interpolateTemplate(campaign.subject ?? '', templateContext),
+          ...(campaign.previewText ? { image: campaign.previewText } : {}),
         }
 
         const msgId = await deliverySend({

@@ -596,3 +596,49 @@ export const predictionScores = pgTable('prediction_scores', {
   index('idx_prediction_scores_customer').on(table.projectId, table.customerId),
   index('idx_prediction_scores_goal').on(table.goalId, table.computedAt),
 ])
+
+// ============ ADMIN USERS (admin panel authentication) ============
+
+export const adminUsers = pgTable('admin_users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: varchar('email', { length: 255 }).notNull(),
+  passwordHash: varchar('password_hash', { length: 255 }), // nullable for OAuth-only users
+  name: varchar('name', { length: 255 }).notNull(),
+  role: varchar('role', { length: 20 }).notNull().default('admin'),
+  projectId: uuid('project_id').references(() => projects.id),
+  emailVerified: boolean('email_verified').notNull().default(false),
+  totpSecret: varchar('totp_secret', { length: 255 }),
+  totpEnabled: boolean('totp_enabled').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_admin_users_email').on(table.email),
+  index('idx_admin_users_project').on(table.projectId),
+])
+
+// ============ PASSWORD RESET TOKENS ============
+
+export const passwordResetTokens = pgTable('password_reset_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => adminUsers.id),
+  tokenHash: varchar('token_hash', { length: 255 }).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_password_reset_token_hash').on(table.tokenHash),
+  index('idx_password_reset_user').on(table.userId),
+])
+
+// ============ OAUTH ACCOUNTS (link external providers to admin users) ============
+
+export const oauthAccounts = pgTable('oauth_accounts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => adminUsers.id),
+  provider: varchar('provider', { length: 50 }).notNull(),
+  providerAccountId: varchar('provider_account_id', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_oauth_provider_account').on(table.provider, table.providerAccountId),
+  index('idx_oauth_user').on(table.userId),
+])

@@ -9,7 +9,8 @@ declare global {
 }
 
 export function requireProjectId(req: Request, res: Response, next: NextFunction): void {
-  const projectId = (req.query.projectId as string) ?? req.body?.projectId
+  // Check query/body first, then fall back to value set by requireAuth (from JWT)
+  const projectId = (req.query.projectId as string) ?? req.body?.projectId ?? req.projectId
 
   if (!projectId) {
     res.status(400).json({

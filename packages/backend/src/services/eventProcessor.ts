@@ -180,6 +180,7 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
       break
 
     case 'order_placed':
+    case 'order_completed':
     case 'order_fulfilled':
     case 'order_cancelled': {
       base.email = (payload.email as string) ?? base.email
@@ -248,7 +249,8 @@ async function handleSideEffects(
   payload: WebhookPayload,
 ): Promise<void> {
   switch (eventName) {
-    case 'order_placed': {
+    case 'order_placed':
+    case 'order_completed': {
       const externalOrderId = String(payload.id ?? '')
       const total = Number(payload.total_price ?? 0)
       const discount = Number(payload.total_discounts ?? 0)
@@ -267,7 +269,7 @@ async function handleSideEffects(
           projectId,
           customerId,
           externalOrderId,
-          status: 'pending',
+          status: eventName === 'order_completed' ? 'fulfilled' : 'pending',
           total: String(total),
           discount: String(discount),
           currency,
