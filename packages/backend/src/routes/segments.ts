@@ -3,8 +3,10 @@ import { eq, and, count } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { segments, customers } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { requireRole, resolveScopedAgentIds } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { evaluateSegment, evaluateAllSegments, instantiateDefaultSegments } from '../services/segmentService.js'
-import { getLifecycleChart, filterToSql } from '@storees/segments'
+import { getLifecycleChart, filterToSql, scopedFilterToSql } from '@storees/segments'
 import type { FilterConfig } from '@storees/shared'
 
 const router = Router()
@@ -52,8 +54,9 @@ router.get('/lifecycle', requireProjectId, async (req, res) => {
 })
 
 // POST /api/segments/preview?projectId=...
-// Body: { filters } — returns 10 sample matching customers + total count
-router.post('/preview', requireProjectId, async (req, res) => {
+// Body: { filters } — returns 10 sample matching customers + total count.
+// Agent/manager previews are auto-scoped so out-of-scope customers can't match.
+router.post('/preview', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const { filters } = req.body as { filters: FilterConfig }
@@ -62,7 +65,8 @@ router.post('/preview', requireProjectId, async (req, res) => {
       return res.json({ success: true, data: { total: 0, sample: [] } })
     }
 
-    const filterSql = filterToSql(filters)
+    const scopedIds = await resolveScopedAgentIds(req)
+    const filterSql = scopedFilterToSql(filters, scopedIds)
 
     // Get total count
     const [{ total }] = await db
@@ -116,7 +120,9 @@ router.get('/:id', requireProjectId, async (req, res) => {
 
 // POST /api/segments?projectId=...
 // Body: { name, description?, filters }
-router.post('/', requireProjectId, async (req, res) => {
+// Admin-only for v1. Agent-authored segments require a createdBy column + scoped
+// evaluation on write; tracked as follow-up.
+router.post('/', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const { name, description, filters } = req.body
@@ -156,7 +162,7 @@ router.post('/', requireProjectId, async (req, res) => {
 
 // PATCH /api/segments/:id?projectId=...
 // Body: { name?, description?, filters?, isActive? }
-router.patch('/:id', requireProjectId, async (req, res) => {
+router.patch('/:id', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -197,7 +203,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
 })
 
 // DELETE /api/segments/:id?projectId=...
-router.delete('/:id', requireProjectId, async (req, res) => {
+router.delete('/:id', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -224,7 +230,9 @@ router.delete('/:id', requireProjectId, async (req, res) => {
 })
 
 // POST /api/segments/evaluate?projectId=...
-router.post('/evaluate', requireProjectId, async (req, res) => {
+// Re-evaluates all segments and writes to customer_segments (project-wide).
+// Admin-only: writes cross all customers regardless of viewer's scope.
+router.post('/evaluate', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
     await evaluateAllSegments(req.projectId!)
     res.json({ success: true, data: { message: 'Segments evaluated' } })
@@ -235,7 +243,7 @@ router.post('/evaluate', requireProjectId, async (req, res) => {
 })
 
 // POST /api/segments/:id/evaluate?projectId=...
-router.post('/:id/evaluate', requireProjectId, async (req, res) => {
+router.post('/:id/evaluate', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
     const count = await evaluateSegment(req.params.id as string)
     res.json({ success: true, data: { memberCount: count } })

@@ -3,6 +3,8 @@ import { eq, and, sql, count, desc, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events, projects, segments, flows, emailTemplates, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { rawCustomerScopeSql, scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 const router = Router()
 
@@ -13,7 +15,7 @@ function pctChange(current: number, previous: number): number {
 }
 
 // GET /api/dashboard/stats?projectId=...
-router.get('/stats', requireProjectId, async (req, res) => {
+router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
 
@@ -29,6 +31,9 @@ router.get('/stats', requireProjectId, async (req, res) => {
       .limit(1)
     const domainType = (project?.domainType as string) ?? 'ecommerce'
 
+    const customerScope = await rawCustomerScopeSql(req, projectId)
+    const customerIdScope = await scopedCustomerIdsSubquery(req, projectId)
+
     // Core metrics: current + previous period in single queries using FILTER
     const coreResult = await db.execute(sql`
       SELECT
@@ -38,7 +43,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
         COUNT(*) FILTER (WHERE first_seen >= ${sevenDaysAgo}) AS new_customers_7d,
         COUNT(*) FILTER (WHERE first_seen >= ${fourteenDaysAgo} AND first_seen < ${sevenDaysAgo}) AS new_customers_prev_7d,
         COALESCE(AVG(clv), 0) AS avg_clv
-      FROM customers WHERE project_id = ${projectId}
+      FROM customers WHERE ${customerScope}
     `)
     const core = coreResult.rows[0] as Record<string, string>
 
@@ -56,7 +61,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
           COUNT(*) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}) AS orders_prev_7d,
           COALESCE(SUM(total::numeric) FILTER (WHERE created_at >= ${sevenDaysAgo}), 0) AS revenue_7d,
           COALESCE(SUM(total::numeric) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}), 0) AS revenue_prev_7d
-        FROM orders WHERE project_id = ${projectId}
+        FROM orders WHERE project_id = ${projectId} AND ${customerIdScope}
       `)
       const o = orderResult.rows[0] as Record<string, string>
       let totalOrders = Number(o.total_orders)
@@ -85,7 +90,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
               (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
                FROM jsonb_array_elements(properties->'line_items') item)
             ) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
-          FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed'
+          FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed' AND ${customerIdScope}
         `)
         const ev = evtResult.rows[0] as Record<string, string>
         totalOrders = Number(ev.total_orders)
@@ -107,7 +112,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
           COUNT(*) AS total_tx,
           COUNT(*) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS tx_7d,
           COUNT(*) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS tx_prev_7d
-        FROM events WHERE project_id = ${projectId} AND event_name = 'transaction_completed'
+        FROM events WHERE project_id = ${projectId} AND event_name = 'transaction_completed' AND ${customerIdScope}
       `)
       const tx = txResult.rows[0] as Record<string, string>
 
@@ -116,7 +121,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
           total: sql<string>`COALESCE(SUM((metrics->>'total_transaction_volume')::numeric), 0)`,
         })
         .from(customers)
-        .where(eq(customers.projectId, projectId))
+        .where(customerScope)
 
       domainStats = {
         totalTransactions: Number(tx.total_tx),
@@ -131,7 +136,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
           COUNT(*) AS total_events,
           COUNT(*) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS events_7d,
           COUNT(*) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS events_prev_7d
-        FROM events WHERE project_id = ${projectId}
+        FROM events WHERE project_id = ${projectId} AND ${customerIdScope}
       `)
       const e = evtResult.rows[0] as Record<string, string>
       domainStats = { totalEvents: Number(e.total_events) }
@@ -147,7 +152,7 @@ router.get('/stats', requireProjectId, async (req, res) => {
         COUNT(*) FILTER (WHERE event_name = 'page_viewed' AND timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS page_views_prev_7d,
         COUNT(*) FILTER (WHERE event_name = 'session_started' AND timestamp >= ${sevenDaysAgo}) AS sessions_7d,
         COUNT(*) FILTER (WHERE event_name = 'session_started' AND timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS sessions_prev_7d
-      FROM events WHERE project_id = ${projectId}
+      FROM events WHERE project_id = ${projectId} AND ${customerIdScope}
     `)
     const eng = engResult.rows[0] as Record<string, string>
 
@@ -180,10 +185,11 @@ router.get('/stats', requireProjectId, async (req, res) => {
 })
 
 // GET /api/dashboard/activity?projectId=...&limit=20
-router.get('/activity', requireProjectId, async (req, res) => {
+router.get('/activity', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const limit = Math.min(Number(req.query.limit) || 20, 50)
+    const customerIdScope = await scopedCustomerIdsSubquery(req, projectId)
 
     const rows = await db
       .select({
@@ -198,7 +204,7 @@ router.get('/activity', requireProjectId, async (req, res) => {
       })
       .from(events)
       .leftJoin(customers, eq(events.customerId, customers.id))
-      .where(eq(events.projectId, projectId))
+      .where(and(eq(events.projectId, projectId), customerIdScope))
       .orderBy(desc(events.timestamp))
       .limit(limit)
 
@@ -210,7 +216,7 @@ router.get('/activity', requireProjectId, async (req, res) => {
 })
 
 // GET /api/dashboard/trends?projectId=...&range=7d|14d|30d
-router.get('/trends', requireProjectId, async (req, res) => {
+router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const range = (req.query.range as string) || '7d'
@@ -225,6 +231,9 @@ router.get('/trends', requireProjectId, async (req, res) => {
       .limit(1)
     const domainType = (project?.domainType as string) ?? 'ecommerce'
 
+    const customerScope = await rawCustomerScopeSql(req, projectId)
+    const customerIdScope = await scopedCustomerIdsSubquery(req, projectId)
+
     // Daily new customers + daily active customers
     const customerTrends = await db.execute(sql`
       SELECT
@@ -234,12 +243,12 @@ router.get('/trends', requireProjectId, async (req, res) => {
       FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
       LEFT JOIN (
         SELECT first_seen::date AS day, COUNT(*) AS new_count
-        FROM customers WHERE project_id = ${projectId} AND first_seen >= ${startDate}
+        FROM customers WHERE ${customerScope} AND first_seen >= ${startDate}
         GROUP BY first_seen::date
       ) nc ON nc.day = d.day::date
       LEFT JOIN (
         SELECT last_seen::date AS day, COUNT(*) AS active_count
-        FROM customers WHERE project_id = ${projectId} AND last_seen >= ${startDate}
+        FROM customers WHERE ${customerScope} AND last_seen >= ${startDate}
         GROUP BY last_seen::date
       ) ac ON ac.day = d.day::date
       ORDER BY d.day
@@ -253,7 +262,7 @@ router.get('/trends', requireProjectId, async (req, res) => {
       FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
       LEFT JOIN (
         SELECT timestamp::date AS day, COUNT(*) AS event_count
-        FROM events WHERE project_id = ${projectId} AND timestamp >= ${startDate}
+        FROM events WHERE project_id = ${projectId} AND timestamp >= ${startDate} AND ${customerIdScope}
         GROUP BY timestamp::date
       ) e ON e.day = d.day::date
       ORDER BY d.day
@@ -276,7 +285,7 @@ router.get('/trends', requireProjectId, async (req, res) => {
             FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
             LEFT JOIN (
               SELECT created_at::date AS day, COUNT(*) AS order_count, SUM(total::numeric) AS revenue
-              FROM orders WHERE project_id = ${projectId} AND created_at >= ${startDate}
+              FROM orders WHERE project_id = ${projectId} AND created_at >= ${startDate} AND ${customerIdScope}
               GROUP BY created_at::date
             ) o ON o.day = d.day::date
             ORDER BY d.day
@@ -293,7 +302,7 @@ router.get('/trends', requireProjectId, async (req, res) => {
                   (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
                    FROM jsonb_array_elements(properties->'line_items') item)
                 ), 0) AS revenue
-              FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed' AND timestamp >= ${startDate}
+              FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed' AND timestamp >= ${startDate} AND ${customerIdScope}
               GROUP BY timestamp::date
             ) o ON o.day = d.day::date
             ORDER BY d.day
@@ -307,7 +316,7 @@ router.get('/trends', requireProjectId, async (req, res) => {
         FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
         LEFT JOIN (
           SELECT timestamp::date AS day, COUNT(*) AS tx_count
-          FROM events WHERE project_id = ${projectId} AND event_name = 'transaction_completed' AND timestamp >= ${startDate}
+          FROM events WHERE project_id = ${projectId} AND event_name = 'transaction_completed' AND timestamp >= ${startDate} AND ${customerIdScope}
           GROUP BY timestamp::date
         ) t ON t.day = d.day::date
         ORDER BY d.day
@@ -331,9 +340,10 @@ router.get('/trends', requireProjectId, async (req, res) => {
 })
 
 // GET /api/dashboard/counts?projectId=...
-router.get('/counts', requireProjectId, async (req, res) => {
+router.get('/counts', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
+    const customerScope = await rawCustomerScopeSql(req, projectId)
     const [
       [{ customersCount }],
       [{ segmentsCount }],
@@ -341,7 +351,7 @@ router.get('/counts', requireProjectId, async (req, res) => {
       [{ templatesCount }],
       [{ campaignsCount }],
     ] = await Promise.all([
-      db.select({ customersCount: count() }).from(customers).where(eq(customers.projectId, projectId)),
+      db.select({ customersCount: count() }).from(customers).where(customerScope),
       db.select({ segmentsCount: count() }).from(segments).where(eq(segments.projectId, projectId)),
       db.select({ flowsCount: count() }).from(flows).where(eq(flows.projectId, projectId)),
       db.select({ templatesCount: count() }).from(emailTemplates).where(eq(emailTemplates.projectId, projectId)),
@@ -365,6 +375,10 @@ router.get('/counts', requireProjectId, async (req, res) => {
 })
 
 // GET /api/dashboard/segments?projectId=...
+// Note: memberCount here is the project-wide value; agents/managers see the
+// same numbers as admins for now. Per-agent counts would require re-evaluating
+// every segment against the caller's scope, which is too expensive for a sidebar
+// tile — do it in /segments/:id/preview instead.
 router.get('/segments', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!

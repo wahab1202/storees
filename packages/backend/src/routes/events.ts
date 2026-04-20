@@ -1,16 +1,19 @@
 import { Router } from 'express'
-import { eq, desc } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { events, customers } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 const router = Router()
 
 // GET /api/events?projectId=...&limit=100
-router.get('/', requireProjectId, async (req, res) => {
+router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const limit = Math.min(Number(req.query.limit) || 100, 500)
+    const customerIdScope = await scopedCustomerIdsSubquery(req, projectId)
 
     const rows = await db
       .select({
@@ -25,7 +28,7 @@ router.get('/', requireProjectId, async (req, res) => {
       })
       .from(events)
       .leftJoin(customers, eq(events.customerId, customers.id))
-      .where(eq(events.projectId, projectId))
+      .where(and(eq(events.projectId, projectId), customerIdScope))
       .orderBy(desc(events.timestamp))
       .limit(limit)
 

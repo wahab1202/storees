@@ -3,6 +3,8 @@ import { eq, and, desc, asc, ilike, or, sql, count } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events, customerSegments, segments, flowTrips, flows, messages, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { customerScopeFilter, requireRole } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
@@ -10,8 +12,26 @@ import type { JourneyEntryType } from '../services/customerJourneyService.js'
 
 const router = Router()
 
+/**
+ * Returns true if the customer is visible under the authenticated user's scope.
+ * Used to gate sub-resources (orders/events/trips/messages) — out-of-scope
+ * customers 404 the same as nonexistent ones.
+ */
+async function assertCustomerVisible(
+  req: AuthenticatedRequest,
+  customerId: string,
+  projectId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: customers.id })
+    .from(customers)
+    .where(and(eq(customers.id, customerId), await customerScopeFilter(req, projectId)))
+    .limit(1)
+  return !!row
+}
+
 // GET /api/customers?projectId=...&page=1&pageSize=25&search=...&sortBy=lastSeen&sortOrder=desc&segmentId=...
-router.get('/', requireProjectId, async (req, res) => {
+router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const page = Math.max(1, Number(req.query.page) || 1)
@@ -23,8 +43,9 @@ router.get('/', requireProjectId, async (req, res) => {
     const rfm = req.query.rfm as string | undefined // e.g. "recent_high", "lapsed_medium"
     const offset = (page - 1) * pageSize
 
-    // Build WHERE conditions
-    const conditions = [eq(customers.projectId, projectId)]
+    // Build WHERE conditions. customerScopeFilter already includes project scope
+    // and, for agent/manager roles, restricts to their customers.agent_id.
+    const conditions = [await customerScopeFilter(req, projectId)]
 
     if (search) {
       conditions.push(
@@ -156,13 +177,16 @@ router.get('/', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id?projectId=...
-router.get('/:id', requireProjectId, async (req, res) => {
+router.get('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const [customer] = await db
       .select()
       .from(customers)
       .where(
-        and(eq(customers.id, req.params.id as string), eq(customers.projectId, req.projectId!)),
+        and(
+          eq(customers.id, req.params.id as string),
+          await customerScopeFilter(req, req.projectId!),
+        ),
       )
       .limit(1)
 
@@ -199,10 +223,14 @@ router.get('/:id', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id/orders?projectId=...
-router.get('/:id/orders', requireProjectId, async (req, res) => {
+router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const customerId = req.params.id as string
     const projectId = req.projectId!
+
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
 
     // Try orders table first
     const rows = await db
@@ -274,15 +302,22 @@ router.get('/:id/orders', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id/events?projectId=...&limit=50
-router.get('/:id/events', requireProjectId, async (req, res) => {
+router.get('/:id/events', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
+    const customerId = req.params.id as string
+    const projectId = req.projectId!
+
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
+
     const limit = Math.min(Number(req.query.limit) || 50, 200)
 
     const rows = await db
       .select()
       .from(events)
       .where(
-        and(eq(events.customerId, req.params.id as string), eq(events.projectId, req.projectId!)),
+        and(eq(events.customerId, customerId), eq(events.projectId, projectId)),
       )
       .orderBy(desc(events.timestamp))
       .limit(limit)
@@ -295,8 +330,15 @@ router.get('/:id/events', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id/trips?projectId=...
-router.get('/:id/trips', requireProjectId, async (req, res) => {
+router.get('/:id/trips', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
+    const customerId = req.params.id as string
+    const projectId = req.projectId!
+
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
+
     const rows = await db
       .select({
         id: flowTrips.id,
@@ -311,7 +353,7 @@ router.get('/:id/trips', requireProjectId, async (req, res) => {
       .from(flowTrips)
       .innerJoin(flows, eq(flowTrips.flowId, flows.id))
       .where(
-        and(eq(flowTrips.customerId, req.params.id as string), eq(flows.projectId, req.projectId!)),
+        and(eq(flowTrips.customerId, customerId), eq(flows.projectId, projectId)),
       )
       .orderBy(desc(flowTrips.enteredAt))
 
@@ -323,8 +365,15 @@ router.get('/:id/trips', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id/messages?projectId=...
-router.get('/:id/messages', requireProjectId, async (req, res) => {
+router.get('/:id/messages', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
+    const customerId = req.params.id as string
+    const projectId = req.projectId!
+
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
+
     const rows = await db
       .select({
         id: messages.id,
@@ -343,7 +392,7 @@ router.get('/:id/messages', requireProjectId, async (req, res) => {
       .leftJoin(flowTrips, eq(messages.flowTripId, flowTrips.id))
       .leftJoin(flows, eq(flowTrips.flowId, flows.id))
       .where(
-        and(eq(messages.customerId, req.params.id as string), eq(messages.projectId, req.projectId!)),
+        and(eq(messages.customerId, customerId), eq(messages.projectId, projectId)),
       )
       .orderBy(desc(messages.sentAt))
       .limit(50)
@@ -356,18 +405,11 @@ router.get('/:id/messages', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id/journey?projectId=...&limit=100&offset=0&types=event,order
-router.get('/:id/journey', requireProjectId, async (req, res) => {
+router.get('/:id/journey', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const customerId = req.params.id as string
 
-    // Verify customer belongs to project
-    const [customer] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.id, customerId), eq(customers.projectId, req.projectId!)))
-      .limit(1)
-
-    if (!customer) {
+    if (!(await assertCustomerVisible(req, customerId, req.projectId!))) {
       return res.status(404).json({ success: false, error: 'Customer not found' })
     }
 
@@ -387,17 +429,11 @@ router.get('/:id/journey', requireProjectId, async (req, res) => {
 })
 
 // GET /api/customers/:id/activity-summary?projectId=...
-router.get('/:id/activity-summary', requireProjectId, async (req, res) => {
+router.get('/:id/activity-summary', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const customerId = req.params.id as string
 
-    const [customer] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.id, customerId), eq(customers.projectId, req.projectId!)))
-      .limit(1)
-
-    if (!customer) {
+    if (!(await assertCustomerVisible(req, customerId, req.projectId!))) {
       return res.status(404).json({ success: false, error: 'Customer not found' })
     }
 
@@ -411,7 +447,8 @@ router.get('/:id/activity-summary', requireProjectId, async (req, res) => {
 
 // POST /api/customers/recalculate?projectId=...
 // Recalculates all customer aggregates (totalOrders, totalSpent, avgOrderValue, clv) from actual order data
-router.post('/recalculate', requireProjectId, async (req, res) => {
+// Admin-only: this mutates every customer in the project.
+router.post('/recalculate', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const updated = await recalculateAllAggregates(projectId)

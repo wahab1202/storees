@@ -66,6 +66,59 @@ export function requireRole(...allowed: AdminRole[]) {
 }
 
 /**
+ * Raw-SQL scope fragment for aggregation queries that don't use Drizzle's
+ * typed `customers` table reference (e.g. dashboard stats issuing db.execute).
+ *
+ * Returns a SQL expression that evaluates to TRUE for rows the user is allowed
+ * to see, scoped to `customers.project_id` and — for agent/manager — customers.agent_id.
+ * Intended to be composed with `AND`:
+ *   sql`SELECT ... FROM customers WHERE ${await rawCustomerScopeSql(req, projectId)}`
+ */
+export async function rawCustomerScopeSql(
+  req: AuthenticatedRequest,
+  projectId: string
+): Promise<SQL> {
+  const user = req.adminUser
+  const base = sql`project_id = ${projectId}`
+
+  if (!user || user.role === 'admin') return base
+
+  const ids = await resolveScopedAgentIds(req)
+  if (ids === null) return sql`FALSE`
+  if (ids.length === 0) return base
+  if (ids.length === 1) return sql`${base} AND agent_id = ${ids[0]}`
+  // Manager: multiple managed agents.
+  const orClause = or(...ids.map(id => sql`agent_id = ${id}`))!
+  return and(base, orClause)!
+}
+
+/**
+ * Subquery fragment that restricts a table with a `customer_id` column to
+ * customers in the caller's scope. Returns `TRUE` for admin (no-op).
+ * Compose with AND in raw SQL contexts (orders/events/messages aggregations).
+ */
+export async function scopedCustomerIdsSubquery(
+  req: AuthenticatedRequest,
+  projectId: string
+): Promise<SQL> {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return sql`TRUE`
+
+  const ids = await resolveScopedAgentIds(req)
+  if (ids === null) return sql`FALSE`
+  if (ids.length === 0) return sql`TRUE`
+  if (ids.length === 1) {
+    return sql`customer_id IN (
+      SELECT id FROM customers WHERE project_id = ${projectId} AND agent_id = ${ids[0]}
+    )`
+  }
+  const orClause = or(...ids.map(id => sql`agent_id = ${id}`))!
+  return sql`customer_id IN (
+    SELECT id FROM customers WHERE project_id = ${projectId} AND (${orClause})
+  )`
+}
+
+/**
  * Returns the list of agent IDs the authenticated user is allowed to see.
  * Empty array for non-scoped admins (meaning: no filter).
  * null for agents/managers with no valid agentId (meaning: deny all).
