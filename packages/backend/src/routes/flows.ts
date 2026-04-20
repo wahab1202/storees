@@ -3,9 +3,14 @@ import { eq, and, sql, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flows, flowTrips } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { requireRole } from '../middleware/agentScope.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
 
 const router = Router()
+
+// Flows are admin-only. Sub-admins (manager/agent roles) are fenced out:
+// flows reference segments + customers across regions, so read-only would still leak.
+router.use(requireRole('admin'))
 
 // GET /api/flows?projectId=...
 router.get('/', requireProjectId, async (req, res) => {

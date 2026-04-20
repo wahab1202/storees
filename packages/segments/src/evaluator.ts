@@ -2,6 +2,36 @@ import { sql, and, or } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { FilterConfig, FilterRule, FilterGroup, Customer } from '@storees/shared'
 
+// ============ AGENT SCOPE INJECTION ============
+
+/**
+ * Compose a user-authored FilterConfig with an implicit agent_id scope, at the
+ * SQL level. Sub-admins cannot build a segment that reaches customers outside
+ * their scope — the stored filter is left as-authored and the scope is composed
+ * only at read time.
+ *
+ *   scopedAgentIds = []     → admin (no scoping)
+ *   scopedAgentIds = [id]   → agent
+ *   scopedAgentIds = [...]  → manager (own agent + managed agents)
+ *   scopedAgentIds = null   → deny all (agent with no agentId)
+ */
+export function scopedFilterToSql(
+  filters: FilterConfig,
+  scopedAgentIds: string[] | null
+): SQL {
+  const userSql = filterToSql(filters)
+
+  if (scopedAgentIds === null) return sql`FALSE`
+  if (scopedAgentIds.length === 0) return userSql
+
+  const scopeSql =
+    scopedAgentIds.length === 1
+      ? sql`agent_id = ${scopedAgentIds[0]}`
+      : or(...scopedAgentIds.map(id => sql`agent_id = ${id}`))!
+
+  return and(scopeSql, userSql)!
+}
+
 // ============ SQL-FIRST EVALUATION (batch) ============
 
 /**
@@ -211,6 +241,14 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`first_order_date`
     case 'last_order_date':
       return sql`last_order_date`
+
+    // B2B agent / region scoping
+    case 'agent_id':
+      return sql`agent_id`
+    case 'region':
+      return sql`region`
+    case 'city':
+      return sql`city`
 
     // Computed fields
     case 'days_since_last_order':

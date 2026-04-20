@@ -11,10 +11,14 @@ const TOTP_PERIOD = 30
 const TOTP_DIGITS = 6
 const TOTP_WINDOW = 1 // allow ±1 step (prev + current + next)
 
+export type AdminRole = 'admin' | 'manager' | 'agent'
+
 export type JwtPayload = {
   userId: string
   email: string
   projectId: string | null
+  role: AdminRole
+  agentId: string | null
   pending2FA?: boolean
 }
 
@@ -37,9 +41,38 @@ export function generateJwt(payload: Omit<JwtPayload, 'pending2FA'> & { pending2
 
 export function verifyJwt(token: string): JwtPayload | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as JwtPayload
+    const decoded = jwt.verify(token, JWT_SECRET) as Partial<JwtPayload> & { userId: string; email: string }
+    // Defensive defaults for tokens issued before role/agentId were introduced.
+    return {
+      userId: decoded.userId,
+      email: decoded.email,
+      projectId: decoded.projectId ?? null,
+      role: (decoded.role as AdminRole) ?? 'admin',
+      agentId: decoded.agentId ?? null,
+      pending2FA: decoded.pending2FA,
+    }
   } catch {
     return null
+  }
+}
+
+/**
+ * Build a JWT payload from an admin_users row. Centralizes defaults so every
+ * login / token-refresh path carries role + agentId.
+ */
+export function jwtPayloadFrom(user: {
+  id: string
+  email: string
+  projectId: string | null
+  role?: string | null
+  agentId?: string | null
+}): Omit<JwtPayload, 'pending2FA'> {
+  return {
+    userId: user.id,
+    email: user.email,
+    projectId: user.projectId,
+    role: (user.role as AdminRole) ?? 'admin',
+    agentId: user.agentId ?? null,
   }
 }
 

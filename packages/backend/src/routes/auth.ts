@@ -16,6 +16,7 @@ import {
   generateTotpSecret,
   verifyTotp,
   generateQrCode,
+  jwtPayloadFrom,
 } from '../services/authService.js'
 
 const router = Router()
@@ -57,13 +58,16 @@ router.post('/register', rateLimiter(5), async (req: Request, res: Response) => 
         name,
         emailVerified: true, // skip email verification for now
       })
-      .returning({ id: adminUsers.id, email: adminUsers.email, name: adminUsers.name, projectId: adminUsers.projectId })
+      .returning({
+        id: adminUsers.id,
+        email: adminUsers.email,
+        name: adminUsers.name,
+        projectId: adminUsers.projectId,
+        role: adminUsers.role,
+        agentId: adminUsers.agentId,
+      })
 
-    const token = generateJwt({
-      userId: user.id,
-      email: user.email,
-      projectId: user.projectId,
-    })
+    const token = generateJwt(jwtPayloadFrom(user))
 
     res.status(201).json({
       success: true,
@@ -106,9 +110,7 @@ router.post('/login', rateLimiter(10), async (req: Request, res: Response) => {
     // If 2FA is enabled, return a temp token
     if (user.totpEnabled) {
       const tempToken = generateJwt({
-        userId: user.id,
-        email: user.email,
-        projectId: user.projectId,
+        ...jwtPayloadFrom(user),
         pending2FA: true,
       })
 
@@ -121,11 +123,7 @@ router.post('/login', rateLimiter(10), async (req: Request, res: Response) => {
       })
     }
 
-    const token = generateJwt({
-      userId: user.id,
-      email: user.email,
-      projectId: user.projectId,
-    })
+    const token = generateJwt(jwtPayloadFrom(user))
 
     res.json({
       success: true,
@@ -136,6 +134,8 @@ router.post('/login', rateLimiter(10), async (req: Request, res: Response) => {
           email: user.email,
           name: user.name,
           projectId: user.projectId,
+          role: user.role,
+          agentId: user.agentId,
           totpEnabled: user.totpEnabled,
         },
       },
@@ -176,11 +176,7 @@ router.post('/verify-2fa', rateLimiter(5), async (req: Request, res: Response) =
     }
 
     // Issue full JWT
-    const token = generateJwt({
-      userId: user.id,
-      email: user.email,
-      projectId: user.projectId,
-    })
+    const token = generateJwt(jwtPayloadFrom(user))
 
     res.json({
       success: true,
@@ -191,6 +187,8 @@ router.post('/verify-2fa', rateLimiter(5), async (req: Request, res: Response) =
           email: user.email,
           name: user.name,
           projectId: user.projectId,
+          role: user.role,
+          agentId: user.agentId,
           totpEnabled: user.totpEnabled,
         },
       },
@@ -474,17 +472,15 @@ router.post('/oauth-callback', async (req: Request, res: Response) => {
         email: adminUsers.email,
         name: adminUsers.name,
         projectId: adminUsers.projectId,
+        role: adminUsers.role,
+        agentId: adminUsers.agentId,
         totpEnabled: adminUsers.totpEnabled,
       })
       .from(adminUsers)
       .where(eq(adminUsers.id, userId))
       .limit(1)
 
-    const token = generateJwt({
-      userId: user.id,
-      email: user.email,
-      projectId: user.projectId,
-    })
+    const token = generateJwt(jwtPayloadFrom(user))
 
     res.json({
       success: true,
@@ -511,6 +507,7 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
         email: adminUsers.email,
         name: adminUsers.name,
         role: adminUsers.role,
+        agentId: adminUsers.agentId,
         projectId: adminUsers.projectId,
         emailVerified: adminUsers.emailVerified,
         totpEnabled: adminUsers.totpEnabled,
@@ -563,14 +560,12 @@ router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res: Response
         email: adminUsers.email,
         name: adminUsers.name,
         projectId: adminUsers.projectId,
+        role: adminUsers.role,
+        agentId: adminUsers.agentId,
       })
 
     // Return a fresh JWT with updated projectId
-    const token = generateJwt({
-      userId: user.id,
-      email: user.email,
-      projectId: user.projectId,
-    })
+    const token = generateJwt(jwtPayloadFrom(user))
 
     res.json({
       success: true,

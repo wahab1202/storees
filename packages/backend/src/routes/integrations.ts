@@ -16,7 +16,7 @@ import {
 } from '../services/shopifyService.js'
 import { encrypt } from '../services/encryption.js'
 import { redis } from '../services/redis.js'
-import { generateJwt } from '../services/authService.js'
+import { generateJwt, jwtPayloadFrom } from '../services/authService.js'
 import { instantiateDefaultSegments } from '../services/segmentService.js'
 import { instantiateDefaultFlows } from '../services/flowService.js'
 
@@ -143,8 +143,9 @@ router.get('/shopify/callback', async (req, res) => {
       })
     }
 
-    // Generate JWT so the merchant is logged in immediately
-    const token = generateJwt({ userId, email: ownerEmail, projectId })
+    // Generate JWT so the merchant is logged in immediately.
+    // Shopify auto-install always creates an admin-role user, so role defaults apply.
+    const token = generateJwt(jwtPayloadFrom({ id: userId, email: ownerEmail, projectId }))
 
     res.redirect(getCallbackRedirectUrl(token, projectId))
   } catch (err) {
