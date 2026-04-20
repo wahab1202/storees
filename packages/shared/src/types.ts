@@ -639,6 +639,12 @@ export type DomainFieldDef = {
   category: string
   operators: FilterOperator[]
   options?: string[]
+  /**
+   * Value/label pairs for selects whose values differ from their labels
+   * (e.g. agent UUIDs with human-readable dealer names). Takes precedence
+   * over `options` when both are present.
+   */
+  optionPairs?: Array<{ value: string; label: string }>
   metricKey?: string
 }
 

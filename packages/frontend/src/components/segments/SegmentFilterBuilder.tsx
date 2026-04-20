@@ -240,7 +240,7 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
     const ops = getOperators(firstField)
     const op = (ops[0]?.value ?? 'is') as FilterOperator
     const type = def?.type ?? 'string'
-    const defaultValue = type === 'number' ? 0 : type === 'boolean' ? true : type === 'select' ? (def?.options?.[0] ?? '') : ''
+    const defaultValue = type === 'number' ? 0 : type === 'boolean' ? true : type === 'select' ? (def?.optionPairs?.[0]?.value ?? def?.options?.[0] ?? '') : ''
     onChange({
       ...filters,
       rules: [...rules, { field: firstField, operator: op, value: defaultValue }],
@@ -340,16 +340,20 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
                       value={rule.value as string}
                       onChange={val => updateRule(index, { value: val })}
                     />
-                  ) : fieldType === 'select' && fieldDef?.options ? (
+                  ) : fieldType === 'select' && (fieldDef?.optionPairs || fieldDef?.options) ? (
                     <select
                       value={rule.value as string}
                       onChange={e => updateRule(index, { value: e.target.value })}
                       className={cn(selectClass, 'min-w-[140px]')}
                     >
                       <option value="">Select...</option>
-                      {fieldDef.options.map(opt => (
-                        <option key={opt} value={opt}>{opt}</option>
-                      ))}
+                      {fieldDef.optionPairs
+                        ? fieldDef.optionPairs.map(opt => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))
+                        : fieldDef.options!.map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
                     </select>
                   ) : rule.operator === 'between' ? (
                     <div className="flex items-center gap-2">
