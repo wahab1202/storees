@@ -1,0 +1,83 @@
+{
+  "project": "storees",
+  "description": "Storees CDP + Marketing Automation Platform — Full Build",
+  "phases": ["phase-0-platform-upgrade", "phase-1-analytics-ux", "phase-2-ai-ml-engine", "phase-3-inapp-personalization", "phase-4-advanced-features"],
+
+  "agents": {
+    "phase_0": ["platform-upgrade", "pinnacle-integration", "client-sdks", "vertical-packs"],
+    "phase_1": ["analytics", "flow-builder-v2"],
+    "phase_2": ["ml-infrastructure", "recommendations", "propensity", "affinity", "bts-nba", "ml-integration", "autoresearch"],
+    "phase_3": ["inapp-personalization"],
+    "phase_4": ["advanced-features"]
+  },
+
+  "rules": {
+    "always_active": ["multi-tenant", "delivery-pipeline", "no-domain-logic", "python-conventions"],
+    "ml_specific": ["temporal-split", "metric-guardrails", "frozen-infrastructure"],
+    "frontend_specific": ["flow-renderer"]
+  },
+
+  "skills": {
+    "available": ["data-pipeline", "model-training", "evaluation", "feature-engineering", "autoresearch-pattern", "ml-serving", "sdk-development", "flow-builder-architecture", "vertical-pack-format"]
+  },
+
+  "hooks": {
+    "ml": ["pre-commit-ml", "pre-train-validation", "post-train-validation", "model-promotion"],
+    "flows": ["flow-publish-validation"],
+    "delivery": ["pre-send-validation"]
+  },
+
+  "commands": {
+    "immediate": ["fix-segment-triggers"],
+    "ml": ["prepare-data", "run-baseline", "run-autoresearch", "promote-models", "model-status", "explain-prediction"],
+    "platform": ["create-vertical-pack", "validate-flow"]
+  },
+
+  "paths": {
+    "backend": "packages/backend",
+    "frontend": "packages/frontend",
+    "shared": "packages/shared",
+    "segments": "packages/segments",
+    "flows": "packages/flows",
+    "ml": "packages/ml",
+    "sdk_web": "packages/sdk-web",
+    "sdk_flutter": "packages/sdk-flutter",
+    "models_output": "packages/ml/models",
+    "data_cache": "packages/ml/data",
+    "vertical_packs": "packages/backend/src/data/packs"
+  },
+
+  "environment": {
+    "python_version": "3.11+",
+    "node_version": "20+",
+    "autoresearch_compute": "laptop_cpu",
+    "max_experiment_time_seconds": 120,
+    "default_experiment_time_seconds": 60,
+    "delivery_provider_production": "pinnacle",
+    "delivery_provider_dev": "resend"
+  },
+
+  "tenant_defaults": {
+    "first_deployment": "pinnacle_nbfc",
+    "primary_prediction_goals": ["propensity_to_convert", "propensity_to_crosssell"],
+    "primary_vertical_pack": "nbfc",
+    "frequency_cap_promotional": 5,
+    "frequency_cap_promotional_unit": "per_day_per_channel",
+    "quiet_hours_start": 21,
+    "quiet_hours_end": 8,
+    "max_inactivity_days_before_suppress": 180
+  },
+
+  "execution_order": {
+    "day_1": "fix-segment-triggers, then pinnacle delivery service abstraction",
+    "week_1": "generic item catalogue, interaction engine, interaction config UI",
+    "week_2": "web SDK, flutter SDK, consent management",
+    "week_3": "vertical pack loader, 4 packs, onboarding wizard",
+    "week_3_5": "analytics nav, funnel builder, cohort analytics, customer 360, dashboard templates",
+    "week_4_5": "flow builder V2 rebuild, template gallery, right-drawer editing, validation errors",
+    "week_4_8": "ML infrastructure then recommendation models then propensity engine then affinity then BTS then autoresearch runs",
+    "week_6_8": "ML integration into segment builder and customer 360 and analytics and prediction goals UI",
+    "week_7_9": "in-app message SDK, dynamic banners, web personalisation, cards",
+    "week_8_11": "NBA Thompson Sampling, path optimizer, PII tokenisation, AI Studio"
+  }
+}
