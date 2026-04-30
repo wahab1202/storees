@@ -40,8 +40,25 @@ export type FlowAnalytics = {
   messageStats: {
     totalSent: number
     delivered: number
+    opened: number
+    clicked: number
     failed: number
     deliveryRate: number
+    openRate: number
+    clickRate: number
+    bounceRate: number
+    byChannel: Array<{
+      channel: string
+      sent: number
+      delivered: number
+      opened: number
+      clicked: number
+      failed: number
+      deliveryRate: number
+      openRate: number
+      clickRate: number
+      bounceRate: number
+    }>
   }
 }
 
@@ -122,15 +139,20 @@ export async function getFlowAnalytics(flowId: string): Promise<FlowAnalytics> {
     .orderBy(desc(flowTrips.enteredAt))
     .limit(20),
 
-    // Message stats from messages table (flow-triggered)
+    // Per-channel message engagement — read implies delivered, clicked implies read,
+    // so "delivered" is the union of any later-state timestamp being set.
     db.select({
-      status: messages.status,
-      count: sql<number>`count(*)::int`,
+      channel: messages.channel,
+      sent: sql<number>`count(*)::int`,
+      delivered: sql<number>`count(*) filter (where ${messages.deliveredAt} is not null or ${messages.readAt} is not null or ${messages.clickedAt} is not null)::int`,
+      opened: sql<number>`count(*) filter (where ${messages.readAt} is not null or ${messages.clickedAt} is not null)::int`,
+      clicked: sql<number>`count(*) filter (where ${messages.clickedAt} is not null)::int`,
+      failed: sql<number>`count(*) filter (where ${messages.failedAt} is not null)::int`,
     })
     .from(messages)
     .innerJoin(flowTrips, eq(flowTrips.id, messages.flowTripId))
     .where(eq(flowTrips.flowId, flowId))
-    .groupBy(messages.status),
+    .groupBy(messages.channel),
   ])
 
   // Build overview
@@ -177,12 +199,25 @@ export async function getFlowAnalytics(flowId: string): Promise<FlowAnalytics> {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([week, data]) => ({ week, ...data }))
 
-  // Message stats
-  const msgMap: Record<string, number> = {}
-  for (const m of msgStats) msgMap[m.status] = m.count
-  const totalMsgSent = Object.values(msgMap).reduce((a, b) => a + b, 0)
-  const delivered = (msgMap['delivered'] ?? 0) + (msgMap['read'] ?? 0) + (msgMap['clicked'] ?? 0)
-  const failed = msgMap['failed'] ?? 0
+  // Aggregate per-channel rows into totals + a normalized per-channel breakdown
+  const pct = (num: number, den: number) => den > 0 ? (num / den) * 100 : 0
+  const byChannel = msgStats.map(r => ({
+    channel: r.channel,
+    sent: r.sent,
+    delivered: r.delivered,
+    opened: r.opened,
+    clicked: r.clicked,
+    failed: r.failed,
+    deliveryRate: pct(r.delivered, r.sent),
+    openRate: pct(r.opened, r.delivered),
+    clickRate: pct(r.clicked, r.opened),
+    bounceRate: pct(r.failed, r.sent),
+  }))
+  const totalMsgSent = byChannel.reduce((a, c) => a + c.sent, 0)
+  const delivered = byChannel.reduce((a, c) => a + c.delivered, 0)
+  const opened = byChannel.reduce((a, c) => a + c.opened, 0)
+  const clicked = byChannel.reduce((a, c) => a + c.clicked, 0)
+  const failed = byChannel.reduce((a, c) => a + c.failed, 0)
 
   return {
     overview: {
@@ -208,8 +243,14 @@ export async function getFlowAnalytics(flowId: string): Promise<FlowAnalytics> {
     messageStats: {
       totalSent: totalMsgSent,
       delivered,
+      opened,
+      clicked,
       failed,
-      deliveryRate: totalMsgSent > 0 ? (delivered / totalMsgSent) * 100 : 0,
+      deliveryRate: pct(delivered, totalMsgSent),
+      openRate: pct(opened, delivered),
+      clickRate: pct(clicked, opened),
+      bounceRate: pct(failed, totalMsgSent),
+      byChannel,
     },
   }
 }

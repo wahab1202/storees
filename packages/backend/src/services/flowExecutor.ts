@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, gt } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events } from '../db/schema.js'
 import { flowActionsQueue } from './queue.js'
@@ -244,9 +244,21 @@ async function evaluateCondition(
   const config = node.config
 
   if (config.check === 'event_occurred') {
-    // Check if the event happened since the trip started
-    const tripEnteredAt = trip.enteredAt as Date
+    if (!config.event) return false
     const customerId = trip.customerId as string
+
+    let since = trip.enteredAt as Date
+    if (config.since === 'flow_start') {
+      const flowId = trip.flowId as string | undefined
+      if (flowId) {
+        const [flow] = await db
+          .select({ createdAt: flows.createdAt })
+          .from(flows)
+          .where(eq(flows.id, flowId))
+          .limit(1)
+        if (flow?.createdAt) since = flow.createdAt as Date
+      }
+    }
 
     const [result] = await db
       .select({ id: events.id })
@@ -254,7 +266,8 @@ async function evaluateCondition(
       .where(
         and(
           eq(events.customerId, customerId),
-          eq(events.eventName, config.event!),
+          eq(events.eventName, config.event),
+          gt(events.timestamp, since),
         ),
       )
       .limit(1)

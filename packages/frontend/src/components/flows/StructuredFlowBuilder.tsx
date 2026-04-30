@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import {
   Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone,
   CircleStop, Plus, Trash2, LogOut, X, Save, Loader2, AlertCircle,
+  Minus, Maximize2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
@@ -122,11 +123,13 @@ const ADD_OPTIONS: NodeOption[] = [
   { type: 'send_push',     label: 'Push Notification',  icon: Bell,          color: 'text-violet-600',  bg: 'bg-violet-50',  cat: 'Actions' },
   { type: 'send_whatsapp', label: 'WhatsApp',           icon: Phone,         color: 'text-emerald-600', bg: 'bg-emerald-50', cat: 'Actions' },
   // Conditions
-  { type: 'condition',          label: 'Conditional Split',       icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
-  { type: 'condition_email',    label: 'Has opened email',        icon: Mail,          color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
-  { type: 'condition_click',    label: 'Has clicked email',       icon: Mail,          color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
-  { type: 'condition_segment',  label: 'Is in segment',           icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
-  { type: 'condition_attr',     label: 'Check user attribute',    icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  { type: 'condition',          label: 'Conditional Split',     icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
+  { type: 'condition_email',    label: 'Has opened email',      icon: Mail,          color: 'text-green-600',  bg: 'bg-green-50',  cat: 'Conditions' },
+  { type: 'condition_click',    label: 'Has clicked email',     icon: Mail,          color: 'text-green-600',  bg: 'bg-green-50',  cat: 'Conditions' },
+  { type: 'condition_sms_read', label: 'Has read SMS',          icon: MessageSquare, color: 'text-teal-600',   bg: 'bg-teal-50',   cat: 'Conditions' },
+  { type: 'condition_wa_read',  label: 'Has read WhatsApp',     icon: Phone,         color: 'text-emerald-600',bg: 'bg-emerald-50',cat: 'Conditions' },
+  { type: 'condition_push_tap', label: 'Push tapped',           icon: Bell,          color: 'text-violet-600', bg: 'bg-violet-50', cat: 'Conditions' },
+  { type: 'condition_attr',     label: 'Check user attribute',  icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
   // Controls
   { type: 'delay',         label: 'Wait for / till',    icon: Clock,         color: 'text-blue-600',    bg: 'bg-blue-50',    cat: 'Controls' },
   { type: 'end',           label: 'Exit',               icon: CircleStop,    color: 'text-red-500',     bg: 'bg-red-50',     cat: 'Controls' },
@@ -135,10 +138,15 @@ const ADD_OPTIONS: NodeOption[] = [
 const CATS = ['Actions', 'Conditions', 'Controls'] as const
 const CAT_ICON: Record<string, string> = { Actions: 'bg-green-400', Conditions: 'bg-amber-400', Controls: 'bg-violet-400' }
 
-// Map subtypes to the actual FlowNode type for creation
-function resolveNodeType(optionType: string): string {
-  if (optionType.startsWith('condition')) return 'condition'
-  return optionType
+// Pre-fills the condition node's config when a channel-specific preset is picked from the menu
+type CondPreset = { check: 'event_occurred' | 'attribute_check'; event?: string }
+const CONDITION_PRESETS: Record<string, CondPreset> = {
+  condition_email:    { check: 'event_occurred', event: 'email_opened' },
+  condition_click:    { check: 'event_occurred', event: 'email_clicked' },
+  condition_sms_read: { check: 'event_occurred', event: 'sms_read' },
+  condition_wa_read:  { check: 'event_occurred', event: 'whatsapp_read' },
+  condition_push_tap: { check: 'event_occurred', event: 'push_read' },
+  condition_attr:     { check: 'attribute_check' },
 }
 
 function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
@@ -208,7 +216,7 @@ function AddNodeBtn({ onAdd }: { onAdd: (type: string) => void }) {
                       return (
                         <button
                           key={opt.type}
-                          onClick={() => { onAdd(resolveNodeType(opt.type)); setOpen(false) }}
+                          onClick={() => { onAdd(opt.type); setOpen(false) }}
                           className="w-full flex items-center gap-3 py-3 px-1 text-sm text-gray-700 hover:text-gray-900 transition-colors whitespace-nowrap"
                         >
                           <Icon className={cn('h-5 w-5 flex-shrink-0', opt.color)} />
@@ -240,6 +248,7 @@ function NodeCard({
 
   return (
     <div
+      data-no-pan
       onClick={onSelect}
       className={cn(
         'relative bg-white border rounded-xl px-4 py-3 cursor-pointer transition-all',
@@ -316,48 +325,85 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
   const yes = tn.yesBranch ?? []
   const no = tn.noBranch ?? []
 
+  // Columns size to their own content (asymmetric is fine). Tick positions are measured so the bar always lands on actual column centers.
+  const yesRef = useRef<HTMLDivElement>(null)
+  const noRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const [ticks, setTicks] = useState({ leftPct: 25, rightPct: 25 })
+  useLayoutEffect(() => {
+    const measure = () => {
+      const w = wrapperRef.current
+      const y = yesRef.current
+      const n = noRef.current
+      if (!w || !y || !n) return
+      // getBoundingClientRect, not offsetLeft — wrapper isn't a positioned ancestor, so offsetLeft would resolve against the wrong frame
+      const wRect = w.getBoundingClientRect()
+      const yRect = y.getBoundingClientRect()
+      const nRect = n.getBoundingClientRect()
+      if (wRect.width === 0) return
+      const yesCenterX = yRect.left + yRect.width / 2 - wRect.left
+      const noCenterX = nRect.left + nRect.width / 2 - wRect.left
+      setTicks({
+        leftPct: (yesCenterX / wRect.width) * 100,
+        rightPct: ((wRect.width - noCenterX) / wRect.width) * 100,
+      })
+    }
+    measure()
+    let raf = 0
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(measure)
+    })
+    if (yesRef.current) ro.observe(yesRef.current)
+    if (noRef.current) ro.observe(noRef.current)
+    if (wrapperRef.current) ro.observe(wrapperRef.current)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [tn])
+
   return (
     <div className="flex flex-col items-center">
       <Connector h="h-4" />
 
-      {/* T-connector */}
-      <div className="relative" style={{ width: 540, height: 20 }}>
-        {/* Horizontal bar */}
-        <div className="absolute top-0 left-[135px] right-[135px] h-px bg-gray-300" />
-        {/* Left (Yes) vertical tick — green */}
-        <div className="absolute top-0 left-[135px] w-px h-full bg-green-400" />
-        {/* Right (No) vertical tick — red */}
-        <div className="absolute top-0 right-[135px] w-px h-full bg-red-400" />
-      </div>
-
-      {/* Two columns */}
-      <div className="flex" style={{ width: 540 }}>
-        {/* Yes */}
-        <div className="flex-1 flex flex-col items-center">
-          <span className="text-[11px] font-bold text-green-600 bg-green-50 border border-green-200 px-2.5 py-px rounded-full">Yes</span>
-          <Connector color="bg-green-400" h="h-3" />
-          {yes.length > 0 ? (
-            <>
-              <BranchRenderer chain={yes} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
-              {yes[yes.length - 1].node.type !== 'end' && <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />}
-            </>
-          ) : (
-            <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'yes')} />
-          )}
+      <div ref={wrapperRef} className="flex flex-col">
+        {/* T-connector — tick percentages computed to land on actual column centers */}
+        <div className="relative h-5">
+          <div className="absolute top-0 h-px bg-gray-300" style={{ left: `${ticks.leftPct}%`, right: `${ticks.rightPct}%` }} />
+          <div className="absolute top-0 w-px h-full bg-green-400" style={{ left: `${ticks.leftPct}%` }} />
+          <div className="absolute top-0 w-px h-full bg-red-400" style={{ right: `${ticks.rightPct}%` }} />
         </div>
 
-        {/* No */}
-        <div className="flex-1 flex flex-col items-center">
-          <span className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 px-2.5 py-px rounded-full">No</span>
-          <Connector color="bg-red-400" h="h-3" />
-          {no.length > 0 ? (
-            <>
-              <BranchRenderer chain={no} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
-              {no[no.length - 1].node.type !== 'end' && <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />}
-            </>
-          ) : (
-            <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'no')} />
-          )}
+        {/* Columns size to content; flex (not grid) so neither side balloons to match the other */}
+        <div className="flex items-start" style={{ minWidth: 540 }}>
+          {/* Yes */}
+          <div ref={yesRef} className="flex flex-col items-center px-3" style={{ minWidth: 270 }}>
+            <span className="text-[11px] font-bold text-green-600 bg-green-50 border border-green-200 px-2.5 py-px rounded-full">Yes</span>
+            <Connector color="bg-green-400" h="h-3" />
+            {yes.length > 0 ? (
+              <>
+                <BranchRenderer chain={yes} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
+                {yes[yes.length - 1].node.type !== 'end' && yes[yes.length - 1].node.type !== 'condition' && <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />}
+              </>
+            ) : (
+              <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'yes')} />
+            )}
+          </div>
+
+          {/* No */}
+          <div ref={noRef} className="flex flex-col items-center px-3" style={{ minWidth: 270 }}>
+            <span className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 px-2.5 py-px rounded-full">No</span>
+            <Connector color="bg-red-400" h="h-3" />
+            {no.length > 0 ? (
+              <>
+                <BranchRenderer chain={no} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
+                {no[no.length - 1].node.type !== 'end' && no[no.length - 1].node.type !== 'condition' && <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />}
+              </>
+            ) : (
+              <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'no')} />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -479,6 +525,93 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   const [nodes, setNodes] = useState<FlowNode[]>(flowNodes)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [exitEvent, setExitEvent] = useState(initialExitConfig?.event ?? '')
+  const [zoom, setZoom] = useState(1)
+  const zoomRef = useRef(zoom)
+  useEffect(() => { zoomRef.current = zoom }, [zoom])
+
+  const ZOOM_MIN = 0.4
+  const ZOOM_MAX = 1.5
+  const ZOOM_STEP = 0.1
+  const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100))
+
+  const canvasRef = useRef<HTMLDivElement>(null)
+
+  // Zoom toward a focal point (cursor pos or viewport center) — keeps that point under the cursor/center after the scale change
+  const applyZoom = useCallback((nextZoom: number, focalClientX?: number, focalClientY?: number) => {
+    const target = clampZoom(nextZoom)
+    const oldZoom = zoomRef.current
+    if (target === oldZoom) return
+    const el = canvasRef.current
+    if (!el) { setZoom(target); return }
+    const rect = el.getBoundingClientRect()
+    const fx = focalClientX != null ? focalClientX - rect.left : el.clientWidth / 2
+    const fy = focalClientY != null ? focalClientY - rect.top : el.clientHeight / 2
+    const ratio = target / oldZoom
+    const newScrollLeft = (el.scrollLeft + fx) * ratio - fx
+    const newScrollTop = (el.scrollTop + fy) * ratio - fy
+    setZoom(target)
+    requestAnimationFrame(() => {
+      const node = canvasRef.current
+      if (!node) return
+      node.scrollLeft = newScrollLeft
+      node.scrollTop = newScrollTop
+    })
+  }, [])
+
+  const zoomIn = () => applyZoom(zoomRef.current + ZOOM_STEP)
+  const zoomOut = () => applyZoom(zoomRef.current - ZOOM_STEP)
+  const zoomReset = () => applyZoom(1)
+
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP
+      applyZoom(zoomRef.current + delta, e.clientX, e.clientY)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [applyZoom])
+
+  // Click-and-drag panning — mousedown on empty canvas starts a pan candidate; 3px threshold preserves "click to deselect"
+  const panRef = useRef<{ x: number; y: number; sl: number; st: number; moved: boolean } | null>(null)
+  const [isPanning, setIsPanning] = useState(false)
+  const onCanvasMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    const t = e.target as HTMLElement
+    if (t.closest('button, a, input, select, textarea, [data-no-pan]')) return
+    const el = canvasRef.current
+    if (!el) return
+    panRef.current = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop, moved: false }
+  }
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const p = panRef.current
+      const el = canvasRef.current
+      if (!p || !el) return
+      const dx = e.clientX - p.x
+      const dy = e.clientY - p.y
+      if (!p.moved && Math.hypot(dx, dy) < 3) return
+      if (!p.moved) {
+        p.moved = true
+        setIsPanning(true)
+      }
+      el.scrollLeft = p.sl - dx
+      el.scrollTop = p.st - dy
+    }
+    const onUp = () => {
+      panRef.current = null
+      setIsPanning(false)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   const errors = validateNodes(nodes)
   const errorCount = Array.from(errors.values()).reduce((sum, a) => sum + a.length, 0)
@@ -486,30 +619,18 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   const selectedNode = nodes.find(n => n.id === selectedId) ?? null
 
   const handleAddNode = useCallback((afterId: string, optionType: string, branch?: 'yes' | 'no') => {
-    if (optionType === 'condition') {
-      const condNode: FlowNode = {
-        id: nextId('condition'), type: 'condition',
-        config: { check: 'event_occurred', since: 'trip_start', branches: { yes: '', no: '' } },
-      }
-      setNodes(prev => {
-        const idx = prev.findIndex(n => n.id === afterId)
-        if (idx < 0) return [...prev, condNode]
-        const copy = [...prev]
-        copy.splice(idx + 1, 0, condNode)
-        return copy
-      })
-      setSelectedId(condNode.id)
-      return
-    }
+    const baseType = optionType.startsWith('condition') ? 'condition' : optionType
+    const preset = CONDITION_PRESETS[optionType]
+    const newNode: FlowNode = baseType === 'condition'
+      ? { id: nextId('condition'), type: 'condition', config: { check: preset?.check ?? 'event_occurred', event: preset?.event, since: 'trip_start', branches: { yes: '', no: '' } } }
+      : baseType === 'delay'
+        ? { id: nextId('delay'), type: 'delay', config: { value: 30, unit: 'minutes' } }
+        : baseType === 'end'
+          ? { id: nextId('end'), type: 'end', label: 'End' }
+          : { id: nextId('action'), type: 'action', config: { actionType: baseType as 'send_email', templateId: '' } }
 
-    const newNode: FlowNode = optionType === 'delay'
-      ? { id: nextId('delay'), type: 'delay', config: { value: 30, unit: 'minutes' } }
-      : optionType === 'end'
-        ? { id: nextId('end'), type: 'end', label: 'End' }
-        : { id: nextId('action'), type: 'action', config: { actionType: optionType as 'send_email', templateId: '' } }
-
-    if (branch) {
-      setNodes(prev => {
+    setNodes(prev => {
+      if (branch) {
         const condIdx = prev.findIndex(n => n.id === afterId && n.type === 'condition')
         if (condIdx >= 0) {
           const cond = prev[condIdx]
@@ -523,21 +644,13 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
           copy.splice(condIdx + 1, 0, newNode)
           return copy
         }
-        const idx = prev.findIndex(n => n.id === afterId)
-        if (idx < 0) return [...prev, newNode]
-        const copy = [...prev]
-        copy.splice(idx + 1, 0, newNode)
-        return copy
-      })
-    } else {
-      setNodes(prev => {
-        const idx = prev.findIndex(n => n.id === afterId)
-        if (idx < 0) return [...prev, newNode]
-        const copy = [...prev]
-        copy.splice(idx + 1, 0, newNode)
-        return copy
-      })
-    }
+      }
+      const idx = prev.findIndex(n => n.id === afterId)
+      if (idx < 0) return [...prev, newNode]
+      const copy = [...prev]
+      copy.splice(idx + 1, 0, newNode)
+      return copy
+    })
     setSelectedId(newNode.id)
   }, [])
 
@@ -570,19 +683,63 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
       {/* Canvas area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Scrollable canvas — cocooned in a bordered section */}
-        <div className="flex-1 overflow-auto m-3 bg-white rounded-2xl border border-gray-200 shadow-sm">
-          <div className="flex flex-col items-center py-10 px-6 min-w-fit min-h-full">
-            <BranchRenderer
-              chain={tree}
-              selectedId={selectedId}
-              onSelect={id => setSelectedId(selectedId === id ? null : id)}
-              onDelete={handleDelete}
-              onAddNode={handleAddNode}
-              errors={errors}
-            />
-            {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && tree[tree.length - 1].node.type !== 'end' && (
-              <AddNodeBtn onAdd={(t) => handleAddNode(nodes[nodes.length - 1].id, t)} />
+        <div className="relative flex-1 m-3 bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div
+            ref={canvasRef}
+            onMouseDown={onCanvasMouseDown}
+            className={cn(
+              'h-full w-full overflow-auto overscroll-contain select-none',
+              isPanning ? 'cursor-grabbing' : 'cursor-grab',
             )}
+          >
+            <div style={{ zoom }} className="flex flex-col items-center py-10 px-6 min-w-fit min-h-full">
+              <BranchRenderer
+                chain={tree}
+                selectedId={selectedId}
+                onSelect={id => setSelectedId(selectedId === id ? null : id)}
+                onDelete={handleDelete}
+                onAddNode={handleAddNode}
+                errors={errors}
+              />
+              {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && tree[tree.length - 1].node.type !== 'end' && (
+                <AddNodeBtn onAdd={(t) => handleAddNode(nodes[nodes.length - 1].id, t)} />
+              )}
+            </div>
+          </div>
+
+          {/* Zoom toolbar — floating bottom-right */}
+          <div data-no-pan className="absolute bottom-4 right-4 flex items-center gap-0.5 bg-white border border-gray-200 rounded-lg shadow-sm px-1 py-1">
+            <button
+              onClick={zoomOut}
+              disabled={zoom <= ZOOM_MIN}
+              aria-label="Zoom out"
+              className="w-7 h-7 flex items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+            >
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={zoomReset}
+              aria-label="Reset zoom"
+              className="px-2 h-7 text-[11px] font-semibold text-gray-700 tabular-nums rounded-md hover:bg-gray-100 transition-colors min-w-[44px]"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              onClick={zoomIn}
+              disabled={zoom >= ZOOM_MAX}
+              aria-label="Zoom in"
+              className="w-7 h-7 flex items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+            <div className="w-px h-4 bg-gray-200 mx-1" />
+            <button
+              onClick={zoomReset}
+              aria-label="Fit to 100%"
+              className="w-7 h-7 flex items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
 
