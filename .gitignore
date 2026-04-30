@@ -6,3 +6,7 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .turbo/
+
+# Local planning / Claude config (not for repo)
+Storees Phase 2 Claude.md
+Storees Phase 2 Folder/
