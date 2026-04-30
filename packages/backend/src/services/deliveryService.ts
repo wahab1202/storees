@@ -1,6 +1,6 @@
 import { eq, and, sql, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { messages, consents, customers } from '../db/schema.js'
+import { messages, consents, customers, whatsappTemplates } from '../db/schema.js'
 import { deliveryQueue } from './queue.js'
 import { redis } from './redis.js'
 import type { SendCommand, MessageChannel } from '@storees/shared'
@@ -79,7 +79,21 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
 
     if (channelResult) {
       providerName = channelResult.provider.name
-      sendResult = await channelResult.provider.send(command, channelResult.config)
+      // Route through sendTemplate when channel=whatsapp + templateId resolves to a synced WhatsApp template
+      // for this provider. Falls through to plain text send otherwise.
+      const waTemplate = await resolveWhatsappTemplate(command, providerName)
+      if (waTemplate && channelResult.provider.sendTemplate) {
+        const params: string[] = []
+        for (let i = 1; i <= (waTemplate.parameterCount ?? 0); i++) {
+          params.push(command.variables?.[String(i)] ?? '')
+        }
+        sendResult = await channelResult.provider.sendTemplate(
+          { ...command, templateName: waTemplate.providerTemplateId, templateLanguage: waTemplate.language, templateParams: params },
+          channelResult.config,
+        )
+      } else {
+        sendResult = await channelResult.provider.send(command, channelResult.config)
+      }
     } else {
       // Fallback to legacy registered providers
       const legacy = providers.get('pinnacle') ?? providers.get('resend')
@@ -110,6 +124,31 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
       failedAt: new Date(),
     }).where(eq(messages.id, messageId))
   }
+}
+
+/**
+ * If the command targets WhatsApp and templateId points at a synced whatsapp_templates row
+ * for this provider, return it. Returns null for plain-text sends or unknown templates.
+ */
+async function resolveWhatsappTemplate(
+  command: SendCommand,
+  providerName: string,
+): Promise<{ providerTemplateId: string; language: string; parameterCount: number } | null> {
+  if (command.channel !== 'whatsapp' || !command.templateId) return null
+  const [row] = await db
+    .select({
+      providerTemplateId: whatsappTemplates.providerTemplateId,
+      language: whatsappTemplates.language,
+      parameterCount: whatsappTemplates.parameterCount,
+    })
+    .from(whatsappTemplates)
+    .where(and(
+      eq(whatsappTemplates.id, command.templateId),
+      eq(whatsappTemplates.projectId, command.projectId),
+      eq(whatsappTemplates.provider, providerName),
+    ))
+    .limit(1)
+  return row ?? null
 }
 
 /**

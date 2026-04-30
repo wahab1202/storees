@@ -31,6 +31,7 @@ import analyticsRoutes from './routes/analytics.js'
 import predictionRoutes from './routes/predictions.js'
 import sendTimeRoutes from './routes/sendTime.js'
 import channelWebhookRoutes from './routes/channelWebhooks.js'
+import whatsappAdminRoutes from './routes/whatsappAdmin.js'
 import urlTrackerRoutes from './routes/urlTracker.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
@@ -64,11 +65,20 @@ app.use('/api/webhooks/shopify', express.raw({ type: 'application/json' }))
 
 // JSON parser — 1MB limit for SDK batch events (default 100KB too small)
 app.use(express.json({ limit: '1mb' }))
+// Twilio + some Gupshup webhooks send form-encoded payloads
+app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 
 // CORS: SDK routes allow any origin (controlled by API key), admin routes restricted
 app.use('/api/v1', cors({ origin: '*', methods: ['POST', 'GET', 'OPTIONS'] }))
+const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:3000,http://localhost:3002')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
 app.use(cors({
-  origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true)
+    cb(new Error(`CORS: origin ${origin} not allowed`))
+  },
   credentials: true,
 }))
 
@@ -109,6 +119,7 @@ app.use('/api/ai', requireAuth, aiRoutes)
 app.use('/api/products', requireAuth, productRoutes)
 app.use('/api/campaigns', requireAuth, campaignRoutes)
 app.use('/api/templates', requireAuth, templateRoutes)
+app.use('/api/whatsapp', requireAuth, whatsappAdminRoutes)
 app.use('/api/api-keys', requireAuth, v1ApiKeyRoutes)
 app.use('/api/schema', requireAuth, v1SchemaRoutes)
 app.use('/api/onboarding', requireAuth, onboardingRoutes)

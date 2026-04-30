@@ -3,9 +3,63 @@ import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
 import type { MessageChannel, SendCommand } from '@storees/shared'
 
+export type SendResult = { messageId: string; status: string; error?: string }
+
+// Provider's view of an approved WhatsApp template after a sync()
+export type ProviderTemplate = {
+  providerTemplateId: string
+  name: string
+  language: string
+  category?: string
+  status: string
+  bodyText: string
+  header?: unknown
+  footer?: string
+  buttons?: unknown
+  parameterCount: number
+  rawPayload?: unknown
+}
+
+export type SendTemplateCommand = SendCommand & {
+  // Resolved at the deliveryService layer from whatsapp_templates
+  templateName: string
+  templateLanguage: string
+  templateParams: string[]      // ordered substitutions for {{1}} {{2}} ...
+}
+
+export type InboundMessage = {
+  fromPhone: string
+  providerMessageId: string
+  content?: string
+  mediaUrl?: string
+  mediaType?: string
+  replyTo?: string
+  rawPayload?: unknown
+}
+
 export type ChannelProvider = {
   name: string
-  send(command: SendCommand, config: Record<string, string>): Promise<{ messageId: string; status: string; error?: string }>
+  send(command: SendCommand, config: Record<string, string>): Promise<SendResult>
+  // Optional WhatsApp-specific capabilities. Presence of the method = capability is supported.
+  sendTemplate?(command: SendTemplateCommand, config: Record<string, string>): Promise<SendResult>
+  syncTemplates?(config: Record<string, string>): Promise<ProviderTemplate[]>
+  parseInbound?(payload: unknown): InboundMessage[]
+}
+
+export type ProviderCapabilities = {
+  sendText: boolean
+  sendTemplate: boolean
+  syncTemplates: boolean
+  parseInbound: boolean
+}
+
+export function getProviderCapabilities(provider: ChannelProvider): ProviderCapabilities {
+  return {
+    sendText: typeof provider.send === 'function',
+    sendTemplate: typeof provider.sendTemplate === 'function',
+    syncTemplates: typeof provider.syncTemplates === 'function',
+    parseInbound: typeof provider.parseInbound === 'function',
+  }
 }
 
 type ChannelConfig = {

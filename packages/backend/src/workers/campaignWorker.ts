@@ -12,7 +12,9 @@ export function startCampaignWorker(): void {
     },
     {
       connection: redisConnection,
-      concurrency: 1, // process one campaign at a time to avoid Resend rate limits
+      // Multiple campaigns can process in parallel. Per-campaign in-flight sends are bounded by
+      // PARALLEL_SENDS_PER_PAGE (10) inside processCampaign, so 3 campaigns × 10 = 30 max in-flight.
+      concurrency: 3,
     },
   )
 

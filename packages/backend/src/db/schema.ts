@@ -410,6 +410,7 @@ export const consents = pgTable('consents', {
   status: varchar('status', { length: 20 }).notNull().default('opted_in'),
   // 'opted_in' | 'opted_out'
   source: varchar('source', { length: 20 }), // 'app' | 'web' | 'api' | 'sms'
+  provider: varchar('provider', { length: 30 }), // which channel provider observed the consent change
   consentedAt: timestamp('consented_at', { withTimezone: true }).notNull().defaultNow(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -673,4 +674,46 @@ export const oauthAccounts = pgTable('oauth_accounts', {
 }, (table) => [
   uniqueIndex('idx_oauth_provider_account').on(table.provider, table.providerAccountId),
   index('idx_oauth_user').on(table.userId),
+])
+
+export const whatsappTemplates = pgTable('whatsapp_templates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  provider: varchar('provider', { length: 30 }).notNull(),
+  providerTemplateId: varchar('provider_template_id', { length: 255 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  language: varchar('language', { length: 20 }).notNull(),
+  category: varchar('category', { length: 50 }),
+  status: varchar('status', { length: 30 }).notNull().default('PENDING'),
+  bodyText: text('body_text').notNull(),
+  header: jsonb('header'),
+  footer: text('footer'),
+  buttons: jsonb('buttons'),
+  parameterCount: integer('parameter_count').notNull().default(0),
+  rawPayload: jsonb('raw_payload'),
+  syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_wa_templates_unique').on(table.projectId, table.provider, table.name, table.language),
+  index('idx_wa_templates_status').on(table.projectId, table.status),
+])
+
+export const whatsappInboundMessages = pgTable('whatsapp_inbound_messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+  fromPhone: varchar('from_phone', { length: 50 }).notNull(),
+  provider: varchar('provider', { length: 30 }).notNull(),
+  providerMessageId: varchar('provider_message_id', { length: 255 }).notNull(),
+  content: text('content'),
+  mediaUrl: text('media_url'),
+  mediaType: varchar('media_type', { length: 50 }),
+  replyTo: varchar('reply_to', { length: 255 }),
+  rawPayload: jsonb('raw_payload'),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_wa_inbound_idem').on(table.provider, table.providerMessageId),
+  index('idx_wa_inbound_customer').on(table.projectId, table.customerId, table.receivedAt),
+  index('idx_wa_inbound_phone').on(table.projectId, table.fromPhone, table.receivedAt),
 ])
