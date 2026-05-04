@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 
 type Project = {
@@ -9,6 +9,8 @@ type Project = {
   features?: { agentScopedAccess?: boolean; [key: string]: unknown } | null
   createdAt: string
 }
+
+type ProjectFeatures = { agentScopedAccess?: boolean }
 
 /** Returns true if the currently-active project has agent-scoped access enabled. */
 export function useAgentRbacEnabled() {
@@ -45,5 +47,17 @@ export function useProjectApiKeys(projectId: string) {
     queryKey: ['api-keys', projectId],
     queryFn: () => api.get<ApiKey[]>(`/api/api-keys?projectId=${projectId}`),
     enabled: !!projectId,
+  })
+}
+
+/** Mutate per-project feature flags. Invalidates the projects list so dependent UI re-reads. */
+export function useUpdateProjectFeatures(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (features: ProjectFeatures) =>
+      api.patch<{ features: ProjectFeatures }>(`/api/onboarding/projects/${projectId}/features`, features),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
   })
 }

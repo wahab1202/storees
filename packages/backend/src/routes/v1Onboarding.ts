@@ -4,6 +4,7 @@ import { db } from '../db/connection.js'
 import { projects, apiKeys, events, segments } from '../db/schema.js'
 import { eq, and, count } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
+import { requireRole } from '../middleware/agentScope.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
 import type { DomainType, IntegrationType } from '@storees/shared'
 
@@ -484,6 +485,64 @@ router.get('/projects', async (_req: Request, res: Response) => {
   } catch (err) {
     console.error('List projects error:', err)
     res.status(500).json({ success: false, error: 'Failed to list projects' })
+  }
+})
+
+/**
+ * PATCH /api/onboarding/projects/:id/features — Update per-project feature flags
+ *
+ * Admin-only. Currently exposes:
+ *   - agentScopedAccess: enables Dealer/Region/City segment fields and
+ *     scoped customer access for agent/manager roles. Required for B2B
+ *     multi-distributor setups (e.g. GowelMart).
+ *
+ * Body: { agentScopedAccess?: boolean, ...other future flags }
+ * Returns: { features }  (full features object after merge)
+ */
+router.patch('/projects/:id/features', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+    const incoming = (req.body ?? {}) as Record<string, unknown>
+
+    // Whitelist toggleable feature flags — refuse unknown keys so typos don't
+    // silently land in the JSONB blob and accumulate over time.
+    const ALLOWED_FLAGS = new Set(['agentScopedAccess'])
+    const updates: Record<string, unknown> = {}
+    for (const key of Object.keys(incoming)) {
+      if (!ALLOWED_FLAGS.has(key)) {
+        return res.status(400).json({ success: false, error: `Unknown feature flag: ${key}` })
+      }
+      if (typeof incoming[key] !== 'boolean') {
+        return res.status(400).json({ success: false, error: `Feature flag '${key}' must be a boolean` })
+      }
+      updates[key] = incoming[key]
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid feature flags supplied' })
+    }
+
+    const [project] = await db
+      .select({ features: projects.features })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1)
+
+    if (!project) {
+      return res.status(404).json({ success: false, error: 'Project not found' })
+    }
+
+    const merged = { ...((project.features as Record<string, unknown> | null) ?? {}), ...updates }
+
+    await db
+      .update(projects)
+      .set({ features: merged, updatedAt: new Date() })
+      .where(eq(projects.id, projectId))
+
+    res.json({ success: true, data: { features: merged } })
+  } catch (err) {
+    console.error('Update features error:', err)
+    res.status(500).json({ success: false, error: 'Failed to update features' })
   }
 })
 
