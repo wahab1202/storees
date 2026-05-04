@@ -192,6 +192,61 @@ the project's API key.
 
 ---
 
+## 5b. (Pre-flight) Verify the email send path
+
+Before letting a merchant send their first real campaign, sanity-check the
+Resend send path. This catches misconfiguration BEFORE the first send to a
+real customer list — far cheaper than diagnosing it after a deliverability
+incident.
+
+### Run the test script
+
+```bash
+node scripts/test-email-send.mjs your-own-inbox@example.com
+```
+
+The script reads `RESEND_API_KEY` and `FROM_EMAIL` from
+`packages/backend/.env`, sends one HTML test email, and prints the Resend
+message id. Open the recipient inbox (and spam folder) within 30 seconds —
+the message should arrive in inbox, not spam.
+
+### Run a deliverability score check
+
+1. Visit https://www.mail-tester.com — they generate a single-use address
+   (e.g. `test-xyz123@srv1.mail-tester.com`).
+2. Send the test email to that address:
+   ```bash
+   node scripts/test-email-send.mjs test-xyz123@srv1.mail-tester.com
+   ```
+3. Click "Then check your score" on mail-tester within 30 seconds.
+
+**Target: 9-10 / 10.** Common failure modes:
+
+| Score impact | Cause | Fix |
+|---|---|---|
+| -2 | Missing SPF | Add `v=spf1 include:_spf.resend.com ~all` to the from-domain DNS |
+| -2 | Missing/broken DKIM | Verify the domain in Resend → paste their CNAME record into DNS |
+| -1 | DMARC not set | Add `v=DMARC1; p=none; rua=mailto:dmarc@yourdomain.com` |
+| -1 | Missing `List-Unsubscribe` | The Storees campaign builder will add this in Phase E2.2; the test script does not |
+| -1 | Image-only HTML | Add a meaningful text/plain alternative |
+
+### Confirm the webhook loop
+
+1. In the Resend dashboard, register the webhook endpoint:
+   `https://YOUR_API_HOST/api/webhooks/resend`
+2. Subscribe to: `email.delivered`, `email.opened`, `email.clicked`,
+   `email.bounced`, `email.complained`.
+3. Send the test email; check the Storees DB:
+   ```sql
+   SELECT * FROM events WHERE event_name LIKE 'email_%' ORDER BY timestamp DESC LIMIT 5;
+   ```
+   You should see `email_delivered` and `email_opened` rows within 30 seconds.
+
+If any of the above fails, **do not start sending real campaigns yet.** Fix
+the verification step first.
+
+---
+
 ## 6. Send your first product-keyed campaign
 
 1. Go to **Campaigns → New Campaign**.

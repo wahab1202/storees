@@ -213,3 +213,58 @@
 - [ ] Connect a Shopify dev store → wait for sync → confirm `products`, `collections`, `customers.region`, `customers.city` populated
 - [ ] Open segment builder → confirm Dealer/Region/City group renders (with `agentScopedAccess` on) AND Product/Category/Collection pickers show real options
 - [ ] Build a "purchased Product X" segment → send a campaign to it → message lands
+
+## Email Deliverability — Multi-Tenant Black Friday Safety
+
+**Goal:** Make the Resend pipeline safe for high-volume multi-tenant marketing campaigns. One client's bad list must not tank deliverability for all other tenants. Black Friday-scale concurrent campaigns must not starve each other.
+
+**Confirmed state (Apr 30):**
+- Resend integration via [resendProvider.ts](packages/backend/src/services/resendProvider.ts) — single shared `FROM_EMAIL` env var
+- Webhook handler [resendWebhook.ts](packages/backend/src/routes/resendWebhook.ts) tracks delivered/opened/clicked/bounced/complained — but no HMAC verification, no suppression, no idempotency
+- `consents` table exists ([schema.ts:403](packages/backend/src/db/schema.ts#L403)) but campaign dispatcher [campaignService.ts:115-120](packages/backend/src/services/campaignService.ts#L115-L120) only filters by reachability — does not check consent or suppression
+- Delivery worker fixed at `concurrency: 50` global — no per-tenant rate budget
+
+### Phase E1 — Verify Resend works (operational, ~1 hour)
+- [ ] Add `scripts/test-email-send.mjs` — sends one email through resendProvider, logs message id
+- [ ] Document Mail-Tester verification step in `docs/integrations/SHOPIFY_ONBOARDING.md` (target 9-10/10)
+- [ ] Confirm Resend webhook endpoint URL is registered in Resend dashboard, send a test event, verify `campaigns` counters update
+
+### Phase E2 — Tenant-safe sending (~1-1.5 days)
+**E2.1 — Per-tenant sending domain + DKIM**
+- [ ] Migration: `email_from_address`, `email_from_name`, `email_domain_verified_at` columns on `projects`
+- [ ] Backend: `POST /api/projects/:id/email-domain` — registers domain with Resend's domains API, returns DNS records
+- [ ] Backend: `GET /api/projects/:id/email-domain` — checks Resend verification status
+- [ ] Frontend: Settings → Project → "Email" section with domain entry + DNS record display + "Check verification" button
+- [ ] resendProvider reads project's verified domain; falls back to shared pool (rate-capped 100/hour) if not verified
+
+**E2.2 — Suppression + consent gate**
+- [ ] Migration: `email_suppressions` table (project_id, email, reason, suppressed_at)
+- [ ] Resend webhook: upsert suppression row on hard `email.bounced` and `email.complained`
+- [ ] Campaign dispatcher: LEFT JOIN suppressions + check `consents.status = 'opted_in'` for email channel
+- [ ] List-Unsubscribe header on every send (mailto + https one-click)
+- [ ] One-click unsubscribe endpoint `GET /u/:token` — flips consents to opted_out
+
+**E2.3 — Resend webhook hardening**
+- [ ] HMAC verification using svix signing (Resend's webhook signing)
+- [ ] Idempotency: dedup by `email_id + event_type` via Redis SET NX, 24h TTL
+
+### Phase E3 — Black Friday scale safety (~1 day)
+**E3.1 — Per-tenant rate budget**
+- [ ] `projects.email_rate_per_minute` column (default 60)
+- [ ] Redis token-bucket per project_id; dispatcher acquires tokens before each batch, sleeps when empty
+- [ ] Optional warming: rate ramps automatically over 7 days for newly-verified domains
+
+**E3.2 — Engagement-based throttling**
+- [ ] Segment-builder filter "skip recipients with no opens in last N days"
+- [ ] Dispatcher pre-flight warning if >30% of segment is never-opened; admin must confirm
+
+**E3.3 — Pre-send content lint**
+- [ ] Pre-flight on campaign create: missing unsubscribe, image-only body, missing from-domain DNS, list size vs reputation tier
+- [ ] Block send if any fail; show fixable error in UI
+
+### End-to-end live test (after all email phases)
+- [ ] Verify domain for test project, confirm DNS records, send to mail-tester.com
+- [ ] Confirm score >=9/10
+- [ ] Trigger a hard bounce (send to invalid address) → confirm suppression row created
+- [ ] Trigger complaint via Resend webhook payload → confirm suppression row created
+- [ ] Run two simulated campaigns from different projects in parallel → confirm rate budgets isolate them
