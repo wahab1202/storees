@@ -91,3 +91,15 @@ export const campaignQueue = new Queue('campaigns', {
     removeOnFail: { count: 50 },
   },
 })
+
+// Phase F1b — periodic poll for WhatsApp template approval status. Cron'd at
+// startup to fire every 4h (see workers/templateStatusWorker.ts).
+export const templateStatusQueue = new Queue('template-status', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: true,
+    removeOnFail: { count: 20 },
+  },
+})

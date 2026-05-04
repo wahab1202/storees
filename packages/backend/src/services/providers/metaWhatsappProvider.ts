@@ -1,4 +1,11 @@
-import type { ChannelProvider, ProviderTemplate, InboundMessage } from '../channelProviderRegistry.js'
+import type {
+  ChannelProvider,
+  ProviderTemplate,
+  InboundMessage,
+  SubmitTemplateInput,
+  SubmitTemplateResult,
+  TemplateStatusResult,
+} from '../channelProviderRegistry.js'
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
@@ -16,6 +23,48 @@ type MetaTemplate = {
   status: string
   category?: string
   components?: MetaComponent[]
+}
+
+/**
+ * Translate Storees' SubmitTemplateInput into Meta's `components` array shape.
+ * Meta requires example values for any parameter — these power the preview in
+ * Meta's review UI and are ALSO checked by their automated reviewer.
+ */
+function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
+  const components: Array<Record<string, unknown>> = []
+
+  // BODY (required) — with example values for {{1}}..{{N}}
+  const body: Record<string, unknown> = { type: 'BODY', text: input.bodyText }
+  if (input.bodyExample && input.bodyExample.length > 0) {
+    body.example = { body_text: [input.bodyExample] } // Meta expects array-of-arrays
+  }
+  components.push(body)
+
+  // HEADER (optional) — TEXT carries text + example, media carries header_handle from upload
+  if (input.header) {
+    if (input.header.type === 'TEXT' && input.header.text) {
+      const h: Record<string, unknown> = { type: 'HEADER', format: 'TEXT', text: input.header.text }
+      if (input.header.example) h.example = { header_text: [input.header.example] }
+      components.push(h)
+    } else if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(input.header.type)) {
+      // Media headers need an uploaded `header_handle` — caller provides via raw payload
+      // for now; we can extend the interface when a customer needs this end-to-end.
+      components.push({ type: 'HEADER', format: input.header.type })
+    }
+  }
+
+  if (input.footer) components.push({ type: 'FOOTER', text: input.footer })
+
+  if (input.buttons && input.buttons.length > 0) {
+    const btns = input.buttons.map(b => {
+      if (b.type === 'URL') return { type: 'URL', text: b.text, url: b.url }
+      if (b.type === 'PHONE_NUMBER') return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phone }
+      return { type: 'QUICK_REPLY', text: b.text }
+    })
+    components.push({ type: 'BUTTONS', buttons: btns })
+  }
+
+  return components
 }
 
 function parseMetaTemplate(t: MetaTemplate): ProviderTemplate {
@@ -164,6 +213,88 @@ export const metaWhatsappProvider: ChannelProvider = {
       }
     }
     return out
+  },
+
+  /**
+   * Submit a new template to Meta. Returns the provider id (Meta uses the
+   * template *name* as the id; multiple languages of the same name share it)
+   * and Meta's initial status (always PENDING for fresh submissions, but
+   * existing approved templates re-submitted by name return APPROVED
+   * immediately — Meta dedupes server-side).
+   *
+   * Requires `wabaId` and `accessToken`. The endpoint is
+   *   POST /<waba_id>/message_templates
+   */
+  async submitTemplate(input: SubmitTemplateInput, config: Record<string, string>): Promise<SubmitTemplateResult> {
+    const { wabaId, accessToken } = config
+    if (!wabaId || !accessToken) throw new Error('Meta submitTemplate: wabaId and accessToken required')
+
+    const components = buildMetaComponents(input)
+
+    const payload = {
+      name: input.name,
+      language: input.language,
+      category: input.category,
+      components,
+    }
+
+    const resp = await fetch(`https://graph.facebook.com/v23.0/${wabaId}/message_templates`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({})) as { error?: { message: string; error_user_msg?: string } }
+      throw new Error(`Meta submitTemplate failed: ${err.error?.error_user_msg ?? err.error?.message ?? `HTTP ${resp.status}`}`)
+    }
+
+    const data = await resp.json() as { id?: string; status?: string; category?: string }
+    return {
+      providerTemplateId: data.id ?? input.name,
+      status: (data.status ?? 'PENDING').toUpperCase(),
+      category: data.category,
+    }
+  },
+
+  /**
+   * Refresh status for a previously-submitted template. Uses the WABA-level
+   * message_templates endpoint and filters by name (Meta has no per-template
+   * GET that we trust to be cheap); for production this is fine because the
+   * status worker only polls templates we know are still PENDING.
+   */
+  async getTemplateStatus(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult> {
+    const { wabaId, accessToken } = config
+    if (!wabaId || !accessToken) throw new Error('Meta getTemplateStatus: wabaId and accessToken required')
+
+    // providerTemplateId is the Meta template *name* (or numeric id depending on submit response).
+    // Meta's name-filter param is `?name=`; numeric ids work via /<id> endpoint.
+    const isNumeric = /^\d+$/.test(providerTemplateId)
+    const url = isNumeric
+      ? `https://graph.facebook.com/v23.0/${providerTemplateId}?fields=name,language,status,category,quality_score`
+      : `https://graph.facebook.com/v23.0/${wabaId}/message_templates?name=${encodeURIComponent(providerTemplateId)}&fields=name,language,status,category,quality_score,reason`
+
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({})) as { error?: { message: string } }
+      throw new Error(`Meta getTemplateStatus failed: ${err.error?.message ?? `HTTP ${resp.status}`}`)
+    }
+
+    const data = await resp.json() as
+      | { name: string; status?: string; category?: string; reason?: string }                       // single
+      | { data: Array<{ name: string; status?: string; category?: string; reason?: string }> }     // list
+
+    const t = 'data' in data ? data.data?.[0] : data
+    if (!t) throw new Error(`Meta getTemplateStatus: template "${providerTemplateId}" not found`)
+
+    return {
+      status: (t.status ?? 'PENDING').toUpperCase(),
+      category: t.category,
+      rejectionReason: t.reason ?? null,
+    }
   },
 
   /**

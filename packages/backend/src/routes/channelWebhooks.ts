@@ -8,9 +8,11 @@ import {
   findProjectByMetaPhoneNumberId,
   findProjectByGupshupApp,
   findProjectByWhatsappFromNumber,
+  findProjectByWabaId,
   persistInboundMessages,
 } from '../services/whatsappInboundService.js'
 import { handleDeliveryReceipt } from '../services/messageStatusService.js'
+import { handleMetaTemplateStatusEvent } from '../services/templateStatusService.js'
 
 const router = Router()
 
@@ -231,11 +233,21 @@ router.post('/whatsapp', async (req, res) => {
   try {
     const body = req.body as {
       entry?: Array<{
+        id?: string  // WABA id for template events
         changes?: Array<{
+          field?: string  // 'messages' | 'message_template_status_update' | ...
           value?: {
             statuses?: Array<{ id: string; status: string }>
             messages?: unknown[]
             metadata?: { phone_number_id?: string }
+            // template_status_update fields
+            event?: string
+            message_template_id?: string | number
+            message_template_name?: string
+            message_template_language?: string
+            reason?: string
+            previous_category?: string
+            new_category?: string
           }
         }>
       }>
@@ -255,6 +267,25 @@ router.post('/whatsapp', async (req, res) => {
             await handleDeliveryReceipt(status.id, mapped, 'whatsapp', 'meta')
           }
         }
+      }
+    }
+
+    // Branch 1b — template status updates (Phase F1b-5).
+    // Meta sends these as `field: 'message_template_status_update'` with the
+    // WABA id at entry[].id. We resolve the project from the WABA id and
+    // hand off to the template status service which updates the row + alerts
+    // on category changes.
+    for (const entry of body.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        if (change.field !== 'message_template_status_update') continue
+        const wabaId = entry.id
+        if (!wabaId) continue
+        const projectId = await findProjectByWabaId(wabaId)
+        if (!projectId) {
+          console.warn(`[whatsapp/meta] template status event for unknown WABA=${wabaId}`)
+          continue
+        }
+        await handleMetaTemplateStatusEvent(projectId, change.value ?? {})
       }
     }
 

@@ -47,6 +47,7 @@ import { startMetricsWorker } from './workers/metricsWorker.js'
 import { startDeliveryWorker } from './workers/deliveryWorker.js'
 import { startInteractionWorker } from './workers/interactionWorker.js'
 import { startScoringWorker } from './workers/scoringWorker.js'
+import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
 import { startScoringScheduler } from './workers/scoringScheduler.js'
 import { startTrainingWorker } from './workers/trainingWorker.js'
 import { startCampaignScheduler } from './workers/campaignScheduler.js'
@@ -166,6 +167,7 @@ startScoringWorker()
 startScoringScheduler()
 startTrainingWorker()
 startCampaignScheduler()
+startTemplateStatusWorker()
 
 app.listen(port, () => {
   console.log(`Storees backend running on port ${port}`)

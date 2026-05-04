@@ -745,6 +745,13 @@ export const whatsappTemplates = pgTable('whatsapp_templates', {
   buttons: jsonb('buttons'),
   parameterCount: integer('parameter_count').notNull().default(0),
   rawPayload: jsonb('raw_payload'),
+  // Phase F1b — submission lifecycle + re-categorisation detection.
+  // submittedAt set when the merchant submits *through* Storees;
+  // NULL = the row was synced FROM the provider, not submitted by us.
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  lastStatusCheckAt: timestamp('last_status_check_at', { withTimezone: true }),
+  rejectionReason: text('rejection_reason'),
+  previousCategory: varchar('previous_category', { length: 50 }),
   syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

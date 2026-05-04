@@ -43,6 +43,21 @@ export async function findProjectByGupshupApp(appName: string): Promise<string |
 }
 
 /**
+ * Resolve a project ID from a Meta WABA (WhatsApp Business Account) ID.
+ * Used by the template_status_update webhook handler — those events arrive
+ * with `entry[].id` set to the WABA ID, not phone_number_id.
+ */
+export async function findProjectByWabaId(wabaId: string): Promise<string | null> {
+  const result = await db.execute(sql`
+    SELECT id FROM projects
+    WHERE settings->'channels'->'whatsapp'->'config'->>'wabaId' = ${wabaId}
+    LIMIT 1
+  `)
+  const row = (result as unknown as { rows: Array<{ id: string }> }).rows[0]
+  return row?.id ?? null
+}
+
+/**
  * Resolve a project ID from a business phone number (Twilio/Bird/Vonage WhatsApp From number).
  * Strips any 'whatsapp:' prefix before matching.
  */

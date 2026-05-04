@@ -37,12 +37,40 @@ export type InboundMessage = {
   rawPayload?: unknown
 }
 
+export type SubmitTemplateInput = {
+  name: string
+  language: string
+  category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'
+  bodyText: string
+  header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string; example?: string } | null
+  footer?: string | null
+  buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'; text: string; url?: string; phone?: string }>
+  /** Sample values for body parameters {{1}}..{{N}}. Meta rejects without these. */
+  bodyExample?: string[]
+}
+
+export type SubmitTemplateResult = {
+  providerTemplateId: string
+  status: string // 'PENDING' | 'APPROVED' | 'REJECTED' | 'IN_APPEAL' | 'PAUSED' | 'DISABLED'
+  category?: string
+}
+
+export type TemplateStatusResult = {
+  status: string
+  category?: string
+  rejectionReason?: string | null
+}
+
 export type ChannelProvider = {
   name: string
   send(command: SendCommand, config: Record<string, string>): Promise<SendResult>
   // Optional WhatsApp-specific capabilities. Presence of the method = capability is supported.
   sendTemplate?(command: SendTemplateCommand, config: Record<string, string>): Promise<SendResult>
   syncTemplates?(config: Record<string, string>): Promise<ProviderTemplate[]>
+  /** Submit a new template to the provider. Returns the provider's id + initial status. */
+  submitTemplate?(input: SubmitTemplateInput, config: Record<string, string>): Promise<SubmitTemplateResult>
+  /** Refresh status for a previously-submitted template. */
+  getTemplateStatus?(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult>
   parseInbound?(payload: unknown): InboundMessage[]
 }
 
@@ -50,6 +78,8 @@ export type ProviderCapabilities = {
   sendText: boolean
   sendTemplate: boolean
   syncTemplates: boolean
+  submitTemplate: boolean
+  getTemplateStatus: boolean
   parseInbound: boolean
 }
 
@@ -58,6 +88,8 @@ export function getProviderCapabilities(provider: ChannelProvider): ProviderCapa
     sendText: typeof provider.send === 'function',
     sendTemplate: typeof provider.sendTemplate === 'function',
     syncTemplates: typeof provider.syncTemplates === 'function',
+    submitTemplate: typeof provider.submitTemplate === 'function',
+    getTemplateStatus: typeof provider.getTemplateStatus === 'function',
     parseInbound: typeof provider.parseInbound === 'function',
   }
 }
