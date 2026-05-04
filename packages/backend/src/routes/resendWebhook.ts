@@ -2,8 +2,9 @@ import { Router } from 'express'
 import crypto from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { campaignSends, campaigns, messages, events, emailSuppressions } from '../db/schema.js'
+import { campaignSends, campaigns, messages, emailSuppressions } from '../db/schema.js'
 import { redis } from '../services/redis.js'
+import { handleDeliveryReceipt } from '../services/messageStatusService.js'
 
 const router = Router()
 
@@ -134,7 +135,8 @@ async function suppressEmail(
     .onConflictDoNothing()
 }
 
-// Campaign tracking: column + counter
+// Campaign tracking: column + counter (email-specific aggregate counters live here, not in
+// the shared message-status service, since SMS/WhatsApp use a different aggregate model).
 const CAMPAIGN_EVENT_MAP: Record<string, { tsField: string; counterField: string }> = {
   'email.delivered': { tsField: 'delivered_at', counterField: 'delivered_count' },
   'email.opened': { tsField: 'opened_at', counterField: 'opened_count' },
@@ -143,21 +145,15 @@ const CAMPAIGN_EVENT_MAP: Record<string, { tsField: string; counterField: string
   'email.complained': { tsField: 'complained_at', counterField: 'complained_count' },
 }
 
-// Messages table tracking: column name
-const MESSAGE_EVENT_MAP: Record<string, string> = {
-  'email.delivered': 'delivered_at',
-  'email.opened': 'read_at',
-  'email.clicked': 'clicked_at',
-  'email.bounced': 'failed_at',
-}
-
-// Storees event names for activity timeline
-const STOREES_EVENT_MAP: Record<string, string> = {
-  'email.delivered': 'email_delivered',
-  'email.opened': 'email_opened',
-  'email.clicked': 'email_clicked',
-  'email.bounced': 'email_bounced',
-  'email.complained': 'email_complained',
+// Resend event → unified delivery-receipt status. The shared
+// messageStatusService maps this to messages.<status>_at + emits a
+// `email_<status>` event row (email_read on opens, matching whatsapp_read /
+// sms_read for cross-channel queries).
+const RECEIPT_STATUS_MAP: Record<string, 'delivered' | 'read' | 'clicked' | 'failed'> = {
+  'email.delivered': 'delivered',
+  'email.opened': 'read',
+  'email.clicked': 'clicked',
+  'email.bounced': 'failed',
 }
 
 /**
@@ -192,10 +188,9 @@ router.post('/', async (req, res) => {
     if (!emailId) return res.status(400).json({ error: 'Missing email_id' })
 
     const campaignMapping = CAMPAIGN_EVENT_MAP[payload.type]
-    const messageField = MESSAGE_EVENT_MAP[payload.type]
-    const storeesEvent = STOREES_EVENT_MAP[payload.type]
+    const receiptStatus = RECEIPT_STATUS_MAP[payload.type]
 
-    if (!campaignMapping && !messageField) {
+    if (!campaignMapping && !receiptStatus) {
       return res.json({ received: true })
     }
 
@@ -256,56 +251,14 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // ── 2. Update messages table (campaigns + flows + any email) ──
-    if (messageField) {
-      const [msg] = await db
-        .select({
-          id: messages.id,
-          projectId: messages.projectId,
-          customerId: messages.customerId,
-          campaignId: messages.campaignId,
-          flowTripId: messages.flowTripId,
-          status: messages.status,
-        })
-        .from(messages)
-        .where(eq(messages.providerMessageId, emailId))
-        .limit(1)
-
-      if (msg) {
-        // Update timestamp (idempotent — only first occurrence)
-        await db.execute(sql`
-          UPDATE messages
-          SET ${sql.raw(messageField)} = ${now},
-              status = CASE
-                WHEN ${messageField} = 'failed_at' THEN 'failed'
-                WHEN ${messageField} = 'clicked_at' THEN 'clicked'
-                WHEN ${messageField} = 'read_at' THEN 'read'
-                WHEN ${messageField} = 'delivered_at' AND status = 'sent' THEN 'delivered'
-                ELSE status
-              END
-          WHERE id = ${msg.id} AND ${sql.raw(messageField)} IS NULL
-        `)
-
-        // ── 3. Create tracking event (for activity timeline) ──
-        if (storeesEvent && msg.customerId) {
-          await db.insert(events).values({
-            projectId: msg.projectId,
-            customerId: msg.customerId,
-            eventName: storeesEvent,
-            properties: {
-              message_id: msg.id,
-              channel: 'email',
-              campaign_id: msg.campaignId ?? undefined,
-              flow_trip_id: msg.flowTripId ?? undefined,
-              subject: payload.data.subject,
-            },
-            platform: 'email',
-            source: 'resend_webhook',
-            idempotencyKey: `${payload.type}_${emailId}`,
-            timestamp: now,
-          }).onConflictDoNothing()
-        }
-      }
+    // ── 2. Update messages.<status>_at + emit `email_<status>` event ──
+    // Goes through the shared messageStatusService so email gets the same
+    // delivery-receipt + read-status pipeline as WhatsApp/SMS. On
+    // email.opened this writes messages.read_at + status='read' + an
+    // `email_read` event (parallel to whatsapp_read / sms_read for
+    // cross-channel "has read" segment filters and timeline rendering).
+    if (receiptStatus) {
+      await handleDeliveryReceipt(emailId, receiptStatus, 'email', 'resend')
     }
 
     res.json({ received: true })

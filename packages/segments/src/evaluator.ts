@@ -182,8 +182,14 @@ function ruleToSql(rule: FilterRule): SQL {
   // materialized column — translate <N / >N / between into EXISTS / NOT EXISTS
   // subqueries against the events table. Customers who never had the event
   // count as "infinity days since" (NOT EXISTS in any window).
+  //
+  // Email-open events were renamed `email_opened` → `email_read` to match
+  // `whatsapp_read` / `sms_read`. Match BOTH names so historical data and
+  // new data both count.
   if (rule.field === 'days_since_email_open' || rule.field === 'days_since_email_click') {
-    const eventName = rule.field === 'days_since_email_open' ? 'email_opened' : 'email_clicked'
+    const eventNames = rule.field === 'days_since_email_open'
+      ? sql`('email_opened', 'email_read')`
+      : sql`('email_clicked')`
     const op = rule.operator
     const num = Number(value)
 
@@ -192,7 +198,7 @@ function ruleToSql(rule: FilterRule): SQL {
       return sql`EXISTS (
         SELECT 1 FROM events
         WHERE events.customer_id = customers.id
-        AND events.event_name = ${eventName}
+        AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - (${num}::int * INTERVAL '1 day')
       )`
     }
@@ -201,7 +207,7 @@ function ruleToSql(rule: FilterRule): SQL {
       return sql`NOT EXISTS (
         SELECT 1 FROM events
         WHERE events.customer_id = customers.id
-        AND events.event_name = ${eventName}
+        AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - (${num}::int * INTERVAL '1 day')
       )`
     }
@@ -213,7 +219,7 @@ function ruleToSql(rule: FilterRule): SQL {
       return sql`EXISTS (
         SELECT 1 FROM events
         WHERE events.customer_id = customers.id
-        AND events.event_name = ${eventName}
+        AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - (${maxDays}::int * INTERVAL '1 day')
         AND events.timestamp <= NOW() - (${minDays}::int * INTERVAL '1 day')
       )`
@@ -223,7 +229,7 @@ function ruleToSql(rule: FilterRule): SQL {
       return sql`EXISTS (
         SELECT 1 FROM events
         WHERE events.customer_id = customers.id
-        AND events.event_name = ${eventName}
+        AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - ((${num}::int + 1) * INTERVAL '1 day')
         AND events.timestamp < NOW() - (${num}::int * INTERVAL '1 day')
       )`

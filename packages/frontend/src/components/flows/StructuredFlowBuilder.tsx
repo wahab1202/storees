@@ -124,7 +124,7 @@ const ADD_OPTIONS: NodeOption[] = [
   { type: 'send_whatsapp', label: 'WhatsApp',           icon: Phone,         color: 'text-emerald-600', bg: 'bg-emerald-50', cat: 'Actions' },
   // Conditions
   { type: 'condition',          label: 'Conditional Split',     icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
-  { type: 'condition_email',    label: 'Has opened email',      icon: Mail,          color: 'text-green-600',  bg: 'bg-green-50',  cat: 'Conditions' },
+  { type: 'condition_email',    label: 'Has read email',        icon: Mail,          color: 'text-green-600',  bg: 'bg-green-50',  cat: 'Conditions' },
   { type: 'condition_click',    label: 'Has clicked email',     icon: Mail,          color: 'text-green-600',  bg: 'bg-green-50',  cat: 'Conditions' },
   { type: 'condition_sms_read', label: 'Has read SMS',          icon: MessageSquare, color: 'text-teal-600',   bg: 'bg-teal-50',   cat: 'Conditions' },
   { type: 'condition_wa_read',  label: 'Has read WhatsApp',     icon: Phone,         color: 'text-emerald-600',bg: 'bg-emerald-50',cat: 'Conditions' },
@@ -141,7 +141,9 @@ const CAT_ICON: Record<string, string> = { Actions: 'bg-green-400', Conditions: 
 // Pre-fills the condition node's config when a channel-specific preset is picked from the menu
 type CondPreset = { check: 'event_occurred' | 'attribute_check'; event?: string }
 const CONDITION_PRESETS: Record<string, CondPreset> = {
-  condition_email:    { check: 'event_occurred', event: 'email_opened' },
+  // email_read mirrors sms_read / whatsapp_read for cross-channel uniformity.
+  // Backend dual-emits email_opened for backward compat with old flow configs.
+  condition_email:    { check: 'event_occurred', event: 'email_read' },
   condition_click:    { check: 'event_occurred', event: 'email_clicked' },
   condition_sms_read: { check: 'event_occurred', event: 'sms_read' },
   condition_wa_read:  { check: 'event_occurred', event: 'whatsapp_read' },

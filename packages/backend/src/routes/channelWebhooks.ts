@@ -1,7 +1,4 @@
 import { Router } from 'express'
-import { eq, sql } from 'drizzle-orm'
-import { db } from '../db/connection.js'
-import { messages, events } from '../db/schema.js'
 import { metaWhatsappProvider } from '../services/providers/metaWhatsappProvider.js'
 import { gupshupWhatsappProvider } from '../services/providers/gupshupProvider.js'
 import { twilioWhatsappProvider } from '../services/providers/twilioProvider.js'
@@ -13,64 +10,9 @@ import {
   findProjectByWhatsappFromNumber,
   persistInboundMessages,
 } from '../services/whatsappInboundService.js'
+import { handleDeliveryReceipt } from '../services/messageStatusService.js'
 
 const router = Router()
-
-// Helper: update message status + create tracking event
-async function handleDeliveryReceipt(
-  providerMessageId: string,
-  status: 'delivered' | 'read' | 'clicked' | 'failed',
-  channel: string,
-  providerName: string,
-) {
-  const fieldMap: Record<string, string> = {
-    delivered: 'delivered_at',
-    read: 'read_at',
-    clicked: 'clicked_at',
-    failed: 'failed_at',
-  }
-  const statusMap: Record<string, string> = {
-    delivered: 'delivered',
-    read: 'read',
-    clicked: 'clicked',
-    failed: 'failed',
-  }
-
-  const tsField = fieldMap[status]
-  if (!tsField) return
-
-  // Find the message
-  const [msg] = await db
-    .select({ id: messages.id, projectId: messages.projectId, customerId: messages.customerId })
-    .from(messages)
-    .where(eq(messages.providerMessageId, providerMessageId))
-    .limit(1)
-
-  if (!msg) return
-
-  // Update message timestamp (idempotent)
-  await db.execute(sql`
-    UPDATE messages
-    SET ${sql.raw(tsField)} = NOW(),
-        status = ${statusMap[status]}
-    WHERE id = ${msg.id} AND ${sql.raw(tsField)} IS NULL
-  `)
-
-  // Create tracking event
-  const eventName = `${channel}_${status}`
-  if (msg.customerId) {
-    await db.insert(events).values({
-      projectId: msg.projectId,
-      customerId: msg.customerId,
-      eventName,
-      properties: { message_id: msg.id, channel, provider: providerName },
-      platform: channel,
-      source: `${providerName}_webhook`,
-      idempotencyKey: `${eventName}_${providerMessageId}`,
-      timestamp: new Date(),
-    }).onConflictDoNothing()
-  }
-}
 
 // ============ TWILIO WEBHOOK ============
 // Twilio sends form-encoded POST with MessageSid + MessageStatus

@@ -71,7 +71,8 @@ const EVENT_ICONS: Record<string, typeof ShoppingCart> = {
   user_invited: UserPlus,
   // Email tracking
   email_delivered: Mail,
-  email_opened: Eye,
+  email_opened: Eye, // legacy event name, kept for historical timeline rows
+  email_read: Eye,   // new canonical name (matches whatsapp_read / sms_read)
   email_clicked: ShoppingBag,
   email_bounced: AlertCircle,
   email_complained: AlertCircle,
@@ -98,7 +99,8 @@ const EVENT_COLORS: Record<string, string> = {
   subscription_cancelled: 'bg-red-500',
   // Email tracking
   email_delivered: 'bg-teal-500',
-  email_opened: 'bg-sky-500',
+  email_opened: 'bg-sky-500', // legacy, retained for historical events
+  email_read: 'bg-sky-500',   // new canonical (parallel to whatsapp_read / sms_read)
   email_clicked: 'bg-blue-600',
   email_bounced: 'bg-red-400',
   email_complained: 'bg-red-600',

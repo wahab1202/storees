@@ -96,7 +96,7 @@ export async function previewCampaignAudience(campaignId: string): Promise<{
        WHERE NOT EXISTS (
          SELECT 1 FROM events e
          WHERE e.customer_id = c.customer_id
-         AND e.event_name = 'email_opened'
+         AND e.event_name IN ('email_opened', 'email_read')
          AND e.timestamp >= NOW() - INTERVAL '90 days'
        )) AS never_opened
   `)
