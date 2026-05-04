@@ -27,6 +27,12 @@ export const projects = pgTable('projects', {
   webhookSecret: varchar('webhook_secret', { length: 255 }),
   settings: jsonb('settings').default('{}'),
   features: jsonb('features').notNull().default('{}'),
+  // Per-tenant Resend sending domain (Phase E2.1). NULL = falls back to shared
+  // FROM_EMAIL env var with rate cap. Set when client verifies their domain.
+  emailFromAddress: varchar('email_from_address', { length: 255 }),
+  emailFromName: varchar('email_from_name', { length: 255 }),
+  resendDomainId: varchar('resend_domain_id', { length: 255 }),
+  emailDomainVerifiedAt: timestamp('email_domain_verified_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

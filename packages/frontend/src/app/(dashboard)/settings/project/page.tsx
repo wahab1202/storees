@@ -1,11 +1,19 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useProjects, useUpdateProjectFeatures } from '@/hooks/useProjects'
+import {
+  useProjects,
+  useUpdateProjectFeatures,
+  useEmailDomain,
+  useRegisterEmailDomain,
+  type EmailDnsRecord,
+} from '@/hooks/useProjects'
 import { getProjectId } from '@/lib/project'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { Loader2 } from 'lucide-react'
+import { Loader2, CheckCircle2, AlertCircle, Copy, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 
 export default function ProjectSettingsPage() {
@@ -91,6 +99,225 @@ export default function ProjectSettingsPage() {
           />
         </div>
       </section>
+
+      <EmailDomainSection projectId={project.id} projectName={project.name} />
+    </div>
+  )
+}
+
+function EmailDomainSection({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const qc = useQueryClient()
+  const { data: domainResp, isLoading } = useEmailDomain(projectId)
+  const registerDomain = useRegisterEmailDomain(projectId)
+  const status = domainResp?.data ?? null
+
+  const [domain, setDomain] = useState('')
+  const [fromName, setFromName] = useState(projectName)
+  const [refreshing, setRefreshing] = useState(false)
+
+  useEffect(() => {
+    if (status?.fromName) setFromName(status.fromName)
+  }, [status?.fromName])
+
+  const handleRegister = () => {
+    if (!domain.trim()) {
+      toast.error('Enter a domain')
+      return
+    }
+    if (!fromName.trim()) {
+      toast.error('Enter a from-name')
+      return
+    }
+    registerDomain.mutate(
+      { domain: domain.trim().toLowerCase(), fromName: fromName.trim() },
+      {
+        onSuccess: () => toast.success('Domain registered. Add the DNS records below to verify.'),
+        onError: (err: Error) => toast.error(err.message || 'Failed to register domain'),
+      },
+    )
+  }
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try {
+      // Force a re-fetch from Resend
+      await api.get(`/api/onboarding/projects/${projectId}/email-domain`)
+      await qc.invalidateQueries({ queryKey: ['email-domain', projectId] })
+      toast.success('Status refreshed')
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white">
+      <header className="px-6 py-4 border-b border-slate-200">
+        <h2 className="text-base font-semibold text-slate-900">Email sending domain</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Send marketing email from your own domain. DKIM/SPF reputation accumulates against your
+          brand, not the shared Storees pool — required before high-volume campaigns.
+        </p>
+      </header>
+
+      <div className="px-6 py-5">
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading domain status…
+          </div>
+        ) : !status?.registered ? (
+          <div className="space-y-4">
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 flex gap-3 items-start">
+              <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-amber-900">
+                <strong>No sending domain registered.</strong> Campaigns from this project will use
+                the shared Storees pool, which is rate-capped to protect platform reputation. Register
+                your own domain to send at full volume.
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="block text-sm">
+                <span className="block font-medium text-slate-700 mb-1">Domain (subdomain recommended)</span>
+                <input
+                  type="text"
+                  value={domain}
+                  onChange={e => setDomain(e.target.value)}
+                  placeholder="mail.yourbrand.com"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="block font-medium text-slate-700 mb-1">From name (display name)</span>
+                <input
+                  type="text"
+                  value={fromName}
+                  onChange={e => setFromName(e.target.value)}
+                  placeholder="Your Brand"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                />
+              </label>
+            </div>
+
+            <button
+              onClick={handleRegister}
+              disabled={registerDomain.isPending}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {registerDomain.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Register with Resend
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-slate-900">{status.domain}</div>
+                <div className="text-sm text-slate-500">
+                  Sending as <code className="text-xs bg-slate-100 px-1.5 py-0.5 rounded">{status.fromName} &lt;{status.fromAddress}&gt;</code>
+                </div>
+              </div>
+              <StatusBadge verified={status.verified} status={status.status} />
+            </div>
+
+            {!status.verified && (
+              <>
+                <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                  Add the DNS records below to your domain&apos;s DNS provider (Cloudflare, Route53,
+                  Google Domains, etc.). Verification typically takes 5-30 minutes after the records
+                  propagate.
+                </div>
+
+                <DnsRecordTable records={status.records} />
+
+                <button
+                  onClick={handleRefresh}
+                  disabled={refreshing}
+                  className="inline-flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 text-sm font-medium rounded-md hover:bg-slate-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
+                  Check verification status
+                </button>
+              </>
+            )}
+
+            {status.verified && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 flex gap-3 items-start">
+                <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-emerald-900">
+                  <strong>Domain verified.</strong> Future campaigns will send from{' '}
+                  <code>{status.fromAddress}</code> with full DKIM/SPF authentication.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function StatusBadge({ verified, status }: { verified: boolean; status: string }) {
+  if (verified) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+        <CheckCircle2 className="h-3.5 w-3.5" /> Verified
+      </span>
+    )
+  }
+  if (status === 'failed' || status === 'temporary_failure') {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
+        <AlertCircle className="h-3.5 w-3.5" /> Failed
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">
+      <Loader2 className="h-3.5 w-3.5" /> Pending
+    </span>
+  )
+}
+
+function DnsRecordTable({ records }: { records: EmailDnsRecord[] }) {
+  if (records.length === 0) return null
+
+  const copy = (val: string) => {
+    navigator.clipboard.writeText(val)
+    toast.success('Copied')
+  }
+
+  return (
+    <div className="border border-slate-200 rounded-md overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium">Type</th>
+            <th className="px-3 py-2 text-left font-medium">Name / Host</th>
+            <th className="px-3 py-2 text-left font-medium">Value</th>
+            <th className="px-3 py-2 text-left font-medium w-12"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {records.map((r, i) => (
+            <tr key={i} className="hover:bg-slate-50">
+              <td className="px-3 py-2 font-mono text-xs text-slate-600">{r.type}</td>
+              <td className="px-3 py-2 font-mono text-xs text-slate-700 break-all">{r.name}</td>
+              <td className="px-3 py-2 font-mono text-xs text-slate-700 break-all">{r.value}</td>
+              <td className="px-3 py-2">
+                <button
+                  onClick={() => copy(r.value)}
+                  title="Copy value"
+                  className="text-slate-400 hover:text-slate-700"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

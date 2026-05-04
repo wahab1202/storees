@@ -6,6 +6,7 @@ import { eq, and, count } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
+import { registerDomain, checkDomainStatus } from '../services/emailDomainService.js'
 import type { DomainType, IntegrationType } from '@storees/shared'
 
 const router = Router()
@@ -543,6 +544,91 @@ router.patch('/projects/:id/features', requireRole('admin'), async (req: Request
   } catch (err) {
     console.error('Update features error:', err)
     res.status(500).json({ success: false, error: 'Failed to update features' })
+  }
+})
+
+/**
+ * POST /api/onboarding/projects/:id/email-domain — Register a sending domain
+ *
+ * Admin-only. Body: { domain: string, fromName: string }
+ * Calls Resend's domains.create, stores resend_domain_id on the project, and
+ * returns the DNS records the tenant needs to add to their domain. Idempotent
+ * if a domain is already registered (returns current status without recreating).
+ */
+router.post('/projects/:id/email-domain', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+    const { domain, fromName } = (req.body ?? {}) as { domain?: string; fromName?: string }
+
+    if (!domain || typeof domain !== 'string') {
+      return res.status(400).json({ success: false, error: 'domain is required' })
+    }
+    if (!fromName || typeof fromName !== 'string') {
+      return res.status(400).json({ success: false, error: 'fromName is required' })
+    }
+
+    const result = await registerDomain(projectId, domain.trim().toLowerCase(), fromName.trim())
+    res.json({ success: true, data: result })
+  } catch (err) {
+    console.error('Register email domain error:', err)
+    const msg = err instanceof Error ? err.message : 'Failed to register domain'
+    res.status(500).json({ success: false, error: msg })
+  }
+})
+
+/**
+ * GET /api/onboarding/projects/:id/email-domain — Refresh verification status
+ *
+ * Hits Resend's domains.get; on status='verified' stamps email_domain_verified_at
+ * so future sends can use the per-tenant from-domain.
+ */
+router.get('/projects/:id/email-domain', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+
+    const [project] = await db
+      .select({
+        resendDomainId: projects.resendDomainId,
+        emailFromAddress: projects.emailFromAddress,
+        emailFromName: projects.emailFromName,
+        emailDomainVerifiedAt: projects.emailDomainVerifiedAt,
+      })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1)
+
+    if (!project) {
+      return res.status(404).json({ success: false, error: 'Project not found' })
+    }
+
+    if (!project.resendDomainId) {
+      return res.json({
+        success: true,
+        data: {
+          registered: false,
+          fromAddress: null,
+          fromName: null,
+          status: 'not_registered',
+          records: [],
+          verified: false,
+        },
+      })
+    }
+
+    const result = await checkDomainStatus(projectId)
+    res.json({
+      success: true,
+      data: {
+        registered: true,
+        fromAddress: project.emailFromAddress,
+        fromName: project.emailFromName,
+        ...result,
+      },
+    })
+  } catch (err) {
+    console.error('Get email domain status error:', err)
+    const msg = err instanceof Error ? err.message : 'Failed to fetch domain status'
+    res.status(500).json({ success: false, error: msg })
   }
 })
 

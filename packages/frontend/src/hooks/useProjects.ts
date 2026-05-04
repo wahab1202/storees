@@ -61,3 +61,44 @@ export function useUpdateProjectFeatures(projectId: string) {
     },
   })
 }
+
+// ============ EMAIL SENDING DOMAIN ============
+
+export type EmailDnsRecord = {
+  type: string
+  name: string
+  value: string
+  ttl?: number | string
+  priority?: number
+  status?: string
+}
+
+export type EmailDomainStatus = {
+  registered: boolean
+  fromAddress: string | null
+  fromName: string | null
+  status: string
+  domainId?: string
+  domain?: string
+  records: EmailDnsRecord[]
+  verified: boolean
+}
+
+export function useEmailDomain(projectId: string | null) {
+  return useQuery({
+    queryKey: ['email-domain', projectId],
+    queryFn: () => api.get<EmailDomainStatus>(`/api/onboarding/projects/${projectId}/email-domain`),
+    enabled: !!projectId,
+  })
+}
+
+export function useRegisterEmailDomain(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { domain: string; fromName: string }) =>
+      api.post<EmailDomainStatus>(`/api/onboarding/projects/${projectId}/email-domain`, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['email-domain', projectId] })
+    },
+  })
+}
