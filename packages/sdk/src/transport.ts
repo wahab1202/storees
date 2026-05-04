@@ -82,13 +82,18 @@ export class Transport {
     return sent
   }
 
-  /** Send customer upsert (for identify) — with retry on 5xx/network errors */
+  /** Send customer upsert (for identify) — with retry on 5xx/network errors.
+   *  Phase F3 — session_id is included so the backend can link the
+   *  pre-identify browser session to this customer and back-attribute prior
+   *  anonymous events (browse-abandonment / open-but-not-purchase use cases).
+   */
   async sendCustomerUpsert(
     customerId: string,
-    attributes: Record<string, unknown>
+    attributes: Record<string, unknown>,
+    sessionId?: string
   ): Promise<void> {
     const url = `${this.apiUrl}/api/v1/customers`
-    const body = JSON.stringify({ customer_id: customerId, attributes })
+    const body = JSON.stringify({ customer_id: customerId, attributes, session_id: sessionId })
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {

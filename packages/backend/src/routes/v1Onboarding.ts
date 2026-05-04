@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express'
 import crypto from 'crypto'
 import { db } from '../db/connection.js'
-import { projects, apiKeys, events, segments, consentAuditLog, customers } from '../db/schema.js'
-import { eq, and, count, gte, lte, sql } from 'drizzle-orm'
+import { projects, apiKeys, events, segments, consentAuditLog, customers, anonymousSessions } from '../db/schema.js'
+import { eq, and, count, gte, lte, sql, isNotNull } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
@@ -708,6 +708,50 @@ router.get('/projects/:id/frequency-caps', requireRole('admin'), async (req: Req
   } catch (err) {
     console.error('Get frequency caps error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch frequency caps' })
+  }
+})
+
+/**
+ * GET /api/onboarding/projects/:id/identity-merge-stats?days=30
+ *
+ * Phase F3 observability — proves the back-attribution flow works.
+ * Returns: total resolutions, total events back-attributed, total flows
+ * triggered from replay, in the requested window. Drives the dashboard
+ * card "X anonymous browsers identified, Y events back-attributed last
+ * month".
+ */
+router.get('/projects/:id/identity-merge-stats', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+    const days = Math.min(Math.max(Number(req.query.days ?? 30), 1), 365)
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+
+    const [row] = await db
+      .select({
+        resolutions: sql<number>`COUNT(*)::int`,
+        completed: sql<number>`COUNT(*) FILTER (WHERE ${anonymousSessions.resolvedAt} IS NOT NULL)::int`,
+        eventsAttributed: sql<number>`COALESCE(SUM(${anonymousSessions.eventsBackAttributed}), 0)::int`,
+        flowsTriggered: sql<number>`COALESCE(SUM(${anonymousSessions.flowsTriggered}), 0)::int`,
+      })
+      .from(anonymousSessions)
+      .where(and(
+        eq(anonymousSessions.projectId, projectId),
+        gte(anonymousSessions.linkedAt, since),
+      ))
+
+    res.json({
+      success: true,
+      data: {
+        windowDays: days,
+        resolutions: row?.resolutions ?? 0,
+        completedResolutions: row?.completed ?? 0,
+        eventsBackAttributed: row?.eventsAttributed ?? 0,
+        flowsTriggered: row?.flowsTriggered ?? 0,
+      },
+    })
+  } catch (err) {
+    console.error('Identity merge stats error:', err)
+    res.status(500).json({ success: false, error: 'Failed to load identity merge stats' })
   }
 })
 

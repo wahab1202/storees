@@ -147,7 +147,7 @@ class StoreesSdk {
 
     // Upsert customer on the backend
     if (attributes) {
-      this.transport.sendCustomerUpsert(userId, attributes)
+      this.transport.sendCustomerUpsert(userId, attributes, this.autoTracker.getSessionId())
     }
   }
 

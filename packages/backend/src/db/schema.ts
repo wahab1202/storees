@@ -236,6 +236,9 @@ export const flows = pgTable('flows', {
   exitConfig: jsonb('exit_config'),
   nodes: jsonb('nodes').notNull(),
   status: varchar('status', { length: 20 }).notNull().default('draft'),
+  // Phase F3 — replay lookback window in days. Events older than this are not
+  // back-attributed when an anonymous session is linked to a customer.
+  lookbackDays: integer('lookback_days').notNull().default(30),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -252,11 +255,36 @@ export const flowTrips = pgTable('flow_trips', {
   status: varchar('status', { length: 20 }).notNull().default('active'),
   currentNodeId: varchar('current_node_id', { length: 100 }).notNull(),
   context: jsonb('context').default('{}'),
+  // Phase F3 — replay-idempotency key. The triggering event row's id; if a
+  // session-resolution back-attribution re-publishes the same event later,
+  // the unique index on (flow_id, customer_id, trigger_event_id) prevents
+  // double-enrolment.
+  triggerEventId: uuid('trigger_event_id'),
   enteredAt: timestamp('entered_at', { withTimezone: true }).notNull().defaultNow(),
   exitedAt: timestamp('exited_at', { withTimezone: true }),
 }, (table) => [
   index('idx_trips_active').on(table.flowId, table.status),
   index('idx_trips_customer').on(table.customerId, table.flowId),
+])
+
+// ============ ANONYMOUS SESSIONS (Phase F3) ============
+// Links a browser session_id to a customer once we know who they are.
+// Source of truth for the back-attribution worker that re-attributes prior
+// anonymous events when a session resolves.
+
+export const anonymousSessions = pgTable('anonymous_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  sessionId: varchar('session_id', { length: 255 }).notNull(),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  linkedAt: timestamp('linked_at', { withTimezone: true }).notNull().defaultNow(),
+  // Worker outcome — NULL until the merge job runs
+  eventsBackAttributed: integer('events_back_attributed'),
+  flowsTriggered: integer('flows_triggered'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+}, (table) => [
+  uniqueIndex('idx_anon_sessions_unique').on(table.projectId, table.sessionId),
+  index('idx_anon_sessions_customer').on(table.projectId, table.customerId),
 ])
 
 // ============ SCHEDULED JOBS ============

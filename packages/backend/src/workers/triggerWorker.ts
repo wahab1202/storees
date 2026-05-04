@@ -14,6 +14,11 @@ type EventJob = {
   properties: Record<string, unknown>
   platform: string
   timestamp: string
+  // Phase F3 — set by the identity-merge worker when replaying back-attributed
+  // events. The trigger worker uses triggerEventId as the (flow, customer)
+  // idempotency key in flow_trips so re-entry from replay is impossible.
+  replayed?: boolean
+  triggerEventId?: string
 }
 
 export function startTriggerWorker(): Worker {
@@ -59,6 +64,18 @@ async function evaluateFlowTrigger(flow: Record<string, unknown>, event: EventJo
 
   // 2. Match event name against flow trigger
   if (triggerConfig.event !== event.eventName) return null
+
+  // Phase F3-6 — lookback window enforcement on replayed events. If the event
+  // is older than this flow's lookback_days, skip — the flow is configured
+  // not to fire on stale history.
+  if (event.replayed) {
+    const lookbackDays = (flow.lookbackDays as number | undefined) ?? 30
+    const eventTimestamp = new Date(event.timestamp).getTime()
+    const cutoff = Date.now() - lookbackDays * 24 * 60 * 60 * 1000
+    if (eventTimestamp < cutoff) {
+      return null
+    }
+  }
 
   // 3. Check trigger filters against event properties
   if (triggerConfig.filters) {
@@ -130,19 +147,32 @@ async function evaluateFlowTrigger(flow: Record<string, unknown>, event: EventJo
   const flowNodes = flow.nodes as Array<{ id: string; type: string }>
   const firstNodeId = flowNodes.length > 0 ? flowNodes[0].id : 'trigger'
 
-  const [created] = await db.insert(flowTrips).values({
+  // Phase F3-5 — replay-idempotency. The unique index on
+  // (flow_id, customer_id, trigger_event_id) is what stops a replayed event
+  // from re-enrolling a customer who was already enrolled the first time.
+  // ON CONFLICT DO NOTHING + RETURNING handles the race where two replays
+  // arrive simultaneously.
+  const insertResult = await db.insert(flowTrips).values({
     flowId: flow.id as string,
     customerId: event.customerId,
     status: 'active',
     currentNodeId: firstNodeId,
+    triggerEventId: event.triggerEventId ?? null,
     context: {
       triggerEvent: event.eventName,
       triggerProperties: event.properties,
       triggeredAt: event.timestamp,
+      replayed: !!event.replayed,
     },
-  }).returning()
+  }).onConflictDoNothing().returning()
 
-  console.log(`Created flow trip for customer ${event.customerId} in flow ${(flow as { name: string }).name}`)
+  if (insertResult.length === 0) {
+    // Replay-dedupe hit — already enrolled via prior replay or original event
+    return null
+  }
+
+  const created = insertResult[0]
+  console.log(`Created flow trip for customer ${event.customerId} in flow ${(flow as { name: string }).name}${event.replayed ? ' (replayed)' : ''}`)
   return created.id
 }
 

@@ -103,3 +103,16 @@ export const templateStatusQueue = new Queue('template-status', {
     removeOnFail: { count: 20 },
   },
 })
+
+// Phase F3 — identity-merge job queue. Enqueued when an anonymous browser
+// session resolves to a known customer; the worker back-attributes prior
+// events and re-publishes them through the events queue with replayed=true.
+export const identityMergeQueue = new Queue('identity-merge', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 2000 },
+    removeOnComplete: true,
+    removeOnFail: { count: 100 },
+  },
+})

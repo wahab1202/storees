@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express'
 import { db } from '../db/connection.js'
-import { events, customers, entities, identities } from '../db/schema.js'
+import { events, customers, entities, identities, anonymousSessions } from '../db/schema.js'
 import { eq, and, sql } from 'drizzle-orm'
 import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { dataMaskingMiddleware } from '../middleware/dataMasking.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
-import { eventsQueue, metricsQueue } from '../services/queue.js'
+import { eventsQueue, metricsQueue, identityMergeQueue } from '../services/queue.js'
 import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
 import type { EventIngestionPayload } from '@storees/shared'
 
@@ -354,9 +354,10 @@ router.post('/events/batch', async (req: Request, res: Response) => {
 router.post('/customers', async (req: Request, res: Response) => {
   try {
     const projectId = req.projectId!
-    const { customer_id, attributes } = req.body as {
+    const { customer_id, attributes, session_id } = req.body as {
       customer_id: string
       attributes?: Record<string, unknown>
+      session_id?: string
     }
 
     if (!customer_id?.trim()) {
@@ -407,6 +408,12 @@ router.post('/customers', async (req: Request, res: Response) => {
 
       await db.update(customers).set(updates).where(eq(customers.id, existing.id))
 
+      // Phase F3 — link the browser session if one was provided. Enqueue
+      // identity-merge so prior anonymous events get back-attributed.
+      if (session_id) {
+        await linkAnonymousSession(projectId, session_id, existing.id)
+      }
+
       res.json({ success: true, data: { id: existing.id, created: false } })
     } else {
       // Create new
@@ -442,6 +449,11 @@ router.post('/customers', async (req: Request, res: Response) => {
       }
       if (identityRecords.length > 0) {
         await db.insert(identities).values(identityRecords).onConflictDoNothing()
+      }
+
+      // Phase F3 — link the browser session if one was provided
+      if (session_id) {
+        await linkAnonymousSession(projectId, session_id, customer.id)
       }
 
       res.status(201).json({ success: true, data: { id: customer.id, created: true } })
@@ -667,5 +679,87 @@ async function handleUserPropertiesUpdated(
     await db.update(customers).set(updates).where(eq(customers.id, customerId))
   }
 }
+
+/**
+ * Phase F3 — link a previously-anonymous browser session to a customer
+ * and enqueue the back-attribution merge job. Idempotent: re-linking the
+ * same session to the same customer is a no-op (does not re-queue).
+ */
+async function linkAnonymousSession(
+  projectId: string,
+  sessionId: string,
+  customerId: string,
+): Promise<void> {
+  const [existing] = await db
+    .select({ id: anonymousSessions.id, customerId: anonymousSessions.customerId })
+    .from(anonymousSessions)
+    .where(and(
+      eq(anonymousSessions.projectId, projectId),
+      eq(anonymousSessions.sessionId, sessionId),
+    ))
+    .limit(1)
+
+  if (existing) {
+    if (existing.customerId === customerId) return // already linked to this customer
+    // Conflict: session previously linked to a different customer (rare —
+    // usually shared device). Update to the new customer; back-attribution
+    // worker will re-process. Audit-trail this in the future via an event.
+    await db.update(anonymousSessions)
+      .set({ customerId, linkedAt: new Date(), eventsBackAttributed: null, flowsTriggered: null, resolvedAt: null })
+      .where(eq(anonymousSessions.id, existing.id))
+  } else {
+    await db.insert(anonymousSessions).values({
+      projectId,
+      sessionId,
+      customerId,
+    })
+  }
+
+  // Enqueue the merge job — non-blocking, fire-and-forget
+  await identityMergeQueue.add('merge', {
+    projectId,
+    sessionId,
+    customerId,
+  }).catch(err => console.error('[identify] failed to enqueue merge:', err))
+}
+
+/**
+ * POST /api/v1/identify — explicit session-to-customer linkage.
+ *
+ * Used when the storefront knows the customer's external_id but doesn't have
+ * full attribute data to send a /customers upsert. Lighter-weight: just links
+ * the browser session to an already-known customer and triggers the merge.
+ *
+ * Body: { customer_id: string, session_id: string }
+ *
+ * Useful for: post-checkout pages where the user just authenticated, embed
+ * scripts triggered by an email-link UTM param resolving to a customer, etc.
+ */
+router.post('/identify', async (req: Request, res: Response) => {
+  try {
+    const projectId = req.projectId!
+    const { customer_id, session_id } = req.body as { customer_id?: string; session_id?: string }
+
+    if (!customer_id?.trim() || !session_id?.trim()) {
+      return res.status(400).json({ success: false, error: 'customer_id and session_id are required' })
+    }
+
+    const [existing] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.projectId, projectId), eq(customers.externalId, customer_id)))
+      .limit(1)
+
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Customer not found. Use /customers to create first.' })
+    }
+
+    await linkAnonymousSession(projectId, session_id, existing.id)
+    res.json({ success: true, data: { customerId: existing.id } })
+  } catch (err) {
+    console.error('Identify error:', err)
+    res.status(500).json({ success: false, error: 'Failed to link session' })
+  }
+})
 
 export default router
