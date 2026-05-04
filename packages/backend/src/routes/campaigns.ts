@@ -7,7 +7,9 @@ import {
   listCampaigns,
   getCampaignWithSegment,
   dispatchCampaign,
+  previewCampaignAudience,
 } from '../services/campaignService.js'
+import { lintCampaignContent } from '../services/contentLint.js'
 import {
   getCampaignAnalytics,
   compareAbVariants,
@@ -119,10 +121,33 @@ router.post('/', requireProjectId, async (req, res) => {
       abTestDurationHours: abTestDurationHours ?? 4,
     }).returning()
 
-    res.status(201).json({ success: true, data: campaign })
+    // Phase E3.3 — content lint. Warnings only; never blocks creation.
+    // Frontend surfaces these on the campaign review/send step.
+    const lintFindings = ch === 'email'
+      ? lintCampaignContent({ subject: subject ?? '', html: htmlBody ?? '', text: bodyText ?? null })
+      : []
+
+    res.status(201).json({ success: true, data: { ...campaign, lintFindings } })
   } catch (err) {
     console.error('Campaign create error:', err)
     res.status(500).json({ success: false, error: 'Failed to create campaign' })
+  }
+})
+
+// POST /api/campaigns/lint?projectId= — preview content lint without persisting
+// Lets the frontend live-preview warnings as the admin types.
+router.post('/lint', requireProjectId, async (req, res) => {
+  try {
+    const { subject, htmlBody, bodyText } = req.body as { subject?: string; htmlBody?: string; bodyText?: string }
+    const findings = lintCampaignContent({
+      subject: subject ?? '',
+      html: htmlBody ?? '',
+      text: bodyText ?? null,
+    })
+    res.json({ success: true, data: { findings } })
+  } catch (err) {
+    console.error('Lint error:', err)
+    res.status(500).json({ success: false, error: 'Failed to lint content' })
   }
 })
 
@@ -239,15 +264,43 @@ router.delete('/:id', requireProjectId, async (req, res) => {
   }
 })
 
-// POST /api/campaigns/:id/send?projectId=
+// POST /api/campaigns/:id/send?projectId=[&force=true]
+// Phase E3.2 — pre-flight stale-list audit. If >30% of the deliverable list
+// hasn't opened any email in 90 days, return 409 with the audit; admin
+// re-sends with ?force=true to override after acknowledging.
 router.post('/:id/send', requireProjectId, async (req, res) => {
   try {
     const id = req.params.id as string
+    const force = req.query.force === 'true'
+
+    if (!force) {
+      const audit = await previewCampaignAudience(id)
+      if (audit.warning) {
+        return res.status(409).json({
+          success: false,
+          error: 'stale_list_warning',
+          data: audit,
+        })
+      }
+    }
+
     const totalRecipients = await dispatchCampaign(id)
     res.json({ success: true, data: { message: `Campaign dispatched to ${totalRecipients} recipients`, totalRecipients } })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to dispatch campaign'
     console.error('Campaign send error:', err)
+    res.status(400).json({ success: false, error: msg })
+  }
+})
+
+// GET /api/campaigns/:id/audience-preview?projectId= — pre-flight audit (no side effects)
+router.get('/:id/audience-preview', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+    const audit = await previewCampaignAudience(id)
+    res.json({ success: true, data: audit })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to preview audience'
     res.status(400).json({ success: false, error: msg })
   }
 })

@@ -114,20 +114,68 @@ export function useDeleteCampaign() {
   })
 }
 
+export type StaleListAudit = {
+  totalReachable: number
+  suppressed: number
+  optedOut: number
+  neverOpened: number
+  stalePct: number
+  warning: string
+}
+
+/** Thrown by useSendCampaign on 409 — caller surfaces a confirm dialog and re-calls with force=true. */
+export class StaleListError extends Error {
+  audit: StaleListAudit
+  constructor(audit: StaleListAudit) {
+    super(audit.warning)
+    this.name = 'StaleListError'
+    this.audit = audit
+  }
+}
+
 export function useSendCampaign() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) =>
-      api.post<{ message: string; totalRecipients: number }>(
-        withProject(`/api/campaigns/${id}/send`),
-        {},
-      ),
-    onSuccess: (res, id) => {
+    mutationFn: async ({ id, force }: { id: string; force?: boolean }) => {
+      // Custom fetch path: api.post throws a plain Error on any non-2xx and
+      // doesn't preserve the response body, but we need the audit data on 409.
+      const { getSession } = await import('next-auth/react')
+      const session = await getSession()
+      const jwt = (session as Record<string, unknown> | null)?.backendJwt as string | undefined
+
+      const url = withProject(`/api/campaigns/${id}/send${force ? '&force=true' : ''}`)
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}${url}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
+        },
+        body: '{}',
+      })
+
+      if (response.status === 409) {
+        const body = await response.json() as { error: string; data: StaleListAudit }
+        if (body.error === 'stale_list_warning') {
+          throw new StaleListError(body.data)
+        }
+      }
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'Failed to send' }))
+        throw new Error((body as { error?: string }).error ?? `HTTP ${response.status}`)
+      }
+
+      return response.json() as Promise<{ success: boolean; data: { message: string; totalRecipients: number } }>
+    },
+    onSuccess: (res, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaigns', id] })
       toast.success(res.data?.message ?? 'Campaign dispatched')
     },
-    onError: (err) => toast.error(err.message ?? 'Failed to send campaign'),
+    onError: (err) => {
+      // StaleListError is intentionally surfaced to the caller — don't toast.
+      if (err instanceof StaleListError) return
+      toast.error(err.message ?? 'Failed to send campaign')
+    },
   })
 }
 

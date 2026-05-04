@@ -71,6 +71,7 @@ export default function CampaignDetailPage() {
   const [showPreview, setShowPreview] = useState(false)
   const [showDelete, setShowDelete] = useState(false)
   const [showSendConfirm, setShowSendConfirm] = useState(false)
+  const [staleAudit, setStaleAudit] = useState<import('@/hooks/useCampaigns').StaleListAudit | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'recipients' | 'ab'>('overview')
 
   if (isLoading) {
@@ -99,8 +100,24 @@ export default function CampaignDetailPage() {
   const canSend = ['draft', 'scheduled'].includes(campaign.status)
   const hasSent = campaign.status === 'sent' || campaign.status === 'sending'
 
-  const handleSend = () => {
-    sendCampaign.mutate(id, { onSuccess: () => setShowSendConfirm(false) })
+  const handleSend = (force = false) => {
+    sendCampaign.mutate(
+      { id, force },
+      {
+        onSuccess: () => {
+          setShowSendConfirm(false)
+          setStaleAudit(null)
+        },
+        onError: (err) => {
+          // Stale-list warning bubbles up from useSendCampaign as StaleListError;
+          // surface it as a confirm dialog instead of a generic toast.
+          if (err && (err as { name?: string }).name === 'StaleListError') {
+            setStaleAudit((err as unknown as { audit: import('@/hooks/useCampaigns').StaleListAudit }).audit)
+            setShowSendConfirm(false)
+          }
+        },
+      },
+    )
   }
 
   const handleDelete = () => {
@@ -218,13 +235,54 @@ export default function CampaignDetailPage() {
             Cancel
           </button>
           <button
-            onClick={handleSend}
+            onClick={() => handleSend(false)}
             disabled={sendCampaign.isPending}
             className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50"
           >
             {sendCampaign.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Confirm Send
           </button>
+        </div>
+      )}
+
+      {/* Stale-list warning banner (Phase E3.2) */}
+      {staleAudit && (
+        <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+          <div className="flex items-start gap-3">
+            <Megaphone className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-amber-900 mb-1">Stale audience warning</h3>
+              <p className="text-sm text-amber-900 mb-2">
+                <strong>{staleAudit.stalePct}%</strong> of recipients haven&apos;t opened any email in the last 90 days.
+                Sending may hurt your domain&apos;s sender reputation.
+              </p>
+              <ul className="text-xs text-amber-800 space-y-0.5 mb-3">
+                <li>Total reachable: {staleAudit.totalReachable.toLocaleString()}</li>
+                <li>Already suppressed (bounced/complained): {staleAudit.suppressed.toLocaleString()}</li>
+                <li>Opted out: {staleAudit.optedOut.toLocaleString()}</li>
+                <li>Stale (no opens in 90 days): {staleAudit.neverOpened.toLocaleString()}</li>
+              </ul>
+              <p className="text-xs text-amber-800 mb-3">
+                Recommended: add a <em>Days Since Email Open &lt; 90</em> filter to your segment to skip stale recipients.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStaleAudit(null)}
+                  className="px-3 py-1.5 text-sm font-medium text-amber-900 border border-amber-300 rounded-lg hover:bg-amber-100"
+                >
+                  Edit segment
+                </button>
+                <button
+                  onClick={() => handleSend(true)}
+                  disabled={sendCampaign.isPending}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {sendCampaign.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  Send anyway
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

@@ -23,6 +23,12 @@ const ecommerceFields: DomainFieldDef[] = [
   { field: 'orders_in_last_30_days', label: 'Orders in Last 30 Days', type: 'number', category: 'Engagement', operators: ['is', 'greater_than', 'less_than'] as FilterOperator[] },
   { field: 'orders_in_last_90_days', label: 'Orders in Last 90 Days', type: 'number', category: 'Engagement', operators: ['is', 'greater_than', 'less_than'] as FilterOperator[] },
   { field: 'discount_order_percentage', label: 'Discount Order %', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than'] as FilterOperator[] },
+  // Email engagement (Phase E3.2). less_than 30 = "opened in last 30 days";
+  // greater_than 30 = "stale (never opened or last open >30d)". Lets segment
+  // builders carve never-openers out of campaigns before send so we don't
+  // burn sender reputation on dead addresses.
+  { field: 'days_since_email_open', label: 'Days Since Email Open', type: 'number', category: 'Engagement', operators: ['less_than', 'greater_than', 'between'] as FilterOperator[] },
+  { field: 'days_since_email_click', label: 'Days Since Email Click', type: 'number', category: 'Engagement', operators: ['less_than', 'greater_than', 'between'] as FilterOperator[] },
   { field: 'sms_subscribed', label: 'SMS Subscribed', type: 'boolean', category: 'Customer Info', operators: ['is_true', 'is_false'] as FilterOperator[] },
 
   // Product Filters

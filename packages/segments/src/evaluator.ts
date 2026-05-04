@@ -178,6 +178,59 @@ function ruleToSql(rule: FilterRule): SQL {
       break
   }
 
+  // Engagement fields (Phase E3.2). The "days since last X event" is not a
+  // materialized column — translate <N / >N / between into EXISTS / NOT EXISTS
+  // subqueries against the events table. Customers who never had the event
+  // count as "infinity days since" (NOT EXISTS in any window).
+  if (rule.field === 'days_since_email_open' || rule.field === 'days_since_email_click') {
+    const eventName = rule.field === 'days_since_email_open' ? 'email_opened' : 'email_clicked'
+    const op = rule.operator
+    const num = Number(value)
+
+    // less_than N: "opened in the last N days" → EXISTS within window
+    if (op === 'less_than') {
+      return sql`EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = ${eventName}
+        AND events.timestamp >= NOW() - (${num}::int * INTERVAL '1 day')
+      )`
+    }
+    // greater_than N: "has NOT opened in the last N days" (inc. never-openers) → NOT EXISTS within window
+    if (op === 'greater_than') {
+      return sql`NOT EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = ${eventName}
+        AND events.timestamp >= NOW() - (${num}::int * INTERVAL '1 day')
+      )`
+    }
+    // between [a,b]: opened with last open between a and b days ago — EXISTS in [now-b, now-a]
+    if (op === 'between') {
+      const [a, b] = value as [number, number]
+      const minDays = Math.min(a, b)
+      const maxDays = Math.max(a, b)
+      return sql`EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = ${eventName}
+        AND events.timestamp >= NOW() - (${maxDays}::int * INTERVAL '1 day')
+        AND events.timestamp <= NOW() - (${minDays}::int * INTERVAL '1 day')
+      )`
+    }
+    // is N: opened exactly N days ago (rarely useful, support for completeness)
+    if (op === 'is') {
+      return sql`EXISTS (
+        SELECT 1 FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name = ${eventName}
+        AND events.timestamp >= NOW() - ((${num}::int + 1) * INTERVAL '1 day')
+        AND events.timestamp < NOW() - (${num}::int * INTERVAL '1 day')
+      )`
+    }
+    // Other operators don't make sense on this field — fall through to error
+  }
+
   const column = fieldToSqlExpression(rule.field)
 
   switch (rule.operator) {
@@ -408,6 +461,11 @@ function evaluateGroup(group: FilterGroup, customer: Customer): boolean {
 }
 
 function evaluateRule(rule: FilterRule, customer: Customer): boolean {
+  // Engagement fields require querying the events table — SQL path only
+  if (rule.field === 'days_since_email_open' || rule.field === 'days_since_email_click') {
+    return false
+  }
+
   // Product/date operators can't be evaluated in-memory without order data
   // These return false as fallback — SQL path is the authoritative evaluator
   switch (rule.operator) {

@@ -32,6 +32,97 @@ type CampaignRow = typeof campaigns.$inferSelect
 type CustomerInfo = { id: string; name: string | null; phone: string | null; customAttributes: unknown }
 
 /**
+ * Audit a campaign's audience for deliverability risks BEFORE we stage sends.
+ * Returns counts of would-be-skipped (suppressed, opted-out) and would-be-stale
+ * (no email_opened in last 90 days) recipients. The send route uses this to
+ * block on a high stale ratio unless the admin acknowledges with ?force=true.
+ *
+ * Why 90 days: industry consensus for an "engaged" mailbox. After 6 months of
+ * silence, mailbox providers materially down-weight sender reputation.
+ */
+export async function previewCampaignAudience(campaignId: string): Promise<{
+  totalReachable: number
+  suppressed: number
+  optedOut: number
+  neverOpened: number
+  stalePct: number
+  warning: string | null
+}> {
+  const [campaign] = await db
+    .select({ projectId: campaigns.projectId, segmentId: campaigns.segmentId, channel: campaigns.channel })
+    .from(campaigns)
+    .where(eq(campaigns.id, campaignId))
+    .limit(1)
+
+  if (!campaign) throw new Error('Campaign not found')
+  if ((campaign.channel ?? 'email') !== 'email') {
+    return { totalReachable: 0, suppressed: 0, optedOut: 0, neverOpened: 0, stalePct: 0, warning: null }
+  }
+
+  // Build the candidate customer list (same shape as dispatch but in one SQL call).
+  // We want: count of reachable customers, count overlapping suppressions,
+  // count overlapping opted-out, count with no email_opened in 90 days.
+  const candidatesCte = campaign.segmentId
+    ? sql`SELECT c.id AS customer_id, c.email
+          FROM customers c
+          JOIN customer_segments cs ON cs.customer_id = c.id
+          WHERE cs.segment_id = ${campaign.segmentId}
+          AND c.email IS NOT NULL`
+    : sql`SELECT id AS customer_id, email
+          FROM customers
+          WHERE project_id = ${campaign.projectId}
+          AND email IS NOT NULL`
+
+  const result = await db.execute(sql`
+    WITH candidates AS (${candidatesCte})
+    SELECT
+      (SELECT COUNT(*) FROM candidates) AS total_reachable,
+      (SELECT COUNT(*) FROM candidates c
+       WHERE EXISTS (
+         SELECT 1 FROM email_suppressions s
+         WHERE s.project_id = ${campaign.projectId}
+         AND lower(s.email) = lower(c.email)
+       )) AS suppressed,
+      (SELECT COUNT(*) FROM candidates c
+       WHERE EXISTS (
+         SELECT 1 FROM consents co
+         WHERE co.project_id = ${campaign.projectId}
+         AND co.customer_id = c.customer_id
+         AND co.channel = 'email'
+         AND co.purpose = 'promotional'
+         AND co.status = 'opted_out'
+       )) AS opted_out,
+      (SELECT COUNT(*) FROM candidates c
+       WHERE NOT EXISTS (
+         SELECT 1 FROM events e
+         WHERE e.customer_id = c.customer_id
+         AND e.event_name = 'email_opened'
+         AND e.timestamp >= NOW() - INTERVAL '90 days'
+       )) AS never_opened
+  `)
+
+  const row = result.rows[0] as { total_reachable: string | number; suppressed: string | number; opted_out: string | number; never_opened: string | number }
+  const totalReachable = Number(row.total_reachable)
+  const suppressed = Number(row.suppressed)
+  const optedOut = Number(row.opted_out)
+  const neverOpened = Number(row.never_opened)
+
+  // After excluding suppressed + opted-out, what % of the *deliverable* list is stale?
+  const deliverable = Math.max(0, totalReachable - suppressed - optedOut)
+  const stalePct = deliverable > 0 ? Math.round((neverOpened / deliverable) * 100) : 0
+
+  // 30% stale threshold: industry guidance for shared sending pools. Above this
+  // a campaign materially burns sender reputation. Tune later if needed.
+  const STALE_THRESHOLD_PCT = 30
+  const warning =
+    stalePct > STALE_THRESHOLD_PCT && deliverable > 0
+      ? `${stalePct}% of recipients haven't opened any email in the last 90 days. Sending may hurt deliverability. Consider adding a "Days Since Email Open" filter to your segment, or pass force=true to send anyway.`
+      : null
+
+  return { totalReachable, suppressed, optedOut, neverOpened, stalePct, warning }
+}
+
+/**
  * Fetch all customers in a segment who have an email address.
  * Returns the fresh member list (re-evaluates via junction table).
  */
