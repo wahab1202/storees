@@ -34,6 +34,8 @@ export const projects = pgTable('projects', {
   emailFromName: varchar('email_from_name', { length: 255 }),
   resendDomainId: varchar('resend_domain_id', { length: 255 }),
   emailDomainVerifiedAt: timestamp('email_domain_verified_at', { withTimezone: true }),
+  // Phase E3.1 — per-tenant rate budget for email sends (per-minute).
+  emailRatePerMinute: integer('email_rate_per_minute').notNull().default(60),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
