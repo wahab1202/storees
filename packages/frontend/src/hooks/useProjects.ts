@@ -102,3 +102,32 @@ export function useRegisterEmailDomain(projectId: string) {
     },
   })
 }
+
+// ============ FREQUENCY CAPS ============
+
+export type FrequencyCap = { perDays: number; max: number }
+export type FrequencyCaps = {
+  whatsapp_marketing?: FrequencyCap
+  sms_marketing?: FrequencyCap
+  email_marketing?: FrequencyCap
+  push_marketing?: FrequencyCap
+}
+
+export function useFrequencyCaps(projectId: string | null) {
+  return useQuery({
+    queryKey: ['frequency-caps', projectId],
+    queryFn: () => api.get<{ frequencyCaps: FrequencyCaps }>(`/api/onboarding/projects/${projectId}/frequency-caps`),
+    enabled: !!projectId,
+  })
+}
+
+export function useUpdateFrequencyCaps(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (caps: FrequencyCaps) =>
+      api.patch<{ frequencyCaps: FrequencyCaps }>(`/api/onboarding/projects/${projectId}/frequency-caps`, caps),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['frequency-caps', projectId] })
+    },
+  })
+}

@@ -36,6 +36,15 @@ export const projects = pgTable('projects', {
   emailDomainVerifiedAt: timestamp('email_domain_verified_at', { withTimezone: true }),
   // Phase E3.1 — per-tenant rate budget for email sends (per-minute).
   emailRatePerMinute: integer('email_rate_per_minute').notNull().default(60),
+  // Phase F1a — per-channel marketing frequency caps.
+  // Shape: { "<channel>_marketing": { perDays: number, max: number } }.
+  // Transactional sends bypass caps; only promotional consumes quota.
+  frequencyCaps: jsonb('frequency_caps').notNull().default(sql`'{
+    "whatsapp_marketing": { "perDays": 7, "max": 1 },
+    "sms_marketing":      { "perDays": 7, "max": 3 },
+    "email_marketing":    { "perDays": 1, "max": 3 },
+    "push_marketing":     { "perDays": 1, "max": 5 }
+  }'::jsonb`),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

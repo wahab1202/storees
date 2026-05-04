@@ -8,7 +8,10 @@ import {
   useUpdateProjectFeatures,
   useEmailDomain,
   useRegisterEmailDomain,
+  useFrequencyCaps,
+  useUpdateFrequencyCaps,
   type EmailDnsRecord,
+  type FrequencyCaps,
 } from '@/hooks/useProjects'
 import { getProjectId } from '@/lib/project'
 import { api } from '@/lib/api'
@@ -101,7 +104,99 @@ export default function ProjectSettingsPage() {
       </section>
 
       <EmailDomainSection projectId={project.id} projectName={project.name} />
+
+      <FrequencyCapsSection projectId={project.id} />
     </div>
+  )
+}
+
+function FrequencyCapsSection({ projectId }: { projectId: string }) {
+  const { data: capsResp, isLoading } = useFrequencyCaps(projectId)
+  const update = useUpdateFrequencyCaps(projectId)
+
+  const channels: Array<{ key: keyof FrequencyCaps; label: string; help: string }> = [
+    { key: 'whatsapp_marketing', label: 'WhatsApp marketing',  help: 'Meta recommends ≤2 per week to keep WABA quality HIGH.' },
+    { key: 'sms_marketing',      label: 'SMS marketing',       help: 'TRAI guidance: don’t exceed 5 per week or carriers throttle.' },
+    { key: 'email_marketing',    label: 'Email marketing',     help: 'Per-day cap; bounce/complaint rates rise sharply above 1/day.' },
+    { key: 'push_marketing',     label: 'Push marketing',      help: 'Per-day cap; iOS notifications get hidden after a few in-day.' },
+  ]
+
+  const [form, setForm] = useState<FrequencyCaps>({})
+  useEffect(() => {
+    if (capsResp?.data?.frequencyCaps) setForm(capsResp.data.frequencyCaps)
+  }, [capsResp?.data?.frequencyCaps])
+
+  const handleSave = () => {
+    update.mutate(form, {
+      onSuccess: () => toast.success('Frequency caps updated'),
+      onError: (err: Error) => toast.error(err.message || 'Failed to update'),
+    })
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white">
+      <header className="px-6 py-4 border-b border-slate-200">
+        <h2 className="text-base font-semibold text-slate-900">Frequency caps</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Maximum marketing messages per channel per customer in a rolling window. Transactional sends
+          (order receipts, OTPs) bypass these caps. Set <code className="text-xs bg-slate-100 px-1 rounded">max = 0</code> to disable a channel’s cap.
+        </p>
+      </header>
+
+      <div className="px-6 py-5 space-y-3">
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <>
+            {channels.map(({ key, label, help }) => {
+              const cap = form[key] ?? { perDays: 7, max: 1 }
+              return (
+                <div key={key} className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 py-2 border-b border-slate-100 last:border-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-900">{label}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{help}</div>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-slate-600">Max</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={cap.max}
+                      onChange={e => setForm(f => ({ ...f, [key]: { ...cap, max: Number(e.target.value) } }))}
+                      className="w-16 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                    />
+                    <span className="text-slate-600">per</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={90}
+                      value={cap.perDays}
+                      onChange={e => setForm(f => ({ ...f, [key]: { ...cap, perDays: Number(e.target.value) } }))}
+                      className="w-16 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                    />
+                    <span className="text-slate-600">{cap.perDays === 1 ? 'day' : 'days'}</span>
+                  </div>
+                </div>
+              )
+            })}
+
+            <div className="pt-2">
+              <button
+                onClick={handleSave}
+                disabled={update.isPending}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {update.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                Save caps
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
   )
 }
 

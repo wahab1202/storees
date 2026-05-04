@@ -25,7 +25,8 @@ router.post('/:token', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'missing_token' })
   }
 
-  const result = await applyUnsubscribe(token, null)
+  const ip = (req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim()) ?? req.socket?.remoteAddress ?? null
+  const result = await applyUnsubscribe(token, null, ip)
   if (!result.ok) {
     return res.status(404).json({ ok: false, error: result.reason ?? 'failed' })
   }
@@ -38,7 +39,8 @@ router.get('/:token', async (req, res) => {
     return renderHtmlError(res, 'Invalid unsubscribe link.')
   }
 
-  const result = await applyUnsubscribe(token, null)
+  const ip = (req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim()) ?? req.socket?.remoteAddress ?? null
+  const result = await applyUnsubscribe(token, null, ip)
   if (!result.ok) {
     return renderHtmlError(res, 'This unsubscribe link is invalid or has already been used.')
   }

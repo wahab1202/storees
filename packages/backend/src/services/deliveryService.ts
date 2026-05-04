@@ -1,6 +1,6 @@
 import { eq, and, sql, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { messages, consents, customers, whatsappTemplates } from '../db/schema.js'
+import { messages, consents, customers, whatsappTemplates, projects } from '../db/schema.js'
 import { deliveryQueue } from './queue.js'
 import { redis } from './redis.js'
 import type { SendCommand, MessageChannel } from '@storees/shared'
@@ -217,13 +217,48 @@ async function checkConsent(
   return allowed
 }
 
+// Per-project frequency-cap config cached for 60s. Capped values rarely
+// change (admin tweaks them once during onboarding) but the hot path runs
+// per-send, so a DB lookup every time is wasteful.
+type FreqCapConfig = { perDays: number; max: number }
+const FREQ_CAP_CACHE_TTL_MS = 60_000
+const freqCapCache = new Map<string, { caps: Record<string, FreqCapConfig>; expiresAt: number }>()
+
+const DEFAULT_FREQ_CAPS: Record<string, FreqCapConfig> = {
+  whatsapp_marketing: { perDays: 7, max: 1 },
+  sms_marketing: { perDays: 7, max: 3 },
+  email_marketing: { perDays: 1, max: 3 },
+  push_marketing: { perDays: 1, max: 5 },
+}
+
+async function getProjectFreqCaps(projectId: string): Promise<Record<string, FreqCapConfig>> {
+  const cached = freqCapCache.get(projectId)
+  if (cached && cached.expiresAt > Date.now()) return cached.caps
+
+  const [row] = await db
+    .select({ caps: projects.frequencyCaps })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+
+  const caps = (row?.caps as Record<string, FreqCapConfig> | null) ?? DEFAULT_FREQ_CAPS
+  freqCapCache.set(projectId, { caps, expiresAt: Date.now() + FREQ_CAP_CACHE_TTL_MS })
+  return caps
+}
+
+/** Returns true if this customer has hit (or exceeded) the marketing cap on
+ *  this channel. Transactional sends never reach this check — bypass is at
+ *  the caller. Returning true blocks the send and flags it as `frequency_capped`. */
 async function checkFrequencyCap(
   projectId: string,
   customerId: string,
   channel: MessageChannel,
 ): Promise<boolean> {
-  const maxPerDay = 5 // promotional cap; TODO: make configurable per project
-  const count = await db
+  const caps = await getProjectFreqCaps(projectId)
+  const cap = caps[`${channel}_marketing`]
+  if (!cap || cap.max <= 0) return false // no cap configured = no limit
+
+  const [{ count } = { count: 0 }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(messages)
     .where(and(
@@ -231,10 +266,15 @@ async function checkFrequencyCap(
       eq(messages.customerId, customerId),
       eq(messages.channel, channel),
       eq(messages.messageType, 'promotional'),
-      gte(messages.createdAt, sql`NOW() - INTERVAL '24 hours'`),
+      gte(messages.createdAt, sql`NOW() - (${cap.perDays}::int * INTERVAL '1 day')`),
     ))
 
-  return (count[0]?.count ?? 0) >= maxPerDay
+  return count >= cap.max
+}
+
+/** Test-only: clears the freq-cap cache for a project (admin UI calls this when caps change). */
+export function invalidateFreqCapCache(projectId: string): void {
+  freqCapCache.delete(projectId)
 }
 
 async function checkReachability(

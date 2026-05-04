@@ -8,6 +8,7 @@ import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
+import { getConsentAuditLog, getConsentStatus } from '../services/consentService.js'
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
 
 const router = Router()
@@ -447,6 +448,32 @@ router.get('/:id/activity-summary', requireProjectId, async (req: AuthenticatedR
 
 // POST /api/customers/recalculate?projectId=...
 // Recalculates all customer aggregates (totalOrders, totalSpent, avgOrderValue, clv) from actual order data
+// GET /api/customers/:id/consent-history?projectId=...
+// Per-customer DPDP-compliance trail: when did they opt in/out, from where,
+// what text did they see. Admin/manager only — agents shouldn't see PII trails
+// for customers outside their dealer scope (handled by assertCustomerVisible).
+router.get('/:id/consent-history', requireProjectId, async (req: AuthenticatedRequest, res) => {
+  try {
+    const customerId = req.params.id as string
+    const projectId = req.projectId!
+
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
+
+    const limit = Math.min(Number(req.query.limit ?? 100), 500)
+    const [history, currentStatus] = await Promise.all([
+      getConsentAuditLog(projectId, customerId, limit),
+      getConsentStatus(projectId, customerId),
+    ])
+
+    res.json({ success: true, data: { history, currentStatus } })
+  } catch (err) {
+    console.error('Consent history error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch consent history' })
+  }
+})
+
 // Admin-only: this mutates every customer in the project.
 router.post('/recalculate', requireRole('admin'), requireProjectId, async (req, res) => {
   try {

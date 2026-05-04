@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express'
 import crypto from 'crypto'
 import { db } from '../db/connection.js'
-import { projects, apiKeys, events, segments } from '../db/schema.js'
-import { eq, and, count } from 'drizzle-orm'
+import { projects, apiKeys, events, segments, consentAuditLog, customers } from '../db/schema.js'
+import { eq, and, count, gte, lte, sql } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
@@ -629,6 +629,181 @@ router.get('/projects/:id/email-domain', requireRole('admin'), async (req: Reque
     console.error('Get email domain status error:', err)
     const msg = err instanceof Error ? err.message : 'Failed to fetch domain status'
     res.status(500).json({ success: false, error: msg })
+  }
+})
+
+/**
+ * PATCH /api/onboarding/projects/:id/frequency-caps
+ *
+ * Admin-only. Body: { whatsapp_marketing?: { perDays, max }, sms_marketing?: ..., ... }
+ * Validates each cap against sane bounds (perDays 1-90, max 0-100; max=0 disables
+ * the cap for that channel). Caches in deliveryService are invalidated server-side
+ * via the next cache TTL (60s); we don't import deliveryService here to keep the
+ * route module dependency-free.
+ */
+router.patch('/projects/:id/frequency-caps', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+    const incoming = (req.body ?? {}) as Record<string, { perDays?: number; max?: number }>
+
+    const ALLOWED_CHANNELS = new Set([
+      'whatsapp_marketing', 'sms_marketing', 'email_marketing', 'push_marketing',
+    ])
+    const sanitised: Record<string, { perDays: number; max: number }> = {}
+    for (const [key, val] of Object.entries(incoming)) {
+      if (!ALLOWED_CHANNELS.has(key)) {
+        return res.status(400).json({ success: false, error: `Unknown frequency-cap key: ${key}` })
+      }
+      const perDays = Number(val?.perDays)
+      const max = Number(val?.max)
+      if (!Number.isFinite(perDays) || perDays < 1 || perDays > 90) {
+        return res.status(400).json({ success: false, error: `${key}.perDays must be 1-90` })
+      }
+      if (!Number.isFinite(max) || max < 0 || max > 100) {
+        return res.status(400).json({ success: false, error: `${key}.max must be 0-100 (0 disables the cap)` })
+      }
+      sanitised[key] = { perDays, max }
+    }
+
+    const [project] = await db
+      .select({ caps: projects.frequencyCaps })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1)
+
+    if (!project) {
+      return res.status(404).json({ success: false, error: 'Project not found' })
+    }
+
+    const merged = { ...((project.caps as Record<string, unknown> | null) ?? {}), ...sanitised }
+    await db
+      .update(projects)
+      .set({ frequencyCaps: merged, updatedAt: new Date() })
+      .where(eq(projects.id, projectId))
+
+    res.json({ success: true, data: { frequencyCaps: merged } })
+  } catch (err) {
+    console.error('Update frequency caps error:', err)
+    res.status(500).json({ success: false, error: 'Failed to update frequency caps' })
+  }
+})
+
+/**
+ * GET /api/onboarding/projects/:id/frequency-caps
+ *
+ * Returns the project's current frequency-cap config so the Settings UI can
+ * pre-populate the form.
+ */
+router.get('/projects/:id/frequency-caps', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+    const [project] = await db
+      .select({ caps: projects.frequencyCaps })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1)
+
+    if (!project) return res.status(404).json({ success: false, error: 'Project not found' })
+    res.json({ success: true, data: { frequencyCaps: project.caps } })
+  } catch (err) {
+    console.error('Get frequency caps error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch frequency caps' })
+  }
+})
+
+/**
+ * GET /api/onboarding/projects/:id/consent-export?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *
+ * Streams a CSV of every consent_audit_log row for the project in the date
+ * range. Used by merchants when responding to a DPDP regulator audit or a
+ * Meta WABA quality-rating dispute (Meta's review team asks for the consent
+ * proof for every reported message).
+ *
+ * Admin-only. Default range: last 90 days.
+ */
+router.get('/projects/:id/consent-export', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const projectId = req.params.id as string
+    const fromStr = (req.query.from as string) ?? ''
+    const toStr = (req.query.to as string) ?? ''
+
+    const from = fromStr ? new Date(fromStr) : new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
+    const to = toStr ? new Date(toStr) : new Date()
+
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      return res.status(400).json({ success: false, error: 'Invalid from/to date (use YYYY-MM-DD)' })
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="consent-audit-${projectId}-${fromStr || 'auto'}-to-${toStr || 'now'}.csv"`)
+
+    const writeRow = (cells: (string | null | undefined)[]) => {
+      const escaped = cells.map(v => {
+        if (v == null) return ''
+        const s = String(v)
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+      }).join(',')
+      res.write(escaped + '\n')
+    }
+
+    writeRow(['created_at', 'customer_id', 'customer_email', 'customer_phone', 'channel', 'message_type', 'action', 'source', 'ip_address', 'consent_text'])
+
+    // Stream rows so we don't OOM on large exports. Drizzle doesn't expose
+    // streaming directly; do paged reads of 1000 by primary key.
+    const PAGE = 1000
+    let cursorTs: Date = from
+    while (true) {
+      const rows = await db
+        .select({
+          createdAt: consentAuditLog.createdAt,
+          customerId: consentAuditLog.customerId,
+          email: customers.email,
+          phone: customers.phone,
+          channel: consentAuditLog.channel,
+          messageType: consentAuditLog.messageType,
+          action: consentAuditLog.action,
+          source: consentAuditLog.source,
+          ipAddress: consentAuditLog.ipAddress,
+          consentText: consentAuditLog.consentText,
+        })
+        .from(consentAuditLog)
+        .leftJoin(customers, eq(customers.id, consentAuditLog.customerId))
+        .where(and(
+          eq(consentAuditLog.projectId, projectId),
+          gte(consentAuditLog.createdAt, cursorTs),
+          lte(consentAuditLog.createdAt, to),
+        ))
+        .orderBy(sql`${consentAuditLog.createdAt} ASC`)
+        .limit(PAGE)
+
+      if (rows.length === 0) break
+
+      for (const r of rows) {
+        writeRow([
+          r.createdAt.toISOString(),
+          r.customerId,
+          r.email,
+          r.phone,
+          r.channel,
+          r.messageType,
+          r.action,
+          r.source,
+          r.ipAddress,
+          r.consentText,
+        ])
+      }
+
+      if (rows.length < PAGE) break
+      // Advance cursor by 1ms past the last row's timestamp
+      cursorTs = new Date(rows[rows.length - 1].createdAt.getTime() + 1)
+    }
+
+    res.end()
+  } catch (err) {
+    console.error('Consent export error:', err)
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Failed to export consent log' })
+    }
   }
 })
 
