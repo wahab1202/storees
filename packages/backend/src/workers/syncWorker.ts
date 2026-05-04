@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { projects, orders, products, collections, productCollections } from '../db/schema.js'
-import { fetchShopifyApi } from '../services/shopifyService.js'
+import { fetchShopifyApi, fetchShopifyPage } from '../services/shopifyService.js'
 import { decrypt } from '../services/encryption.js'
 import { resolveCustomer, updateCustomerAggregates } from '../services/customerService.js'
 import { processHistoricalEvent } from '../services/eventProcessor.js'
@@ -85,17 +85,14 @@ export function startSyncWorker(): Worker {
       const shop = project.shopifyDomain
       const token = decrypt(project.shopifyAccessToken)
 
-      // Fetch customers (limit to 100 for demo speed)
-      let customerUrl = '/customers.json?limit=100&order=created_at+desc'
+      // Fetch customers — paginate through all pages via Link header
+      let customerUrl: string | null = '/customers.json?limit=250&order=created_at+desc'
       let customersProcessed = 0
       let ordersProcessed = 0
 
       while (customerUrl) {
-        const data = await fetchShopifyApi<{ customers: ShopifyCustomer[] }>(
-          shop,
-          token,
-          customerUrl,
-        )
+        const { data, nextPath }: { data: { customers: ShopifyCustomer[] }; nextPath: string | null } =
+          await fetchShopifyPage<{ customers: ShopifyCustomer[] }>(shop, token, customerUrl)
 
         for (const shopifyCustomer of data.customers) {
           const name = [shopifyCustomer.first_name, shopifyCustomer.last_name]
@@ -182,8 +179,8 @@ export function startSyncWorker(): Worker {
           })
         }
 
-        // No pagination for demo (limit=100 is enough)
-        customerUrl = ''
+        customerUrl = nextPath
+        if (customerUrl) await delay(SHOPIFY_API_DELAY_MS)
       }
 
       console.log(`Sync complete: ${customersProcessed} customers, ${ordersProcessed} orders`)
@@ -227,10 +224,11 @@ function delay(ms: number): Promise<void> {
 
 async function syncProducts(projectId: string, shop: string, token: string): Promise<number> {
   let count = 0
-  let url = '/products.json?limit=250&status=active'
+  let url: string | null = '/products.json?limit=250&status=active'
 
   while (url) {
-    const data = await fetchShopifyApi<{ products: ShopifyProduct[] }>(shop, token, url)
+    const { data, nextPath }: { data: { products: ShopifyProduct[] }; nextPath: string | null } =
+      await fetchShopifyPage<{ products: ShopifyProduct[] }>(shop, token, url)
 
     for (const p of data.products) {
       await db.insert(products).values({
@@ -245,9 +243,8 @@ async function syncProducts(projectId: string, shop: string, token: string): Pro
       count++
     }
 
-    // No pagination for demo
-    url = ''
-    await delay(SHOPIFY_API_DELAY_MS)
+    url = nextPath
+    if (url) await delay(SHOPIFY_API_DELAY_MS)
   }
 
   return count
@@ -255,39 +252,50 @@ async function syncProducts(projectId: string, shop: string, token: string): Pro
 
 async function syncCollections(projectId: string, shop: string, token: string): Promise<number> {
   let count = 0
+  const allShopifyCollections: ShopifyCollection[] = []
 
-  // Sync custom collections
-  const customData = await fetchShopifyApi<{ custom_collections: ShopifyCollection[] }>(
-    shop, token, '/custom_collections.json?limit=250',
-  )
-  await delay(SHOPIFY_API_DELAY_MS)
+  // Sync custom collections (paginated)
+  let customUrl: string | null = '/custom_collections.json?limit=250'
+  while (customUrl) {
+    const { data, nextPath }: { data: { custom_collections: ShopifyCollection[] }; nextPath: string | null } =
+      await fetchShopifyPage<{ custom_collections: ShopifyCollection[] }>(shop, token, customUrl)
 
-  for (const c of customData.custom_collections) {
-    await db.insert(collections).values({
-      projectId,
-      shopifyCollectionId: String(c.id),
-      title: c.title,
-      collectionType: 'custom',
-      imageUrl: c.image?.src ?? null,
-    }).onConflictDoNothing()
-    count++
+    for (const c of data.custom_collections) {
+      await db.insert(collections).values({
+        projectId,
+        shopifyCollectionId: String(c.id),
+        title: c.title,
+        collectionType: 'custom',
+        imageUrl: c.image?.src ?? null,
+      }).onConflictDoNothing()
+      count++
+      allShopifyCollections.push(c)
+    }
+
+    customUrl = nextPath
+    await delay(SHOPIFY_API_DELAY_MS)
   }
 
-  // Sync smart collections
-  const smartData = await fetchShopifyApi<{ smart_collections: ShopifyCollection[] }>(
-    shop, token, '/smart_collections.json?limit=250',
-  )
-  await delay(SHOPIFY_API_DELAY_MS)
+  // Sync smart collections (paginated)
+  let smartUrl: string | null = '/smart_collections.json?limit=250'
+  while (smartUrl) {
+    const { data, nextPath }: { data: { smart_collections: ShopifyCollection[] }; nextPath: string | null } =
+      await fetchShopifyPage<{ smart_collections: ShopifyCollection[] }>(shop, token, smartUrl)
 
-  for (const c of smartData.smart_collections) {
-    await db.insert(collections).values({
-      projectId,
-      shopifyCollectionId: String(c.id),
-      title: c.title,
-      collectionType: 'smart',
-      imageUrl: c.image?.src ?? null,
-    }).onConflictDoNothing()
-    count++
+    for (const c of data.smart_collections) {
+      await db.insert(collections).values({
+        projectId,
+        shopifyCollectionId: String(c.id),
+        title: c.title,
+        collectionType: 'smart',
+        imageUrl: c.image?.src ?? null,
+      }).onConflictDoNothing()
+      count++
+      allShopifyCollections.push(c)
+    }
+
+    smartUrl = nextPath
+    await delay(SHOPIFY_API_DELAY_MS)
   }
 
   // Sync product-collection mappings via collects API
@@ -300,24 +308,27 @@ async function syncCollections(projectId: string, shop: string, token: string): 
     .from(collections).where(eq(collections.projectId, projectId))
   const collectionMap = new Map(allCols.map(c => [c.shopifyCollectionId, c.id]))
 
-  const allShopifyCollections = [...customData.custom_collections, ...smartData.smart_collections]
   for (const col of allShopifyCollections) {
     try {
-      const collectsData = await fetchShopifyApi<{ collects: ShopifyCollect[] }>(
-        shop, token, `/collects.json?collection_id=${col.id}&limit=250`,
-      )
-      await delay(SHOPIFY_API_DELAY_MS)
+      let collectsUrl: string | null = `/collects.json?collection_id=${col.id}&limit=250`
+      while (collectsUrl) {
+        const { data, nextPath }: { data: { collects: ShopifyCollect[] }; nextPath: string | null } =
+          await fetchShopifyPage<{ collects: ShopifyCollect[] }>(shop, token, collectsUrl)
 
-      for (const collect of collectsData.collects) {
-        const productId = productMap.get(String(collect.product_id))
-        const collectionId = collectionMap.get(String(collect.collection_id))
+        for (const collect of data.collects) {
+          const productId = productMap.get(String(collect.product_id))
+          const collectionId = collectionMap.get(String(collect.collection_id))
 
-        if (productId && collectionId) {
-          await db.insert(productCollections).values({
-            productId,
-            collectionId,
-          }).onConflictDoNothing()
+          if (productId && collectionId) {
+            await db.insert(productCollections).values({
+              productId,
+              collectionId,
+            }).onConflictDoNothing()
+          }
         }
+
+        collectsUrl = nextPath
+        await delay(SHOPIFY_API_DELAY_MS)
       }
     } catch (err) {
       console.error(`Failed to sync collects for collection ${col.id}:`, err)

@@ -110,22 +110,64 @@ export async function fetchShopifyApi<T>(
   accessToken: string,
   path: string,
 ): Promise<T> {
-  const response = await fetch(
-    `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`,
-    {
-      headers: {
-        'X-Shopify-Access-Token': accessToken,
-        'Content-Type': 'application/json',
-      },
-    }
-  )
+  const { data } = await fetchShopifyPage<T>(shop, accessToken, path)
+  return data
+}
+
+/**
+ * Fetch a Shopify REST page, returning both the body and the next-page path
+ * parsed from the Link header (cursor-based pagination, Shopify API 2019-07+).
+ *
+ * `pathOrAbsoluteUrl` is either a path like "/products.json?limit=250" or a
+ * full URL returned from a previous call's `nextPath`. We strip the host on
+ * absolute URLs so caller logic stays simple.
+ */
+export async function fetchShopifyPage<T>(
+  shop: string,
+  accessToken: string,
+  pathOrAbsoluteUrl: string,
+): Promise<{ data: T; nextPath: string | null }> {
+  const url = pathOrAbsoluteUrl.startsWith('http')
+    ? pathOrAbsoluteUrl
+    : `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${pathOrAbsoluteUrl}`
+
+  const response = await fetch(url, {
+    headers: {
+      'X-Shopify-Access-Token': accessToken,
+      'Content-Type': 'application/json',
+    },
+  })
 
   if (!response.ok) {
     const text = await response.text()
     throw new Error(`Shopify API error: ${response.status} ${text}`)
   }
 
-  return response.json() as T
+  const data = (await response.json()) as T
+  const nextPath = parseNextLink(response.headers.get('link'), shop)
+  return { data, nextPath }
+}
+
+/**
+ * Shopify Link header format (RFC 5988):
+ *   <https://shop.myshopify.com/admin/api/2024-01/products.json?limit=250&page_info=...>; rel="next",
+ *   <https://shop.myshopify.com/admin/api/2024-01/products.json?limit=250&page_info=...>; rel="previous"
+ *
+ * Returns the relative path of the rel="next" link (so callers can pass it back
+ * to fetchShopifyPage), or null if there is no next page.
+ */
+function parseNextLink(linkHeader: string | null, shop: string): string | null {
+  if (!linkHeader) return null
+  const parts = linkHeader.split(',')
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>;\s*rel="next"/)
+    if (match) {
+      const fullUrl = match[1]
+      const prefix = `https://${shop}`
+      return fullUrl.startsWith(prefix) ? fullUrl.slice(prefix.length) : fullUrl
+    }
+  }
+  return null
 }
 
 export async function fetchShopInfo(shop: string, accessToken: string): Promise<{ name: string; email: string; shopOwner: string }> {
