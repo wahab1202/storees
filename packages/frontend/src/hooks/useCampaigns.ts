@@ -143,7 +143,9 @@ export function useSendCampaign() {
       const session = await getSession()
       const jwt = (session as Record<string, unknown> | null)?.backendJwt as string | undefined
 
-      const url = withProject(`/api/campaigns/${id}/send${force ? '&force=true' : ''}`)
+      // withProject appends `?projectId=...`; pass force as a real query param
+      // so the resulting URL is /send?projectId=...&force=true (not malformed).
+      const url = withProject(`/api/campaigns/${id}/send`, force ? { force: 'true' } : undefined)
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}${url}`, {
         method: 'POST',
         headers: {
