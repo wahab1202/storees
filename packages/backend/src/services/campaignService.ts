@@ -1,4 +1,4 @@
-import { eq, and, inArray, gt } from 'drizzle-orm'
+import { eq, and, inArray, gt, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import {
   campaigns,
@@ -6,6 +6,8 @@ import {
   customers,
   customerSegments,
   segments,
+  emailSuppressions,
+  consents,
 } from '../db/schema.js'
 import { sendEmail, interpolateTemplate } from './emailService.js'
 import { campaignQueue } from './queue.js'
@@ -111,7 +113,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
 
     if (page.length === 0) break
 
-    // Filter by channel reachability
+    // 1. Filter by channel reachability
     const reachable = page.filter(c => {
       if (channel === 'email') return !!c.email
       if (channel === 'sms' || channel === 'whatsapp') return !!c.phone
@@ -119,8 +121,44 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
       return !!c.email
     })
 
-    if (reachable.length > 0) {
-      const sendRows = reachable.map(r => ({
+    // 2. Filter by suppression + consent (deliverability gates).
+    //    Two cheap per-page lookups: O(1000) IN-list each, bounded round-trips.
+    let allowed = reachable
+    if (channel === 'email' && reachable.length > 0) {
+      const emails = reachable.map(c => c.email!.toLowerCase())
+      const customerIds = reachable.map(c => c.customerId)
+
+      const suppressedRows = await db
+        .select({ email: emailSuppressions.email })
+        .from(emailSuppressions)
+        .where(and(
+          eq(emailSuppressions.projectId, campaign.projectId),
+          inArray(sql`lower(${emailSuppressions.email})`, emails),
+        ))
+      const suppressedSet = new Set(suppressedRows.map(r => r.email.toLowerCase()))
+
+      const optedOutRows = await db
+        .select({ customerId: consents.customerId })
+        .from(consents)
+        .where(and(
+          eq(consents.projectId, campaign.projectId),
+          eq(consents.channel, 'email'),
+          eq(consents.purpose, 'promotional'),
+          eq(consents.status, 'opted_out'),
+          inArray(consents.customerId, customerIds),
+        ))
+      const optedOutSet = new Set(optedOutRows.map(r => r.customerId))
+
+      const before = allowed.length
+      allowed = reachable.filter(c => !suppressedSet.has(c.email!.toLowerCase()) && !optedOutSet.has(c.customerId))
+      const excluded = before - allowed.length
+      if (excluded > 0) {
+        console.log(`[campaign ${campaignId}] page-skip ${excluded} (suppressed=${suppressedSet.size}, opted_out=${optedOutSet.size})`)
+      }
+    }
+
+    if (allowed.length > 0) {
+      const sendRows = allowed.map(r => ({
         campaignId,
         customerId: r.customerId,
         email: r.email ?? '',
@@ -131,7 +169,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
       for (let i = 0; i < sendRows.length; i += SEND_INSERT_BATCH) {
         await db.insert(campaignSends).values(sendRows.slice(i, i + SEND_INSERT_BATCH))
       }
-      totalRecipients += reachable.length
+      totalRecipients += allowed.length
     }
 
     cursor = page[page.length - 1].customerId

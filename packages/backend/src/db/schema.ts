@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 // ============ PROJECTS ============
 
@@ -422,6 +423,42 @@ export const consents = pgTable('consents', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_consents_customer').on(table.projectId, table.customerId, table.channel),
+])
+
+// ============ EMAIL SUPPRESSIONS (per-tenant block list) ============
+// Phase E2.2 — every hard bounce, spam complaint, or unsubscribe lands here
+// and the campaign dispatcher excludes any (project_id, email) match before
+// sending. Without this we re-hit known-bad addresses on every campaign,
+// which is exactly what mailbox providers treat as spammer behaviour.
+
+export const emailSuppressions = pgTable('email_suppressions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  email: varchar('email', { length: 255 }).notNull(),
+  reason: varchar('reason', { length: 20 }).notNull(),
+  // 'hard_bounce' | 'complained' | 'unsubscribed' | 'manual'
+  suppressedAt: timestamp('suppressed_at', { withTimezone: true }).notNull().defaultNow(),
+  source: varchar('source', { length: 50 }),
+  metadata: jsonb('metadata').default('{}'),
+}, (table) => [
+  uniqueIndex('idx_email_suppressions_lookup').on(table.projectId, sql`lower(${table.email})`),
+  index('idx_email_suppressions_reason').on(table.projectId, table.reason),
+])
+
+// ============ UNSUBSCRIBE TOKENS (List-Unsubscribe header) ============
+// Each (project, customer, channel) gets one token; included in the
+// List-Unsubscribe header on every send so Gmail/Yahoo can offer a
+// one-click unsubscribe button (required Feb 2024+ for senders >5K/day).
+
+export const unsubscribeTokens = pgTable('unsubscribe_tokens', {
+  token: varchar('token', { length: 64 }).primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  channel: varchar('channel', { length: 20 }).notNull().default('email'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+}, (table) => [
+  uniqueIndex('idx_unsub_tokens_customer').on(table.projectId, table.customerId, table.channel),
 ])
 
 // ============ CATALOGUES (generic item type definitions per project) ============

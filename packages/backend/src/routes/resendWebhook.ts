@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { campaignSends, campaigns, messages, events } from '../db/schema.js'
+import { campaignSends, campaigns, messages, events, emailSuppressions } from '../db/schema.js'
 
 const router = Router()
 
@@ -14,7 +14,50 @@ type ResendWebhookPayload = {
     to: string[]
     subject: string
     created_at: string
+    // Bounce events carry a bounce sub-shape; we use it to distinguish
+    // hard bounces (suppress permanently) from soft bounces (don't).
+    bounce?: {
+      type?: string // 'hard_bounce' | 'soft_bounce' | other
+      message?: string
+    }
   }
+}
+
+/**
+ * Look up the Storees project that owns this Resend message id. The recipient
+ * email is taken straight from the webhook payload (data.to[]) — Resend is
+ * authoritative for what got sent. Project comes from the messages row that
+ * was written when the send was queued.
+ */
+async function resolveProjectId(emailId: string): Promise<string | null> {
+  const [msg] = await db
+    .select({ projectId: messages.projectId })
+    .from(messages)
+    .where(eq(messages.providerMessageId, emailId))
+    .limit(1)
+  return msg?.projectId ?? null
+}
+
+/**
+ * Insert a row into email_suppressions if not already present. The unique
+ * index on (project_id, lower(email)) makes this safe to call many times.
+ */
+async function suppressEmail(
+  projectId: string,
+  email: string,
+  reason: 'hard_bounce' | 'complained' | 'unsubscribed' | 'manual',
+  metadata: Record<string, unknown> = {},
+): Promise<void> {
+  await db
+    .insert(emailSuppressions)
+    .values({
+      projectId,
+      email: email.toLowerCase().trim(),
+      reason,
+      source: 'resend_webhook',
+      metadata,
+    })
+    .onConflictDoNothing()
 }
 
 // Campaign tracking: column + counter
@@ -66,6 +109,35 @@ router.post('/', async (req, res) => {
     }
 
     const now = new Date()
+
+    // ── Suppression: hard bounces and complaints get added to email_suppressions
+    //    so they're never re-sent to. Soft bounces are NOT suppressed (transient).
+    const isHardBounce = payload.type === 'email.bounced' && (
+      // Resend's payload shape: data.bounce.type indicates hard vs soft.
+      // If absent (older payloads), treat as hard since Resend escalates
+      // permanent failures to .bounced.
+      !payload.data.bounce?.type ||
+      payload.data.bounce.type === 'hard_bounce' ||
+      payload.data.bounce.type === 'permanent'
+    )
+    const isComplaint = payload.type === 'email.complained'
+
+    if (isHardBounce || isComplaint) {
+      const projectId = await resolveProjectId(emailId)
+      const recipient = payload.data.to?.[0]
+      if (projectId && recipient) {
+        await suppressEmail(
+          projectId,
+          recipient,
+          isHardBounce ? 'hard_bounce' : 'complained',
+          {
+            email_id: emailId,
+            bounce_type: payload.data.bounce?.type,
+            bounce_message: payload.data.bounce?.message,
+          },
+        )
+      }
+    }
 
     // ── 1. Update campaign_sends (if this is a campaign email) ──
     if (campaignMapping) {

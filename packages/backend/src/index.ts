@@ -36,6 +36,7 @@ import urlTrackerRoutes from './routes/urlTracker.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
+import unsubscribeRoutes from './routes/unsubscribe.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { startSyncWorker } from './workers/syncWorker.js'
@@ -107,6 +108,9 @@ app.use('/api/v1', v1EventRoutes)
 
 // URL tracker — public (redirect links)
 app.use('/api/t', urlTrackerRoutes)
+
+// Unsubscribe — public, mounted short for List-Unsubscribe header brevity
+app.use('/u', unsubscribeRoutes)
 
 // Admin panel routes — protected by requireAuth middleware
 app.use('/api/integrations', requireAuth, integrationRoutes)

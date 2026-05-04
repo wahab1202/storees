@@ -2,6 +2,7 @@ import { Resend } from 'resend'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
+import { getOrCreateToken } from './unsubscribeService.js'
 import type { SendCommand } from '@storees/shared'
 
 let resend: Resend | null = null
@@ -79,12 +80,34 @@ export const resendProvider = {
       return { messageId: '', status: 'failed', error: `Failed to resolve from-address: ${(err as Error).message}` }
     }
 
+    // RFC 8058 List-Unsubscribe + One-Click headers. Required by Gmail/Yahoo
+    // (Feb 2024+) for senders >5K/day. Mailbox providers POST to the URL
+    // without user interaction; we treat that POST as authoritative consent
+    // withdrawal. Skipped for transactional sends.
+    const headers: Record<string, string> = {}
+    const isPromotional = command.messageType !== 'transactional'
+    if (isPromotional && command.userId) {
+      try {
+        const token = await getOrCreateToken(command.projectId, command.userId, 'email')
+        const baseUrl = (process.env.UNSUB_BASE_URL ?? process.env.APP_URL ?? '').replace(/\/$/, '')
+        if (baseUrl) {
+          const unsubUrl = `${baseUrl}/u/${token}`
+          headers['List-Unsubscribe'] = `<${unsubUrl}>`
+          headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
+        }
+      } catch (err) {
+        // Header generation failure shouldn't block the send — log + continue
+        console.warn('[resendProvider] List-Unsubscribe token generation failed:', (err as Error).message)
+      }
+    }
+
     try {
       const { data, error } = await getResend().emails.send({
         from: fromInfo.from,
         to,
         subject,
         html,
+        headers,
         // Tag with the project so the Resend dashboard makes multi-tenant analytics
         // legible. Resend supports tags at send-time.
         tags: [
