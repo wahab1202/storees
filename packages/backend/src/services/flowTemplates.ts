@@ -17,6 +17,7 @@ import type { FlowNode } from '@storees/shared'
 export type FlowTemplateId =
   | 'ctwa_welcome'
   | 'ctwa_browse_abandon_followup'
+  | 'widget_optin_welcome'
 
 export type FlowTemplate = {
   id: FlowTemplateId
@@ -118,9 +119,45 @@ export const CTWA_BROWSE_ABANDON_TEMPLATE: FlowTemplate = {
   ],
 }
 
+/**
+ * "Widget Opt-in Welcome" — fires when an on-site widget submission lands.
+ * Trigger: optin_received event (emitted by POST /v1/optin). Sends an
+ * approved welcome template to the new contact. Mirrors the CTWA welcome
+ * structure so flows behave consistently regardless of acquisition source.
+ */
+export const WIDGET_OPTIN_WELCOME_TEMPLATE: FlowTemplate = {
+  id: 'widget_optin_welcome',
+  name: 'Widget Opt-in Welcome',
+  description: 'Fires when a customer submits an on-site opt-in widget. Sends an approved welcome template within seconds.',
+  triggerConfig: {
+    event: 'optin_received',
+    filters: { logic: 'AND', rules: [] },
+  },
+  nodes: [
+    {
+      id: 'trigger',
+      type: 'trigger',
+      config: {
+        event: 'optin_received',
+        filters: { logic: 'AND', rules: [] },
+      },
+    },
+    {
+      id: 'send_welcome',
+      type: 'action',
+      config: {
+        actionType: 'send_whatsapp',
+        templateId: 'widget_welcome', // merchant replaces with real approved template
+      },
+    },
+    { id: 'end', type: 'end', label: 'Welcome sent' },
+  ],
+}
+
 const ALL_TEMPLATES: Record<FlowTemplateId, FlowTemplate> = {
   ctwa_welcome: CTWA_WELCOME_TEMPLATE,
   ctwa_browse_abandon_followup: CTWA_BROWSE_ABANDON_TEMPLATE,
+  widget_optin_welcome: WIDGET_OPTIN_WELCOME_TEMPLATE,
 }
 
 export function listFlowTemplates(): FlowTemplate[] {

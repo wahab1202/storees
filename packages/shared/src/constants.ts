@@ -22,6 +22,9 @@ export const STANDARD_EVENTS = {
   // WhatsApp / CTWA — Phase F2a
   WHATSAPP_INBOUND: 'whatsapp_inbound',
   CTWA_LEAD_RECEIVED: 'ctwa_lead_received',
+
+  // On-site widget opt-in — Phase F2b
+  OPTIN_RECEIVED: 'optin_received',
 } as const
 
 export const FINTECH_EVENTS = {

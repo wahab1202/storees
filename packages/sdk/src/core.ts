@@ -6,6 +6,7 @@ import { EventBuilder } from './events'
 import { Transport } from './transport'
 import { EventQueue } from './queue'
 import { AutoTracker } from './autotrack'
+import { WidgetManager } from './widget'
 
 const DEFAULT_CONFIG: Partial<StoreesSdkConfig> = {
   autoTrack: {
@@ -32,6 +33,7 @@ class StoreesSdk {
   private transport!: Transport
   private queue!: EventQueue
   private autoTracker!: AutoTracker
+  private widgetManager!: WidgetManager
   private config!: StoreesSdkConfig
 
   // Pre-init command queue (for async snippet)
@@ -101,6 +103,12 @@ class StoreesSdk {
     // Wire up the EventBuilder reference that AutoTracker needs
     this.autoTracker.setEventBuilder(this.eventBuilder)
 
+    // On-site opt-in widgets (Phase F2b). Loaded async so the SDK init
+    // doesn't block on the network — widgets render whenever they're ready,
+    // which is fine for time/scroll/exit triggers (all fire after first paint).
+    this.widgetManager = new WidgetManager(this.config.apiUrl, this.config.apiKey, this.config.debug || false)
+    this.widgetManager.init().catch(err => log.warn('[widget] init failed:', err))
+
     this.initialized = true
     log.log('SDK initialized', {
       apiUrl: this.config.apiUrl,
@@ -109,6 +117,15 @@ class StoreesSdk {
 
     // Process any commands queued before init
     this.drainPreInitQueue()
+  }
+
+  /**
+   * Manually trigger a widget by name or id.
+   * Usage: Storees('widget', 'show', 'welcome_offer')
+   */
+  widget(action: 'show', idOrName: string): void {
+    if (!this.ensureInit('widget', action, idOrName)) return
+    if (action === 'show') this.widgetManager.show(idOrName)
   }
 
   /** Identify a user — anonymous → known transition */

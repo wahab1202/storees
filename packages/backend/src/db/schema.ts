@@ -730,6 +730,34 @@ export const oauthAccounts = pgTable('oauth_accounts', {
   index('idx_oauth_user').on(table.userId),
 ])
 
+// ============ OPT-IN WIDGETS (Phase F2b) ============
+// Configurable storefront opt-in forms; merchant CRUDs in the admin panel,
+// SDK reads via /v1/widgets and renders. consent_text mandatory — DPDP
+// requires the exact wording shown to the user be auditable.
+
+export const optinWidgets = pgTable('optin_widgets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  headline: varchar('headline', { length: 255 }).notNull(),
+  body: text('body'),
+  buttonLabel: varchar('button_label', { length: 80 }).notNull().default('Get the discount'),
+  consentText: text('consent_text').notNull(),
+  triggerType: varchar('trigger_type', { length: 30 }).notNull(),
+  triggerConfig: jsonb('trigger_config').notNull().default('{}'),
+  targetPages: jsonb('target_pages').notNull().default('[]'),
+  showOnce: boolean('show_once').notNull().default(true),
+  collectEmail: boolean('collect_email').notNull().default(false),
+  collectName: boolean('collect_name').notNull().default(false),
+  phoneRequired: boolean('phone_required').notNull().default(true),
+  preCheckConsent: boolean('pre_check_consent').notNull().default(false),
+  isActive: boolean('is_active').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_optin_widgets_project').on(table.projectId),
+])
+
 // ============ CTWA ATTRIBUTIONS (Phase F2a) ============
 // One row per (project, customer, ad). The merchant's primary growth signal —
 // every CTWA click that turns into a conversation is a list-add with full

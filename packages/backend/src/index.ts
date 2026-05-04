@@ -16,6 +16,7 @@ import productRoutes from './routes/products.js'
 import campaignRoutes from './routes/campaigns.js'
 import templateRoutes from './routes/templates.js'
 import v1EventRoutes from './routes/v1Events.js'
+import v1OptInRoutes from './routes/v1OptIn.js'
 import v1ApiKeyRoutes from './routes/v1ApiKeys.js'
 import v1SchemaRoutes from './routes/v1Schema.js'
 import onboardingRoutes from './routes/v1Onboarding.js'
@@ -37,6 +38,7 @@ import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
+import optinWidgetRoutes from './routes/optinWidgets.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { startSyncWorker } from './workers/syncWorker.js'
@@ -108,6 +110,7 @@ app.use('/api/webhooks/channel', channelWebhookRoutes)
 
 // v1 API — generic event ingestion (API key auth, not admin auth)
 app.use('/api/v1', v1EventRoutes)
+app.use('/api/v1', v1OptInRoutes)
 
 // URL tracker — public (redirect links)
 app.use('/api/t', urlTrackerRoutes)
@@ -142,6 +145,7 @@ app.use('/api/predictions', requireAuth, predictionRoutes)
 app.use('/api/send-time', requireAuth, sendTimeRoutes)
 app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
+app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)
