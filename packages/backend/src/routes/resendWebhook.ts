@@ -1,9 +1,83 @@
 import { Router } from 'express'
+import crypto from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { campaignSends, campaigns, messages, events, emailSuppressions } from '../db/schema.js'
+import { redis } from '../services/redis.js'
 
 const router = Router()
+
+const RESEND_WEBHOOK_SECRET = process.env.RESEND_WEBHOOK_SECRET ?? ''
+const RESEND_WEBHOOK_DEDUP_PREFIX = 'resend-webhook:'
+const RESEND_WEBHOOK_DEDUP_TTL = 86400 // 24 hours
+const SVIX_TIMESTAMP_TOLERANCE_S = 5 * 60 // 5 minutes — protects against replay
+
+/**
+ * Verify a svix-signed Resend webhook. svix is the standard webhook signing
+ * format Resend uses; we re-implement the verification here (~20 lines)
+ * rather than pull in the svix client just for this one call.
+ *
+ * Format:
+ *   svix-id:        unique message id (also used for dedupe)
+ *   svix-timestamp: epoch seconds
+ *   svix-signature: space-separated list of "v1,<base64>" entries
+ *
+ * Signed payload: `${svix-id}.${svix-timestamp}.${rawBody}`
+ * Signature:      base64( HMAC-SHA256(decoded_secret, signed_payload) )
+ *
+ * Returns true on success. Returns false (and the caller should 401) if:
+ *   - secret not configured (fail closed)
+ *   - any required header missing
+ *   - timestamp older than 5 minutes (replay protection)
+ *   - signature mismatch (constant-time compare)
+ */
+function verifySvixSignature(
+  rawBody: Buffer,
+  svixId: string | undefined,
+  svixTimestamp: string | undefined,
+  svixSignatureHeader: string | undefined,
+): boolean {
+  if (!RESEND_WEBHOOK_SECRET) {
+    console.error('[resend-webhook] RESEND_WEBHOOK_SECRET not configured — rejecting')
+    return false
+  }
+  if (!svixId || !svixTimestamp || !svixSignatureHeader) return false
+
+  const ts = Number(svixTimestamp)
+  if (!Number.isFinite(ts)) return false
+  const ageS = Math.abs(Math.floor(Date.now() / 1000) - ts)
+  if (ageS > SVIX_TIMESTAMP_TOLERANCE_S) {
+    console.warn(`[resend-webhook] timestamp out of tolerance (age=${ageS}s)`)
+    return false
+  }
+
+  // Strip the whsec_ prefix and base64-decode the secret
+  const rawSecret = RESEND_WEBHOOK_SECRET.startsWith('whsec_')
+    ? RESEND_WEBHOOK_SECRET.slice('whsec_'.length)
+    : RESEND_WEBHOOK_SECRET
+  let secretBuf: Buffer
+  try {
+    secretBuf = Buffer.from(rawSecret, 'base64')
+  } catch {
+    console.error('[resend-webhook] failed to decode secret')
+    return false
+  }
+
+  const signedPayload = `${svixId}.${svixTimestamp}.${rawBody.toString('utf-8')}`
+  const expected = crypto.createHmac('sha256', secretBuf).update(signedPayload).digest('base64')
+  const expectedBuf = Buffer.from(expected)
+
+  // Header carries one or more "v1,<base64>" entries (rotation support); accept any match
+  const sigs = svixSignatureHeader.split(' ')
+  for (const entry of sigs) {
+    const [version, sig] = entry.split(',')
+    if (version !== 'v1' || !sig) continue
+    const sigBuf = Buffer.from(sig)
+    if (sigBuf.length !== expectedBuf.length) continue
+    if (crypto.timingSafeEqual(sigBuf, expectedBuf)) return true
+  }
+  return false
+}
 
 type ResendWebhookPayload = {
   type: string
@@ -96,7 +170,24 @@ const STOREES_EVENT_MAP: Record<string, string> = {
  */
 router.post('/', async (req, res) => {
   try {
-    const payload = req.body as ResendWebhookPayload
+    const rawBody = req.body as Buffer
+    const svixId = req.headers['svix-id'] as string | undefined
+    const svixTs = req.headers['svix-timestamp'] as string | undefined
+    const svixSig = req.headers['svix-signature'] as string | undefined
+
+    if (!verifySvixSignature(rawBody, svixId, svixTs, svixSig)) {
+      return res.status(401).json({ error: 'Invalid signature' })
+    }
+
+    // Idempotency: dedupe by svix-id (svix guarantees the same id is reused on retry)
+    const dedupKey = `${RESEND_WEBHOOK_DEDUP_PREFIX}${svixId}`
+    const isFirst = await redis.set(dedupKey, '1', 'EX', RESEND_WEBHOOK_DEDUP_TTL, 'NX')
+    if (!isFirst) {
+      // Already processed — respond 200 so svix doesn't retry, but skip the work
+      return res.json({ received: true, deduped: true })
+    }
+
+    const payload = JSON.parse(rawBody.toString('utf-8')) as ResendWebhookPayload
     const emailId = payload.data?.email_id
     if (!emailId) return res.status(400).json({ error: 'Missing email_id' })
 

@@ -63,6 +63,8 @@ app.use(compression())
 
 // Raw body for Shopify webhook HMAC verification — must be before JSON parser
 app.use('/api/webhooks/shopify', express.raw({ type: 'application/json' }))
+// Resend webhooks use svix HMAC signing — verification needs the raw body
+app.use('/api/webhooks/resend', express.raw({ type: 'application/json' }))
 
 // JSON parser — 1MB limit for SDK batch events (default 100KB too small)
 app.use(express.json({ limit: '1mb' }))
