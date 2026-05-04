@@ -558,7 +558,11 @@ router.patch('/projects/:id/features', requireRole('admin'), async (req: Request
 router.post('/projects/:id/email-domain', requireRole('admin'), async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
-    const { domain, fromName } = (req.body ?? {}) as { domain?: string; fromName?: string }
+    const { domain, fromName, fromLocalPart } = (req.body ?? {}) as {
+      domain?: string
+      fromName?: string
+      fromLocalPart?: string
+    }
 
     if (!domain || typeof domain !== 'string') {
       return res.status(400).json({ success: false, error: 'domain is required' })
@@ -567,7 +571,12 @@ router.post('/projects/:id/email-domain', requireRole('admin'), async (req: Requ
       return res.status(400).json({ success: false, error: 'fromName is required' })
     }
 
-    const result = await registerDomain(projectId, domain.trim().toLowerCase(), fromName.trim())
+    const result = await registerDomain(
+      projectId,
+      domain.trim().toLowerCase(),
+      fromName.trim(),
+      fromLocalPart?.trim() || 'hello', // default to a real inbox name, not noreply
+    )
     res.json({ success: true, data: result })
   } catch (err) {
     console.error('Register email domain error:', err)

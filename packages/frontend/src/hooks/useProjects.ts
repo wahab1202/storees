@@ -95,7 +95,7 @@ export function useEmailDomain(projectId: string | null) {
 export function useRegisterEmailDomain(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: { domain: string; fromName: string }) =>
+    mutationFn: (input: { domain: string; fromName: string; fromLocalPart?: string }) =>
       api.post<EmailDomainStatus>(`/api/onboarding/projects/${projectId}/email-domain`, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['email-domain', projectId] })

@@ -48,15 +48,28 @@ export type DomainStatusResult = {
   verified: boolean
 }
 
-/** Register a new sending domain with Resend and persist the resend_domain_id on the project. */
+/** Register a new sending domain with Resend and persist the resend_domain_id on the project.
+ *  fromLocalPart is the inbox name (the part before @). We default to 'hello' rather than
+ *  'noreply' because mailbox providers treat unrepliable senders as a small negative trust
+ *  signal — noreply increases the chance recipients hit "Mark as spam" instead of replying.
+ *  Resend's Insights tab flags `noreply` for the same reason.
+ */
 export async function registerDomain(
   projectId: string,
   domain: string,
   fromName: string,
+  fromLocalPart: string = 'hello',
 ): Promise<DomainStatusResult> {
   // Validate the domain shape early — Resend's error message is opaque
   if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(domain)) {
     throw new Error(`Invalid domain format: ${domain}`)
+  }
+
+  // RFC 5322 local-part is more permissive but we accept the safe subset that
+  // works everywhere: letters, digits, dots, hyphens, underscores, plus.
+  const safeLocal = fromLocalPart.trim().toLowerCase()
+  if (!/^[a-z0-9._+-]{1,64}$/.test(safeLocal)) {
+    throw new Error(`Invalid local-part: "${fromLocalPart}". Use letters, digits, dots, hyphens, underscores, plus.`)
   }
 
   const [project] = await db
@@ -69,7 +82,7 @@ export async function registerDomain(
     throw new Error('Project not found')
   }
 
-  const fromAddress = `noreply@${domain}`
+  const fromAddress = `${safeLocal}@${domain}`
 
   // If we already registered this project, return the existing domain status
   // rather than creating a duplicate (Resend returns an error on duplicate names).

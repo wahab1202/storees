@@ -208,11 +208,17 @@ function EmailDomainSection({ projectId, projectName }: { projectId: string; pro
 
   const [domain, setDomain] = useState('')
   const [fromName, setFromName] = useState(projectName)
+  const [fromLocalPart, setFromLocalPart] = useState('hello')
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     if (status?.fromName) setFromName(status.fromName)
   }, [status?.fromName])
+
+  // Mailbox providers (Gmail in particular) treat unrepliable senders as a
+  // negative trust signal — recipients who can't reply hit "Mark as spam"
+  // more often. Resend's Insights tab flags this. Warn loudly but don't block.
+  const isNoReplyPattern = /^(no-?reply|donot-?reply|do-?not-?reply)/i.test(fromLocalPart.trim())
 
   const handleRegister = () => {
     if (!domain.trim()) {
@@ -223,8 +229,16 @@ function EmailDomainSection({ projectId, projectName }: { projectId: string; pro
       toast.error('Enter a from-name')
       return
     }
+    if (!fromLocalPart.trim()) {
+      toast.error('Enter an inbox name')
+      return
+    }
     registerDomain.mutate(
-      { domain: domain.trim().toLowerCase(), fromName: fromName.trim() },
+      {
+        domain: domain.trim().toLowerCase(),
+        fromName: fromName.trim(),
+        fromLocalPart: fromLocalPart.trim().toLowerCase(),
+      },
       {
         onSuccess: () => toast.success('Domain registered. Add the DNS records below to verify.'),
         onError: (err: Error) => toast.error(err.message || 'Failed to register domain'),
@@ -293,6 +307,50 @@ function EmailDomainSection({ projectId, projectName }: { projectId: string; pro
                   className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
                 />
               </label>
+            </div>
+
+            <div>
+              <label className="block text-sm">
+                <span className="block font-medium text-slate-700 mb-1">Inbox name</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={fromLocalPart}
+                    onChange={e => setFromLocalPart(e.target.value)}
+                    placeholder="hello"
+                    className={cn(
+                      'w-32 px-3 py-2 border rounded-md text-sm font-mono focus:outline-none focus:ring-2',
+                      isNoReplyPattern
+                        ? 'border-amber-400 focus:ring-amber-400/30 focus:border-amber-500'
+                        : 'border-slate-300 focus:ring-indigo-500/30 focus:border-indigo-500',
+                    )}
+                  />
+                  <span className="text-sm text-slate-500 font-mono">
+                    @{domain || 'mail.yourbrand.com'}
+                  </span>
+                </div>
+              </label>
+              {isNoReplyPattern ? (
+                <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-3 flex gap-2 items-start">
+                  <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-900">
+                    <strong>Avoid &ldquo;noreply&rdquo;.</strong> Mailbox providers (Gmail especially) treat
+                    unrepliable senders as a small negative trust signal — recipients who can&apos;t reply
+                    hit &ldquo;Mark as spam&rdquo; more often, hurting your domain&apos;s reputation over time.
+                    Use a real, monitored address like <code className="bg-amber-100 px-1 rounded">hello</code>,
+                    {' '}<code className="bg-amber-100 px-1 rounded">team</code>, or
+                    {' '}<code className="bg-amber-100 px-1 rounded">support</code>. Set up forwarding to a
+                    real inbox so replies actually reach a human.
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-1.5 text-xs text-slate-500">
+                  The inbox name shown to recipients. Pick something humans can reply to (e.g.{' '}
+                  <code className="bg-slate-100 px-1 rounded">hello</code> or{' '}
+                  <code className="bg-slate-100 px-1 rounded">team</code>) — don&apos;t use{' '}
+                  <code className="bg-slate-100 px-1 rounded">noreply</code>.
+                </p>
+              )}
             </div>
 
             <button
