@@ -87,6 +87,12 @@ export const SHOPIFY_WEBHOOK_TOPICS = [
   'orders/cancelled',
   'checkouts/create',
   'carts/create',
+  'products/create',
+  'products/update',
+  'products/delete',
+  'collections/create',
+  'collections/update',
+  'collections/delete',
 ] as const
 
 export const FLOW_NODE_TYPES = [

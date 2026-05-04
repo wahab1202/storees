@@ -4,6 +4,7 @@ import { db } from '../db/connection.js'
 import { projects, customers, events, orders } from '../db/schema.js'
 import { verifyHmac } from '../services/shopifyService.js'
 import { processWebhookEvent } from '../services/eventProcessor.js'
+import { handleProductWebhook, handleCollectionWebhook } from '../services/catalogService.js'
 import { redis } from '../services/redis.js'
 
 const router = Router()
@@ -13,7 +14,7 @@ const WEBHOOK_DEDUP_TTL = 86400 // 24 hours
 const WEBHOOK_DEDUP_PREFIX = 'shopify-webhook:'
 const DLQ_PREFIX = 'shopify-dlq:'
 
-// Shopify webhook topic → standard event name mapping
+// Shopify webhook topic → standard event name mapping (customer-scoped events only)
 const TOPIC_EVENT_MAP: Record<string, string> = {
   'customers/create': 'customer_created',
   'customers/update': 'customer_updated',
@@ -24,6 +25,10 @@ const TOPIC_EVENT_MAP: Record<string, string> = {
   'carts/create': 'cart_created',
   'carts/update': 'cart_updated',
 }
+
+// Catalog topics route to a different handler (no customer identity, no event row)
+const CATALOG_PRODUCT_TOPICS = new Set(['products/create', 'products/update', 'products/delete'])
+const CATALOG_COLLECTION_TOPICS = new Set(['collections/create', 'collections/update', 'collections/delete'])
 
 // POST /api/webhooks/shopify/:projectId
 // Body is raw Buffer (parsed by express.raw() in index.ts)
@@ -73,7 +78,33 @@ router.post('/shopify/:projectId', async (req, res) => {
     // Parse JSON from raw body
     const payload = JSON.parse(rawBody.toString('utf-8'))
 
-    // Map topic to standard event name
+    // Catalog webhooks (products/*, collections/*) take a different path — no
+    // customer identity, no events row, just upsert/archive the catalog table.
+    if (CATALOG_PRODUCT_TOPICS.has(topic) || CATALOG_COLLECTION_TOPICS.has(topic)) {
+      console.log(`Catalog webhook received: ${topic} for project ${projectId}`)
+      res.status(200).json({ success: true })
+
+      const handler = CATALOG_PRODUCT_TOPICS.has(topic)
+        ? handleProductWebhook(projectId, topic, payload)
+        : handleCollectionWebhook(projectId, topic, payload)
+
+      handler.catch(err => {
+        console.error(`Catalog webhook processing failed for ${topic}:`, err)
+        const dlqEntry = JSON.stringify({
+          webhookId,
+          projectId,
+          topic,
+          error: err instanceof Error ? err.message : String(err),
+          payload,
+          failedAt: new Date().toISOString(),
+        })
+        redis.lpush(`${DLQ_PREFIX}${projectId}`, dlqEntry).catch(() => {})
+        redis.ltrim(`${DLQ_PREFIX}${projectId}`, 0, 999).catch(() => {})
+      })
+      return
+    }
+
+    // Map topic to standard customer-scoped event name
     const eventName = TOPIC_EVENT_MAP[topic]
     if (!eventName) {
       console.warn(`Unknown webhook topic: ${topic}`)
