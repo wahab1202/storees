@@ -8,6 +8,7 @@ import {
   getCampaignWithSegment,
   dispatchCampaign,
   previewCampaignAudience,
+  duplicateCampaign,
 } from '../services/campaignService.js'
 import { lintCampaignContent } from '../services/contentLint.js'
 import {
@@ -17,10 +18,14 @@ import {
 
 const router = Router()
 
-// GET /api/campaigns?projectId=
+// GET /api/campaigns?projectId=&includeArchived=true&archivedOnly=true
+// Default: active campaigns only, latest first.
 router.get('/', requireProjectId, async (req, res) => {
   try {
-    const rows = await listCampaigns(req.projectId!)
+    const rows = await listCampaigns(req.projectId!, {
+      includeArchived: req.query.includeArchived === 'true',
+      archivedOnly: req.query.archivedOnly === 'true',
+    })
     res.json({ success: true, data: rows })
   } catch (err) {
     console.error('Campaign list error:', err)
@@ -261,6 +266,56 @@ router.delete('/:id', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Campaign delete error:', err)
     res.status(500).json({ success: false, error: 'Failed to delete campaign' })
+  }
+})
+
+// POST /api/campaigns/:id/archive?projectId=
+// Sets archived_at = NOW. Idempotent (re-archiving a row updates the timestamp).
+router.post('/:id/archive', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+    const [updated] = await db
+      .update(campaigns)
+      .set({ archivedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(campaigns.id, id), eq(campaigns.projectId, req.projectId!)))
+      .returning()
+    if (!updated) return res.status(404).json({ success: false, error: 'Campaign not found' })
+    res.json({ success: true, data: updated })
+  } catch (err) {
+    console.error('Campaign archive error:', err)
+    res.status(500).json({ success: false, error: 'Failed to archive campaign' })
+  }
+})
+
+// POST /api/campaigns/:id/unarchive?projectId=
+router.post('/:id/unarchive', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+    const [updated] = await db
+      .update(campaigns)
+      .set({ archivedAt: null, updatedAt: new Date() })
+      .where(and(eq(campaigns.id, id), eq(campaigns.projectId, req.projectId!)))
+      .returning()
+    if (!updated) return res.status(404).json({ success: false, error: 'Campaign not found' })
+    res.json({ success: true, data: updated })
+  } catch (err) {
+    console.error('Campaign unarchive error:', err)
+    res.status(500).json({ success: false, error: 'Failed to unarchive campaign' })
+  }
+})
+
+// POST /api/campaigns/:id/duplicate?projectId=
+// Clones the campaign as a fresh draft with " (Copy)" suffix. Counters reset.
+router.post('/:id/duplicate', requireProjectId, async (req, res) => {
+  try {
+    const id = req.params.id as string
+    const created = await duplicateCampaign(req.projectId!, id)
+    res.status(201).json({ success: true, data: created })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to duplicate campaign'
+    const status = msg.includes('not found') ? 404 : 500
+    console.error('Campaign duplicate error:', err)
+    res.status(status).json({ success: false, error: msg })
   }
 })
 

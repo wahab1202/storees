@@ -174,6 +174,8 @@ export type Campaign = {
   abWinnerMetric: 'open_rate' | 'click_rate' | 'conversion_rate'
   abAutoSendWinner: boolean
   abTestDurationHours: number
+  // Soft-archive timestamp; null = active
+  archivedAt: string | null
   createdAt: Date
   updatedAt: Date
 }

@@ -342,6 +342,9 @@ export const campaigns = pgTable('campaigns', {
   abWinnerMetric: varchar('ab_winner_metric', { length: 20 }).default('open_rate'),
   abAutoSendWinner: boolean('ab_auto_send_winner').notNull().default(false),
   abTestDurationHours: integer('ab_test_duration_hours').notNull().default(4),
+  // Soft-archive — hides the campaign from default list views without losing
+  // its lifecycle state. NULL = active; non-NULL = archived at this time.
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

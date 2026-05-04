@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { SlidePanel } from '@/components/shared/SlidePanel'
 import { StatusStrip } from '@/components/shared/StatusStrip'
-import { useCampaigns } from '@/hooks/useCampaigns'
+import { useCampaigns, useArchiveCampaign, useUnarchiveCampaign, useDuplicateCampaign } from '@/hooks/useCampaigns'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import {
@@ -29,6 +29,10 @@ import {
   Smartphone,
   Trophy,
   Search,
+  MoreVertical,
+  Copy,
+  Archive,
+  ArchiveRestore,
 } from 'lucide-react'
 import type { Campaign } from '@storees/shared'
 
@@ -105,13 +109,20 @@ function MiniProgress({ value, color }: { value: number; color: string }) {
 
 export default function CampaignsPage() {
   const router = useRouter()
-  const { data, isLoading, isError } = useCampaigns()
 
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [selectedChannel, setSelectedChannel] = useState('email')
   const [selectedType, setSelectedType] = useState('one-time')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [view, setView] = useState<'active' | 'archived'>('active')
+
+  const { data, isLoading, isError } = useCampaigns(
+    view === 'archived' ? { archivedOnly: true } : undefined,
+  )
+  const archiveMutation = useArchiveCampaign()
+  const unarchiveMutation = useUnarchiveCampaign()
+  const duplicateMutation = useDuplicateCampaign()
 
   const campaigns = data?.data ?? []
 
@@ -275,9 +286,9 @@ export default function CampaignsPage() {
           {/* Status Summary Strip */}
           <StatusStrip tabs={statusTabs} active={statusFilter} onChange={setStatusFilter} />
 
-          {/* Search Bar */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 max-w-sm">
+          {/* Search Bar + view toggle */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="relative flex-1 max-w-sm min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" />
               <input
                 value={searchQuery}
@@ -285,6 +296,20 @@ export default function CampaignsPage() {
                 placeholder="Search campaigns..."
                 className="w-full h-9 pl-9 pr-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent placeholder:text-text-muted"
               />
+            </div>
+            <div className="inline-flex rounded-lg border border-border bg-white overflow-hidden">
+              {(['active', 'archived'] as const).map(v => (
+                <button
+                  key={v}
+                  onClick={() => { setView(v); setStatusFilter(null) }}
+                  className={cn(
+                    'px-3 py-1.5 text-xs font-medium transition-colors',
+                    view === v ? 'bg-accent text-white' : 'text-text-secondary hover:bg-surface',
+                  )}
+                >
+                  {v === 'active' ? 'Active' : 'Archived'}
+                </button>
+              ))}
             </div>
             <span className="text-xs text-text-muted">
               Showing {filteredCampaigns.length} of {campaigns.length} campaigns
@@ -395,12 +420,14 @@ export default function CampaignsPage() {
                         </span>
                       </td>
                       <td className="px-5 py-4">
-                        <Link
-                          href={`/campaigns/${campaign.id}`}
-                          className="text-text-muted hover:text-text-primary transition-colors"
-                        >
-                          <ArrowRight className="h-4 w-4" />
-                        </Link>
+                        <RowActions
+                          campaignId={campaign.id}
+                          isArchived={!!campaign.archivedAt}
+                          isSending={campaign.status === 'sending'}
+                          onDuplicate={() => duplicateMutation.mutate(campaign.id)}
+                          onArchive={() => archiveMutation.mutate(campaign.id)}
+                          onUnarchive={() => unarchiveMutation.mutate(campaign.id)}
+                        />
                       </td>
                     </tr>
                   )
@@ -408,6 +435,82 @@ export default function CampaignsPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─── Row Actions Menu ─── */
+
+function RowActions({
+  campaignId,
+  isArchived,
+  isSending,
+  onDuplicate,
+  onArchive,
+  onUnarchive,
+}: {
+  campaignId: string
+  isArchived: boolean
+  isSending: boolean
+  onDuplicate: () => void
+  onArchive: () => void
+  onUnarchive: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative inline-block text-left">
+      <button
+        onClick={(e) => { e.preventDefault(); setOpen(v => !v) }}
+        className="p-1.5 text-text-muted hover:text-text-primary hover:bg-surface rounded-md transition-colors"
+        aria-label="Campaign actions"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-44 bg-white border border-border rounded-lg shadow-lg z-20 py-1">
+          <Link
+            href={`/campaigns/${campaignId}`}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-text-primary hover:bg-surface w-full text-left"
+            onClick={() => setOpen(false)}
+          >
+            <ArrowRight className="h-3.5 w-3.5 text-text-muted" /> View
+          </Link>
+          <button
+            onClick={() => { setOpen(false); onDuplicate() }}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-text-primary hover:bg-surface w-full text-left"
+          >
+            <Copy className="h-3.5 w-3.5 text-text-muted" /> Duplicate
+          </button>
+          {isArchived ? (
+            <button
+              onClick={() => { setOpen(false); onUnarchive() }}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-text-primary hover:bg-surface w-full text-left"
+            >
+              <ArchiveRestore className="h-3.5 w-3.5 text-text-muted" /> Restore
+            </button>
+          ) : (
+            <button
+              onClick={() => { setOpen(false); onArchive() }}
+              disabled={isSending}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-text-primary hover:bg-surface w-full text-left disabled:opacity-50 disabled:cursor-not-allowed"
+              title={isSending ? 'Cannot archive a campaign that is currently sending' : ''}
+            >
+              <Archive className="h-3.5 w-3.5 text-text-muted" /> Archive
+            </button>
+          )}
         </div>
       )}
     </div>

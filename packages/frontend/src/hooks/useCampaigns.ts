@@ -6,10 +6,14 @@ import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import type { Campaign, CampaignSend, CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule } from '@storees/shared'
 
-export function useCampaigns() {
+export function useCampaigns(opts?: { archivedOnly?: boolean; includeArchived?: boolean }) {
+  const params: Record<string, string> = {}
+  if (opts?.archivedOnly) params.archivedOnly = 'true'
+  else if (opts?.includeArchived) params.includeArchived = 'true'
+  const key = opts?.archivedOnly ? 'archived' : opts?.includeArchived ? 'all' : 'active'
   return useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api.get<Campaign[]>(withProject('/api/campaigns')),
+    queryKey: ['campaigns', key],
+    queryFn: () => api.get<Campaign[]>(withProject('/api/campaigns', params)),
   })
 }
 
@@ -111,6 +115,42 @@ export function useDeleteCampaign() {
       toast.success('Campaign deleted')
     },
     onError: (err) => toast.error(err.message ?? 'Failed to delete campaign'),
+  })
+}
+
+export function useArchiveCampaign() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.post<Campaign>(withProject(`/api/campaigns/${id}/archive`), {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      toast.success('Campaign archived')
+    },
+    onError: (err) => toast.error(err.message ?? 'Failed to archive campaign'),
+  })
+}
+
+export function useUnarchiveCampaign() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.post<Campaign>(withProject(`/api/campaigns/${id}/unarchive`), {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      toast.success('Campaign restored')
+    },
+    onError: (err) => toast.error(err.message ?? 'Failed to restore campaign'),
+  })
+}
+
+export function useDuplicateCampaign() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.post<Campaign>(withProject(`/api/campaigns/${id}/duplicate`), {}),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      toast.success(`Duplicated as "${res.data?.name ?? 'Copy'}"`)
+    },
+    onError: (err) => toast.error(err.message ?? 'Failed to duplicate campaign'),
   })
 }
 

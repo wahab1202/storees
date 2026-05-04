@@ -452,7 +452,19 @@ export async function getCampaignWithSegment(campaignId: string) {
 /**
  * List campaigns for a project with segment names.
  */
-export async function listCampaigns(projectId: string) {
+export async function listCampaigns(
+  projectId: string,
+  opts: { includeArchived?: boolean; archivedOnly?: boolean } = {},
+) {
+  // Default: active only (archived_at IS NULL), most recent first.
+  // includeArchived=true: include both active + archived.
+  // archivedOnly=true: only archived.
+  const archivedFilter = opts.archivedOnly
+    ? sql`${campaigns.archivedAt} IS NOT NULL`
+    : opts.includeArchived
+      ? sql`TRUE`
+      : sql`${campaigns.archivedAt} IS NULL`
+
   const rows = await db
     .select({
       campaign: campaigns,
@@ -460,11 +472,57 @@ export async function listCampaigns(projectId: string) {
     })
     .from(campaigns)
     .leftJoin(segments, eq(segments.id, campaigns.segmentId))
-    .where(eq(campaigns.projectId, projectId))
-    .orderBy(campaigns.createdAt)
+    .where(and(eq(campaigns.projectId, projectId), archivedFilter))
+    .orderBy(sql`${campaigns.createdAt} DESC`)
 
   return rows.map(r => ({
     ...r.campaign,
     segmentName: r.segmentName ?? null,
   }))
+}
+
+/**
+ * Duplicate a campaign as a fresh draft. Copies content + segment + delivery
+ * config; resets all counters, schedule, and A/B winner state. Name gets
+ * " (Copy)" appended; the merchant can rename in the editor.
+ */
+export async function duplicateCampaign(projectId: string, sourceId: string) {
+  const [source] = await db
+    .select()
+    .from(campaigns)
+    .where(and(eq(campaigns.id, sourceId), eq(campaigns.projectId, projectId)))
+    .limit(1)
+
+  if (!source) throw new Error('Source campaign not found')
+
+  const [created] = await db.insert(campaigns).values({
+    projectId,
+    name: `${source.name} (Copy)`,
+    channel: source.channel,
+    deliveryType: source.deliveryType,
+    status: 'draft',
+    contentType: source.contentType,
+    segmentId: source.segmentId,
+    subject: source.subject,
+    previewText: source.previewText,
+    htmlBody: source.htmlBody,
+    bodyText: source.bodyText,
+    fromName: source.fromName,
+    periodicSchedule: source.periodicSchedule,
+    templateId: source.templateId,
+    conversionGoals: source.conversionGoals,
+    goalTrackingHours: source.goalTrackingHours,
+    deliveryLimit: source.deliveryLimit,
+    // A/B config copied; winner + counters reset (new campaign starts fresh)
+    abTestEnabled: source.abTestEnabled,
+    abSplitPct: source.abSplitPct,
+    abVariantBSubject: source.abVariantBSubject,
+    abVariantBHtmlBody: source.abVariantBHtmlBody,
+    abVariantBBodyText: source.abVariantBBodyText,
+    abWinnerMetric: source.abWinnerMetric,
+    abAutoSendWinner: source.abAutoSendWinner,
+    abTestDurationHours: source.abTestDurationHours,
+  }).returning()
+
+  return created
 }
