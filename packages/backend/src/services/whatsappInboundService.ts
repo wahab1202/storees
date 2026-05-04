@@ -1,7 +1,10 @@
 import { eq, and, sql, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { consents, customers, events, whatsappInboundMessages } from '../db/schema.js'
-import type { InboundMessage } from './channelProviderRegistry.js'
+import { consents, customers, events, whatsappInboundMessages, ctwaAttributions } from '../db/schema.js'
+import type { InboundMessage, CtwaReferral } from './channelProviderRegistry.js'
+import { resolveCustomer } from './customerService.js'
+import { updateConsent } from './consentService.js'
+import { eventsQueue } from './queue.js'
 
 // Compliance-standard opt-out / opt-in keywords (case-insensitive, exact match after trim)
 const OPT_OUT_KEYWORDS = new Set(['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'OPTOUT', 'OPT OUT', 'STOP ALL'])
@@ -91,7 +94,7 @@ export async function persistInboundMessages(
     const candidates = [m.fromPhone]
     if (!m.fromPhone.startsWith('+')) candidates.push(`+${m.fromPhone}`)
     else candidates.push(m.fromPhone.slice(1))
-    const [customer] = await db
+    let [customer] = await db
       .select({ id: customers.id })
       .from(customers)
       .where(and(
@@ -101,6 +104,21 @@ export async function persistInboundMessages(
       .limit(1)
 
     if (customer) matched++
+
+    // CTWA leads: when the message is the first one after a Meta ad tap, the
+    // ad-click counts as the implicit DPDP-compliant marketing opt-in. Create
+    // the customer record if we don't have one yet so the attribution + flow
+    // trigger can fire on the first inbound rather than waiting for an explicit
+    // identify call.
+    if (!customer && m.ctwaReferral) {
+      const phone = m.fromPhone.startsWith('+') ? m.fromPhone : `+${m.fromPhone}`
+      const newId = await resolveCustomer({
+        projectId,
+        phone,
+      })
+      customer = { id: newId }
+      matched++
+    }
 
     const inserted = await db.insert(whatsappInboundMessages).values({
       projectId,
@@ -143,10 +161,122 @@ export async function persistInboundMessages(
       if (intent) {
         await applyConsentChange(projectId, customer.id, provider, intent, m.providerMessageId)
       }
+
+      // CTWA referral side-effects: attribution row, implicit consent, lead event.
+      // Runs after the message is persisted so we don't double-write on retries.
+      if (m.ctwaReferral) {
+        await handleCtwaReferral(projectId, customer.id, provider, m.ctwaReferral, m.providerMessageId)
+      }
     }
   }
 
   return { persisted, matched }
+}
+
+/**
+ * Handle a CTWA referral attached to an inbound WhatsApp message (Phase F2a).
+ *
+ * Effects:
+ *   1. Upsert ctwa_attributions row keyed by (project, customer, ad). Repeat
+ *      clicks on the same ad bump inbound_count + last_inbound_at + ctwa_clid.
+ *      A different ad creates a second attribution row (multi-touch).
+ *   2. Record implicit WhatsApp marketing opt-in via the consent service.
+ *      The consent text captures the ad headline + body + source URL — that's
+ *      the artifact we'd hand a regulator if challenged.
+ *   3. Emit `ctwa_lead_received` event with the full ad metadata as
+ *      properties; the flow trigger evaluator picks this up to fire the
+ *      welcome flow.
+ */
+async function handleCtwaReferral(
+  projectId: string,
+  customerId: string,
+  provider: string,
+  referral: CtwaReferral,
+  triggeringMessageId: string,
+): Promise<void> {
+  const adId = referral.sourceId
+  if (!adId) return
+
+  // 1. Upsert attribution row
+  const now = new Date()
+  await db.execute(sql`
+    INSERT INTO ctwa_attributions (
+      project_id, customer_id, ad_id, source_type, source_url, source_id,
+      headline, body, media_type, image_url, ctwa_clid,
+      first_inbound_at, last_inbound_at, inbound_count
+    )
+    VALUES (
+      ${projectId}, ${customerId}, ${adId},
+      ${referral.sourceType ?? null}, ${referral.sourceUrl ?? null}, ${referral.sourceId},
+      ${referral.headline ?? null}, ${referral.body ?? null},
+      ${referral.mediaType ?? null}, ${referral.imageUrl ?? null}, ${referral.ctwaClid ?? null},
+      ${now}, ${now}, 1
+    )
+    ON CONFLICT (project_id, customer_id, ad_id) DO UPDATE SET
+      last_inbound_at = ${now},
+      inbound_count = ctwa_attributions.inbound_count + 1,
+      ctwa_clid = COALESCE(EXCLUDED.ctwa_clid, ctwa_attributions.ctwa_clid),
+      updated_at = ${now}
+  `)
+
+  // 2. Implicit marketing consent — captures the ad context as the consent text
+  //    so a DPDP audit / Meta WABA dispute can show what the user agreed to.
+  const consentText = [
+    'Implicit opt-in via CTWA ad click.',
+    referral.headline && `Headline: ${referral.headline}`,
+    referral.body && `Body: ${referral.body}`,
+    referral.sourceUrl && `Click URL: ${referral.sourceUrl}`,
+    referral.ctwaClid && `Click token: ${referral.ctwaClid}`,
+  ].filter(Boolean).join(' | ')
+
+  await updateConsent(
+    projectId,
+    customerId,
+    'whatsapp',
+    'opt_in',
+    'ctwa_ad',
+    {
+      purpose: 'promotional',
+      consentText,
+      provider,
+    },
+  )
+
+  // 3. Emit ctwa_lead_received event — flow triggers use this to fire welcome flows
+  await db.insert(events).values({
+    projectId,
+    customerId,
+    eventName: 'ctwa_lead_received',
+    properties: {
+      ad_id: adId,
+      source_type: referral.sourceType,
+      source_url: referral.sourceUrl,
+      headline: referral.headline,
+      body: referral.body,
+      media_type: referral.mediaType,
+      image_url: referral.imageUrl,
+      ctwa_clid: referral.ctwaClid,
+      provider,
+    },
+    platform: 'whatsapp',
+    source: `${provider}_webhook`,
+    idempotencyKey: `ctwa_lead_${provider}_${triggeringMessageId}`,
+    timestamp: now,
+  }).onConflictDoNothing()
+
+  // Publish to BullMQ so the trigger evaluator + flow worker can fire welcome flows
+  await eventsQueue.add('ctwa_lead_received', {
+    projectId,
+    customerId,
+    eventName: 'ctwa_lead_received',
+    properties: {
+      ad_id: adId,
+      headline: referral.headline,
+      ctwa_clid: referral.ctwaClid,
+    },
+    platform: 'whatsapp',
+    timestamp: now.toISOString(),
+  }).catch(err => console.error('[ctwa] eventsQueue publish failed:', err))
 }
 
 /**

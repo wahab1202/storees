@@ -2,6 +2,7 @@ import type {
   ChannelProvider,
   ProviderTemplate,
   InboundMessage,
+  CtwaReferral,
   SubmitTemplateInput,
   SubmitTemplateResult,
   TemplateStatusResult,
@@ -184,6 +185,17 @@ export const metaWhatsappProvider: ChannelProvider = {
       button?: { text: string; payload?: string }
       interactive?: { button_reply?: { id: string; title: string }; list_reply?: { id: string; title: string } }
       context?: { id: string }
+      // CTWA referral — present only on first message after a Click-to-WhatsApp ad tap
+      referral?: {
+        source_url?: string
+        source_type?: string
+        source_id?: string
+        headline?: string
+        body?: string
+        media_type?: string
+        image_url?: string
+        ctwa_clid?: string
+      }
     }
     type MetaWebhook = { entry?: Array<{ changes?: Array<{ value?: { messages?: MetaMsg[] } }> }> }
     const p = payload as MetaWebhook
@@ -201,12 +213,29 @@ export const metaWhatsappProvider: ChannelProvider = {
           else if (m.button) { content = m.button.text }
           else if (m.interactive?.button_reply) { content = m.interactive.button_reply.title }
           else if (m.interactive?.list_reply) { content = m.interactive.list_reply.title }
+
+          // CTWA referral — sourceId is the only required field; the rest enrich attribution
+          let ctwaReferral: CtwaReferral | undefined
+          if (m.referral && m.referral.source_id) {
+            ctwaReferral = {
+              sourceId: m.referral.source_id,
+              sourceType: m.referral.source_type,
+              sourceUrl: m.referral.source_url,
+              headline: m.referral.headline,
+              body: m.referral.body,
+              mediaType: m.referral.media_type,
+              imageUrl: m.referral.image_url,
+              ctwaClid: m.referral.ctwa_clid,
+            }
+          }
+
           out.push({
             providerMessageId: m.id,
             fromPhone: m.from,
             content,
             mediaType,
             replyTo: m.context?.id,
+            ctwaReferral,
             rawPayload: m,
           })
         }

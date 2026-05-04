@@ -27,6 +27,25 @@ export type SendTemplateCommand = SendCommand & {
   templateParams: string[]      // ordered substitutions for {{1}} {{2}} ...
 }
 
+/**
+ * Click-to-WhatsApp referral payload that Meta attaches to the FIRST inbound
+ * message after a user taps a CTWA ad. Phase F2a wires this through to
+ * the attribution table; presence of this object on an InboundMessage is the
+ * primary signal that a new lead originated from a paid ad click.
+ */
+export type CtwaReferral = {
+  /** Meta source_id — the ad/post id (also exposed as ad_id in our schema). */
+  sourceId: string
+  sourceType?: 'ad' | 'post' | string
+  sourceUrl?: string                 // fb.me/... short URL the user tapped
+  headline?: string                  // ad headline
+  body?: string                      // ad body
+  mediaType?: 'image' | 'video' | string
+  imageUrl?: string
+  /** Unique per-click token, lets the merchant attribute conversions to specific clicks. */
+  ctwaClid?: string
+}
+
 export type InboundMessage = {
   fromPhone: string
   providerMessageId: string
@@ -34,6 +53,8 @@ export type InboundMessage = {
   mediaUrl?: string
   mediaType?: string
   replyTo?: string
+  /** Set when Meta forwards a CTWA ad-click referral with this message. */
+  ctwaReferral?: CtwaReferral
   rawPayload?: unknown
 }
 

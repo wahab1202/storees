@@ -1,12 +1,19 @@
+/**
+ * Historical export — the real flow trigger evaluator lives in
+ * `packages/backend/src/workers/triggerWorker.ts`. That worker is what
+ * actually runs in production: it consumes events from the BullMQ events
+ * queue, fetches active flows, matches by triggerConfig.event, evaluates
+ * trigger filters + audience filters, dedupes against active/waiting trips,
+ * and creates new FlowTrip rows.
+ *
+ * This module is kept as a no-op for backwards compatibility — some older
+ * tests imported `evaluateTrigger` from `@storees/flows`. New code should
+ * import from the worker directly or call the events queue.
+ */
 import type { TrackedEvent, FlowTrip } from '@storees/shared'
 
 export function evaluateTrigger(_event: TrackedEvent, _projectId: string): FlowTrip[] {
-  // TODO: implement trigger evaluation
-  // 1. Get all ACTIVE flows for project
-  // 2. Match event_name against flow.trigger_config.event
-  // 3. Check trigger filters against event properties
-  // 4. Check audience filters against customer
-  // 5. Check for duplicate trips
-  // 6. Create FlowTrip, store event context
-  throw new Error('Not implemented')
+  // The runtime evaluator is in triggerWorker.ts. This export survives only
+  // for legacy imports; callers should publish to the events queue instead.
+  return []
 }

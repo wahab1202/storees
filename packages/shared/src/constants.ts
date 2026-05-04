@@ -18,6 +18,10 @@ export const STANDARD_EVENTS = {
   // Segment engine-sourced
   ENTERS_SEGMENT: 'enters_segment',
   EXITS_SEGMENT: 'exits_segment',
+
+  // WhatsApp / CTWA — Phase F2a
+  WHATSAPP_INBOUND: 'whatsapp_inbound',
+  CTWA_LEAD_RECEIVED: 'ctwa_lead_received',
 } as const
 
 export const FINTECH_EVENTS = {

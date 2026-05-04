@@ -5,6 +5,7 @@ import { flows, flowTrips } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
+import { listFlowTemplates, installFlowTemplate, type FlowTemplateId } from '../services/flowTemplates.js'
 
 const router = Router()
 
@@ -305,6 +306,29 @@ router.post('/:id/clone', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Flow clone error:', err)
     res.status(500).json({ success: false, error: 'Failed to clone flow' })
+  }
+})
+
+// GET /api/flows/templates — list pre-built flow templates installable into a project
+router.get('/templates/list', requireProjectId, (_req, res) => {
+  res.json({ success: true, data: listFlowTemplates() })
+})
+
+// POST /api/flows/templates/install?projectId=  body: { templateId }
+// Installs a pre-built flow template (e.g. CTWA Welcome) as a draft flow.
+router.post('/templates/install', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const { templateId } = req.body as { templateId: FlowTemplateId }
+    if (!templateId) {
+      return res.status(400).json({ success: false, error: 'templateId is required' })
+    }
+    const result = await installFlowTemplate(projectId, templateId)
+    res.status(201).json({ success: true, data: result })
+  } catch (err) {
+    console.error('Install flow template error:', err)
+    const msg = err instanceof Error ? err.message : 'Failed to install template'
+    res.status(500).json({ success: false, error: msg })
   }
 })
 

@@ -730,6 +730,37 @@ export const oauthAccounts = pgTable('oauth_accounts', {
   index('idx_oauth_user').on(table.userId),
 ])
 
+// ============ CTWA ATTRIBUTIONS (Phase F2a) ============
+// One row per (project, customer, ad). The merchant's primary growth signal —
+// every CTWA click that turns into a conversation is a list-add with full
+// attribution. Updated on each subsequent inbound (last_inbound_at, inbound_count)
+// and on the first attributed order (first_purchase_at, attributed_revenue).
+
+export const ctwaAttributions = pgTable('ctwa_attributions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  adId: varchar('ad_id', { length: 255 }).notNull(),
+  sourceType: varchar('source_type', { length: 40 }),
+  sourceUrl: varchar('source_url', { length: 2048 }),
+  sourceId: varchar('source_id', { length: 255 }),
+  headline: varchar('headline', { length: 512 }),
+  body: text('body'),
+  mediaType: varchar('media_type', { length: 40 }),
+  imageUrl: varchar('image_url', { length: 2048 }),
+  ctwaClid: varchar('ctwa_clid', { length: 255 }),
+  firstInboundAt: timestamp('first_inbound_at', { withTimezone: true }).notNull().defaultNow(),
+  lastInboundAt: timestamp('last_inbound_at', { withTimezone: true }).notNull().defaultNow(),
+  inboundCount: integer('inbound_count').notNull().default(1),
+  firstPurchaseAt: timestamp('first_purchase_at', { withTimezone: true }),
+  attributedRevenue: decimal('attributed_revenue', { precision: 12, scale: 2 }).notNull().default('0'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_ctwa_attributions_unique').on(table.projectId, table.customerId, table.adId),
+  index('idx_ctwa_attributions_project_ad').on(table.projectId, table.adId, table.firstInboundAt),
+])
+
 export const whatsappTemplates = pgTable('whatsapp_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
