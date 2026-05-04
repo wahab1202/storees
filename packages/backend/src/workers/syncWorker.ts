@@ -10,6 +10,12 @@ import { processHistoricalEvent } from '../services/eventProcessor.js'
 import { SHOPIFY_API_DELAY_MS } from '@storees/shared'
 import { evaluateAllSegments } from '../services/segmentService.js'
 
+type ShopifyAddress = {
+  province?: string | null
+  province_code?: string | null
+  city?: string | null
+}
+
 type ShopifyCustomer = {
   id: number
   email: string | null
@@ -19,6 +25,7 @@ type ShopifyCustomer = {
   created_at: string
   email_marketing_consent: { state: string } | null
   sms_marketing_consent: { state: string } | null
+  default_address?: ShopifyAddress | null
 }
 
 type ShopifyProduct = {
@@ -95,6 +102,10 @@ export function startSyncWorker(): Worker {
             .filter(Boolean)
             .join(' ') || null
 
+          const addr = shopifyCustomer.default_address
+          const region = addr?.province || addr?.province_code || null
+          const city = addr?.city || null
+
           const customerId = await resolveCustomer({
             projectId,
             externalId: String(shopifyCustomer.id),
@@ -103,6 +114,8 @@ export function startSyncWorker(): Worker {
             name,
             emailSubscribed: shopifyCustomer.email_marketing_consent?.state === 'subscribed',
             smsSubscribed: shopifyCustomer.sms_marketing_consent?.state === 'subscribed',
+            region,
+            city,
           })
 
           // Fetch orders for this customer

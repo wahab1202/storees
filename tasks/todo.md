@@ -165,3 +165,51 @@
 - [x] Prediction-based segment conditions (churn_risk, conversion_score, dormancy_risk in segment builder)
 - [x] Prediction score dashboard widget (AI Predictions card with quality scores)
 - [ ] End-to-end ML pipeline test (train → score → display in UI) — needs real data
+
+## Shopify Onboarding — Region/Dealer Segments + Product Catalog + Product Notifications
+
+**Goal:** When a merchant connects a Shopify store, the segment builder must support filtering by Dealer/Region/City AND by Product/Category/Collection, and campaigns must be able to target product-derived segments. An onboarding doc walks the merchant from "connect store" to "first product-keyed campaign sent".
+
+**Confirmed state (Apr 30):**
+- Products + collections sync **already exists** in [syncWorker.ts:215-315](packages/backend/src/workers/syncWorker.ts#L215-L315) (no pagination, capped at 250)
+- Customer initial sync exists, capped at 100 customers — does NOT extract `default_address.province/city`
+- Webhook topics ([constants.ts:82](packages/shared/src/constants.ts#L82)) cover customers/orders/carts/checkouts only — no `products/*`, no `collections/*`
+- `eventProcessor.normalizePayload` ([eventProcessor.ts:166-179](packages/backend/src/services/eventProcessor.ts#L166-L179)) skips address fields
+- `customerService.resolveCustomer` doesn't accept region/city
+- Shopify SDK exists at `packages/sdk` + `packages/sdk-react` (need to confirm `product_viewed` is wired)
+- `agentScopedAccess` flag must be flipped manually in DB — no settings UI
+
+### Phase A — Customer region/city extraction (smallest, validates wiring end-to-end)
+- [ ] Extend `ResolveParams` in `customerService.ts` with optional `region`/`city`
+- [ ] In `resolveCustomer`, write region/city if currently null (don't overwrite — Shopify is one of many sources)
+- [ ] Update `eventProcessor.normalizePayload` to pull `payload.customer.default_address.province` → region, `.city` → city
+- [ ] Update `syncWorker.ts` initial customer sync to pass region/city to resolveCustomer
+- [ ] Backfill SQL for any existing customers where region is currently NULL but Shopify address data is reachable
+
+### Phase B — Product/Collection webhook subscriptions
+- [ ] Add `products/create`, `products/update`, `products/delete`, `collections/create`, `collections/update`, `collections/delete` to `SHOPIFY_WEBHOOK_TOPICS`
+- [ ] Add catalog handler in `webhooks.ts` — products/* upsert into `products` table; collections/* upsert into `collections` table; deletes flip `status='archived'` (don't hard-delete, segment history may reference them)
+- [ ] Re-register webhooks for already-connected projects (one-shot script that hits the Shopify API for each project's stored access token)
+
+### Phase C — Pagination for initial sync
+- [ ] Replace the `// No pagination for demo` shortcut in `syncProducts` and `syncCollections` with Shopify's Link-header `page_info` cursor pagination
+- [ ] Same for the customers loop (line 86) — currently capped at 100
+- [ ] Worker progress: keep the per-page progress callback so `/sync-status` stays meaningful
+
+### Phase D — Settings panel toggle for B2B/dealer scope
+- [ ] Backend: `PATCH /api/projects/:id/features` (admin-only) accepting `{ agentScopedAccess: boolean }`
+- [ ] Frontend: Settings → Project, add a section "B2B / Dealer Access" with a toggle that calls the PATCH endpoint
+- [ ] When enabled, surface a hint: "Dealers and Region/City filters are now available in segments"
+
+### Phase E — Onboarding doc (`docs/integrations/SHOPIFY_ONBOARDING.md`)
+- [ ] Cover: (1) install Shopify app from store, (2) wait for sync (status endpoint), (3) install SDK pixel in `theme.liquid` for product_viewed events, (4) verify with Debugger, (5) build first segment using product/region filters, (6) send first campaign
+
+### Phase F — Post-OAuth SDK install step (verify packages/sdk first)
+- [ ] Confirm `packages/sdk` ships a `product_viewed`/`added_to_cart` tracker
+- [ ] If yes: add an "Install pixel" step to the post-Shopify-connect onboarding flow that renders the `<script>` snippet with the project's API key
+- [ ] If no: defer to a separate ticket and leave a manual instruction in the onboarding doc
+
+### Verification (after all phases)
+- [ ] Connect a Shopify dev store → wait for sync → confirm `products`, `collections`, `customers.region`, `customers.city` populated
+- [ ] Open segment builder → confirm Dealer/Region/City group renders (with `agentScopedAccess` on) AND Product/Category/Collection pickers show real options
+- [ ] Build a "purchased Product X" segment → send a campaign to it → message lands

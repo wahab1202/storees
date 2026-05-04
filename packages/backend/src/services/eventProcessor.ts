@@ -47,6 +47,8 @@ export async function processWebhookEvent(
       name: normalized.customerName,
       emailSubscribed: normalized.emailSubscribed,
       smsSubscribed: normalized.smsSubscribed,
+      region: normalized.region,
+      city: normalized.city,
     })
 
     // 4. Enrich — handle side effects (create order rows, update aggregates)
@@ -130,8 +132,20 @@ type NormalizedPayload = {
   customerName?: string | null
   emailSubscribed?: boolean
   smsSubscribed?: boolean
+  region?: string | null
+  city?: string | null
   properties: Record<string, unknown>
   timestamp: Date
+}
+
+/** Pull province (region) and city from a Shopify customer's default_address. Tolerates the field being missing or partial. */
+function extractShopifyAddress(customer: Record<string, unknown> | undefined): { region: string | null; city: string | null } {
+  if (!customer) return { region: null, city: null }
+  const addr = (customer.default_address ?? customer.billing_address ?? customer.shipping_address) as Record<string, unknown> | undefined
+  if (!addr) return { region: null, city: null }
+  const region = (addr.province as string | undefined) || (addr.province_code as string | undefined) || null
+  const city = (addr.city as string | undefined) || null
+  return { region: region || null, city: city || null }
 }
 
 function normalizePayload(eventName: string, payload: WebhookPayload): NormalizedPayload {
@@ -161,6 +175,10 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
     if (smsConsent) {
       base.smsSubscribed = smsConsent.state === 'subscribed'
     }
+
+    const { region, city } = extractShopifyAddress(customer)
+    base.region = region
+    base.city = city
   }
 
   switch (eventName) {
@@ -177,6 +195,10 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
       if (emailConsent) base.emailSubscribed = emailConsent.state === 'subscribed'
       const smsConsent = payload.sms_marketing_consent as Record<string, unknown> | undefined
       if (smsConsent) base.smsSubscribed = smsConsent.state === 'subscribed'
+      // customer_* webhooks deliver fields at top level, not nested under .customer
+      const directAddr = extractShopifyAddress(payload as Record<string, unknown>)
+      if (directAddr.region) base.region = directAddr.region
+      if (directAddr.city) base.city = directAddr.city
       break
 
     case 'order_placed':

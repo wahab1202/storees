@@ -133,6 +133,8 @@ type ResolveParams = {
   name?: string | null
   emailSubscribed?: boolean
   smsSubscribed?: boolean
+  region?: string | null
+  city?: string | null
 }
 
 /**
@@ -148,7 +150,7 @@ type ResolveParams = {
  * Always updates last_seen.
  */
 export async function resolveCustomer(params: ResolveParams): Promise<string> {
-  const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed } = params
+  const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed, region, city } = params
 
   // 1. Try external_id (has unique index: idx_customers_external)
   if (externalId) {
@@ -159,7 +161,7 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed })
+      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed, region, city })
       return found.id
     }
   }
@@ -179,6 +181,9 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
       if (phone) updates.phone = phone
       if (emailSubscribed !== undefined) updates.emailSubscribed = emailSubscribed
       if (smsSubscribed !== undefined) updates.smsSubscribed = smsSubscribed
+      // Region/city: only fill if currently NULL (don't clobber other-source data like B2B dealer assignment)
+      if (region) updates.region = sql`COALESCE(${customers.region}, ${region})`
+      if (city) updates.city = sql`COALESCE(${customers.city}, ${city})`
       await db.update(customers).set(updates).where(eq(customers.id, found.id))
       return found.id
     }
@@ -193,7 +198,7 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed })
+      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed, region, city })
       return found.id
     }
   }
@@ -202,15 +207,17 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
   // Try insert with the best unique key available
   if (email) {
     const result = await db.execute(sql`
-      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, metrics)
-      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, '{}'::jsonb)
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics)
+      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb)
       ON CONFLICT (project_id, email) WHERE email IS NOT NULL
       DO UPDATE SET
         last_seen = NOW(),
         updated_at = NOW(),
         external_id = COALESCE(EXCLUDED.external_id, customers.external_id),
         phone = COALESCE(EXCLUDED.phone, customers.phone),
-        name = COALESCE(EXCLUDED.name, customers.name)
+        name = COALESCE(EXCLUDED.name, customers.name),
+        region = COALESCE(customers.region, EXCLUDED.region),
+        city = COALESCE(customers.city, EXCLUDED.city)
       RETURNING id
     `)
     return (result.rows[0] as { id: string }).id
@@ -218,14 +225,16 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
 
   if (phone) {
     const result = await db.execute(sql`
-      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, metrics)
-      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, '{}'::jsonb)
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics)
+      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb)
       ON CONFLICT (project_id, phone) WHERE phone IS NOT NULL
       DO UPDATE SET
         last_seen = NOW(),
         updated_at = NOW(),
         external_id = COALESCE(EXCLUDED.external_id, customers.external_id),
-        name = COALESCE(EXCLUDED.name, customers.name)
+        name = COALESCE(EXCLUDED.name, customers.name),
+        region = COALESCE(customers.region, EXCLUDED.region),
+        city = COALESCE(customers.city, EXCLUDED.city)
       RETURNING id
     `)
     return (result.rows[0] as { id: string }).id
@@ -240,6 +249,8 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
     name: name ?? null,
     emailSubscribed: emailSubscribed ?? false,
     smsSubscribed: smsSubscribed ?? false,
+    region: region ?? null,
+    city: city ?? null,
     metrics: {},
   }).returning({ id: customers.id })
 
@@ -255,6 +266,8 @@ async function updateLastSeen(
     phone?: string | null
     emailSubscribed?: boolean
     smsSubscribed?: boolean
+    region?: string | null
+    city?: string | null
   },
 ): Promise<void> {
   const updates: Record<string, unknown> = {
@@ -267,6 +280,9 @@ async function updateLastSeen(
   if (extra?.phone) updates.phone = extra.phone
   if (extra?.emailSubscribed !== undefined) updates.emailSubscribed = extra.emailSubscribed
   if (extra?.smsSubscribed !== undefined) updates.smsSubscribed = extra.smsSubscribed
+  // Region/city: only fill if currently NULL — see resolveCustomer for rationale
+  if (extra?.region) updates.region = sql`COALESCE(${customers.region}, ${extra.region})`
+  if (extra?.city) updates.city = sql`COALESCE(${customers.city}, ${extra.city})`
 
   await db.update(customers).set(updates).where(eq(customers.id, customerId))
 }
