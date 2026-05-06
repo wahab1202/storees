@@ -155,9 +155,11 @@ SELECT
        THEN o_stats.total_spent / o_stats.total_orders
        ELSE 0 END                     AS avg_order_value,
 
-  -- Most-recent dealer (from gwm.dealer_order JOIN gwm.order)
-  most_recent_dealer.dealer_id        AS gwm_dealer_id,
-  most_recent_dealer.dealer_name      AS gwm_dealer_name
+  -- Customer's assigned dealer. In this Medusa instance the linkage is at
+  -- the customer level (B2B perma-assignment in gc.metadata->>'dealer_id'),
+  -- with order-level dealer_order as a fallback. NOT the other way around.
+  dealer_link.dealer_id   AS gwm_dealer_id,
+  dealer_link.dealer_name AS gwm_dealer_name
 FROM customers sc
 JOIN gwm.customer gc
   ON gc.id = sc.external_id
@@ -182,16 +184,31 @@ LEFT JOIN LATERAL (
     AND o.canceled_at IS NULL
 ) o_stats ON TRUE
 LEFT JOIN LATERAL (
-  SELECT d.id AS dealer_id, d.name AS dealer_name
-  FROM gwm.dealer_order do_
-  JOIN gwm."order" o ON o.id = do_.order_id
-  JOIN gwm.dealer d ON d.id = do_.dealer_id
-  WHERE o.customer_id = gc.id
-    AND do_.deleted_at IS NULL
-    AND o.deleted_at IS NULL
-  ORDER BY do_.created_at DESC
-  LIMIT 1
-) most_recent_dealer ON TRUE
+  -- Resolve the customer's dealer. Customer-level metadata dealer_id is
+  -- the B2B perma-assignment (every customer is owned by a single dealer
+  -- regardless of orders). Order-level dealer_order is fallback for
+  -- pre-metadata-migration rows or order-attribution flows.
+  SELECT
+    coalesce_dealer.id AS dealer_id,
+    coalesce_dealer.name AS dealer_name
+  FROM (
+    SELECT COALESCE(
+      NULLIF(gc.metadata->>'dealer_id', ''),
+      (
+        SELECT do_.dealer_id
+        FROM gwm.dealer_order do_
+        JOIN gwm."order" o ON o.id = do_.order_id
+        WHERE o.customer_id = gc.id
+          AND do_.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+        ORDER BY do_.created_at DESC
+        LIMIT 1
+      )
+    ) AS dealer_id_resolved
+  ) resolved
+  LEFT JOIN gwm.dealer coalesce_dealer
+    ON coalesce_dealer.id = resolved.dealer_id_resolved
+) dealer_link ON TRUE
 WHERE sc.project_id IN (
   SELECT project_id FROM project_data_sources
   WHERE source_type = 'medusa_gwm' AND is_active = TRUE
