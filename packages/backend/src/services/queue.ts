@@ -116,3 +116,16 @@ export const identityMergeQueue = new Queue('identity-merge', {
     removeOnFail: { count: 100 },
   },
 })
+
+// Phase F-fed — periodic refresh of federated materialised views
+// (mv_gwm_customer_attrs etc.) plus the customers-table sync that makes
+// region/city/total_orders/etc. live in segment queries.
+export const federationRefreshQueue = new Queue('federation-refresh', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 10_000 },
+    removeOnComplete: true,
+    removeOnFail: { count: 20 },
+  },
+})

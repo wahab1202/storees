@@ -761,6 +761,26 @@ export const oauthAccounts = pgTable('oauth_accounts', {
   index('idx_oauth_user').on(table.userId),
 ])
 
+// ============ PROJECT DATA SOURCES (Phase F-fed — federation) ============
+// Tells the refresh worker which projects pull live data from an external
+// DB via postgres_fdw, vs. those that own their data natively. The actual
+// FDW server + user mapping live at the Postgres level; this row tells the
+// app "for project X, refresh the materialised view from server Y."
+
+export const projectDataSources = pgTable('project_data_sources', {
+  projectId: uuid('project_id').primaryKey().references(() => projects.id, { onDelete: 'cascade' }),
+  sourceType: varchar('source_type', { length: 40 }).notNull(),
+  fdwServerName: varchar('fdw_server_name', { length: 64 }),
+  config: jsonb('config').notNull().default('{}'),
+  lastRefreshAt: timestamp('last_refresh_at', { withTimezone: true }),
+  lastRefreshStatus: varchar('last_refresh_status', { length: 20 }),
+  lastRefreshError: text('last_refresh_error'),
+  lastRefreshDurationMs: integer('last_refresh_duration_ms'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
 // ============ OPT-IN WIDGETS (Phase F2b) ============
 // Configurable storefront opt-in forms; merchant CRUDs in the admin panel,
 // SDK reads via /v1/widgets and renders. consent_text mandatory — DPDP
