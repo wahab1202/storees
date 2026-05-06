@@ -53,6 +53,14 @@ CREATE USER MAPPING FOR postgres SERVER gwm_source
 -- CREATE USER MAPPING FOR storees_app SERVER gwm_source
 --   OPTIONS (user :'gwm_user', password :'gwm_password');
 
--- 3. Test the connection
-SELECT 'fdw_setup_ok' AS status,
-       (SELECT COUNT(*) FROM dblink_connect_u('gwm_source', '')) AS handle_count;
+-- 3. Sanity check — confirm the server + user mapping registered.
+--    No actual cross-DB call is made here (that would require dblink and
+--    add a runtime extension dep); the IMPORT FOREIGN SCHEMA in
+--    gwm_federated_views.sql is the real proof the connection works.
+SELECT
+  'fdw_setup_ok' AS status,
+  s.srvname,
+  s.srvoptions,
+  (SELECT COUNT(*) FROM pg_user_mappings WHERE srvname = 'gwm_source') AS user_mappings
+FROM pg_foreign_server s
+WHERE s.srvname = 'gwm_source';

@@ -34,11 +34,14 @@ DROP FOREIGN TABLE IF EXISTS gwm.dealer CASCADE;
 DROP FOREIGN TABLE IF EXISTS gwm.dealer_order CASCADE;
 DROP FOREIGN TABLE IF EXISTS gwm.cat_product CASCADE;
 
+-- Import every table EXCEPT `order` — it has a custom enum
+-- (`public.order_status_enum`) that doesn't exist on the Storees side, and
+-- IMPORT FOREIGN SCHEMA can't auto-translate. We create that one by hand
+-- below with `text` for the status column, which is what we'd cast to anyway.
 IMPORT FOREIGN SCHEMA public
   LIMIT TO (
     customer,
     customer_address,
-    "order",
     order_summary,
     order_line_item,
     order_item,
@@ -47,6 +50,31 @@ IMPORT FOREIGN SCHEMA public
     cat_product
   )
   FROM SERVER gwm_source INTO gwm;
+
+-- Manually create gwm."order" with status as text (avoids the enum dependency).
+-- Column list mirrors the source schema we surveyed; only `status` is degraded
+-- from the enum to text — the segment evaluator only ever reads it as a string.
+CREATE FOREIGN TABLE gwm."order" (
+  id                  text NOT NULL,
+  region_id           text,
+  display_id          integer,
+  customer_id         text,
+  version             integer NOT NULL,
+  sales_channel_id    text,
+  status              text NOT NULL,
+  is_draft_order      boolean NOT NULL,
+  email               text,
+  currency_code       text NOT NULL,
+  shipping_address_id text,
+  billing_address_id  text,
+  no_notification     boolean,
+  metadata            jsonb,
+  created_at          timestamp with time zone NOT NULL,
+  updated_at          timestamp with time zone NOT NULL,
+  deleted_at          timestamp with time zone,
+  canceled_at         timestamp with time zone
+) SERVER gwm_source
+OPTIONS (schema_name 'public', table_name 'order');
 
 -- ── 2. Live view: gwm-shaped → Storees-shaped ──────────────────────────────
 
