@@ -76,6 +76,56 @@ CREATE FOREIGN TABLE gwm."order" (
 ) SERVER gwm_source
 OPTIONS (schema_name 'public', table_name 'order');
 
+-- ── 1b. Region / city normalisation ────────────────────────────────────────
+-- gwm.customer_address.province is unbounded text; merchants enter values
+-- inconsistently ("Tamil Nadu" / "Tamilnadu" / "TAMILNADU" / "tamilnadu").
+-- Without normalisation, segment "Region is X" only matches one spelling.
+--
+-- Strategy:
+--   1. Lower + trim + collapse whitespace
+--   2. Insert a space in compound state names that arrived without one
+--      (tamilnadu → tamil nadu, andhrapradesh → andhra pradesh, etc.)
+--   3. Title-case the result
+--   4. Restore the lowercase "and" connector (Jammu and Kashmir, not "And")
+--
+-- IMMUTABLE so the planner can use it in indexed expressions if needed later.
+CREATE OR REPLACE FUNCTION normalize_indian_region(raw text) RETURNS text AS $$
+DECLARE
+  base text;
+BEGIN
+  IF raw IS NULL OR LENGTH(TRIM(raw)) = 0 THEN RETURN NULL; END IF;
+  base := LOWER(TRIM(raw));
+  base := REGEXP_REPLACE(base, '\s+', ' ', 'g');
+
+  -- Insert spaces in compound names that arrived without them
+  base := CASE base
+    WHEN 'tamilnadu' THEN 'tamil nadu'
+    WHEN 'andhrapradesh' THEN 'andhra pradesh'
+    WHEN 'arunachalpradesh' THEN 'arunachal pradesh'
+    WHEN 'himachalpradesh' THEN 'himachal pradesh'
+    WHEN 'madhyapradesh' THEN 'madhya pradesh'
+    WHEN 'uttarpradesh' THEN 'uttar pradesh'
+    WHEN 'westbengal' THEN 'west bengal'
+    WHEN 'jammuandkashmir' THEN 'jammu and kashmir'
+    WHEN 'jammukashmir' THEN 'jammu and kashmir'
+    WHEN 'newdelhi' THEN 'delhi'
+    ELSE base
+  END;
+
+  -- Title-case + restore the lowercase connector "and" / "of"
+  RETURN REGEXP_REPLACE(REGEXP_REPLACE(INITCAP(base), '\\bAnd\\b', 'and', 'g'), '\\bOf\\b', 'of', 'g');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- City: lighter normalisation (just trim + title-case). Cities are usually
+-- entered in one of two forms ("Chennai" or "chennai"); INITCAP merges them.
+CREATE OR REPLACE FUNCTION normalize_city(raw text) RETURNS text AS $$
+BEGIN
+  IF raw IS NULL OR LENGTH(TRIM(raw)) = 0 THEN RETURN NULL; END IF;
+  RETURN INITCAP(REGEXP_REPLACE(LOWER(TRIM(raw)), '\s+', ' ', 'g'));
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 -- ── 2. Live view: gwm-shaped → Storees-shaped ──────────────────────────────
 
 -- One row per (Storees customer that exists in gwm).
@@ -90,9 +140,11 @@ SELECT
   sc.project_id,
   sc.external_id  AS gwm_customer_id,
 
-  -- Address: prefer billing address, fall back to shipping
-  ga.province     AS region,
-  ga.city,
+  -- Address: prefer billing address, fall back to shipping. Normalise both
+  -- so segment filters match across the variant spellings merchants enter
+  -- ("Tamilnadu", "tamil nadu", "TAMIL NADU" all → "Tamil Nadu").
+  normalize_indian_region(ga.province) AS region,
+  normalize_city(ga.city)              AS city,
 
   -- Order aggregates (computed live from gwm)
   COALESCE(o_stats.total_orders, 0)   AS total_orders,
