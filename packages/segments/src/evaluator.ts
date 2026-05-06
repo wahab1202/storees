@@ -64,6 +64,39 @@ function groupToSql(group: FilterGroup): SQL {
 function ruleToSql(rule: FilterRule): SQL {
   const value = rule.value
 
+  // Dealer-attribute fields (Phase F-fed) — JOIN against agents table.
+  // "Customers whose dealer's name contains tiruvarur" → EXISTS on agents.
+  if (rule.field === 'dealer_name' || rule.field === 'dealer_city' || rule.field === 'dealer_region') {
+    const col = rule.field === 'dealer_name' ? sql`a.name`
+              : rule.field === 'dealer_city' ? sql`a.city`
+              : sql`a.region`
+    const v = String(value ?? '')
+    let predicate: SQL
+    switch (rule.operator) {
+      case 'is':         predicate = sql`${col} = ${v}`; break
+      case 'is_not':     predicate = sql`${col} IS DISTINCT FROM ${v}`; break
+      case 'contains':   predicate = sql`${col} ILIKE ${'%' + v + '%'}`; break
+      case 'begins_with':predicate = sql`${col} ILIKE ${v + '%'}`; break
+      case 'ends_with':  predicate = sql`${col} ILIKE ${'%' + v}`; break
+      default:
+        // Unsupported operator on dealer-attribute fields → match nothing rather than throw
+        return sql`FALSE`
+    }
+    // is_not matches customers whose dealer is different OR who have no dealer at all
+    if (rule.operator === 'is_not') {
+      return sql`NOT EXISTS (
+        SELECT 1 FROM agents a
+        WHERE a.id = customers.agent_id
+        AND ${col} = ${v}
+      )`
+    }
+    return sql`EXISTS (
+      SELECT 1 FROM agents a
+      WHERE a.id = customers.agent_id
+      AND ${predicate}
+    )`
+  }
+
   // Product-based operators use special subqueries
   switch (rule.operator) {
     case 'has_purchased':
@@ -469,6 +502,10 @@ function evaluateGroup(group: FilterGroup, customer: Customer): boolean {
 function evaluateRule(rule: FilterRule, customer: Customer): boolean {
   // Engagement fields require querying the events table — SQL path only
   if (rule.field === 'days_since_email_open' || rule.field === 'days_since_email_click') {
+    return false
+  }
+  // Dealer-attribute fields require JOIN against agents — SQL path only
+  if (rule.field === 'dealer_name' || rule.field === 'dealer_city' || rule.field === 'dealer_region') {
     return false
   }
 

@@ -2,6 +2,7 @@ import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { getDomainFields } from './domainRegistry.js'
+import { getProjectFieldDefs } from './agentFieldDefs.js'
 import type { DomainType, DomainFieldDef } from '@storees/shared'
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
@@ -71,6 +72,20 @@ ${fieldDocs}
 7. For select fields, value must be one of the listed options exactly.
 8. Output ONLY the FilterConfig JSON. No explanations, no markdown, no code fences.
 
+## Field-mapping guidance
+
+When the user says... → use this field
+- "from <city>" / "in <city>"           → "city" if it's the customer's location, "dealer_city" if asking about the dealer
+- "dealer's name has X" / "dealer named" → "dealer_name" with operator "contains"
+- "dealer in <state>" / "dealer from"   → "dealer_region" (or "dealer_city" for sub-state geography) with "contains"
+- "Tamil Nadu customers"                 → "region" with "is" "Tamil Nadu" (the customer's region)
+- "customers under <DealerName>" with a specific exact name → "agent_id" only if the exact dealer ID is known; otherwise prefer "dealer_name" with "contains"
+
+DEALER VS CUSTOMER GEOGRAPHY:
+- "city" / "region" describe THE CUSTOMER's location
+- "dealer_city" / "dealer_region" / "dealer_name" describe the CUSTOMER'S ASSIGNED DEALER (B2B model — each customer is owned by one dealer)
+- If ambiguous ("from Chennai"), default to "city" (customer's own city)
+
 ## Examples
 
 Input: "Active customers who haven't transacted in 30 days"
@@ -83,7 +98,19 @@ Input: "கடந்த 90 நாட்களில் பரிவர்த்�
 Output: {"logic":"AND","rules":[{"field":"days_since_last_txn","operator":"greater_than","value":90}]}
 
 Input: "High value customers with portfolio over 5 lakh"
-Output: {"logic":"AND","rules":[{"field":"portfolio_value","operator":"greater_than","value":50000000}]}`
+Output: {"logic":"AND","rules":[{"field":"portfolio_value","operator":"greater_than","value":50000000}]}
+
+Input: "Customers whose dealers are from Tiruvarur"
+Output: {"logic":"AND","rules":[{"field":"dealer_name","operator":"contains","value":"Tiruvarur"}]}
+
+Input: "Customers under dealers in Tamil Nadu"
+Output: {"logic":"AND","rules":[{"field":"dealer_region","operator":"contains","value":"Tamil Nadu"}]}
+
+Input: "Customers in Chennai"
+Output: {"logic":"AND","rules":[{"field":"city","operator":"is","value":"Chennai"}]}
+
+Input: "Customers from Tamil Nadu who spent over 10000"
+Output: {"logic":"AND","rules":[{"field":"region","operator":"is","value":"Tamil Nadu"},{"field":"total_spent","operator":"greater_than","value":1000000}]}`
 }
 
 // ---- Summary generator ----
@@ -156,7 +183,12 @@ export async function generateSegmentFilter(
   // Resolve domain for this project
   const [project] = await db.select({ domainType: projects.domainType }).from(projects).where(eq(projects.id, projectId)).limit(1)
   const domainType: DomainType = (project?.domainType as DomainType) ?? 'ecommerce'
-  const fields = getDomainFields(domainType)
+  // Enriched field set: includes dynamic B2B fields (Dealer, Region, City,
+  // Dealer Name/City/Region) when the project has agentScopedAccess enabled.
+  // Same set the segment-builder UI sees → AI generates filters that are
+  // valid against the same evaluator.
+  const baseFields = getDomainFields(domainType)
+  const fields = await getProjectFieldDefs(projectId, baseFields)
 
   const validFields = new Set(fields.map(f => f.field))
   const systemPrompt = buildSystemPrompt(fields)

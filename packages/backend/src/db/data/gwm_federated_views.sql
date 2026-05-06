@@ -280,10 +280,11 @@ DECLARE
   v_linked INT;
 BEGIN
   -- Upsert dealers as agents. Truncate text → varchar columns defensively
-  -- (name 255 / email 255 / phone 50 / region 64) — gwm.dealer fields are
-  -- unbounded text upstream.
+  -- (name 255 / email 255 / phone 50 / region 64 / city 128). dealer.city is
+  -- often '-' or empty for this merchant; coerce that to NULL so dealer_city
+  -- segment filters don't match dashes.
   WITH ins AS (
-    INSERT INTO agents (project_id, external_dealer_id, name, email, phone, region, is_active)
+    INSERT INTO agents (project_id, external_dealer_id, name, email, phone, region, city, is_active)
     SELECT
       p_project_id,
       d.id,
@@ -291,6 +292,7 @@ BEGIN
       LEFT(NULLIF(d.email, ''), 255),
       LEFT(NULLIF(d.phone, ''), 50),
       LEFT(NULLIF(d.state, ''), 64),
+      LEFT(NULLIF(NULLIF(TRIM(d.city), ''), '-'), 128),
       d.deleted_at IS NULL
     FROM gwm.dealer d
     ON CONFLICT (project_id, external_dealer_id) DO UPDATE SET
@@ -298,6 +300,7 @@ BEGIN
       email = EXCLUDED.email,
       phone = EXCLUDED.phone,
       region = EXCLUDED.region,
+      city = EXCLUDED.city,
       is_active = EXCLUDED.is_active,
       updated_at = NOW()
     RETURNING 1
