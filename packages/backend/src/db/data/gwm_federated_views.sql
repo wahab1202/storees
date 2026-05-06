@@ -167,12 +167,16 @@ CREATE INDEX idx_mv_gwm_customer_attrs_project
 CREATE OR REPLACE FUNCTION sync_gwm_customer_attrs()
 RETURNS TABLE(updated_count INT) AS $$
 BEGIN
+  -- Defensive truncation: source columns are unbounded text; Storees columns
+  -- have varchar limits (region 64, city 128). LEFT() prevents
+  -- "value too long for type character varying" errors when a merchant has
+  -- entered an unusually long province/city value upstream.
   RETURN QUERY
   WITH applied AS (
     UPDATE customers c
     SET
-      region = mv.region,
-      city = mv.city,
+      region = LEFT(mv.region, 64),
+      city = LEFT(mv.city, 128),
       total_orders = mv.total_orders,
       total_spent = mv.total_spent,
       first_order_date = mv.first_order_date,
@@ -182,8 +186,8 @@ BEGIN
     FROM mv_gwm_customer_attrs mv
     WHERE c.id = mv.customer_id
       AND (
-        c.region IS DISTINCT FROM mv.region
-        OR c.city IS DISTINCT FROM mv.city
+        c.region IS DISTINCT FROM LEFT(mv.region, 64)
+        OR c.city IS DISTINCT FROM LEFT(mv.city, 128)
         OR c.total_orders IS DISTINCT FROM mv.total_orders
         OR c.total_spent IS DISTINCT FROM mv.total_spent
         OR c.first_order_date IS DISTINCT FROM mv.first_order_date
@@ -206,19 +210,20 @@ DECLARE
   v_upserted INT;
   v_linked INT;
 BEGIN
-  -- Upsert dealers as agents
+  -- Upsert dealers as agents. Truncate text → varchar columns defensively
+  -- (name 255 / email 255 / phone 50 / region 64) — gwm.dealer fields are
+  -- unbounded text upstream.
   WITH ins AS (
     INSERT INTO agents (project_id, external_dealer_id, name, email, phone, region, is_active)
     SELECT
       p_project_id,
       d.id,
-      COALESCE(NULLIF(TRIM(d.name), ''), 'Dealer ' || d.id),
-      NULLIF(d.email, ''),
-      NULLIF(d.phone, ''),
-      NULLIF(d.state, ''),
+      LEFT(COALESCE(NULLIF(TRIM(d.name), ''), 'Dealer ' || d.id), 255),
+      LEFT(NULLIF(d.email, ''), 255),
+      LEFT(NULLIF(d.phone, ''), 50),
+      LEFT(NULLIF(d.state, ''), 64),
       d.deleted_at IS NULL
     FROM gwm.dealer d
-    WHERE d.deleted_at IS NULL OR d.deleted_at IS NOT NULL  -- include all; is_active reflects deletion
     ON CONFLICT (project_id, external_dealer_id) DO UPDATE SET
       name = EXCLUDED.name,
       email = EXCLUDED.email,
@@ -230,17 +235,23 @@ BEGIN
   )
   SELECT COUNT(*) INTO v_upserted FROM ins;
 
-  -- Link customers.agent_id via gwm_dealer_id from MV
+  -- Link customers.agent_id via gwm_dealer_id from the MV.
+  -- Postgres UPDATE...FROM can't JOIN to the UPDATE target's columns; resolve
+  -- by computing (customer_id, agent_id) pairs in a subquery first.
   WITH applied AS (
     UPDATE customers c
-    SET agent_id = a.id, updated_at = NOW()
-    FROM mv_gwm_customer_attrs mv
-    JOIN agents a
-      ON a.project_id = c.project_id
-      AND a.external_dealer_id = mv.gwm_dealer_id
-    WHERE c.id = mv.customer_id
+    SET agent_id = pairs.agent_id, updated_at = NOW()
+    FROM (
+      SELECT mv.customer_id, a.id AS agent_id
+      FROM mv_gwm_customer_attrs mv
+      JOIN agents a
+        ON a.project_id = mv.project_id
+        AND a.external_dealer_id = mv.gwm_dealer_id
+      WHERE mv.gwm_dealer_id IS NOT NULL
+    ) pairs
+    WHERE c.id = pairs.customer_id
       AND c.project_id = p_project_id
-      AND c.agent_id IS DISTINCT FROM a.id
+      AND c.agent_id IS DISTINCT FROM pairs.agent_id
     RETURNING 1
   )
   SELECT COUNT(*) INTO v_linked FROM applied;
