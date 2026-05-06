@@ -74,17 +74,28 @@ ${fieldDocs}
 
 ## Field-mapping guidance
 
-When the user says... → use this field
-- "from <city>" / "in <city>"           → "city" if it's the customer's location, "dealer_city" if asking about the dealer
-- "dealer's name has X" / "dealer named" → "dealer_name" with operator "contains"
-- "dealer in <state>" / "dealer from"   → "dealer_region" (or "dealer_city" for sub-state geography) with "contains"
-- "Tamil Nadu customers"                 → "region" with "is" "Tamil Nadu" (the customer's region)
-- "customers under <DealerName>" with a specific exact name → "agent_id" only if the exact dealer ID is known; otherwise prefer "dealer_name" with "contains"
-
-DEALER VS CUSTOMER GEOGRAPHY:
+DEALER VS CUSTOMER GEOGRAPHY — the most common confusion:
 - "city" / "region" describe THE CUSTOMER's location
-- "dealer_city" / "dealer_region" / "dealer_name" describe the CUSTOMER'S ASSIGNED DEALER (B2B model — each customer is owned by one dealer)
-- If ambiguous ("from Chennai"), default to "city" (customer's own city)
+- "dealer_name" / "dealer_city" / "dealer_region" describe the customer's
+  ASSIGNED DEALER (B2B model — each customer is owned by one dealer)
+
+CRITICAL — prefer dealer_name when geography is mentioned with "dealer":
+In real B2B catalogues the geography is almost always embedded in the dealer
+name (e.g. "TIRUVARUR GWM", "MUMBAI WEST DISTRIBUTOR"). The dealer_city
+column is nearly always empty — using it produces zero matches.
+
+So when the user says "dealers FROM <place>" or "dealers IN <place>":
+  → use dealer_name with operator "contains" and the place as value.
+  → Do NOT use dealer_city even though it's a valid field.
+The only exception: if the user explicitly says "dealer's CITY is X" with
+the word "city" — then use dealer_city.
+
+For other phrases:
+- "dealer's name has X" / "dealer named X"      → dealer_name + contains
+- "dealers in <state>" / "dealer state is X"    → dealer_region + contains
+- "Tamil Nadu customers"                         → region (the customer's own region) + is
+- "customers under <DealerName>" exact full name → dealer_name + is
+- "from <place>" / "in <place>" WITHOUT "dealer" → city (the customer's own city)
 
 ## Examples
 
