@@ -2,39 +2,37 @@
 --
 -- Phase F-fed extension — sync products, collections, and orders (with line items)
 -- from gwm into Storees-native tables. Pairs with gwm_federated_views.sql which
--- already imported gwm.cat_product / gwm.order / gwm.order_line_item as foreign
--- tables. This file adds three sync functions called every 5min by
--- federationRefreshWorker:
+-- already imported the gwm foreign tables. This file adds three sync functions
+-- called every 5min by federationRefreshWorker.
 --
---   sync_gwm_products(project_id)      → INSERT/UPSERT cat_product → products
---   sync_gwm_collections(project_id)   → derive distinct categories → collections
---                                        + populate product_collections junction
---   sync_gwm_orders(project_id, since) → incremental: orders.updated_at > since
---                                        with line_items aggregated as JSONB
---                                        in the shape the segment evaluator
---                                        already reads at evaluator.ts:120
+-- Schema reality (discovered via \d on the foreign tables):
+--   gwm.cat_product:    id (text), name (text — always 'Product' literal),
+--                        data (jsonb — { title, handle, status, collection_id,
+--                        type_id, ... }), timestamps
+--   gwm.order:          id, customer_id, status, currency_code, is_draft_order,
+--                        canceled_at, deleted_at, ...
+--   gwm.order_item:     id, order_id, item_id, quantity, unit_price, ...
+--                        (Medusa v2 junction — NOT order_line_item directly)
+--   gwm.order_line_item: id, product_id, product_title, product_type,
+--                        product_collection, unit_price, ...
+--                        (denormalised line snapshot — does NOT have order_id
+--                         or quantity; those live on order_item)
 --
--- The orders sync is incremental — `since` is read from
--- project_data_sources.config -> 'orders' -> 'lastSyncedAt' on the worker side
--- and bumped after each successful tick. Products + collections are full upserts
--- (catalog is small enough that a 5min full pass is cheap).
+-- The product 'title' is in data->>'title', NOT a column. There's no
+-- product_type / vendor / image_url column or JSONB key — leave those
+-- empty for now. Collections come from the denormalised
+-- order_line_item.product_collection (per-line text names) — gives us real
+-- collection names but only for products that have been ordered at least once.
 --
 -- Idempotent: re-running this file replaces the functions in place.
 
 SET search_path = public;
 
 -- ── 1. Products ────────────────────────────────────────────────────────────
--- gwm.cat_product columns we use:
---   id (text)         → products.shopify_product_id (we reuse this column for
---                       any external-catalog-id, varchar(255))
---   title (text)      → products.title (varchar 500)
---   category (text)   → products.product_type (varchar 255)  [also drives collections]
---   brand (text)      → products.vendor (varchar 255)
---   image_url (text)  → products.image_url (varchar 2048)
---   deleted_at        → maps to products.status ('active' | 'archived')
---
--- Defensive truncation everywhere — gwm columns are unbounded text; Storees
--- has varchar limits. LEFT() prevents 22001 errors on overlong values.
+-- Pull from gwm.cat_product. Title comes from the data JSONB. status maps:
+--   gwm.deleted_at IS NOT NULL → 'archived'
+--   data->>'status' = 'rejected' → 'archived'
+--   else 'active'
 
 CREATE OR REPLACE FUNCTION sync_gwm_products(p_project_id UUID)
 RETURNS TABLE(upserted_count INT) AS $$
@@ -45,25 +43,23 @@ BEGIN
     SELECT
       p_project_id,
       LEFT(cp.id, 255),
-      LEFT(COALESCE(NULLIF(TRIM(cp.title), ''), 'Untitled'), 500),
-      LEFT(COALESCE(NULLIF(TRIM(cp.category), ''), ''), 255),
-      LEFT(COALESCE(NULLIF(TRIM(cp.brand), ''), ''), 255),
-      LEFT(NULLIF(cp.image_url, ''), 2048),
-      CASE WHEN cp.deleted_at IS NULL THEN 'active' ELSE 'archived' END
+      LEFT(COALESCE(NULLIF(TRIM(cp.data->>'title'), ''), NULLIF(TRIM(cp.data->>'handle'), ''), 'Untitled'), 500),
+      ''::varchar,    -- product_type: no column or JSONB path on cat_product
+      ''::varchar,    -- vendor: same
+      NULL,           -- image_url: same (could query cat_product_image table later)
+      CASE
+        WHEN cp.deleted_at IS NOT NULL THEN 'archived'
+        WHEN cp.data->>'status' = 'rejected' THEN 'archived'
+        ELSE 'active'
+      END
     FROM gwm.cat_product cp
     ON CONFLICT (project_id, shopify_product_id) DO UPDATE SET
       title = EXCLUDED.title,
-      product_type = EXCLUDED.product_type,
-      vendor = EXCLUDED.vendor,
-      image_url = EXCLUDED.image_url,
       status = EXCLUDED.status,
       updated_at = NOW()
     WHERE
-      products.title         IS DISTINCT FROM EXCLUDED.title
-      OR products.product_type IS DISTINCT FROM EXCLUDED.product_type
-      OR products.vendor       IS DISTINCT FROM EXCLUDED.vendor
-      OR products.image_url    IS DISTINCT FROM EXCLUDED.image_url
-      OR products.status       IS DISTINCT FROM EXCLUDED.status
+      products.title  IS DISTINCT FROM EXCLUDED.title
+      OR products.status IS DISTINCT FROM EXCLUDED.status
     RETURNING 1
   )
   SELECT COUNT(*)::int FROM applied;
@@ -71,12 +67,15 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ── 2. Collections ─────────────────────────────────────────────────────────
--- Medusa's `cat_product.category` is a free-text field — we treat each distinct
--- non-empty value as a Storees collection. The shopify_collection_id slot stores
--- a stable hash of the category name (md5) so re-runs find the same row.
+-- Source: distinct order_line_item.product_collection values (denormalised
+-- text names of collections each line was bought from). Means a product needs
+-- to have been ordered at least once to appear in a collection — acceptable
+-- limitation for now; segment filters that match by collection only need to
+-- find customers who actually bought from that collection anyway.
 --
--- Then re-populate the product_collections junction so segments like
--- "has_purchased X collection" can JOIN through it.
+-- Junction (product_collections): for every (product, collection) pair seen
+-- in order_line_item, link them. Multiple line items for the same product can
+-- claim different collections in the same JOIN — DISTINCT collapses dupes.
 
 CREATE OR REPLACE FUNCTION sync_gwm_collections(p_project_id UUID)
 RETURNS TABLE(upserted_collections INT, linked_products INT) AS $$
@@ -84,20 +83,21 @@ DECLARE
   v_collections INT;
   v_links INT;
 BEGIN
-  -- Upsert collections (one row per distinct cat_product.category value)
-  WITH categories AS (
-    SELECT DISTINCT TRIM(cp.category) AS title
-    FROM gwm.cat_product cp
-    WHERE cp.category IS NOT NULL AND TRIM(cp.category) <> ''
+  -- Upsert distinct collection names from order line items.
+  WITH src AS (
+    SELECT DISTINCT TRIM(oli.product_collection) AS title
+    FROM gwm.order_line_item oli
+    WHERE oli.product_collection IS NOT NULL
+      AND TRIM(oli.product_collection) <> ''
   ),
   applied AS (
     INSERT INTO collections (project_id, shopify_collection_id, title, collection_type)
     SELECT
       p_project_id,
-      LEFT('gwm-cat:' || MD5(c.title), 255),
-      LEFT(c.title, 500),
+      LEFT('gwm-coll:' || MD5(s.title), 255),
+      LEFT(s.title, 500),
       'custom'
-    FROM categories c
+    FROM src s
     ON CONFLICT (project_id, shopify_collection_id) DO UPDATE SET
       title = EXCLUDED.title,
       updated_at = NOW()
@@ -106,22 +106,27 @@ BEGIN
   )
   SELECT COUNT(*) INTO v_collections FROM applied;
 
-  -- Re-link product_collections: clear existing links for this project and
-  -- repopulate from cat_product.category. Cheap because product_collections
-  -- has no per-row external state — it's purely derived.
+  -- Re-link product_collections: clear existing links for this project's
+  -- products, then derive from line items. Cheap because the junction is a
+  -- pure derived index — no per-row external state to preserve.
   DELETE FROM product_collections
   WHERE product_id IN (SELECT id FROM products WHERE project_id = p_project_id);
 
-  WITH linked AS (
-    INSERT INTO product_collections (product_id, collection_id)
-    SELECT p.id, col.id
-    FROM products p
-    JOIN gwm.cat_product cp ON cp.id = p.shopify_product_id
+  WITH pairs AS (
+    SELECT DISTINCT p.id AS product_id, col.id AS collection_id
+    FROM gwm.order_line_item oli
+    JOIN products p
+      ON p.project_id = p_project_id
+      AND p.shopify_product_id = oli.product_id
     JOIN collections col
       ON col.project_id = p_project_id
-      AND col.shopify_collection_id = 'gwm-cat:' || MD5(TRIM(cp.category))
-    WHERE p.project_id = p_project_id
-      AND cp.category IS NOT NULL AND TRIM(cp.category) <> ''
+      AND col.shopify_collection_id = 'gwm-coll:' || MD5(TRIM(oli.product_collection))
+    WHERE oli.product_collection IS NOT NULL
+      AND TRIM(oli.product_collection) <> ''
+  ),
+  linked AS (
+    INSERT INTO product_collections (product_id, collection_id)
+    SELECT product_id, collection_id FROM pairs
     ON CONFLICT (product_id, collection_id) DO NOTHING
     RETURNING 1
   )
@@ -132,19 +137,18 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ── 3. Orders (incremental) ────────────────────────────────────────────────
--- Pulls gwm.order rows whose updated_at > since, joins customer_id through
--- the storees `customers.external_id` mapping (set by the customer-attrs sync),
--- aggregates line items into a JSONB array matching the existing evaluator
--- shape: [{ productId, productName, quantity, price }].
+-- Pulls gwm.order rows whose updated_at > since, joins to Storees customers
+-- via external_id, aggregates line items via the order_item junction. The
+-- aggregated JSONB matches the segment evaluator's expected shape:
+--   [{ productId, productName, quantity, price }]
+-- so `has_purchased <product_name>` works without further changes.
 --
--- Why incremental: gwm has potentially 100K+ orders. Full re-insert every 5min
--- is wasteful. The worker passes `since` from
--- project_data_sources.config->'orders'->>'lastSyncedAt'. On first run,
--- pass NULL → backfills everything.
+-- Total: SUM(order_item.unit_price * quantity) — Medusa's authoritative
+-- billed amount (vs catalog price on order_line_item which can drift after
+-- discounts).
 --
--- Total + currency: gwm.order doesn't carry a single 'total' column; we sum
--- order_line_item.unit_price * quantity. That matches what the customer-attrs
--- MV uses for total_spent.
+-- Filter: skip drafts, deleted, and cancelled orders. Marketing analytics
+-- almost always wants "real" completed-or-pending orders, not exploratory carts.
 
 CREATE OR REPLACE FUNCTION sync_gwm_orders(
   p_project_id UUID,
@@ -155,10 +159,8 @@ DECLARE
   v_count INT;
   v_max TIMESTAMPTZ;
 BEGIN
-  -- First pass: pick the max updated_at we'll process. Returned to the caller
-  -- so it can store as the next cursor. Pinning it here (vs computing after
-  -- the INSERT) avoids a race where new gwm.order rows arrive mid-sync and
-  -- end up missed by the next tick.
+  -- Pin the watermark up-front so concurrent gwm writes don't get missed
+  -- by both this tick and the next.
   SELECT MAX(o.updated_at) INTO v_max
   FROM gwm."order" o
   WHERE p_since IS NULL OR o.updated_at > p_since;
@@ -174,10 +176,12 @@ BEGIN
     WHERE (p_since IS NULL OR o.updated_at > p_since)
       AND o.updated_at <= v_max
       AND o.deleted_at IS NULL
+      AND o.canceled_at IS NULL
       AND o.is_draft_order = FALSE
   ),
-  -- Map gwm customer_id (text Medusa id) → Storees customers.id (uuid)
-  -- via customers.external_id.
+  -- Per-order aggregate: total + line_items JSONB. Done via a correlated
+  -- subquery rather than GROUP BY so the line_items JSONB stays per-order
+  -- and the total is the same SUM expression.
   resolved AS (
     SELECT
       ow.id AS gwm_order_id,
@@ -186,18 +190,20 @@ BEGIN
       ow.created_at,
       ow.updated_at,
       ow.status,
+      (SELECT COALESCE(SUM(oi.unit_price * oi.quantity), 0)
+       FROM gwm.order_item oi
+       WHERE oi.order_id = ow.id
+         AND oi.deleted_at IS NULL) AS total,
       (SELECT jsonb_agg(jsonb_build_object(
          'productId',   oli.product_id,
-         'productName', COALESCE(NULLIF(TRIM(cp.title), ''), 'Item'),
-         'quantity',    oli.quantity,
-         'price',       oli.unit_price
-       ))
-       FROM gwm.order_line_item oli
-       LEFT JOIN gwm.cat_product cp ON cp.id = oli.product_id
-       WHERE oli.order_id = ow.id) AS line_items,
-      (SELECT COALESCE(SUM(oli.unit_price * oli.quantity), 0)
-       FROM gwm.order_line_item oli
-       WHERE oli.order_id = ow.id) AS total
+         'productName', COALESCE(NULLIF(TRIM(oli.product_title), ''), 'Item'),
+         'quantity',    oi.quantity,
+         'price',       oi.unit_price
+       ) ORDER BY oli.id)
+       FROM gwm.order_item oi
+       JOIN gwm.order_line_item oli ON oli.id = oi.item_id
+       WHERE oi.order_id = ow.id
+         AND oi.deleted_at IS NULL) AS line_items
     FROM order_window ow
     JOIN customers c
       ON c.project_id = p_project_id
@@ -220,6 +226,7 @@ BEGIN
       r.created_at,
       NULL
     FROM resolved r
+    WHERE r.line_items IS NOT NULL  -- drop orders with no resolvable line items
     ON CONFLICT (project_id, external_order_id) DO UPDATE SET
       status     = EXCLUDED.status,
       total      = EXCLUDED.total,
