@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
@@ -63,24 +64,114 @@ const inputClass = 'h-9 px-3 text-sm border border-border rounded-lg bg-white te
 
 // ============ Product Search Dropdown ============
 
+/**
+ * Position the dropdown panel below the trigger using viewport-fixed coords
+ * computed from the trigger's bounding rect. Lets us render in a portal so
+ * ancestor `overflow-hidden` (campaign create page → audience card → filter
+ * row) can't clip the panel anymore. Also flips upward when there's not
+ * enough room below — the previous version always opened down, which got
+ * clipped against the viewport bottom.
+ */
+type DropdownCoords = { left: number; top: number; width: number; openUp: boolean }
+
+function useDropdownCoords(triggerRef: React.RefObject<HTMLElement | null>, open: boolean, panelHeight = 320): DropdownCoords | null {
+  const [coords, setCoords] = useState<DropdownCoords | null>(null)
+  useLayoutEffect(() => {
+    if (!open) { setCoords(null); return }
+    const compute = () => {
+      const el = triggerRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const spaceBelow = window.innerHeight - r.bottom
+      const openUp = spaceBelow < panelHeight && r.top > spaceBelow
+      setCoords({
+        left: r.left,
+        top: openUp ? r.top : r.bottom,
+        width: r.width,
+        openUp,
+      })
+    }
+    compute()
+    window.addEventListener('scroll', compute, true)
+    window.addEventListener('resize', compute)
+    return () => {
+      window.removeEventListener('scroll', compute, true)
+      window.removeEventListener('resize', compute)
+    }
+  }, [open, triggerRef, panelHeight])
+  return coords
+}
+
 function ProductSearchDropdown({ value, onChange }: { value: string; onChange: (val: string) => void }) {
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const { data, isLoading } = useProducts(search)
   const products = data?.data ?? []
+  const coords = useDropdownCoords(triggerRef, open)
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (triggerRef.current?.contains(t)) return
+      if (panelRef.current?.contains(t)) return
+      setOpen(false)
     }
-    document.addEventListener('mousedown', handleClickOutside)
+    if (open) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+  }, [open])
+
+  const panel = open && coords ? createPortal(
+    <div
+      ref={panelRef}
+      style={{
+        position: 'fixed',
+        left: coords.left,
+        top: coords.openUp ? undefined : coords.top + 4,
+        bottom: coords.openUp ? window.innerHeight - coords.top + 4 : undefined,
+        width: 288,
+      }}
+      className="z-[100] bg-white border border-border rounded-lg shadow-lg overflow-hidden"
+    >
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+        <Search className="h-3.5 w-3.5 text-text-muted" />
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search products..."
+          autoFocus
+          className="flex-1 text-sm bg-transparent outline-none placeholder:text-text-muted"
+        />
+        {isLoading && <Loader2 className="h-3.5 w-3.5 text-text-muted animate-spin" />}
+      </div>
+      <div className="max-h-72 overflow-y-auto py-1">
+        {products.length === 0 && !isLoading && (
+          <p className="px-3 py-3 text-xs text-text-muted text-center">
+            {search ? 'No products found' : 'Type to search products'}
+          </p>
+        )}
+        {products.map(p => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => { onChange(p.title); setOpen(false); setSearch('') }}
+            className={cn('w-full px-3 py-2 text-sm text-left hover:bg-surface transition-colors flex items-center gap-2', p.title === value && 'bg-accent/5 text-accent font-medium')}
+          >
+            {p.imageUrl && <img src={p.imageUrl} alt="" className="h-6 w-6 rounded object-cover flex-shrink-0" />}
+            <span className="truncate">{p.title}</span>
+          </button>
+        ))}
+      </div>
+    </div>,
+    document.body,
+  ) : null
 
   return (
-    <div ref={ref} className="relative">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(!open)}
         className={cn(inputClass, 'w-full sm:w-52 flex items-center justify-between gap-1 text-left truncate', !value && 'text-text-muted')}
@@ -88,41 +179,8 @@ function ProductSearchDropdown({ value, onChange }: { value: string; onChange: (
         <span className="truncate">{value || 'Select product...'}</span>
         <ChevronDown className="h-3.5 w-3.5 text-text-muted flex-shrink-0" />
       </button>
-      {open && (
-        <div className="absolute z-50 top-full mt-1 w-72 bg-white border border-border rounded-lg shadow-lg overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-            <Search className="h-3.5 w-3.5 text-text-muted" />
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search products..."
-              autoFocus
-              className="flex-1 text-sm bg-transparent outline-none placeholder:text-text-muted"
-            />
-            {isLoading && <Loader2 className="h-3.5 w-3.5 text-text-muted animate-spin" />}
-          </div>
-          <div className="max-h-48 overflow-y-auto">
-            {products.length === 0 && !isLoading && (
-              <p className="px-3 py-3 text-xs text-text-muted text-center">
-                {search ? 'No products found' : 'Type to search products'}
-              </p>
-            )}
-            {products.map(p => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => { onChange(p.title); setOpen(false); setSearch('') }}
-                className={cn('w-full px-3 py-2 text-sm text-left hover:bg-surface transition-colors flex items-center gap-2', p.title === value && 'bg-accent/5 text-accent font-medium')}
-              >
-                {p.imageUrl && <img src={p.imageUrl} alt="" className="h-6 w-6 rounded object-cover flex-shrink-0" />}
-                <span className="truncate">{p.title}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+      {panel}
+    </>
   )
 }
 
