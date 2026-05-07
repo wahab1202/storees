@@ -58,6 +58,7 @@ router.post('/', requireProjectId, async (req, res) => {
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject,
       abVariantBHtmlBody, abVariantBBodyText, abWinnerMetric,
       abAutoSendWinner, abTestDurationHours,
+      tags, audienceFilter, audienceCap, controlGroupPct,
     } = req.body as {
       name: string
       channel?: string
@@ -83,6 +84,10 @@ router.post('/', requireProjectId, async (req, res) => {
       abWinnerMetric?: string
       abAutoSendWinner?: boolean
       abTestDurationHours?: number
+      tags?: string[]
+      audienceFilter?: unknown   // FilterConfig — validated structurally at staging time
+      audienceCap?: number | null
+      controlGroupPct?: number
     }
 
     if (!name?.trim()) {
@@ -96,6 +101,14 @@ router.post('/', requireProjectId, async (req, res) => {
     if ((ch === 'sms' || ch === 'push') && !bodyText?.trim()) {
       return res.status(400).json({ success: false, error: `${ch.toUpperCase()} campaigns require bodyText` })
     }
+
+    // Audience-v2 validation. controlGroupPct must be in [0,50]; cap > 0 if set.
+    const ctrlPct = Math.max(0, Math.min(50, Math.floor(controlGroupPct ?? 0)))
+    if (audienceCap != null && audienceCap <= 0) {
+      return res.status(400).json({ success: false, error: 'audienceCap must be positive when set' })
+    }
+    // Generate the deterministic-split seed only when the control group is actually in use
+    const ctrlSeed = ctrlPct > 0 ? `cg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}` : null
 
     const [campaign] = await db.insert(campaigns).values({
       projectId: req.projectId!,
@@ -124,6 +137,11 @@ router.post('/', requireProjectId, async (req, res) => {
       abWinnerMetric: abWinnerMetric ?? 'open_rate',
       abAutoSendWinner: abAutoSendWinner ?? false,
       abTestDurationHours: abTestDurationHours ?? 4,
+      tags: tags ?? [],
+      audienceFilter: audienceFilter ?? null,
+      audienceCap: audienceCap ?? null,
+      controlGroupPct: ctrlPct,
+      controlGroupSeed: ctrlSeed,
     }).returning()
 
     // Phase E3.3 — content lint. Warnings only; never blocks creation.
@@ -165,6 +183,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       contentType, previewText, conversionGoals, goalTrackingHours, deliveryLimit,
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject, abVariantBHtmlBody,
       abVariantBBodyText, abWinnerMetric, abAutoSendWinner, abTestDurationHours,
+      tags, audienceFilter, audienceCap, controlGroupPct,
     } = req.body as {
       name?: string
       subject?: string
@@ -187,10 +206,18 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       abWinnerMetric?: string
       abAutoSendWinner?: boolean
       abTestDurationHours?: number
+      tags?: string[]
+      audienceFilter?: unknown | null
+      audienceCap?: number | null
+      controlGroupPct?: number
     }
 
     const [existing] = await db
-      .select({ status: campaigns.status, projectId: campaigns.projectId })
+      .select({
+        status: campaigns.status,
+        projectId: campaigns.projectId,
+        controlGroupSeed: campaigns.controlGroupSeed,
+      })
       .from(campaigns)
       .where(eq(campaigns.id, id))
       .limit(1)
@@ -228,6 +255,25 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     if (abWinnerMetric !== undefined) updates.abWinnerMetric = abWinnerMetric
     if (abAutoSendWinner !== undefined) updates.abAutoSendWinner = abAutoSendWinner
     if (abTestDurationHours !== undefined) updates.abTestDurationHours = abTestDurationHours
+    if (tags !== undefined) updates.tags = tags
+    if (audienceFilter !== undefined) updates.audienceFilter = audienceFilter
+    if (audienceCap !== undefined) {
+      if (audienceCap !== null && audienceCap <= 0) {
+        return res.status(400).json({ success: false, error: 'audienceCap must be positive when set' })
+      }
+      updates.audienceCap = audienceCap
+    }
+    if (controlGroupPct !== undefined) {
+      const next = Math.max(0, Math.min(50, Math.floor(controlGroupPct)))
+      updates.controlGroupPct = next
+      // Mint a fresh seed when toggling ON; clear when going to 0. Don't
+      // regenerate if already > 0 — keeps the split stable across edits.
+      if (next === 0) {
+        updates.controlGroupSeed = null
+      } else if (existing.controlGroupSeed == null) {
+        updates.controlGroupSeed = `cg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+      }
+    }
 
     const [updated] = await db
       .update(campaigns)

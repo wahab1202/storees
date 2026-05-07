@@ -342,6 +342,15 @@ export const campaigns = pgTable('campaigns', {
   abWinnerMetric: varchar('ab_winner_metric', { length: 20 }).default('open_rate'),
   abAutoSendWinner: boolean('ab_auto_send_winner').notNull().default(false),
   abTestDurationHours: integer('ab_test_duration_hours').notNull().default(4),
+  // Per-campaign variable mappings — overrides template defaults at send-time.
+  variables: jsonb('variables').notNull().default('[]'),
+  // Phase 1 — audience model v2. Inline filter (mutually exclusive with
+  // segment_id), tags for list filtering, audience cap, control-group split.
+  tags: jsonb('tags').notNull().default('[]'),
+  audienceFilter: jsonb('audience_filter'),
+  audienceCap: integer('audience_cap'),
+  controlGroupPct: integer('control_group_pct').notNull().default(0),
+  controlGroupSeed: varchar('control_group_seed', { length: 64 }),
   // Soft-archive — hides the campaign from default list views without losing
   // its lifecycle state. NULL = active; non-NULL = archived at this time.
   archivedAt: timestamp('archived_at', { withTimezone: true }),
@@ -376,6 +385,24 @@ export const campaignSends = pgTable('campaign_sends', {
   index('idx_campaign_sends_variant').on(table.campaignId, table.variant),
 ])
 
+// ============ CAMPAIGN HOLDOUTS (control group) ============
+// One row per (campaign, customer) where the customer was held back from the
+// send for lift measurement. Send pipeline writes here at staging time;
+// analytics joins on (campaign_id, customer_id) to compare conversion of
+// recipients vs holdouts.
+
+export const campaignHoldouts = pgTable('campaign_holdouts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  campaignId: uuid('campaign_id').notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  reason: varchar('reason', { length: 20 }).notNull().default('control_group'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uniq_campaign_customer_holdout').on(table.campaignId, table.customerId),
+  index('idx_campaign_holdouts_campaign').on(table.campaignId),
+  index('idx_campaign_holdouts_customer').on(table.customerId),
+])
+
 // ============ EMAIL TEMPLATES ============
 
 export const emailTemplates = pgTable('email_templates', {
@@ -386,6 +413,8 @@ export const emailTemplates = pgTable('email_templates', {
   subject: varchar('subject', { length: 500 }),
   htmlBody: text('html_body'),
   bodyText: text('body_text'),
+  // Per-template variable mappings. See services/templateContext.ts for shape.
+  variables: jsonb('variables').notNull().default('[]'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

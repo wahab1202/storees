@@ -3,8 +3,10 @@
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useTemplateDetail, useUpdateTemplate } from '@/hooks/useTemplates'
+import { VariablePanel } from '@/components/templates/VariablePanel'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { TemplateVariable } from '@storees/shared'
 
 const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
 
@@ -24,6 +26,7 @@ export default function EditTemplatePage() {
   const [subject, setSubject] = useState('')
   const [htmlBody, setHtmlBody] = useState('')
   const [bodyText, setBodyText] = useState('')
+  const [variables, setVariables] = useState<TemplateVariable[]>([])
 
   useEffect(() => {
     if (data?.data) {
@@ -32,6 +35,7 @@ export default function EditTemplatePage() {
       setSubject(t.subject ?? '')
       setHtmlBody(t.htmlBody ?? '')
       setBodyText(t.bodyText ?? '')
+      setVariables(t.variables ?? [])
     }
   }, [data])
 
@@ -63,6 +67,7 @@ export default function EditTemplatePage() {
         subject: isEmail ? subject : undefined,
         htmlBody: isEmail ? htmlBody : undefined,
         bodyText: !isEmail ? bodyText : undefined,
+        variables,
       },
       { onSuccess: () => router.push('/templates') },
     )
@@ -126,62 +131,75 @@ export default function EditTemplatePage() {
         </div>
       )}
 
-      {/* Body — side-by-side for email, single column for others */}
-      {isEmail ? (
-        <div className="bg-white border border-border rounded-xl overflow-hidden">
-          <div className="px-5 py-3 bg-surface border-b border-border">
-            <h2 className="text-sm font-semibold text-text-primary">Email Body — Editor & Live Preview</h2>
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 divide-x divide-border">
-            {/* Left: Editor */}
-            <div className="p-4">
-              <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">HTML Editor</p>
-              <textarea
-                value={htmlBody}
-                onChange={e => setHtmlBody(e.target.value)}
-                rows={24}
-                className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
-                spellCheck={false}
-              />
-              <p className="text-xs text-text-muted mt-2">Variables: {'{{customer_name}}'}, {'{{customer_email}}'}</p>
-            </div>
-            {/* Right: Live preview */}
-            <div className="p-4 bg-gray-50/50">
-              <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Live Preview</p>
-              <div className="border border-border rounded-lg overflow-hidden bg-white">
-                <iframe
-                  srcDoc={htmlBody}
-                  title="Preview"
-                  className="w-full h-[520px]"
-                  sandbox="allow-same-origin"
-                />
+      {/* Body + Variable panel */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
+        <div className="min-w-0">
+          {isEmail ? (
+            <div className="bg-white border border-border rounded-xl overflow-hidden">
+              <div className="px-5 py-3 bg-surface border-b border-border">
+                <h2 className="text-sm font-semibold text-text-primary">Email Body — Editor & Live Preview</h2>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 divide-x divide-border">
+                {/* Left: Editor */}
+                <div className="p-4">
+                  <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">HTML Editor</p>
+                  <textarea
+                    value={htmlBody}
+                    onChange={e => setHtmlBody(e.target.value)}
+                    rows={24}
+                    className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
+                    spellCheck={false}
+                  />
+                </div>
+                {/* Right: Live preview */}
+                <div className="p-4 bg-gray-50/50">
+                  <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Live Preview</p>
+                  <div className="border border-border rounded-lg overflow-hidden bg-white">
+                    <iframe
+                      srcDoc={htmlBody}
+                      title="Preview"
+                      className="w-full h-[520px]"
+                      sandbox="allow-same-origin"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-white border border-border rounded-xl overflow-hidden max-w-4xl">
-          <div className="px-5 py-3 bg-surface border-b border-border">
-            <h2 className="text-sm font-semibold text-text-primary">Message Body</h2>
-          </div>
-          <div className="p-5">
-            <textarea
-              value={bodyText}
-              onChange={e => setBodyText(e.target.value)}
-              rows={6}
-              className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none placeholder:text-text-muted"
-            />
-            <div className="flex items-center justify-between mt-2">
-              <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>
-              {template.channel === 'sms' && (
-                <p className={cn('text-xs font-medium', bodyText.length > 160 ? 'text-red-500' : 'text-text-muted')}>
-                  {bodyText.length}/160
-                </p>
-              )}
+          ) : (
+            <div className="bg-white border border-border rounded-xl overflow-hidden">
+              <div className="px-5 py-3 bg-surface border-b border-border">
+                <h2 className="text-sm font-semibold text-text-primary">Message Body</h2>
+              </div>
+              <div className="p-5">
+                <textarea
+                  value={bodyText}
+                  onChange={e => setBodyText(e.target.value)}
+                  rows={6}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none placeholder:text-text-muted"
+                />
+                {template.channel === 'sms' && (
+                  <div className="flex items-center justify-end mt-2">
+                    <p className={cn('text-xs font-medium', bodyText.length > 160 ? 'text-red-500' : 'text-text-muted')}>
+                      {bodyText.length}/160
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
-      )}
+
+        <VariablePanel
+          variables={variables}
+          onChange={setVariables}
+          contentSources={[subject, htmlBody, bodyText]}
+          preview={{
+            subject: isEmail ? subject : null,
+            htmlBody: isEmail ? htmlBody : null,
+            bodyText: !isEmail ? bodyText : null,
+          }}
+        />
+      </div>
     </div>
   )
 }

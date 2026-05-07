@@ -12,7 +12,8 @@ import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE } from '@/lib/emailTypes'
 import type { EmailTemplate } from '@/lib/emailTypes'
-import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule } from '@storees/shared'
+import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
+import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule, FilterConfig } from '@storees/shared'
 import {
   ArrowLeft,
   ArrowRight,
@@ -139,8 +140,14 @@ function CreateCampaignContent() {
   // Step 1
   const [name, setName] = useState('')
   const [contentType, setContentType] = useState<CampaignContentType>('promotional')
+  const [tags, setTags] = useState<string[]>([])
   const [segmentId, setSegmentId] = useState('')
-  const [audienceMode, setAudienceMode] = useState<'all' | 'segment'>('segment')
+  const [audienceMode, setAudienceMode] = useState<'all' | 'segment' | 'filter'>('segment')
+  const [audienceFilter, setAudienceFilter] = useState<FilterConfig>({ logic: 'AND', rules: [] })
+  const [audienceCapEnabled, setAudienceCapEnabled] = useState(false)
+  const [audienceCap, setAudienceCap] = useState<string>('')
+  const [controlGroupEnabled, setControlGroupEnabled] = useState(false)
+  const [controlGroupPct, setControlGroupPct] = useState(10)
   const [showReachability, setShowReachability] = useState(false)
 
   // Step 2 — email
@@ -232,8 +239,12 @@ function CreateCampaignContent() {
         templateId: isEmail ? (selectedTemplateId || undefined) : undefined,
         // SMS/Push fields
         bodyText: !isEmail ? bodyText : undefined,
-        // Audience
+        // Audience-v2
         segmentId: audienceMode === 'segment' ? segmentId || undefined : undefined,
+        audienceFilter: audienceMode === 'filter' && audienceFilter.rules.length > 0 ? audienceFilter : undefined,
+        audienceCap: audienceCapEnabled && audienceCap ? parseInt(audienceCap) : undefined,
+        controlGroupPct: controlGroupEnabled ? controlGroupPct : 0,
+        tags: tags.length > 0 ? tags : undefined,
         // Goals
         conversionGoals: goals.length > 0 ? goals : undefined,
         goalTrackingHours,
@@ -348,9 +359,15 @@ function CreateCampaignContent() {
           <Step1TargetUsers
             channel={channel}
             name={name} setName={setName}
+            tags={tags} setTags={setTags}
             contentType={contentType} setContentType={setContentType}
             audienceMode={audienceMode} setAudienceMode={setAudienceMode}
             segmentId={segmentId} setSegmentId={setSegmentId}
+            audienceFilter={audienceFilter} setAudienceFilter={setAudienceFilter}
+            audienceCapEnabled={audienceCapEnabled} setAudienceCapEnabled={setAudienceCapEnabled}
+            audienceCap={audienceCap} setAudienceCap={setAudienceCap}
+            controlGroupEnabled={controlGroupEnabled} setControlGroupEnabled={setControlGroupEnabled}
+            controlGroupPct={controlGroupPct} setControlGroupPct={setControlGroupPct}
             segments={segments} selectedSegment={selectedSegment}
             showReachability={showReachability} setShowReachability={setShowReachability}
             inputClass={inputClass} selectClass={selectClass}
@@ -474,17 +491,26 @@ function CreateCampaignContent() {
 /* ─── Step 1: Target Users ─── */
 
 function Step1TargetUsers({
-  channel, name, setName, contentType, setContentType,
+  channel, name, setName, tags, setTags, contentType, setContentType,
   audienceMode, setAudienceMode, segmentId, setSegmentId,
+  audienceFilter, setAudienceFilter,
+  audienceCapEnabled, setAudienceCapEnabled, audienceCap, setAudienceCap,
+  controlGroupEnabled, setControlGroupEnabled, controlGroupPct, setControlGroupPct,
   segments, selectedSegment,
   showReachability, setShowReachability,
   inputClass, selectClass,
 }: {
   channel: CampaignChannel
   name: string; setName: (v: string) => void
+  tags: string[]; setTags: (v: string[]) => void
   contentType: CampaignContentType; setContentType: (v: CampaignContentType) => void
-  audienceMode: 'all' | 'segment'; setAudienceMode: (v: 'all' | 'segment') => void
+  audienceMode: 'all' | 'segment' | 'filter'; setAudienceMode: (v: 'all' | 'segment' | 'filter') => void
   segmentId: string; setSegmentId: (v: string) => void
+  audienceFilter: FilterConfig; setAudienceFilter: (v: FilterConfig) => void
+  audienceCapEnabled: boolean; setAudienceCapEnabled: (v: boolean) => void
+  audienceCap: string; setAudienceCap: (v: string) => void
+  controlGroupEnabled: boolean; setControlGroupEnabled: (v: boolean) => void
+  controlGroupPct: number; setControlGroupPct: (v: number) => void
   segments: Array<{ id: string; name: string; memberCount: number }>
   selectedSegment?: { id: string; name: string; memberCount: number }
   showReachability: boolean; setShowReachability: (v: boolean) => void
@@ -496,6 +522,17 @@ function Step1TargetUsers({
 
   const channelLabel = CHANNEL_LABELS[channel] ?? 'Email'
 
+  // Inline tag input — comma + Enter both commit; backspace on empty input
+  // pops the last chip. Same UX as Linear / Notion / Stripe tag pickers.
+  const [tagDraft, setTagDraft] = useState('')
+  const commitTag = () => {
+    const next = tagDraft.trim()
+    if (!next || tags.includes(next)) { setTagDraft(''); return }
+    setTags([...tags, next])
+    setTagDraft('')
+  }
+  const removeTag = (t: string) => setTags(tags.filter(x => x !== t))
+
   return (
     <div className="max-w-2xl space-y-6">
       {/* Campaign Name */}
@@ -504,6 +541,33 @@ function Step1TargetUsers({
           Campaign Name<span className="text-red-400">*</span>
         </label>
         <input value={name} onChange={e => setName(e.target.value)} placeholder={`e.g. Summer Sale 2024 ${channelLabel}`} className={inputClass} autoFocus />
+      </div>
+
+      {/* Tags */}
+      <div className="bg-white border border-border rounded-xl p-6">
+        <label className="block text-sm font-medium text-text-primary mb-1.5">Tags</label>
+        <p className="text-xs text-text-muted mb-3">Optional labels for organising the campaign list. Press Enter or comma to add.</p>
+        <div className={cn(inputClass, 'h-auto min-h-10 flex flex-wrap items-center gap-1.5 py-1.5')}>
+          {tags.map(t => (
+            <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-accent/10 text-accent text-xs font-medium">
+              {t}
+              <button type="button" onClick={() => removeTag(t)} className="hover:opacity-70" aria-label={`Remove ${t}`}>
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+          <input
+            value={tagDraft}
+            onChange={e => setTagDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitTag() }
+              else if (e.key === 'Backspace' && tagDraft === '' && tags.length > 0) { removeTag(tags[tags.length - 1]) }
+            }}
+            onBlur={commitTag}
+            placeholder={tags.length === 0 ? 'e.g. q3-launch, india' : ''}
+            className="flex-1 min-w-[120px] outline-none bg-transparent text-sm placeholder:text-text-muted/60"
+          />
+        </div>
       </div>
 
       {/* Content Type — selectable cards */}
@@ -546,38 +610,39 @@ function Step1TargetUsers({
       <div className="bg-white border border-border rounded-xl p-6">
         <label className="block text-sm font-medium text-text-primary mb-3">Audience</label>
 
-        {/* Audience mode — card toggle */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
+        {/* Audience mode — three modes: all users / saved segment / inline filter */}
+        <div className="grid grid-cols-3 gap-3 mb-4">
           {([
-            { value: 'all' as const, label: 'All users', description: 'Send to everyone in your project', icon: Users },
-            { value: 'segment' as const, label: 'Segment', description: 'Target a specific customer segment', icon: Target },
+            { value: 'all' as const, label: 'All users', description: 'Everyone in this project', icon: Users },
+            { value: 'segment' as const, label: 'Saved segment', description: 'Pick from existing segments', icon: Target },
+            { value: 'filter' as const, label: 'Custom filter', description: 'Build inline — no save needed', icon: Layers },
           ]).map(opt => (
             <button
               key={opt.value}
               type="button"
               onClick={() => setAudienceMode(opt.value)}
               className={cn(
-                'flex items-start gap-3 p-4 rounded-lg border text-left transition-all duration-150',
+                'flex flex-col items-start gap-2 p-3.5 rounded-lg border text-left transition-all duration-150',
                 audienceMode === opt.value
                   ? 'border-accent bg-accent/[0.03] ring-1 ring-accent/20'
                   : 'border-border hover:border-text-muted/30',
               )}
             >
               <div className={cn(
-                'mt-0.5 p-2 rounded-lg transition-colors duration-150',
+                'p-1.5 rounded-md transition-colors duration-150',
                 audienceMode === opt.value ? 'bg-accent/10' : 'bg-surface',
               )}>
-                <opt.icon className={cn('h-4 w-4', audienceMode === opt.value ? 'text-accent' : 'text-text-muted')} />
+                <opt.icon className={cn('h-3.5 w-3.5', audienceMode === opt.value ? 'text-accent' : 'text-text-muted')} />
               </div>
               <div>
                 <div className="text-sm font-medium text-text-primary">{opt.label}</div>
-                <div className="text-xs text-text-muted mt-0.5">{opt.description}</div>
+                <div className="text-[11px] text-text-muted mt-0.5 leading-tight">{opt.description}</div>
               </div>
             </button>
           ))}
         </div>
 
-        {/* Segment selector */}
+        {/* Saved segment selector */}
         {audienceMode === 'segment' && (
           <div className="space-y-3">
             <select value={segmentId} onChange={e => { setSegmentId(e.target.value); setShowReachability(true) }} className={selectClass}>
@@ -585,7 +650,6 @@ function Step1TargetUsers({
               {segments.map(s => <option key={s.id} value={s.id}>{s.name} — {s.memberCount.toLocaleString()} members</option>)}
             </select>
 
-            {/* Reachability — show automatically when segment selected */}
             {segmentId && selectedSegment && (
               <div className="flex items-center gap-4 p-4 bg-surface rounded-lg">
                 <div className="flex-1">
@@ -603,6 +667,116 @@ function Step1TargetUsers({
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Inline filter — same builder the segments page uses, evaluated by
+            the same engine at staging time. No "save segment" step required. */}
+        {audienceMode === 'filter' && (
+          <div className="rounded-lg border border-border bg-surface/40 p-3">
+            <SegmentFilterBuilder filters={audienceFilter} onChange={setAudienceFilter} />
+            {audienceFilter.rules.length === 0 && (
+              <p className="text-xs text-text-muted mt-3">
+                Add at least one rule above. Without rules, the filter has no effect — use "All users" instead.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Audience cap — limit recipient count even if audience is larger.
+          Useful for staged rollouts ("send to 1,000 first") and rate-limit
+          tests. Cap is enforced at staging time as a LIMIT on the page query. */}
+      <div className="bg-white border border-border rounded-xl p-6">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <label className="block text-sm font-medium text-text-primary">Audience cap</label>
+            <p className="text-xs text-text-muted mt-0.5">Limit total recipients regardless of audience size.</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={audienceCapEnabled}
+            onClick={() => setAudienceCapEnabled(!audienceCapEnabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors duration-150',
+              audienceCapEnabled ? 'bg-accent' : 'bg-border',
+            )}
+          >
+            <span className={cn(
+              'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
+              audienceCapEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+            )} />
+          </button>
+        </div>
+        {audienceCapEnabled && (
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              value={audienceCap}
+              onChange={e => setAudienceCap(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder="e.g. 1000"
+              className={cn(inputClass, 'max-w-xs')}
+            />
+            <span className="text-sm text-text-muted">recipients max</span>
+          </div>
+        )}
+      </div>
+
+      {/* Control group — deterministic holdout split for lift measurement.
+          Same customer always falls in the same bucket for a given seed, so
+          re-running the campaign produces identical splits (audit-safe).
+          Cap is 50% — anything higher means you're testing "send" as the
+          experiment, which inverts the analysis. */}
+      <div className="bg-white border border-border rounded-xl p-6">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <label className="block text-sm font-medium text-text-primary">Control group</label>
+            <p className="text-xs text-text-muted mt-0.5">Hold a % of the audience back to measure incremental lift vs no-send.</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={controlGroupEnabled}
+            onClick={() => setControlGroupEnabled(!controlGroupEnabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors duration-150',
+              controlGroupEnabled ? 'bg-accent' : 'bg-border',
+            )}
+          >
+            <span className={cn(
+              'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
+              controlGroupEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+            )} />
+          </button>
+        </div>
+        {controlGroupEnabled && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={1}
+                max={50}
+                value={controlGroupPct}
+                onChange={e => setControlGroupPct(parseInt(e.target.value))}
+                className="flex-1 accent-accent"
+              />
+              <div className="flex items-center gap-1 w-16">
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={controlGroupPct}
+                  onChange={e => setControlGroupPct(Math.max(1, Math.min(50, parseInt(e.target.value) || 0)))}
+                  className={cn(inputClass, 'w-14 h-8 text-center')}
+                />
+                <span className="text-xs text-text-muted">%</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-text-muted">
+              {controlGroupPct}% held back, {100 - controlGroupPct}% receive the campaign. Split is deterministic per customer.
+            </p>
           </div>
         )}
       </div>

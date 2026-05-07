@@ -1,16 +1,22 @@
 import { eq, and, inArray, gt, sql } from 'drizzle-orm'
+import crypto from 'node:crypto'
 import { db } from '../db/connection.js'
 import {
   campaigns,
   campaignSends,
+  campaignHoldouts,
   customers,
   customerSegments,
   segments,
   emailSuppressions,
   consents,
+  projects,
 } from '../db/schema.js'
 import { sendEmail, interpolateTemplate } from './emailService.js'
 import { campaignQueue } from './queue.js'
+import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
+import { filterToSql } from '@storees/segments'
+import type { TemplateVariable, FilterConfig } from '@storees/shared'
 
 // Page sizes tuned for 100K-recipient campaigns: bounded heap, bounded round-trips.
 const RECIPIENT_PAGE_SIZE = 1000
@@ -27,9 +33,21 @@ function assignVariant(customerId: string, campaignId: string, isAb: boolean, sp
   return (Math.abs(h) % 100) < splitPct ? 'A' : 'B'
 }
 
+/**
+ * Stable per-(customer, campaign-seed) bucket in [0, 100). Used by the control
+ * group split — needs cryptographic spread (sha256 truncation) so adjacent UUIDs
+ * don't cluster in the same bucket like a 31-multiplier hash would.
+ */
+function bucketHash(customerId: string, seed: string): number {
+  const digest = crypto.createHash('sha256').update(`${seed}:${customerId}`).digest()
+  // Take 4 bytes → 32-bit unsigned int; mod 100 for the bucket.
+  const n = digest.readUInt32BE(0)
+  return n % 100
+}
+
 type SendRow = typeof campaignSends.$inferSelect
 type CampaignRow = typeof campaigns.$inferSelect
-type CustomerInfo = { id: string; name: string | null; phone: string | null; customAttributes: unknown }
+type CustomerInfo = CustomerLike
 
 /**
  * Audit a campaign's audience for deliverability risks BEFORE we stage sends.
@@ -164,14 +182,44 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   const channel = campaign.channel ?? 'email'
   const isAb = campaign.abTestEnabled ?? false
   const splitPct = campaign.abSplitPct ?? 50
+  // Audience-v2 controls — all default to "no constraint" so legacy campaigns
+  // (created before this column shipped) continue to behave identically.
+  const audienceFilter = (campaign.audienceFilter ?? null) as FilterConfig | null
+  const audienceCap = campaign.audienceCap ?? null
+  const ctrlPct = campaign.controlGroupPct ?? 0
+  const ctrlSeed = campaign.controlGroupSeed ?? ''
 
   let totalRecipients = 0
+  let totalHoldouts = 0
   let cursor: string | null = null
 
   while (true) {
-    // Fetch one page of candidate customers
+    // Stop early if the cap is satisfied — saves the rest of the audience pull.
+    if (audienceCap != null && totalRecipients >= audienceCap) break
+
+    // Fetch one page of candidate customers. Three audience modes, in priority
+    // order: inline filter > saved segment > all-users.
+    const remaining = audienceCap == null ? RECIPIENT_PAGE_SIZE : Math.min(RECIPIENT_PAGE_SIZE, audienceCap - totalRecipients)
+    const pageLimit = Math.max(1, remaining)
     const page: Array<{ customerId: string; email: string | null; name: string | null; phone: string | null; pushSubscribed: boolean }>
-      = campaign.segmentId
+      = audienceFilter
+        ? await db
+            .select({
+              customerId: customers.id,
+              email: customers.email,
+              name: customers.name,
+              phone: customers.phone,
+              pushSubscribed: customers.pushSubscribed,
+            })
+            .from(customers)
+            .where(and(
+              eq(customers.projectId, campaign.projectId),
+              cursor ? gt(customers.id, cursor) : undefined,
+              filterToSql(audienceFilter),
+            ))
+            .orderBy(customers.id)
+            .limit(pageLimit)
+        : campaign.segmentId
         ? await db
             .select({
               customerId: customerSegments.customerId,
@@ -186,7 +234,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
               ? and(eq(customerSegments.segmentId, campaign.segmentId), gt(customers.id, cursor))
               : eq(customerSegments.segmentId, campaign.segmentId))
             .orderBy(customers.id)
-            .limit(RECIPIENT_PAGE_SIZE)
+            .limit(pageLimit)
         : await db
             .select({
               customerId: customers.id,
@@ -200,7 +248,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
               ? and(eq(customers.projectId, campaign.projectId), gt(customers.id, cursor))
               : eq(customers.projectId, campaign.projectId))
             .orderBy(customers.id)
-            .limit(RECIPIENT_PAGE_SIZE)
+            .limit(pageLimit)
 
     if (page.length === 0) break
 
@@ -249,25 +297,69 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
     }
 
     if (allowed.length > 0) {
-      const sendRows = allowed.map(r => ({
-        campaignId,
-        customerId: r.customerId,
-        email: r.email ?? '',
-        status: 'pending' as const,
-        variant: assignVariant(r.customerId, campaignId, isAb, splitPct),
-      }))
-      // Postgres parameter-limit safety
-      for (let i = 0; i < sendRows.length; i += SEND_INSERT_BATCH) {
-        await db.insert(campaignSends).values(sendRows.slice(i, i + SEND_INSERT_BATCH))
+      // Control-group split. Deterministic hash of (customerId + seed) → bucket
+      // 0..99; held back if bucket < ctrlPct. Same customer always falls in
+      // the same bucket for a given campaign, so re-runs are reproducible and
+      // the seed makes the split auditable across reschedules.
+      const heldOut: typeof allowed = []
+      const recipients: typeof allowed = []
+      for (const r of allowed) {
+        if (ctrlPct > 0 && bucketHash(r.customerId, ctrlSeed) < ctrlPct) {
+          heldOut.push(r)
+        } else {
+          recipients.push(r)
+        }
       }
-      totalRecipients += allowed.length
+
+      // Cap enforcement — trim recipients (NOT holdouts) to fit the remaining
+      // budget. Holdouts are always recorded regardless of cap because they
+      // represent the experimental control, not "send-eligible" load.
+      let toSend = recipients
+      if (audienceCap != null) {
+        const remaining = Math.max(0, audienceCap - totalRecipients)
+        if (toSend.length > remaining) toSend = toSend.slice(0, remaining)
+      }
+
+      if (heldOut.length > 0) {
+        const holdoutRows = heldOut.map(r => ({
+          campaignId,
+          customerId: r.customerId,
+          reason: 'control_group' as const,
+        }))
+        for (let i = 0; i < holdoutRows.length; i += SEND_INSERT_BATCH) {
+          await db.insert(campaignHoldouts)
+            .values(holdoutRows.slice(i, i + SEND_INSERT_BATCH))
+            .onConflictDoNothing()
+        }
+        totalHoldouts += heldOut.length
+      }
+
+      if (toSend.length > 0) {
+        const sendRows = toSend.map(r => ({
+          campaignId,
+          customerId: r.customerId,
+          email: r.email ?? '',
+          status: 'pending' as const,
+          variant: assignVariant(r.customerId, campaignId, isAb, splitPct),
+        }))
+        // Postgres parameter-limit safety
+        for (let i = 0; i < sendRows.length; i += SEND_INSERT_BATCH) {
+          await db.insert(campaignSends).values(sendRows.slice(i, i + SEND_INSERT_BATCH))
+        }
+        totalRecipients += toSend.length
+      }
     }
 
     cursor = page[page.length - 1].customerId
     if (page.length < RECIPIENT_PAGE_SIZE) break
   }
 
-  if (totalRecipients === 0) throw new Error(`No reachable customers found for ${channel} campaign`)
+  if (totalRecipients === 0 && totalHoldouts === 0) {
+    throw new Error(`No reachable customers found for ${channel} campaign`)
+  }
+  if (totalRecipients === 0) {
+    throw new Error('Audience produced 0 recipients (everyone fell into the control group). Reduce control_group_pct.')
+  }
 
   await db.update(campaigns).set({
     status: 'sending',
@@ -277,7 +369,11 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
 
   await campaignQueue.add('send-campaign', { campaignId })
 
-  console.log(`Campaign "${campaign.name}" dispatched — ${totalRecipients} recipients`)
+  console.log(
+    `Campaign "${campaign.name}" dispatched — ${totalRecipients} recipients` +
+    (totalHoldouts > 0 ? `, ${totalHoldouts} held back as control` : '') +
+    (audienceCap != null && totalRecipients >= audienceCap ? ` (capped at ${audienceCap})` : ''),
+  )
   return totalRecipients
 }
 
@@ -301,6 +397,20 @@ export async function processCampaign(campaignId: string): Promise<void> {
 
   const channel = campaign.channel ?? 'email'
 
+  // Fetch project once per campaign — same for every recipient. Used by the
+  // template-variable resolver for {{store_name}} / {{email_from_address}}.
+  const [projectRow] = await db
+    .select({
+      id: projects.id,
+      name: projects.name,
+      emailFromAddress: projects.emailFromAddress,
+      emailFromName: projects.emailFromName,
+    })
+    .from(projects)
+    .where(eq(projects.id, campaign.projectId))
+    .limit(1)
+  const project: ProjectLike = projectRow ?? { id: campaign.projectId, name: '' }
+
   let sentCount = campaign.sentCount
   let failedCount = campaign.failedCount
   let cursor: string | null = null
@@ -317,20 +427,40 @@ export async function processCampaign(campaignId: string): Promise<void> {
 
     if (pageSends.length === 0) break
 
-    // Batch-fetch all customers for this page in one query
+    // Batch-fetch all customers for this page in one query — pull every field
+    // the variable resolver might read (region, city, totals, dates) so we
+    // don't re-query per-recipient.
     const customerIds = pageSends.map(s => s.customerId)
     const customerRows = await db
-      .select({ id: customers.id, name: customers.name, phone: customers.phone, customAttributes: customers.customAttributes })
+      .select({
+        id: customers.id,
+        externalId: customers.externalId,
+        email: customers.email,
+        phone: customers.phone,
+        name: customers.name,
+        region: customers.region,
+        city: customers.city,
+        totalOrders: customers.totalOrders,
+        totalSpent: customers.totalSpent,
+        avgOrderValue: customers.avgOrderValue,
+        clv: customers.clv,
+        firstOrderDate: customers.firstOrderDate,
+        lastOrderDate: customers.lastOrderDate,
+        lastSeen: customers.lastSeen,
+        customAttributes: customers.customAttributes,
+      })
       .from(customers)
       .where(inArray(customers.id, customerIds))
-    const customerMap = new Map(customerRows.map(c => [c.id, c]))
+    const customerMap = new Map<string, CustomerInfo>(
+      customerRows.map(c => [c.id, c as CustomerInfo]),
+    )
 
     // Bounded-parallel processing within the page
     const results: Array<{ id: string; success: boolean }> = []
     for (let i = 0; i < pageSends.length; i += PARALLEL_SENDS_PER_PAGE) {
       const chunk = pageSends.slice(i, i + PARALLEL_SENDS_PER_PAGE)
       const chunkResults = await Promise.all(
-        chunk.map(send => sendOneRecipient(send, customerMap.get(send.customerId), campaign, channel)),
+        chunk.map(send => sendOneRecipient(send, customerMap.get(send.customerId), campaign, channel, project)),
       )
       results.push(...chunkResults)
     }
@@ -370,12 +500,23 @@ async function sendOneRecipient(
   customer: CustomerInfo | undefined,
   campaign: CampaignRow,
   channel: string,
+  project: ProjectLike,
 ): Promise<{ id: string; success: boolean }> {
-  const templateContext: Record<string, string> = {
-    customer_name: customer?.name ?? 'there',
-    customer_email: send.email,
-    store_name: 'Storees Store',
-  }
+  // Variable mapping declared on the campaign at save-time. Resolved against
+  // this recipient's customer row + project row to produce the substitution
+  // map. Replaces the old hardcoded { customer_name, customer_email,
+  // store_name } context — those three keys still come back automatically as
+  // defaults inside the resolver.
+  const customerLike: CustomerLike = customer ?? { id: send.customerId, email: send.email }
+  const templateContext = resolveTemplateVariables({
+    variables: (campaign.variables as TemplateVariable[]) ?? [],
+    customer: customerLike,
+    project,
+  })
+  // send.email is the authoritative recipient address — it may differ from
+  // customer.email if the audience was overridden. Stamp it onto the context
+  // so {{customer_email}} reflects what we're actually sending to.
+  templateContext.customer_email = send.email
 
   if (channel === 'email') {
     const useVariantB = send.variant === 'B' && campaign.abTestEnabled

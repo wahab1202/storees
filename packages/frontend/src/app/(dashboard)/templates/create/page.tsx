@@ -3,9 +3,10 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useCreateTemplate } from '@/hooks/useTemplates'
+import { VariablePanel } from '@/components/templates/VariablePanel'
 import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Eye, Loader2, Columns2, Columns3, Columns4, LayoutTemplate } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { TemplateChannel } from '@storees/shared'
+import type { TemplateChannel, TemplateVariable } from '@storees/shared'
 
 const CHANNELS: { value: TemplateChannel; label: string; icon: typeof Mail; description: string }[] = [
   { value: 'email',    label: 'Email',    icon: Mail,          description: 'HTML email with subject line' },
@@ -122,6 +123,7 @@ export default function CreateTemplatePage() {
   const [subject, setSubject] = useState('')
   const [htmlBody, setHtmlBody] = useState(BLANK_HTML)
   const [bodyText, setBodyText] = useState('')
+  const [variables, setVariables] = useState<TemplateVariable[]>([])
   const [tab, setTab] = useState<'edit' | 'preview'>('edit')
 
   const isEmail = channel === 'email'
@@ -135,6 +137,7 @@ export default function CreateTemplatePage() {
         subject: isEmail ? subject : undefined,
         htmlBody: isEmail ? htmlBody : undefined,
         bodyText: !isEmail ? bodyText : undefined,
+        variables,
       },
       { onSuccess: () => router.push('/templates') },
     )
@@ -312,8 +315,8 @@ export default function CreateTemplatePage() {
           </div>
         </div>
 
-        {/* Right: Channel selector */}
-        <div>
+        {/* Right: Channel selector + Variable panel */}
+        <div className="space-y-4">
           <div className="bg-white border border-border rounded-xl overflow-hidden">
             <div className="px-5 py-3 bg-surface border-b border-border">
               <h2 className="text-sm font-semibold text-text-primary">Channel</h2>
@@ -344,6 +347,17 @@ export default function CreateTemplatePage() {
               })}
             </div>
           </div>
+
+          <VariablePanel
+            variables={variables}
+            onChange={setVariables}
+            contentSources={[subject, htmlBody, bodyText]}
+            preview={{
+              subject: isEmail ? subject : null,
+              htmlBody: isEmail ? htmlBody : null,
+              bodyText: !isEmail ? bodyText : null,
+            }}
+          />
         </div>
       </div>
     </div>

@@ -174,10 +174,33 @@ export type Campaign = {
   abWinnerMetric: 'open_rate' | 'click_rate' | 'conversion_rate'
   abAutoSendWinner: boolean
   abTestDurationHours: number
+  // Phase 1 — audience model v2.
+  // tags: free-text labels for filtering campaign list views.
+  // audienceFilter: inline FilterConfig — overrides segmentId at staging
+  //   when set. Same shape segments use, evaluated by the same engine.
+  // audienceCap: optional max recipient count, applied as a LIMIT at staging.
+  // controlGroupPct: 0..50 % of audience held back for lift measurement.
+  // controlGroupSeed: random salt set when controlGroupPct > 0; lets the
+  //   deterministic hash split be audited later.
+  tags: string[]
+  audienceFilter: FilterConfig | null
+  audienceCap: number | null
+  controlGroupPct: number
+  controlGroupSeed: string | null
+  // Per-campaign variable mappings — overrides template defaults at send-time.
+  variables: TemplateVariable[]
   // Soft-archive timestamp; null = active
   archivedAt: string | null
   createdAt: Date
   updatedAt: Date
+}
+
+export type CampaignHoldout = {
+  id: string
+  campaignId: string
+  customerId: string
+  reason: 'control_group' | 'cap_exceeded' | 'frequency_cap'
+  recordedAt: Date
 }
 
 export type CampaignSend = {
@@ -265,6 +288,7 @@ export type EmailTemplate = {
   subject: string | null    // email only
   htmlBody: string | null   // email only
   bodyText: string | null   // sms / push / whatsapp
+  variables: TemplateVariable[]
   createdAt: Date
   updatedAt: Date
 }
@@ -654,6 +678,50 @@ export type DomainConfig = {
   domainType: DomainType
   fields: DomainFieldDef[]
   channels: ('email' | 'sms' | 'push' | 'whatsapp')[]
+}
+
+// ============ TEMPLATE VARIABLES ============
+
+/**
+ * A single variable mapping declared on a template or campaign. Resolved at
+ * send-time by services/templateContext.ts to produce the substitution map
+ * that replaces {{key}} occurrences in subject/body/header/buttons.
+ *
+ * Same shape used across all 4 channels (email, SMS, WhatsApp, push) so the
+ * picker UI is identical regardless of which channel the user is editing.
+ */
+export type TemplateVariableSource =
+  | { kind: 'customer'; field: string }       // any customers.<field> column
+  | { kind: 'attribute'; key: string }        // customers.custom_attributes->>key
+  | { kind: 'event'; key: string }            // event.properties[key] (flows only)
+  | { kind: 'project'; field: string }        // projects.<field>
+  | { kind: 'literal'; value: string }        // hardcoded string
+
+export type TemplateVariableFormat =
+  | 'money'                                   // 500000 → ₹5,000.00
+  | 'date'                                    // 2026-05-07T... → 2026-05-07
+  | 'date:long'                               // → May 7, 2026
+  | 'date:short'                              // → 7 May
+  | 'upper'
+  | 'lower'
+  | 'title'                                   // Title Case
+
+export type TemplateVariable = {
+  key: string                                  // the {{key}} in the body
+  source: TemplateVariableSource
+  defaultValue?: string                       // fallback when source resolves null/empty
+  format?: TemplateVariableFormat             // optional transform
+}
+
+/**
+ * Catalogue of available variable sources for a project — what the picker
+ * dropdown shows. Returned by GET /api/templates/variable-sources.
+ */
+export type VariableSourceCatalog = {
+  customer: Array<{ field: string; label: string; type: 'string' | 'number' | 'date' | 'boolean' }>
+  attributes: Array<{ key: string; sample?: string }>  // top N keys observed in customer.custom_attributes
+  project: Array<{ field: string; label: string }>
+  events: Array<{ name: string; properties: string[] }>  // top events + their property keys
 }
 
 // ============ GENERIC EVENT API TYPES ============

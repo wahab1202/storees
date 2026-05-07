@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
-import type { Campaign, CampaignSend, CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule } from '@storees/shared'
+import type { Campaign, CampaignSend, CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule, FilterConfig } from '@storees/shared'
 
 export function useCampaigns(opts?: { archivedOnly?: boolean; includeArchived?: boolean }) {
   const params: Record<string, string> = {}
@@ -61,6 +61,10 @@ export function useCreateCampaign() {
       abWinnerMetric?: string
       abAutoSendWinner?: boolean
       abTestDurationHours?: number
+      tags?: string[]
+      audienceFilter?: FilterConfig
+      audienceCap?: number
+      controlGroupPct?: number
     }) => api.post<Campaign>(withProject('/api/campaigns'), data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
@@ -96,6 +100,10 @@ export function useUpdateCampaign() {
       abWinnerMetric?: string
       abAutoSendWinner?: boolean
       abTestDurationHours?: number
+      tags?: string[]
+      audienceFilter?: FilterConfig | null
+      audienceCap?: number | null
+      controlGroupPct?: number
     }) => api.patch<Campaign>(withProject(`/api/campaigns/${id}`), data),
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })

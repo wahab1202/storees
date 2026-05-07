@@ -1,9 +1,10 @@
 import { eq, and, gt } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events } from '../db/schema.js'
+import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
 import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate } from './emailService.js'
-import type { FlowNode, ActionNode, DelayNode, ConditionNode } from '@storees/shared'
+import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
+import type { FlowNode, ActionNode, DelayNode, ConditionNode, TemplateVariable } from '@storees/shared'
 
 const DEMO_DELAY_MINUTES = Number(process.env.DEMO_DELAY_MINUTES ?? 2)
 
@@ -324,23 +325,55 @@ async function executeAction(
     return
   }
 
+  // Pull the full customer + project rows once — both needed for variable
+  // resolution regardless of channel.
+  const [customer] = await db
+    .select({
+      id: customers.id,
+      externalId: customers.externalId,
+      email: customers.email,
+      phone: customers.phone,
+      name: customers.name,
+      region: customers.region,
+      city: customers.city,
+      totalOrders: customers.totalOrders,
+      totalSpent: customers.totalSpent,
+      avgOrderValue: customers.avgOrderValue,
+      clv: customers.clv,
+      firstOrderDate: customers.firstOrderDate,
+      lastOrderDate: customers.lastOrderDate,
+      lastSeen: customers.lastSeen,
+      customAttributes: customers.customAttributes,
+    })
+    .from(customers)
+    .where(eq(customers.id, customerId))
+    .limit(1)
+
+  if (!customer) {
+    console.warn(`Cannot execute action: customer ${customerId} not found`)
+    return
+  }
+
+  const [projectRow] = await db
+    .select({
+      id: projects.id,
+      name: projects.name,
+      emailFromAddress: projects.emailFromAddress,
+      emailFromName: projects.emailFromName,
+    })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+  const project: ProjectLike = projectRow ?? { id: projectId, name: '' }
+  const customerLike = customer as CustomerLike
+
+  const eventProperties = context.triggerProperties as Record<string, unknown> | undefined
+
   // For email, use the existing direct send path (backward compatible)
   if (channel === 'email') {
-    const [customer] = await db
-      .select({ email: customers.email, name: customers.name })
-      .from(customers)
-      .where(eq(customers.id, customerId))
-      .limit(1)
-
-    if (!customer?.email) {
+    if (!customer.email) {
       console.warn(`Cannot send email: customer ${customerId} has no email`)
       return
-    }
-
-    const templateContext: Record<string, unknown> = {
-      customer_name: customer.name ?? 'there',
-      customer_email: customer.email,
-      ...(context.triggerProperties as Record<string, unknown> ?? {}),
     }
 
     const [template] = await db
@@ -348,6 +381,13 @@ async function executeAction(
       .from(emailTemplates)
       .where(eq(emailTemplates.name, templateId))
       .limit(1)
+
+    const templateContext = resolveTemplateVariables({
+      variables: ((template?.variables as TemplateVariable[]) ?? []),
+      customer: customerLike,
+      project,
+      eventProperties,
+    })
 
     let subject: string
     let html: string
@@ -370,20 +410,23 @@ async function executeAction(
     return
   }
 
-  // For SMS, Push, WhatsApp — use the delivery service
+  // For SMS, Push, WhatsApp — use the delivery service. Resolve template
+  // variables here too so positional params {{1}}, {{2}} (WhatsApp) and named
+  // tokens (SMS/push) all read from the same per-customer/per-event context.
   const { send } = await import('./deliveryService.js')
-  const variables: Record<string, string> = {
-    customer_name: '',
-    ...(context.triggerProperties as Record<string, string> ?? {}),
-  }
-
-  // Get customer name for variables
-  const [cust] = await db
-    .select({ name: customers.name })
-    .from(customers)
-    .where(eq(customers.id, customerId))
+  // Look up the template's declared variables (SMS/push/WhatsApp templates
+  // share the same email_templates table for now — variable shape is generic).
+  const [providerTemplate] = await db
+    .select({ variables: emailTemplates.variables })
+    .from(emailTemplates)
+    .where(eq(emailTemplates.name, templateId))
     .limit(1)
-  variables.customer_name = cust?.name ?? 'there'
+  const variables = resolveTemplateVariables({
+    variables: ((providerTemplate?.variables as TemplateVariable[]) ?? []),
+    customer: customerLike,
+    project,
+    eventProperties,
+  })
 
   const messageId = await send({
     projectId,
