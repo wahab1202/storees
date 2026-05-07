@@ -39,12 +39,33 @@ const REFRESH_INTERVAL_MS = 5 * 60 * 1000 // 5 min
 
 // Per-source-type orchestration. Today only medusa_gwm exists; other source
 // types (Shopify federation, custom Postgres) plug in here when needed.
-const SOURCE_HANDLERS: Record<string, (projectId: string) => Promise<{ updatedAttrs: number; upsertedAgents: number; linkedCustomers: number }>> = {
+type RefreshStats = {
+  updatedAttrs: number
+  upsertedAgents: number
+  linkedCustomers: number
+  upsertedProducts: number
+  upsertedCollections: number
+  linkedProductCollections: number
+  upsertedOrders: number
+  ordersCursor: string | null
+}
+
+const SOURCE_HANDLERS: Record<string, (projectId: string, config: SourceConfig) => Promise<{ stats: RefreshStats; nextConfig: SourceConfig }>> = {
   medusa_gwm: refreshMedusaGwm,
 }
 
-async function refreshMedusaGwm(projectId: string): Promise<{ updatedAttrs: number; upsertedAgents: number; linkedCustomers: number }> {
-  // Step 1: refresh the materialised view (live FDW pull from gwm)
+/**
+ * Per-stream cursor state stored in project_data_sources.config. Each stream
+ * tracks its own watermark so a slow stream doesn't block fast ones.
+ */
+type SourceConfig = {
+  orders?: { lastSyncedAt?: string | null }
+  // host/dbname/note kept verbatim — config is opaque to the worker beyond cursors.
+  [key: string]: unknown
+}
+
+async function refreshMedusaGwm(projectId: string, config: SourceConfig): Promise<{ stats: RefreshStats; nextConfig: SourceConfig }> {
+  // Step 1: refresh the customer-attr MV (live FDW pull from gwm)
   await db.execute(sql`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_gwm_customer_attrs`)
 
   // Step 2: copy MV → customers columns (only diffs)
@@ -53,11 +74,51 @@ async function refreshMedusaGwm(projectId: string): Promise<{ updatedAttrs: numb
 
   // Step 3: upsert agents + relink customers.agent_id
   const agentsResult = await db.execute(sql`SELECT * FROM sync_gwm_agents(${projectId}::uuid)`)
-  const row = agentsResult.rows[0] as { upserted_count?: number | string; linked_customers?: number | string } | undefined
-  const upsertedAgents = Number(row?.upserted_count ?? 0)
-  const linkedCustomers = Number(row?.linked_customers ?? 0)
+  const agentRow = agentsResult.rows[0] as { upserted_count?: number | string; linked_customers?: number | string } | undefined
+  const upsertedAgents = Number(agentRow?.upserted_count ?? 0)
+  const linkedCustomers = Number(agentRow?.linked_customers ?? 0)
 
-  return { updatedAttrs, upsertedAgents, linkedCustomers }
+  // Step 4: products — full upsert (catalog is small, ~3K rows, cheap)
+  const productsResult = await db.execute(sql`SELECT * FROM sync_gwm_products(${projectId}::uuid)`)
+  const upsertedProducts = Number((productsResult.rows[0] as { upserted_count?: number | string })?.upserted_count ?? 0)
+
+  // Step 5: collections (derived from cat_product.category) — full re-link
+  const collectionsResult = await db.execute(sql`SELECT * FROM sync_gwm_collections(${projectId}::uuid)`)
+  const collectionsRow = collectionsResult.rows[0] as { upserted_collections?: number | string; linked_products?: number | string } | undefined
+  const upsertedCollections = Number(collectionsRow?.upserted_collections ?? 0)
+  const linkedProductCollections = Number(collectionsRow?.linked_products ?? 0)
+
+  // Step 6: orders — incremental from cursor stored in config.orders.lastSyncedAt.
+  // First run: cursor=null → backfills everything. Function returns the new
+  // max(updated_at) which we persist back into config so the next tick picks
+  // up exactly where this one left off.
+  const ordersSince = config.orders?.lastSyncedAt ?? null
+  const ordersResult = await db.execute(sql`
+    SELECT * FROM sync_gwm_orders(${projectId}::uuid, ${ordersSince}::timestamptz)
+  `)
+  const ordersRow = ordersResult.rows[0] as { upserted_count?: number | string; max_updated_at?: string | null } | undefined
+  const upsertedOrders = Number(ordersRow?.upserted_count ?? 0)
+  const ordersCursor = ordersRow?.max_updated_at ?? ordersSince
+
+  // Carry forward the existing config + bump the orders cursor only.
+  const nextConfig: SourceConfig = {
+    ...config,
+    orders: { lastSyncedAt: ordersCursor },
+  }
+
+  return {
+    stats: {
+      updatedAttrs,
+      upsertedAgents,
+      linkedCustomers,
+      upsertedProducts,
+      upsertedCollections,
+      linkedProductCollections,
+      upsertedOrders,
+      ordersCursor: ordersCursor ?? null,
+    },
+    nextConfig,
+  }
 }
 
 export function startFederationRefreshWorker(): Worker {
@@ -84,7 +145,8 @@ export function startFederationRefreshWorker(): Worker {
             .set({ lastRefreshStatus: 'running', updatedAt: new Date() })
             .where(eq(projectDataSources.projectId, src.projectId))
 
-          const stats = await handler(src.projectId)
+          const config = (src.config ?? {}) as SourceConfig
+          const { stats, nextConfig } = await handler(src.projectId, config)
           const durationMs = Date.now() - startedAt
 
           await db.update(projectDataSources).set({
@@ -92,6 +154,8 @@ export function startFederationRefreshWorker(): Worker {
             lastRefreshStatus: 'success',
             lastRefreshError: null,
             lastRefreshDurationMs: durationMs,
+            // Persist the bumped cursor so the next tick picks up where this left off.
+            config: nextConfig,
             updatedAt: new Date(),
           }).where(eq(projectDataSources.projectId, src.projectId))
 

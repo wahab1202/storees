@@ -146,6 +146,53 @@ total_in_mv | with_region | with_city | with_orders | avg_total_spent
 
 (Approximate numbers — actual values depend on GoWelmart data state.)
 
+---
+
+## Step 2b — Sync products + collections + orders (run once after Step 2)
+
+`gwm_federated_views.sql` syncs customer rollups + agents only. To populate the
+Storees `products`, `collections`, and `orders` tables (so segment filters like
+"has purchased X" / "Total Orders > 5" actually return rows), run the
+products+orders sync file:
+
+```bash
+psql "$STOREES_PROD_URL" \
+  -f packages/backend/src/db/data/gwm_federated_products_orders.sql
+```
+
+This declares three new functions (no schema mutation, idempotent re-run safe):
+
+- `sync_gwm_products(project_id)` — full upsert from `gwm.cat_product`
+- `sync_gwm_collections(project_id)` — derives one collection per distinct
+  `cat_product.category` value, repopulates the `product_collections` junction
+- `sync_gwm_orders(project_id, since)` — incremental: pulls
+  `gwm.order` rows where `updated_at > since`, joins customers via
+  `external_id`, aggregates line items into a JSONB array shaped exactly like
+  the segment evaluator expects (`[{productId, productName, quantity, price}]`)
+
+**One-off backfill (first run, since=NULL pulls everything):**
+```sql
+SELECT * FROM sync_gwm_products('a3fe60d4-aa5f-4db1-b775-ee926de78611'::uuid);
+SELECT * FROM sync_gwm_collections('a3fe60d4-aa5f-4db1-b775-ee926de78611'::uuid);
+SELECT * FROM sync_gwm_orders('a3fe60d4-aa5f-4db1-b775-ee926de78611'::uuid, NULL);
+```
+
+After that, the federation worker calls all three every 5min (full upsert for
+products + collections, incremental for orders via the cursor stored in
+`project_data_sources.config -> 'orders' -> 'lastSyncedAt'`).
+
+**Verification:**
+```sql
+SELECT
+  (SELECT COUNT(*) FROM products    WHERE project_id = 'a3fe60d4-aa5f-4db1-b775-ee926de78611') AS products,
+  (SELECT COUNT(*) FROM collections WHERE project_id = 'a3fe60d4-aa5f-4db1-b775-ee926de78611') AS collections,
+  (SELECT COUNT(*) FROM orders      WHERE project_id = 'a3fe60d4-aa5f-4db1-b775-ee926de78611') AS orders,
+  (SELECT config->'orders'->>'lastSyncedAt' FROM project_data_sources
+     WHERE project_id = 'a3fe60d4-aa5f-4db1-b775-ee926de78611') AS orders_cursor;
+```
+
+All four should be > 0 / non-NULL after the first worker tick.
+
 If `total_in_mv = 0`: the JOIN between Storees `customers.external_id` and
 `gwm.customer.id` isn't matching. Spot-check:
 ```sql
