@@ -291,16 +291,25 @@ function SourcePicker({
 
 function PreviewResult({ result }: { result: PreviewResponse }) {
   const errors = result.issues.filter(i => i.kind === 'error')
+  const warnings = result.issues.filter(i => i.kind === 'warning')
+  const sampleLabel = result.sampleSource === 'placeholder'
+    ? 'Placeholder data'
+    : result.sampleCustomer.name ?? result.sampleCustomer.email ?? result.sampleCustomer.id
+
   return (
     <div className="mt-3 space-y-2 text-xs">
-      <div className="text-[11px] text-text-muted">
-        Rendered with{' '}
-        <span className="font-medium text-text-primary">
-          {result.sampleSource === 'placeholder'
-            ? 'placeholder data'
-            : result.sampleCustomer.name ?? result.sampleCustomer.email ?? result.sampleCustomer.id}
-        </span>
+      <div className="rounded-md border border-border bg-white p-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+          Sample Customer
+        </div>
+        <div className="mt-1 truncate text-[11px] font-medium text-text-primary" title={sampleLabel}>
+          {sampleLabel}
+        </div>
+        <div className="mt-0.5 text-[10px] text-text-muted">
+          {result.sampleSource === 'requested' ? 'Selected manually' : result.sampleSource === 'auto' ? 'Auto-selected from customers' : 'Fallback sample'}
+        </div>
       </div>
+
       {errors.length > 0 && (
         <div className="rounded-md bg-red-50 border border-red-200 p-2 space-y-1">
           {errors.map((iss, i) => (
@@ -311,27 +320,59 @@ function PreviewResult({ result }: { result: PreviewResponse }) {
           ))}
         </div>
       )}
-      {result.rendered.subject && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-text-muted mb-0.5">Subject</div>
-          <div className="text-text-primary">{result.rendered.subject}</div>
+
+      {warnings.length > 0 && errors.length === 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-2 space-y-1">
+          {warnings.map((iss, i) => (
+            <div key={i} className="flex items-start gap-1.5 text-[11px] text-amber-800">
+              <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+              <span>{iss.message}</span>
+            </div>
+          ))}
         </div>
       )}
+
+      {result.rendered.subject && (
+        <div className="rounded-md border border-border bg-white p-2">
+          <div className="text-[10px] uppercase tracking-wide text-text-muted mb-0.5">Subject</div>
+          <div className="line-clamp-2 text-text-primary">{result.rendered.subject}</div>
+        </div>
+      )}
+
       {(result.rendered.htmlBody || result.rendered.bodyText) && (
         <div>
           <div className="text-[10px] uppercase tracking-wide text-text-muted mb-0.5">Body</div>
           {result.rendered.htmlBody ? (
-            <div
-              className="border border-border rounded-md bg-white p-2 max-h-40 overflow-y-auto"
-              // eslint-disable-next-line react/no-danger
-              dangerouslySetInnerHTML={{ __html: result.rendered.htmlBody }}
-            />
+            <div className="overflow-hidden rounded-md border border-border bg-white">
+              <iframe
+                srcDoc={result.rendered.htmlBody}
+                title="Rendered sample preview"
+                className="h-72 w-full bg-white"
+                sandbox="allow-same-origin"
+              />
+            </div>
           ) : (
-            <pre className="text-text-primary whitespace-pre-wrap font-sans text-xs">
+            <pre className="max-h-56 overflow-y-auto rounded-md border border-border bg-white p-2 text-text-primary whitespace-pre-wrap font-sans text-xs">
               {result.rendered.bodyText}
             </pre>
           )}
         </div>
+      )}
+
+      {Object.keys(result.substitutions).length > 0 && (
+        <details className="rounded-md border border-border bg-white p-2">
+          <summary className="cursor-pointer text-[11px] font-medium text-text-secondary">
+            Resolved variables
+          </summary>
+          <div className="mt-2 max-h-32 space-y-1 overflow-y-auto">
+            {Object.entries(result.substitutions).map(([key, value]) => (
+              <div key={key} className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)] gap-2 text-[10px]">
+                <code className="truncate rounded bg-surface px-1 py-0.5 text-text-secondary">{`{{${key}}}`}</code>
+                <span className="truncate text-text-primary" title={value}>{value || '-'}</span>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   )
