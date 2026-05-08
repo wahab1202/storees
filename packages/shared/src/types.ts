@@ -764,6 +764,7 @@ export type DomainConfig = {
 export type TemplateVariableSource =
   | { kind: 'customer'; field: string }       // any customers.<field> column
   | { kind: 'attribute'; key: string }        // customers.custom_attributes->>key
+  | { kind: 'product'; field: string }        // products/items field for catalogue-backed variables
   | { kind: 'event'; key: string }            // event.properties[key] (flows only)
   | { kind: 'project'; field: string }        // projects.<field>
   | { kind: 'literal'; value: string }        // hardcoded string
@@ -791,6 +792,7 @@ export type TemplateVariable = {
 export type VariableSourceCatalog = {
   customer: Array<{ field: string; label: string; type: 'string' | 'number' | 'date' | 'boolean' }>
   attributes: Array<{ key: string; sample?: string }>  // top N keys observed in customer.custom_attributes
+  product?: Array<{ field: string; label: string; type?: 'string' | 'number' | 'url' }>
   project: Array<{ field: string; label: string }>
   events: Array<{ name: string; properties: string[] }>  // top events + their property keys
 }

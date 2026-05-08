@@ -50,10 +50,23 @@ export type ProjectLike = {
   emailFromName?: string | null
 }
 
+export type ProductLike = {
+  id?: string | null
+  externalId?: string | null
+  name?: string | null
+  title?: string | null
+  price?: string | number | null
+  url?: string | null
+  imageUrl?: string | null
+  productType?: string | null
+  vendor?: string | null
+}
+
 export type ResolveOpts = {
   variables: TemplateVariable[]
   customer: CustomerLike
   project: ProjectLike
+  product?: ProductLike | null
   eventProperties?: Record<string, unknown>
   /**
    * Computed at send-time, e.g. one-click unsubscribe URL. Merged in as
@@ -67,6 +80,7 @@ export function resolveTemplateVariables({
   variables,
   customer,
   project,
+  product,
   eventProperties,
   systemVars,
 }: ResolveOpts): Record<string, string> {
@@ -85,7 +99,7 @@ export function resolveTemplateVariables({
   out.customer_email = customer.email ?? ''
 
   for (const variable of variables ?? []) {
-    const raw = readSource(variable.source, customer, project, eventProperties)
+    const raw = readSource(variable.source, customer, project, product, eventProperties)
     const formatted = applyFormat(raw, variable.format)
     const final = nonEmpty(formatted) ?? variable.defaultValue ?? ''
     out[variable.key] = final
@@ -98,6 +112,7 @@ function readSource(
   source: TemplateVariableSource,
   customer: CustomerLike,
   project: ProjectLike,
+  product: ProductLike | null | undefined,
   eventProperties: Record<string, unknown> | undefined,
 ): unknown {
   switch (source.kind) {
@@ -107,10 +122,29 @@ function readSource(
       return readCustomerField(customer, source.field)
     case 'attribute':
       return customer.customAttributes?.[source.key]
+    case 'product':
+      return readProductField(product, source.field, eventProperties)
     case 'project':
       return readProjectField(project, source.field)
     case 'event':
       return eventProperties?.[source.key]
+  }
+}
+
+function readProductField(
+  product: ProductLike | null | undefined,
+  field: string,
+  eventProperties: Record<string, unknown> | undefined,
+): unknown {
+  switch (field) {
+    case 'id': return product?.id ?? product?.externalId ?? eventProperties?.product_id
+    case 'name': return product?.name ?? product?.title ?? eventProperties?.product_name ?? eventProperties?.title
+    case 'price': return product?.price ?? eventProperties?.product_price ?? eventProperties?.price
+    case 'url': return product?.url ?? eventProperties?.product_url ?? eventProperties?.url
+    case 'image_url': return product?.imageUrl ?? eventProperties?.product_image_url ?? eventProperties?.image_url
+    case 'type': return product?.productType ?? eventProperties?.product_type
+    case 'vendor': return product?.vendor ?? eventProperties?.vendor
+    default: return eventProperties?.[field]
   }
 }
 

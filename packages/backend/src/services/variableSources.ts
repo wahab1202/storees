@@ -34,6 +34,15 @@ export async function buildVariableCatalog(projectId: string): Promise<VariableS
       { field: 'id',                label: 'Customer ID',           type: 'string' },
     ],
     attributes: attrKeys,
+    product: [
+      { field: 'name', label: 'Product Name', type: 'string' },
+      { field: 'price', label: 'Product Price', type: 'number' },
+      { field: 'url', label: 'Product URL', type: 'url' },
+      { field: 'image_url', label: 'Product Image URL', type: 'url' },
+      { field: 'type', label: 'Product Type', type: 'string' },
+      { field: 'vendor', label: 'Vendor', type: 'string' },
+      { field: 'id', label: 'Product ID', type: 'string' },
+    ],
     project: [
       { field: 'name',                label: 'Project Name' },
       { field: 'email_from_address',  label: 'From Email Address' },

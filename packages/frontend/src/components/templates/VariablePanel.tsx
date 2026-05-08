@@ -58,7 +58,7 @@ export function VariablePanel({ variables, onChange, contentSources, preview }: 
     if (missing.length === 0) return
     const seeded: TemplateVariable[] = missing.map(key => ({
       key,
-      source: { kind: 'customer', field: guessCustomerField(key) ?? 'name' },
+      source: guessSourceForKey(key),
     }))
     onChange([...variables, ...seeded])
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -262,6 +262,15 @@ function SourcePicker({
           ))}
         </optgroup>
       )}
+      {catalog?.product && catalog.product.length > 0 && (
+        <optgroup label="Product">
+          {catalog.product.map(f => (
+            <option key={`product-${f.field}`} value={`product::${f.field}`}>
+              {f.label}
+            </option>
+          ))}
+        </optgroup>
+      )}
       <optgroup label="Project">
         {(catalog?.project ?? []).map(f => (
           <option key={`project-${f.field}`} value={`project::${f.field}`}>
@@ -402,9 +411,29 @@ function nextKey(base: string, existing: TemplateVariable[]): string {
 }
 
 /**
- * Heuristic — when a {{key}} is auto-detected, pick the most likely customer
+ * Heuristic — when a {{key}} is auto-detected, pick the most likely
  * field so the row arrives with a sensible default rather than blank.
  */
+function guessSourceForKey(key: string): TemplateVariableSource {
+  const productField = guessProductField(key)
+  if (productField) return { kind: 'product', field: productField }
+  return { kind: 'customer', field: guessCustomerField(key) ?? 'name' }
+}
+
+function guessProductField(key: string): string | null {
+  const k = key.toLowerCase()
+  const isProductKey = /\b(product|item|sku|variant|catalog|merchandise)_/.test(k) || k.includes('product')
+  if (!isProductKey) return null
+  if (k.includes('price') || k.includes('amount')) return 'price'
+  if (k.includes('image') || k.includes('img') || k.includes('photo') || k.includes('picture')) return 'image_url'
+  if (k.includes('url') || k.includes('link')) return 'url'
+  if (k.includes('type') || k.includes('category')) return 'type'
+  if (k.includes('vendor') || k.includes('brand')) return 'vendor'
+  if (k.includes('id') || k.includes('sku') || k.includes('variant')) return 'id'
+  if (k.includes('name') || k.includes('title')) return 'name'
+  return 'name'
+}
+
 function guessCustomerField(key: string): string | null {
   const k = key.toLowerCase()
   if (k.includes('name')) return 'name'
@@ -423,6 +452,7 @@ function encodeSource(s: TemplateVariableSource): string {
   switch (s.kind) {
     case 'customer':  return `customer::${s.field}`
     case 'attribute': return `attribute::${s.key}`
+    case 'product':   return `product::${s.field}`
     case 'project':   return `project::${s.field}`
     case 'event':     return `event::${s.key}`
     case 'literal':   return `literal::${s.value}`
@@ -435,6 +465,7 @@ function decodeSource(encoded: string): TemplateVariableSource | null {
   switch (kind) {
     case 'customer':  return { kind: 'customer',  field: value }
     case 'attribute': return { kind: 'attribute', key: value }
+    case 'product':   return { kind: 'product',   field: value }
     case 'project':   return { kind: 'project',   field: value }
     case 'event':     return { kind: 'event',     key: value }
     case 'literal':   return { kind: 'literal',   value }
@@ -450,6 +481,10 @@ function describeSource(s: TemplateVariableSource, catalog: VariableSourceCatalo
       return label ? `Customer ▸ ${label}` : null
     }
     case 'attribute': return `Attribute ▸ ${s.key}`
+    case 'product': {
+      const label = catalog?.product?.find(p => p.field === s.field)?.label
+      return label ? `Product ▸ ${label}` : `Product ▸ ${s.field}`
+    }
     case 'project':   return `Project ▸ ${s.field}`
     case 'event':     return `Event ▸ ${s.key}`
     case 'literal':   return `Literal ▸ "${s.value}"`

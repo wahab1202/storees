@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { db } from '../db/connection.js'
-import { emailTemplates, customers, projects } from '../db/schema.js'
+import { emailTemplates, customers, products, projects } from '../db/schema.js'
 import { eq, and, count, desc, sql } from 'drizzle-orm'
 import { requireProjectId } from '../middleware/projectId.js'
 import { SEED_TEMPLATES } from '../data/seedTemplates.js'
@@ -9,6 +9,7 @@ import { lintTemplate, hasBlockingErrors } from '../services/templateLint.js'
 import {
   resolveTemplateVariables,
   type CustomerLike,
+  type ProductLike,
   type ProjectLike,
 } from '../services/templateContext.js'
 import { interpolateTemplate } from '../services/emailService.js'
@@ -199,10 +200,27 @@ router.post('/preview', requireProjectId, async (req, res) => {
       else { customer = placeholderCustomer(); sampleSource = 'placeholder' }
     }
 
+    const [productRow] = await db
+      .select({
+        id: products.id,
+        externalId: products.shopifyProductId,
+        name: products.title,
+        title: products.title,
+        imageUrl: products.imageUrl,
+        productType: products.productType,
+        vendor: products.vendor,
+      })
+      .from(products)
+      .where(eq(products.projectId, projectId))
+      .orderBy(desc(products.updatedAt))
+      .limit(1)
+    const product = productRow as ProductLike | undefined
+
     const map = resolveTemplateVariables({
       variables: variables ?? [],
       customer,
       project,
+      product,
       eventProperties,
     })
 
