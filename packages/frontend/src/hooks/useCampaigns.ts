@@ -4,7 +4,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
-import type { Campaign, CampaignSend, CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule, FilterConfig } from '@storees/shared'
+import type { Campaign, CampaignSend, CampaignContentType, CampaignChannel, CampaignDeliveryType, CampaignSendTimeMode, CampaignUtmParameters, ConversionGoal, GmailAnnotation, PeriodicSchedule, FilterConfig, TemplateVariable } from '@storees/shared'
+import type { EmailTemplate } from '@/lib/emailTypes'
+
+export type CampaignAttachmentUpload = {
+  filename: string
+  mime: string
+  sizeBytes: number
+  contentBase64: string
+}
 
 export function useCampaigns(opts?: { archivedOnly?: boolean; includeArchived?: boolean }) {
   const params: Record<string, string> = {}
@@ -42,16 +50,27 @@ export function useCreateCampaign() {
       deliveryType?: CampaignDeliveryType
       subject?: string
       htmlBody?: string
+      emailBuilderTemplate?: EmailTemplate | null
       bodyText?: string
       segmentId?: string
       fromName?: string
-      scheduledAt?: string
+      fromEmail?: string
+      replyToEmail?: string
+      ccEmails?: string[]
+	      bccEmails?: string[]
+	      gmailAnnotation?: GmailAnnotation | null
+	      utmParameters?: CampaignUtmParameters | null
+	      scheduledAt?: string
       contentType?: CampaignContentType
       previewText?: string
       templateId?: string
       conversionGoals?: ConversionGoal[]
       goalTrackingHours?: number
       deliveryLimit?: number | null
+      ignoreFrequencyCap?: boolean
+      countForFrequencyCap?: boolean
+      sendTimeMode?: CampaignSendTimeMode
+      scheduleTimezone?: string | null
       periodicSchedule?: PeriodicSchedule
       abTestEnabled?: boolean
       abSplitPct?: number
@@ -63,8 +82,12 @@ export function useCreateCampaign() {
       abTestDurationHours?: number
       tags?: string[]
       audienceFilter?: FilterConfig
+      excludeAudienceFilter?: FilterConfig
       audienceCap?: number
       controlGroupPct?: number
+      variables?: TemplateVariable[]
+      subscriptionCategoryIds?: string[]
+      attachmentUploads?: CampaignAttachmentUpload[]
     }) => api.post<Campaign>(withProject('/api/campaigns'), data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
@@ -82,15 +105,27 @@ export function useUpdateCampaign() {
       name?: string
       subject?: string
       htmlBody?: string
+      emailBuilderTemplate?: EmailTemplate | null
       bodyText?: string
       segmentId?: string | null
       fromName?: string | null
-      scheduledAt?: string | null
+      fromEmail?: string | null
+      replyToEmail?: string | null
+      ccEmails?: string[]
+	      bccEmails?: string[]
+	      gmailAnnotation?: GmailAnnotation | null
+	      utmParameters?: CampaignUtmParameters | null
+	      scheduledAt?: string | null
       contentType?: CampaignContentType
       previewText?: string | null
+      templateId?: string | null
       conversionGoals?: ConversionGoal[]
       goalTrackingHours?: number
       deliveryLimit?: number | null
+      ignoreFrequencyCap?: boolean
+      countForFrequencyCap?: boolean
+      sendTimeMode?: CampaignSendTimeMode
+      scheduleTimezone?: string | null
       periodicSchedule?: PeriodicSchedule | null
       abTestEnabled?: boolean
       abSplitPct?: number
@@ -102,8 +137,13 @@ export function useUpdateCampaign() {
       abTestDurationHours?: number
       tags?: string[]
       audienceFilter?: FilterConfig | null
+      excludeAudienceFilter?: FilterConfig | null
       audienceCap?: number | null
       controlGroupPct?: number
+      variables?: TemplateVariable[]
+      subscriptionCategoryIds?: string[]
+      attachmentUploads?: CampaignAttachmentUpload[]
+      deleteAttachmentIds?: string[]
     }) => api.patch<Campaign>(withProject(`/api/campaigns/${id}`), data),
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
@@ -111,6 +151,36 @@ export function useUpdateCampaign() {
       toast.success('Campaign saved')
     },
     onError: (err) => toast.error(err.message ?? 'Failed to save campaign'),
+  })
+}
+
+export type CampaignAudiencePreview = {
+  totalCandidates: number
+  reachable: number
+  suppressed: number
+  optedOut: number
+  subscriptionBlocked: number
+  serviceWindowBlocked: number
+  deliverable: number
+  estimatedHoldouts: number
+  estimatedRecipients: number
+  audienceCap: number | null
+  stalePct: number
+  warning: string | null
+}
+
+export function usePreviewCampaignAudience() {
+  return useMutation({
+    mutationFn: (data: {
+      channel?: CampaignChannel
+      segmentId?: string | null
+      audienceFilter?: FilterConfig | null
+      excludeAudienceFilter?: FilterConfig | null
+      audienceCap?: number | null
+      controlGroupPct?: number
+      subscriptionCategoryIds?: string[]
+      templateId?: string | null
+    }) => api.post<CampaignAudiencePreview>(withProject('/api/campaigns/audience-preview'), data),
   })
 }
 
@@ -247,6 +317,18 @@ export function useRetryCampaign() {
   })
 }
 
+export function useSendCampaignTestEmail() {
+  return useMutation({
+    mutationFn: ({ id, to, sampleCustomerId }: { id: string; to: string; sampleCustomerId?: string }) =>
+      api.post<{ messageId: string; to: string; sampleCustomer: { id: string; name: string | null; email: string | null } }>(
+        withProject(`/api/campaigns/${id}/test-email`),
+        { to, sampleCustomerId },
+      ),
+    onSuccess: (res) => toast.success(`Test email sent to ${res.data?.to ?? 'recipient'}`),
+    onError: (err) => toast.error(err.message ?? 'Failed to send test email'),
+  })
+}
+
 // Campaign analytics types
 export type CampaignAnalytics = {
   funnel: {
@@ -270,6 +352,18 @@ export type CampaignAnalytics = {
     conversionRate: number
     totalRecipients: number
     revenue: number
+  }>
+  controlGroupLift: Array<{
+    goalName: string
+    eventName: string
+    sentRecipients: number
+    sentConversions: number
+    sentConversionRate: number
+    holdoutRecipients: number
+    holdoutConversions: number
+    holdoutConversionRate: number
+    liftPct: number | null
+    incrementalConversions: number
   }>
   timeline: Array<{
     hour: string

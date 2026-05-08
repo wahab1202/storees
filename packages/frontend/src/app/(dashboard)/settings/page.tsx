@@ -7,7 +7,7 @@ import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { cn } from '@/lib/utils'
-import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
 type TabId = 'script' | 'npm' | 'api'
 
@@ -302,6 +302,18 @@ type ProviderField = { key: string; label: string; type?: string; placeholder?: 
 type ProviderDef = { value: string; label: string; description: string; initials: string; color: string; fields: ProviderField[] }
 
 const CHANNEL_PROVIDERS: Record<string, ProviderDef[]> = {
+  email: [
+    { value: 'resend', label: 'Resend', description: 'Default Storees email provider for marketing and transactional mail', initials: 'Re', color: 'bg-black',
+      fields: [{ key: 'apiKey', label: 'API Key', type: 'password', placeholder: 'Uses RESEND_API_KEY when blank' }, { key: 'fromEmail', label: 'Fallback From Email', placeholder: 'Storees <noreply@storees.app>' }] },
+    { value: 'sendgrid', label: 'SendGrid', description: 'High-volume marketing and transactional email via SendGrid Mail Send API', initials: 'SG', color: 'bg-sky-600',
+      fields: [{ key: 'apiKey', label: 'API Key', type: 'password', placeholder: 'Uses SENDGRID_API_KEY when blank' }, { key: 'fromEmail', label: 'Fallback From Email', placeholder: 'Storees <noreply@storees.app>' }] },
+    { value: 'postmark', label: 'Postmark', description: 'Fast transactional email with optional broadcast streams', initials: 'PM', color: 'bg-yellow-600',
+      fields: [{ key: 'serverToken', label: 'Server Token', type: 'password', placeholder: 'Uses POSTMARK_SERVER_TOKEN when blank' }, { key: 'fromEmail', label: 'Fallback From Email', placeholder: 'Storees <noreply@storees.app>' }] },
+    { value: 'mailgun', label: 'Mailgun', description: 'Email API with regional endpoints and domain-level routing', initials: 'MG', color: 'bg-red-600',
+      fields: [{ key: 'apiKey', label: 'API Key', type: 'password', placeholder: 'Uses MAILGUN_API_KEY when blank' }, { key: 'domain', label: 'Domain', placeholder: 'mg.example.com' }, { key: 'baseUrl', label: 'API Base URL', placeholder: 'https://api.mailgun.net' }, { key: 'fromEmail', label: 'Fallback From Email', placeholder: 'Storees <noreply@storees.app>' }] },
+    { value: 'ses', label: 'Amazon SES', description: 'Signed SES v2 email delivery using project or environment AWS credentials', initials: 'SES', color: 'bg-orange-500',
+      fields: [{ key: 'accessKeyId', label: 'Access Key ID', type: 'password', placeholder: 'Uses AWS_ACCESS_KEY_ID when blank' }, { key: 'secretAccessKey', label: 'Secret Access Key', type: 'password', placeholder: 'Uses AWS_SECRET_ACCESS_KEY when blank' }, { key: 'sessionToken', label: 'Session Token', type: 'password', placeholder: 'Optional AWS_SESSION_TOKEN' }, { key: 'region', label: 'Region', placeholder: 'ap-south-1' }, { key: 'fromEmail', label: 'Fallback From Email', placeholder: 'Storees <noreply@storees.app>' }] },
+  ],
   sms: [
     { value: 'twilio', label: 'Twilio', description: 'Global SMS delivery with delivery receipts', initials: 'Tw', color: 'bg-red-500',
       fields: [{ key: 'accountSid', label: 'Account SID', placeholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }, { key: 'authToken', label: 'Auth Token', type: 'password' }, { key: 'fromNumber', label: 'From Number', placeholder: '+1234567890' }] },
@@ -316,7 +328,11 @@ const CHANNEL_PROVIDERS: Record<string, ProviderDef[]> = {
   ],
   whatsapp: [
     { value: 'meta', label: 'WhatsApp Cloud API', description: 'Direct Meta integration — official WhatsApp Business', initials: 'WA', color: 'bg-green-500',
-      fields: [{ key: 'phoneNumberId', label: 'Phone Number ID', placeholder: '1234567890' }, { key: 'accessToken', label: 'Access Token', type: 'password' }] },
+      fields: [
+        { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: '1234567890' },
+        { key: 'wabaId', label: 'WhatsApp Business Account ID', placeholder: '1234567890' },
+        { key: 'accessToken', label: 'Access Token', type: 'password' },
+      ] },
     { value: 'twilio', label: 'Twilio', description: 'WhatsApp via Twilio — same credentials as SMS', initials: 'Tw', color: 'bg-red-500',
       fields: [{ key: 'accountSid', label: 'Account SID' }, { key: 'authToken', label: 'Auth Token', type: 'password' }, { key: 'fromNumber', label: 'WhatsApp Number', placeholder: '+1234567890' }] },
     { value: 'gupshup', label: 'Gupshup', description: 'WhatsApp Business API with template support', initials: 'Gs', color: 'bg-green-600',
@@ -333,6 +349,7 @@ const CHANNEL_PROVIDERS: Record<string, ProviderDef[]> = {
 }
 
 const CHANNEL_META: Record<string, { label: string; description: string; icon: typeof Activity }> = {
+  email: { label: 'Email', description: 'Resend active, multi-ESP routing ready', icon: Mail },
   sms: { label: 'SMS', description: '5 providers available', icon: Smartphone },
   whatsapp: { label: 'WhatsApp', description: '5 providers available', icon: MessageSquare },
   push: { label: 'Push Notifications', description: '1 provider available', icon: Bell },
@@ -343,6 +360,23 @@ function ChannelProviderSettings() {
   const [selectedProvider, setSelectedProvider] = useState<Record<string, string>>({})
   const [configValues, setConfigValues] = useState<Record<string, Record<string, string>>>({})
   const [saveStatus, setSaveStatus] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({})
+  const { data: channelConfigData } = useQuery({
+    queryKey: ['channel-config'],
+    queryFn: () => api.get<{ channels: Record<string, { provider?: string; config?: Record<string, string> }> }>(withProject('/api/ai/channel-config')),
+    staleTime: 60_000,
+  })
+
+  useEffect(() => {
+    const channels = channelConfigData?.data?.channels
+    if (!channels) return
+    setSelectedProvider(Object.fromEntries(Object.entries(channels).map(([channel, value]) => [channel, value.provider ?? ''])))
+    setConfigValues(Object.fromEntries(Object.entries(channels).map(([channel, value]) => {
+      const provider = CHANNEL_PROVIDERS[channel]?.find(p => p.value === value.provider)
+      const secretKeys = new Set(provider?.fields.filter(f => f.type === 'password' || f.key === 'serviceAccountKey').map(f => f.key) ?? [])
+      const visibleConfig = Object.fromEntries(Object.entries(value.config ?? {}).filter(([key]) => !secretKeys.has(key)))
+      return [channel, visibleConfig]
+    })))
+  }, [channelConfigData])
 
   const handleSaveChannel = async (channel: string) => {
     const provider = selectedProvider[channel]

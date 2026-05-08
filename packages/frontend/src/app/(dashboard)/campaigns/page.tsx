@@ -24,6 +24,7 @@ import {
   Mail,
   MessageSquare,
   Bell,
+  Phone,
   CalendarClock,
   Zap,
   Smartphone,
@@ -55,6 +56,7 @@ const CHANNELS = [
   { key: 'push', label: 'Push', icon: Bell, enabled: true },
   { key: 'email', label: 'Email', icon: Mail, enabled: true },
   { key: 'sms', label: 'SMS', icon: MessageSquare, enabled: true },
+  { key: 'whatsapp', label: 'WhatsApp', icon: Phone, enabled: true },
 ] as const
 
 const DELIVERY_TYPES = [
@@ -68,12 +70,14 @@ const CHANNEL_ICONS: Record<string, React.ComponentType<{ className?: string }>>
   email: Mail,
   sms: MessageSquare,
   push: Bell,
+  whatsapp: Phone,
 }
 
 const CHANNEL_LABELS: Record<string, string> = {
   email: 'Email',
   sms: 'SMS',
   push: 'Push',
+  whatsapp: 'WhatsApp',
 }
 
 const DELIVERY_LABELS: Record<string, string> = {
@@ -184,7 +188,7 @@ export default function CampaignsPage() {
         {/* Channel Selector */}
         <div className="mb-6">
           <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Outbound</h3>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {CHANNELS.map(ch => {
               const Icon = ch.icon
               const isSelected = selectedChannel === ch.key

@@ -3,6 +3,18 @@ import { getSession } from 'next-auth/react'
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
+export class ApiError extends Error {
+  status: number
+  payload: unknown
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.payload = payload
+  }
+}
+
 async function getAuthHeaders(): Promise<Record<string, string>> {
   try {
     const session = await getSession()
@@ -36,7 +48,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       throw new Error('Session expired')
     }
     const error = await response.json().catch(() => ({ error: 'Request failed' }))
-    throw new Error((error as { error: string }).error ?? `HTTP ${response.status}`)
+    throw new ApiError((error as { error: string }).error ?? `HTTP ${response.status}`, response.status, error)
   }
 
   return response.json() as Promise<T>

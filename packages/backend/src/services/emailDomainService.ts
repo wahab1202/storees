@@ -1,7 +1,7 @@
 import { Resend } from 'resend'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { projects } from '../db/schema.js'
+import { projectEmailSenders, projects } from '../db/schema.js'
 
 /**
  * Per-tenant Resend sending domain management. Each project can register
@@ -46,6 +46,36 @@ export type DomainStatusResult = {
   status: string // 'not_started' | 'pending' | 'verified' | 'failed' | 'temporary_failure'
   records: DnsRecord[]
   verified: boolean
+}
+
+async function upsertDefaultSender(projectId: string, verifiedAt: Date | null = null) {
+  const [project] = await db
+    .select({
+      id: projects.id,
+      emailFromAddress: projects.emailFromAddress,
+      emailFromName: projects.emailFromName,
+    })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+  if (!project?.emailFromAddress) return
+
+  await db
+    .insert(projectEmailSenders)
+    .values({
+      projectId,
+      address: project.emailFromAddress,
+      displayName: project.emailFromName,
+      verifiedAt,
+    })
+    .onConflictDoUpdate({
+      target: [projectEmailSenders.projectId, projectEmailSenders.address],
+      set: {
+        displayName: project.emailFromName,
+        verifiedAt,
+        updatedAt: new Date(),
+      },
+    })
 }
 
 /** Register a new sending domain with Resend and persist the resend_domain_id on the project.
@@ -107,12 +137,15 @@ export async function registerDomain(
     .update(projects)
     .set({
       resendDomainId,
+      emailDomainProvider: 'resend',
+      emailDomainProviderId: resendDomainId,
       emailFromAddress: fromAddress,
       emailFromName: fromName,
       emailDomainVerifiedAt: null, // freshly registered — not yet verified
       updatedAt: new Date(),
     })
     .where(eq(projects.id, projectId))
+  await upsertDefaultSender(projectId, null)
 
   return {
     domainId: resendDomainId,
@@ -129,6 +162,7 @@ export async function checkDomainStatus(projectId: string): Promise<DomainStatus
     .select({
       id: projects.id,
       resendDomainId: projects.resendDomainId,
+      emailDomainProviderId: projects.emailDomainProviderId,
       emailFromAddress: projects.emailFromAddress,
       emailDomainVerifiedAt: projects.emailDomainVerifiedAt,
     })
@@ -140,11 +174,12 @@ export async function checkDomainStatus(projectId: string): Promise<DomainStatus
     throw new Error('Project not found')
   }
 
-  if (!project.resendDomainId) {
+  const domainProviderId = project.emailDomainProviderId ?? project.resendDomainId
+  if (!domainProviderId) {
     throw new Error('No domain registered for this project — call registerDomain first')
   }
 
-  const resp = await getResend().domains.get(project.resendDomainId)
+  const resp = await getResend().domains.get(domainProviderId)
   if (resp.error || !resp.data) {
     throw new Error(`Resend domain lookup failed: ${resp.error?.message ?? 'unknown error'}`)
   }
@@ -155,15 +190,20 @@ export async function checkDomainStatus(projectId: string): Promise<DomainStatus
   // Stamp verified-at the first time we see it verified; clear it if Resend reports otherwise
   // so a previously-verified-then-broken domain stops being treated as verified.
   if (verified && !project.emailDomainVerifiedAt) {
+    const verifiedAt = new Date()
     await db
       .update(projects)
-      .set({ emailDomainVerifiedAt: new Date(), updatedAt: new Date() })
+      .set({ emailDomainVerifiedAt: verifiedAt, updatedAt: new Date() })
       .where(eq(projects.id, projectId))
+    await upsertDefaultSender(projectId, verifiedAt)
   } else if (!verified && project.emailDomainVerifiedAt) {
     await db
       .update(projects)
       .set({ emailDomainVerifiedAt: null, updatedAt: new Date() })
       .where(eq(projects.id, projectId))
+    await upsertDefaultSender(projectId, null)
+  } else {
+    await upsertDefaultSender(projectId, project.emailDomainVerifiedAt)
   }
 
   return {

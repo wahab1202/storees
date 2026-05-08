@@ -82,16 +82,20 @@ function compileText(p: TextBlockProps): string {
 }
 
 function compileImage(p: ImageBlockProps): string {
-  const img = `<img src="${esc(p.src)}" alt="${esc(p.alt)}" width="${p.width}" style="display:block;max-width:100%;height:auto;${p.align === 'center' ? 'margin:0 auto;' : ''}" />`
+  const imgClass = p.fullWidthOnMobile ? ' class="mob-full"' : ''
+  const img = `<img${imgClass} src="${esc(p.src)}" alt="${esc(p.alt)}" width="${p.width}" style="display:block;max-width:100%;height:auto;${p.align === 'center' ? 'margin:0 auto;' : ''}" />`
   const content = p.link ? `<a href="${esc(p.link)}" target="_blank">${img}</a>` : img
   return row(content, '8px 0')
 }
 
 function compileButton(p: ButtonBlockProps): string {
   const width = p.fullWidth ? 'display:block;width:100%;' : 'display:inline-block;'
+  const buttonClass = p.fullWidthOnMobile ? ' class="mob-full"' : ''
+  const paddingX = p.paddingX ?? 32
+  const paddingY = p.paddingY ?? 14
   return row(`
     <div style="text-align:${p.align};">
-      <a href="${esc(p.url)}" target="_blank" style="${width}padding:14px 32px;background:${p.bgColor};color:${p.textColor};font-size:16px;font-weight:600;text-decoration:none;border-radius:${p.borderRadius}px;text-align:center;mso-padding-alt:0;">
+      <a${buttonClass} href="${esc(p.url)}" target="_blank" style="${width}padding:${paddingY}px ${paddingX}px;background:${p.bgColor};color:${p.textColor};font-size:16px;font-weight:600;text-decoration:none;border-radius:${p.borderRadius}px;text-align:center;mso-padding-alt:0;">
         <!--[if mso]><i style="letter-spacing:32px;mso-font-width:-100%;mso-text-raise:24pt">&nbsp;</i><![endif]-->
         <span style="mso-text-raise:12pt;">${esc(p.text)}</span>
         <!--[if mso]><i style="letter-spacing:32px;mso-font-width:-100%">&nbsp;</i><![endif]-->
@@ -111,18 +115,30 @@ function compileSpacer(p: SpacerBlockProps): string {
 function compileColumns(p: ColumnsBlockProps, g: EmailTemplate['globalStyles']): string {
   const ratios = p.ratio.split(':').map(Number)
   const total = ratios.reduce((a, b) => a + b, 0)
-  const gap = 16
+  const gap = p.gap ?? 16
+  const padding = p.padding ?? 8
+  const rowBgColor = p.rowBgColor ?? 'transparent'
+  const contentBgColor = p.contentBgColor ?? 'transparent'
+  const borderWidth = p.borderWidth ?? 0
+  const borderColor = p.borderColor ?? 'transparent'
+  const borderRadius = p.borderRadius ?? 0
+  const contentStyles = [
+    `background:${contentBgColor};`,
+    borderWidth > 0 ? `border:${borderWidth}px solid ${borderColor};` : '',
+    borderRadius > 0 ? `border-radius:${borderRadius}px;overflow:hidden;` : '',
+  ].join('')
 
   const cols = p.columns.map((colBlocks, i) => {
     const pct = Math.round((ratios[i] / total) * 100)
     const innerHtml = colBlocks.map(b => compileBlock(b, g)).join('\n')
-    return `<td class="mob-stack" width="${pct}%" style="vertical-align:top;padding:0 ${i < p.columns.length - 1 ? gap / 2 : 0}px 0 ${i > 0 ? gap / 2 : 0}px;">
+    const stackClass = p.stackOnMobile !== false ? ' class="mob-stack"' : ''
+    return `<td${stackClass} width="${pct}%" style="vertical-align:top;padding:0 ${i < p.columns.length - 1 ? gap / 2 : 0}px 0 ${i > 0 ? gap / 2 : 0}px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${innerHtml}</table>
     </td>`
   }).join('\n')
 
-  return `<tr><td style="padding:8px 40px;" class="mob-pad">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>${cols}</tr></table>
+  return `<tr><td style="padding:${padding}px 40px;background:${rowBgColor};" class="mob-pad">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="${contentStyles}"><tr>${cols}</tr></table>
   </td></tr>`
 }
 

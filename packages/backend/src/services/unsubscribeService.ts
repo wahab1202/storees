@@ -3,6 +3,7 @@ import { eq, and, isNull } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { unsubscribeTokens, emailSuppressions } from '../db/schema.js'
 import { updateConsent, type ConsentChannel } from './consentService.js'
+import { pushSuppressionToProvider } from './suppressionSync.js'
 
 /**
  * Per-(project, customer, channel) unsubscribe tokens. Used in the
@@ -97,6 +98,7 @@ export async function applyUnsubscribe(
       source: 'one_click_unsub',
       metadata: { token },
     }).onConflictDoNothing()
+    await pushSuppressionToProvider(row.projectId, customerEmail, 'unsubscribed')
   }
 
   return { ok: true }

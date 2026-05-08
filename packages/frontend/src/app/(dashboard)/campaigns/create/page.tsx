@@ -2,18 +2,33 @@
 
 import { useState, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useCreateCampaign } from '@/hooks/useCampaigns'
+import { useCreateCampaign, usePreviewCampaignAudience, type CampaignAttachmentUpload, type CampaignAudiencePreview } from '@/hooks/useCampaigns'
 import { useSegments } from '@/hooks/useSegments'
-import { useTemplates } from '@/hooks/useTemplates'
+import { useCreateTemplate, usePreviewTemplate, useTemplates } from '@/hooks/useTemplates'
+import { useCustomers } from '@/hooks/useCustomers'
+import { useSubscriptionCategories } from '@/hooks/useSubscriptionCategories'
+import { useEmailSenders } from '@/hooks/useEmailSenders'
+import {
+  useRefreshTemplateStatus,
+  useSubmitWhatsappTemplate,
+  useWhatsappProviderStatus,
+  useWhatsappTemplates,
+  useSyncWhatsappTemplates,
+  type SubmitInput,
+  type WhatsappTemplate,
+} from '@/hooks/useWhatsappTemplates'
 import { SlidePanel } from '@/components/shared/SlidePanel'
 import { TemplatePreviewCard } from '@/components/shared/TemplatePreviewCard'
+import { CampaignAiCopywriter } from '@/components/campaigns/CampaignAiCopywriter'
 import { cn } from '@/lib/utils'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
-import { DEFAULT_TEMPLATE } from '@/lib/emailTypes'
-import type { EmailTemplate } from '@/lib/emailTypes'
+import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
+import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
-import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, ConversionGoal, PeriodicSchedule, FilterConfig } from '@storees/shared'
+import { VariablePanel } from '@/components/templates/VariablePanel'
+import { ApiError } from '@/lib/api'
+import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, CampaignSendTimeMode, CampaignUtmParameter, CampaignUtmParameters, ConversionGoal, GmailAnnotation, PeriodicSchedule, FilterConfig, ProjectEmailSender, TemplateVariable } from '@storees/shared'
 import {
   ArrowLeft,
   ArrowRight,
@@ -21,6 +36,7 @@ import {
   Users,
   Mail,
   MessageSquare,
+  Phone,
   Bell,
   Calendar,
   Target,
@@ -34,6 +50,7 @@ import {
   Clock,
   Zap,
   ShieldCheck,
+  Save,
   Send,
   Info,
   BarChart3,
@@ -44,11 +61,28 @@ import {
   SplitSquareHorizontal,
   Trophy,
   Layers,
+  RefreshCw,
+  Paperclip,
+  Trash2,
+  Upload,
+  Monitor,
+  Smartphone,
+  Moon,
+  Sun,
+  Link2,
+  Search,
+  Filter,
+  ShoppingBag,
+  Copy,
 } from 'lucide-react'
 
 type Step = 1 | 2 | 3
-type SendTiming = 'asap' | 'scheduled'
+type SendTiming = CampaignSendTimeMode
 type EditorMode = 'templates' | 'visual' | 'html' | 'preview'
+type PreviewDevice = 'desktop' | 'mobile'
+type PreviewTheme = 'light' | 'dark'
+type DraftAttachment = CampaignAttachmentUpload & { localId: string }
+type ValidationIssue = { severity?: string; message?: string; key?: string; code?: string }
 
 const STEPS = [
   { num: 1 as Step, label: 'Target Users' },
@@ -57,11 +91,43 @@ const STEPS = [
 ]
 
 const CHANNEL_LABELS: Record<string, string> = {
-  email: 'Email', sms: 'SMS', push: 'Push',
+  email: 'Email', sms: 'SMS', push: 'Push', whatsapp: 'WhatsApp',
 }
 
 const CHANNEL_ICONS: Record<string, typeof Mail> = {
-  email: Mail, sms: MessageSquare, push: Bell,
+  email: Mail, sms: MessageSquare, push: Bell, whatsapp: Phone,
+}
+
+function seedWhatsappTemplateVariables(template: WhatsappTemplate): TemplateVariable[] {
+  const vars: TemplateVariable[] = Array.from({ length: template.parameterCount ?? 0 }, (_, idx) => ({
+    key: String(idx + 1),
+    source: { kind: 'customer', field: idx === 0 ? 'name' : 'city' },
+    defaultValue: idx === 0 ? 'there' : '',
+  }))
+  const headerType = (template.header?.format ?? template.header?.type ?? '').toUpperCase()
+  if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerType)) {
+    vars.push({ key: 'wa_header_media_url', source: { kind: 'literal', value: '' } })
+  }
+  const urlButtons = template.buttons?.filter(button => button.type?.toUpperCase() === 'URL') ?? []
+  urlButtons.forEach((_button, idx) => {
+    vars.push({ key: `wa_button_url_${idx + 1}`, source: { kind: 'literal', value: '' } })
+  })
+  return vars
+}
+
+function getApiIssues(error: unknown): ValidationIssue[] {
+  if (!(error instanceof ApiError)) return []
+  const payload = error.payload as { issues?: ValidationIssue[] } | undefined
+  return Array.isArray(payload?.issues) ? payload.issues : []
+}
+
+function countWhatsappTemplateParameters(body: string): number {
+  const matches = Array.from(body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)).map(match => Number(match[1]))
+  return matches.length > 0 ? Math.max(...matches) : 0
+}
+
+function whatsappSampleValue(idx: number): string {
+  return ['Wahab', 'ORD-1001', 'Storees', '20%'][idx] ?? `sample ${idx + 1}`
 }
 
 /* ─── Starter layout templates (email only) ─── */
@@ -105,11 +171,226 @@ const FOUR_COL_HTML = `<table width="600" cellpadding="0" cellspacing="0" style=
 </table>`
 
 const LAYOUT_STARTERS = [
-  { key: 'blank', label: 'Blank Template', icon: Plus, html: BLANK_HTML },
-  { key: '2col', label: '2 Columns', icon: Columns2, html: TWO_COL_HTML },
-  { key: '3col', label: '3 Columns', icon: Columns3, html: THREE_COL_HTML },
-  { key: '4col', label: '4 Columns', icon: Columns4, html: FOUR_COL_HTML },
+  { key: 'blank', label: 'Blank Template', description: 'Start with a clean email shell', icon: Plus, html: BLANK_HTML, group: 'Basic templates' },
+  { key: '2col', label: '2 Columns', description: 'Two equal content columns', icon: Columns2, html: TWO_COL_HTML, group: 'Basic templates' },
+  { key: '3col', label: '3 Columns', description: 'Three feature or product columns', icon: Columns3, html: THREE_COL_HTML, group: 'Basic templates' },
+  { key: '4col', label: '4 Columns', description: 'Compact four-column product grid', icon: Columns4, html: FOUR_COL_HTML, group: 'Basic templates' },
+  { key: 'promo', label: 'Promo Hero', description: 'Hero, offer copy, CTA, and benefits', icon: Trophy, html: BLANK_HTML, group: 'Prebuilt templates' },
+  { key: 'cart', label: 'Abandoned Cart', description: 'Cart reminder with product rows', icon: ShoppingBag, html: BLANK_HTML, group: 'Prebuilt templates' },
+  { key: 'newsletter', label: 'Newsletter', description: 'Editorial update with sections', icon: Layout, html: BLANK_HTML, group: 'Prebuilt templates' },
+  { key: 'product-grid', label: 'Product Grid', description: 'Featured products and CTA buttons', icon: SplitSquareHorizontal, html: BLANK_HTML, group: 'Prebuilt templates' },
 ]
+
+function makeTextColumn(index: number): EmailBlock[] {
+  return [
+    {
+      id: generateBlockId(),
+      type: 'image',
+      props: { src: '', alt: `Feature ${index}`, width: '82%', align: 'center' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'header',
+      props: { text: `Feature ${index}`, level: 3, align: 'center', color: '#111827' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'text',
+      props: { html: '<p>Description here</p>', align: 'center', color: '#4b5563', fontSize: 14 },
+    },
+  ]
+}
+
+function makeProductColumn(index: number): EmailBlock[] {
+  return [
+    {
+      id: generateBlockId(),
+      type: 'image',
+      props: { src: '', alt: `Product ${index}`, width: '86%', align: 'center' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'text',
+      props: { html: `<p><strong>Product ${index}</strong><br/>Fresh pick for {{customer_name}}</p>`, align: 'center', color: '#374151', fontSize: 14 },
+    },
+    {
+      id: generateBlockId(),
+      type: 'button',
+      props: { text: 'View', url: 'https://', bgColor: '#38A9D6', textColor: '#ffffff', align: 'center', borderRadius: 6, fullWidth: false },
+    },
+  ]
+}
+
+function makeColumnBlock(columnCount: 2 | 3 | 4, columnFactory: (index: number) => EmailBlock[] = makeTextColumn): EmailBlock {
+  const ratio: '1:1:1:1' | '1:1:1' | '1:1' = columnCount === 4 ? '1:1:1:1' : columnCount === 3 ? '1:1:1' : '1:1'
+  return {
+    id: generateBlockId(),
+    type: 'columns',
+    props: {
+      ratio,
+      columns: Array.from({ length: columnCount }, (_, idx) => columnFactory(idx + 1)),
+      padding: 8,
+      gap: 16,
+      rowBgColor: 'transparent',
+      contentBgColor: 'transparent',
+      borderColor: 'transparent',
+      borderWidth: 0,
+      borderRadius: 0,
+      stackOnMobile: true,
+    },
+  }
+}
+
+function starterTemplateForLayout(key: string): EmailTemplate {
+  const base: EmailTemplate = {
+    ...DEFAULT_TEMPLATE,
+    blocks: [],
+    globalStyles: { ...DEFAULT_TEMPLATE.globalStyles },
+  }
+
+  const commonBlocks: EmailBlock[] = [
+    {
+      id: generateBlockId(),
+      type: 'header',
+      props: { text: 'Hi {{customer_name}},', level: 1, align: 'center', color: '#111827' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'text',
+      props: { html: '<p>Use this section to introduce the offer, update, or announcement.</p>', align: 'center', color: '#4b5563', fontSize: 16 },
+    },
+  ]
+
+  if (key === 'blank') return { ...base, blocks: commonBlocks }
+
+  if (key === 'promo') {
+    return {
+      ...base,
+      subject: 'A special offer for {{customer_name}}',
+      previewText: 'Your limited-time offer is ready.',
+      blocks: [
+        {
+          id: generateBlockId(),
+          type: 'image',
+          props: { src: '', alt: 'Campaign hero', width: '100%', align: 'center' },
+        },
+        {
+          id: generateBlockId(),
+          type: 'header',
+          props: { text: 'Time for great email design', level: 1, align: 'center', color: '#111827' },
+        },
+        {
+          id: generateBlockId(),
+          type: 'text',
+          props: { html: '<p>Tell customers what is new, why it matters, and what they should do next.</p>', align: 'center', color: '#4b5563', fontSize: 16 },
+        },
+        {
+          id: generateBlockId(),
+          type: 'button',
+          props: { text: 'Shop Now', url: 'https://', bgColor: '#38A9D6', textColor: '#ffffff', align: 'center', borderRadius: 6, fullWidth: false },
+        },
+        makeColumnBlock(3),
+        { id: generateBlockId(), type: 'footer', props: { text: '{{store_name}}', unsubscribeText: 'Unsubscribe', align: 'center' } },
+      ],
+    }
+  }
+
+  if (key === 'cart') {
+    return {
+      ...base,
+      subject: 'Still thinking it over?',
+      previewText: 'Your cart is waiting.',
+      blocks: [
+        {
+          id: generateBlockId(),
+          type: 'header',
+          props: { text: 'Your cart is waiting', level: 1, align: 'center', color: '#111827' },
+        },
+        {
+          id: generateBlockId(),
+          type: 'text',
+          props: { html: '<p>Hi {{customer_name}}, the items you liked are still available. Complete your order before they sell out.</p>', align: 'center', color: '#4b5563', fontSize: 16 },
+        },
+        makeColumnBlock(2, makeProductColumn),
+        {
+          id: generateBlockId(),
+          type: 'button',
+          props: { text: 'Return to Cart', url: 'https://', bgColor: '#111827', textColor: '#ffffff', align: 'center', borderRadius: 6, fullWidth: false },
+        },
+        { id: generateBlockId(), type: 'footer', props: { text: 'Need help? Reply to this email and we will help you finish checkout.', unsubscribeText: 'Unsubscribe', align: 'center' } },
+      ],
+    }
+  }
+
+  if (key === 'newsletter') {
+    return {
+      ...base,
+      subject: '{{store_name}} weekly update',
+      previewText: 'New launches, stories, and recommendations.',
+      blocks: [
+        {
+          id: generateBlockId(),
+          type: 'header',
+          props: { text: '{{store_name}} Weekly', level: 1, align: 'left', color: '#111827' },
+        },
+        {
+          id: generateBlockId(),
+          type: 'text',
+          props: { html: '<p>A short editor note goes here. Keep it direct, useful, and tuned to the segment.</p>', align: 'left', color: '#4b5563', fontSize: 16 },
+        },
+        { id: generateBlockId(), type: 'divider', props: { color: '#e5e7eb', thickness: 1, padding: 16 } },
+        makeColumnBlock(2),
+        {
+          id: generateBlockId(),
+          type: 'text',
+          props: { html: '<p><strong>What else is new?</strong><br/>Add campaign highlights, content links, or announcements here.</p>', align: 'left', color: '#374151', fontSize: 15 },
+        },
+        { id: generateBlockId(), type: 'footer', props: { text: '{{store_name}} newsletter', unsubscribeText: 'Unsubscribe', align: 'center' } },
+      ],
+    }
+  }
+
+  if (key === 'product-grid') {
+    return {
+      ...base,
+      subject: 'Picked for you, {{customer_name}}',
+      previewText: 'Browse today\'s featured products.',
+      blocks: [
+        {
+          id: generateBlockId(),
+          type: 'header',
+          props: { text: 'Featured products', level: 1, align: 'center', color: '#111827' },
+        },
+        {
+          id: generateBlockId(),
+          type: 'text',
+          props: { html: '<p>Highlight bestsellers, new arrivals, or personalized recommendations.</p>', align: 'center', color: '#4b5563', fontSize: 16 },
+        },
+        makeColumnBlock(4, makeProductColumn),
+        makeColumnBlock(4, makeProductColumn),
+        {
+          id: generateBlockId(),
+          type: 'button',
+          props: { text: 'Browse Collection', url: 'https://', bgColor: '#4F46E5', textColor: '#ffffff', align: 'center', borderRadius: 6, fullWidth: false },
+        },
+      ],
+    }
+  }
+
+  const columnCount = key === '4col' ? 4 : key === '3col' ? 3 : 2
+  return {
+    ...base,
+    blocks: [
+      ...commonBlocks,
+      makeColumnBlock(columnCount, key === '4col' ? makeProductColumn : makeTextColumn),
+      {
+        id: generateBlockId(),
+        type: 'button',
+        props: { text: 'Shop Now', url: 'https://', bgColor: '#4F46E5', textColor: '#ffffff', align: 'center', borderRadius: 8, fullWidth: false },
+      },
+    ],
+  }
+}
 
 /* ─── Main Page ─── */
 
@@ -125,14 +406,21 @@ function CreateCampaignContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const createCampaign = useCreateCampaign()
+  const previewAudience = usePreviewCampaignAudience()
   const { data: segmentsData } = useSegments()
   const { data: templatesData } = useTemplates()
+  const { data: subscriptionCategoriesData } = useSubscriptionCategories()
+  const { data: sendersData } = useEmailSenders()
+  const { data: whatsappTemplatesData } = useWhatsappTemplates()
+  const syncWhatsappTemplates = useSyncWhatsappTemplates()
 
   // Read channel and delivery type from URL params
   const channel = (searchParams.get('channel') ?? 'email') as CampaignChannel
   const deliveryType = (searchParams.get('type') ?? 'one-time') as CampaignDeliveryType
   const isEmail = channel === 'email'
+  const isWhatsapp = channel === 'whatsapp'
   const isPeriodic = deliveryType === 'periodic'
+  const supportsLinkTracking = channel !== 'whatsapp'
   const ChannelIcon = CHANNEL_ICONS[channel] ?? Mail
 
   const [step, setStep] = useState<Step>(1)
@@ -140,26 +428,48 @@ function CreateCampaignContent() {
   // Step 1
   const [name, setName] = useState('')
   const [contentType, setContentType] = useState<CampaignContentType>('promotional')
+  const [subscriptionCategoryIds, setSubscriptionCategoryIds] = useState<string[]>([])
   const [tags, setTags] = useState<string[]>([])
   const [segmentId, setSegmentId] = useState('')
   const [audienceMode, setAudienceMode] = useState<'all' | 'segment' | 'filter'>('segment')
   const [audienceFilter, setAudienceFilter] = useState<FilterConfig>({ logic: 'AND', rules: [] })
+  const [excludeAudienceEnabled, setExcludeAudienceEnabled] = useState(false)
+  const [excludeAudienceFilter, setExcludeAudienceFilter] = useState<FilterConfig>({ logic: 'AND', rules: [] })
   const [audienceCapEnabled, setAudienceCapEnabled] = useState(false)
   const [audienceCap, setAudienceCap] = useState<string>('')
   const [controlGroupEnabled, setControlGroupEnabled] = useState(false)
   const [controlGroupPct, setControlGroupPct] = useState(10)
   const [showReachability, setShowReachability] = useState(false)
+  const [audiencePreview, setAudiencePreview] = useState<CampaignAudiencePreview | null>(null)
 
   // Step 2 — email
   const [subject, setSubject] = useState('')
   const [previewText, setPreviewText] = useState('')
   const [fromName, setFromName] = useState('')
+  const [fromEmail, setFromEmail] = useState('')
+  const [replyToEmail, setReplyToEmail] = useState('')
+  const [ccEmails, setCcEmails] = useState('')
+  const [bccEmails, setBccEmails] = useState('')
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([])
+  const [gmailAnnotationEnabled, setGmailAnnotationEnabled] = useState(false)
+  const [gmailImageUrl, setGmailImageUrl] = useState('')
+  const [gmailDealText, setGmailDealText] = useState('')
+  const [gmailDescription, setGmailDescription] = useState('')
+  const [gmailOfferCode, setGmailOfferCode] = useState('')
+  const [gmailStartsAt, setGmailStartsAt] = useState('')
+  const [gmailExpiresAt, setGmailExpiresAt] = useState('')
+  const [utmEnabled, setUtmEnabled] = useState(true)
+  const [utmSource, setUtmSource] = useState('storees')
+  const [utmMedium, setUtmMedium] = useState<string>(channel)
+  const [utmCampaign, setUtmCampaign] = useState('{{campaign_name}}')
+  const [utmCustomParams, setUtmCustomParams] = useState<CampaignUtmParameter[]>([])
   const [htmlBody, setHtmlBody] = useState(BLANK_HTML)
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [selectedLayout, setSelectedLayout] = useState<string>('blank')
   const [editorMode, setEditorMode] = useState<EditorMode>('templates')
   const [previewTemplate, setPreviewTemplate] = useState<{ name: string; html: string } | null>(null)
   const [emailTemplate, setEmailTemplate] = useState<EmailTemplate>(DEFAULT_TEMPLATE)
+  const [variables, setVariables] = useState<TemplateVariable[]>([])
 
   // Step 2 — SMS / Push
   const [bodyText, setBodyText] = useState('')
@@ -180,10 +490,12 @@ function CreateCampaignContent() {
   const [sendTiming, setSendTiming] = useState<SendTiming>('asap')
   const [scheduledDate, setScheduledDate] = useState('')
   const [scheduledTime, setScheduledTime] = useState('')
+  const [scheduleTimezone, setScheduleTimezone] = useState('Asia/Kolkata')
   const [conversionGoals, setConversionGoals] = useState<ConversionGoal[]>([{ name: 'Goal 1', eventName: '' }])
   const [goalTrackingHours, setGoalTrackingHours] = useState(36)
   const [deliveryLimit, setDeliveryLimit] = useState<string>('')
   const [ignoreFreqCapping, setIgnoreFreqCapping] = useState(false)
+  const [countForFreqCapping, setCountForFreqCapping] = useState(true)
 
   // Step 3 — periodic
   const [periodicFrequency, setPeriodicFrequency] = useState<'daily' | 'weekly' | 'monthly'>('daily')
@@ -194,12 +506,19 @@ function CreateCampaignContent() {
 
   const segments = segmentsData?.data ?? []
   const templates = (templatesData?.data ?? []).filter(t => t.channel === channel)
+  const whatsappTemplates = whatsappTemplatesData?.data ?? []
+  const subscriptionCategories = (subscriptionCategoriesData?.data ?? [])
+    .filter(c => c.channel == null || c.channel === channel)
+  const verifiedSenders = (sendersData?.data ?? []).filter(sender => !!sender.verifiedAt)
   const selectedSegment = segments.find(s => s.id === segmentId)
+  const saveValidationIssues = getApiIssues(createCampaign.error)
 
   // Validation
   const step1Valid = name.trim().length > 0
   const step2Valid = isEmail
     ? subject.trim().length > 0 && htmlBody.trim().length > 0
+    : isWhatsapp
+    ? !!selectedTemplateId && bodyText.trim().length > 0
     : bodyText.trim().length > 0
   const step3Valid = isPeriodic
     ? !!periodicTime
@@ -216,6 +535,7 @@ function CreateCampaignContent() {
 
   const handleSaveDraft = () => {
     const goals = conversionGoals.filter(g => g.eventName.trim())
+    const needsScheduleAnchor = ['fixed', 'user_timezone', 'best_time'].includes(sendTiming)
 
     const periodicSchedule: PeriodicSchedule | undefined = isPeriodic ? {
       frequency: periodicFrequency,
@@ -224,6 +544,22 @@ function CreateCampaignContent() {
       time: periodicTime,
       ...(periodicEndsAt ? { endsAt: periodicEndsAt } : {}),
     } : undefined
+    const gmailAnnotation: GmailAnnotation | null = gmailAnnotationEnabled ? {
+      enabled: true,
+      imageUrl: gmailImageUrl || undefined,
+      dealText: gmailDealText || undefined,
+      description: gmailDescription || undefined,
+      offerCode: gmailOfferCode || undefined,
+      startsAt: gmailStartsAt ? new Date(gmailStartsAt).toISOString() : undefined,
+      expiresAt: gmailExpiresAt ? new Date(gmailExpiresAt).toISOString() : undefined,
+    } : null
+    const utmParameters: CampaignUtmParameters | null = supportsLinkTracking ? buildUtmParameters({
+      enabled: utmEnabled,
+      source: utmSource,
+      medium: utmMedium,
+      campaign: utmCampaign,
+      custom: utmCustomParams,
+    }) : null
 
     createCampaign.mutate(
       {
@@ -234,24 +570,43 @@ function CreateCampaignContent() {
         // Email fields
         subject: isEmail ? subject : (channel === 'push' ? pushTitle : undefined),
         htmlBody: isEmail ? htmlBody : undefined,
+        emailBuilderTemplate: isEmail ? { ...emailTemplate, subject, previewText } : undefined,
         previewText: isEmail ? (previewText || undefined) : (channel === 'push' ? (pushImageUrl || undefined) : undefined),
         fromName: isEmail ? (fromName || undefined) : undefined,
-        templateId: isEmail ? (selectedTemplateId || undefined) : undefined,
+        fromEmail: isEmail ? (fromEmail || undefined) : undefined,
+        replyToEmail: isEmail ? (replyToEmail || undefined) : undefined,
+        ccEmails: isEmail ? splitEmails(ccEmails) : undefined,
+        bccEmails: isEmail ? splitEmails(bccEmails) : undefined,
+        gmailAnnotation: isEmail ? gmailAnnotation : undefined,
+        utmParameters: supportsLinkTracking ? utmParameters : undefined,
+        attachmentUploads: isEmail ? attachments.map(attachment => ({
+          filename: attachment.filename,
+          mime: attachment.mime,
+          sizeBytes: attachment.sizeBytes,
+          contentBase64: attachment.contentBase64,
+        })) : undefined,
+        templateId: (isEmail || isWhatsapp) ? (selectedTemplateId || undefined) : undefined,
         // SMS/Push fields
         bodyText: !isEmail ? bodyText : undefined,
         // Audience-v2
         segmentId: audienceMode === 'segment' ? segmentId || undefined : undefined,
         audienceFilter: audienceMode === 'filter' && audienceFilter.rules.length > 0 ? audienceFilter : undefined,
+        excludeAudienceFilter: excludeAudienceEnabled && excludeAudienceFilter.rules.length > 0 ? excludeAudienceFilter : undefined,
         audienceCap: audienceCapEnabled && audienceCap ? parseInt(audienceCap) : undefined,
         controlGroupPct: controlGroupEnabled ? controlGroupPct : 0,
         tags: tags.length > 0 ? tags : undefined,
+        subscriptionCategoryIds: subscriptionCategoryIds.length > 0 ? subscriptionCategoryIds : undefined,
         // Goals
         conversionGoals: goals.length > 0 ? goals : undefined,
         goalTrackingHours,
         deliveryLimit: deliveryLimit ? parseInt(deliveryLimit) : undefined,
+        ignoreFrequencyCap: ignoreFreqCapping,
+        countForFrequencyCap: countForFreqCapping,
+        sendTimeMode: isPeriodic ? 'fixed' : sendTiming,
+        scheduleTimezone: !isPeriodic && sendTiming !== 'asap' ? scheduleTimezone : undefined,
         // Schedule
         periodicSchedule,
-        scheduledAt: !isPeriodic && sendTiming === 'scheduled' && scheduledDate && scheduledTime
+        scheduledAt: !isPeriodic && needsScheduleAnchor && scheduledDate && scheduledTime
           ? new Date(`${scheduledDate}T${scheduledTime}`).toISOString()
           : undefined,
         // A/B Testing
@@ -263,6 +618,7 @@ function CreateCampaignContent() {
         abWinnerMetric: abTestEnabled ? abWinnerMetric : undefined,
         abAutoSendWinner: abTestEnabled ? abAutoSendWinner : undefined,
         abTestDurationHours: abTestEnabled ? abTestDurationHours : undefined,
+        variables,
       },
       { onSuccess: (res) => router.push(`/campaigns/${res.data?.id}`) },
     )
@@ -270,6 +626,21 @@ function CreateCampaignContent() {
 
   const goNext = () => setStep(s => Math.min(s + 1, 3) as Step)
   const goPrev = () => setStep(s => Math.max(s - 1, 1) as Step)
+  const runAudiencePreview = () => {
+    previewAudience.mutate(
+      {
+        channel,
+        templateId: channel === 'whatsapp' ? selectedTemplateId : undefined,
+        segmentId: audienceMode === 'segment' ? segmentId || null : null,
+        audienceFilter: audienceMode === 'filter' && audienceFilter.rules.length > 0 ? audienceFilter : null,
+        excludeAudienceFilter: excludeAudienceEnabled && excludeAudienceFilter.rules.length > 0 ? excludeAudienceFilter : null,
+        audienceCap: audienceCapEnabled && audienceCap ? parseInt(audienceCap) : null,
+        controlGroupPct: controlGroupEnabled ? controlGroupPct : 0,
+        subscriptionCategoryIds,
+      },
+      { onSuccess: res => setAudiencePreview(res.data ?? null) },
+    )
+  }
 
   const inputClass = 'w-full h-10 px-3.5 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/60 transition-colors duration-150'
   const selectClass = cn(inputClass, 'appearance-none cursor-pointer pr-10 bg-[length:16px] bg-[right_12px_center] bg-no-repeat bg-[url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E")]')
@@ -361,15 +732,23 @@ function CreateCampaignContent() {
             name={name} setName={setName}
             tags={tags} setTags={setTags}
             contentType={contentType} setContentType={setContentType}
+            subscriptionCategories={subscriptionCategories}
+            subscriptionCategoryIds={subscriptionCategoryIds}
+            setSubscriptionCategoryIds={setSubscriptionCategoryIds}
             audienceMode={audienceMode} setAudienceMode={setAudienceMode}
             segmentId={segmentId} setSegmentId={setSegmentId}
             audienceFilter={audienceFilter} setAudienceFilter={setAudienceFilter}
+            excludeAudienceEnabled={excludeAudienceEnabled} setExcludeAudienceEnabled={setExcludeAudienceEnabled}
+            excludeAudienceFilter={excludeAudienceFilter} setExcludeAudienceFilter={setExcludeAudienceFilter}
             audienceCapEnabled={audienceCapEnabled} setAudienceCapEnabled={setAudienceCapEnabled}
             audienceCap={audienceCap} setAudienceCap={setAudienceCap}
             controlGroupEnabled={controlGroupEnabled} setControlGroupEnabled={setControlGroupEnabled}
             controlGroupPct={controlGroupPct} setControlGroupPct={setControlGroupPct}
             segments={segments} selectedSegment={selectedSegment}
             showReachability={showReachability} setShowReachability={setShowReachability}
+            audiencePreview={audiencePreview}
+            onPreviewAudience={runAudiencePreview}
+            previewPending={previewAudience.isPending}
             inputClass={inputClass} selectClass={selectClass}
           />
         )}
@@ -380,15 +759,73 @@ function CreateCampaignContent() {
                 subject={subject} setSubject={setSubject}
                 previewText={previewText} setPreviewText={setPreviewText}
                 fromName={fromName} setFromName={setFromName}
+                fromEmail={fromEmail} setFromEmail={setFromEmail}
+                replyToEmail={replyToEmail} setReplyToEmail={setReplyToEmail}
+                ccEmails={ccEmails} setCcEmails={setCcEmails}
+                bccEmails={bccEmails} setBccEmails={setBccEmails}
+                verifiedSenders={verifiedSenders}
+                attachments={attachments} setAttachments={setAttachments}
+                gmailAnnotationEnabled={gmailAnnotationEnabled} setGmailAnnotationEnabled={setGmailAnnotationEnabled}
+                gmailImageUrl={gmailImageUrl} setGmailImageUrl={setGmailImageUrl}
+                gmailDealText={gmailDealText} setGmailDealText={setGmailDealText}
+                gmailDescription={gmailDescription} setGmailDescription={setGmailDescription}
+                gmailOfferCode={gmailOfferCode} setGmailOfferCode={setGmailOfferCode}
+                gmailStartsAt={gmailStartsAt} setGmailStartsAt={setGmailStartsAt}
+                gmailExpiresAt={gmailExpiresAt} setGmailExpiresAt={setGmailExpiresAt}
+                utmEnabled={utmEnabled} setUtmEnabled={setUtmEnabled}
+                utmSource={utmSource} setUtmSource={setUtmSource}
+                utmMedium={utmMedium} setUtmMedium={setUtmMedium}
+                utmCampaign={utmCampaign} setUtmCampaign={setUtmCampaign}
+                utmCustomParams={utmCustomParams} setUtmCustomParams={setUtmCustomParams}
                 htmlBody={htmlBody} setHtmlBody={setHtmlBody}
+                variables={variables}
                 emailTemplate={emailTemplate} setEmailTemplate={setEmailTemplate}
                 selectedTemplateId={selectedTemplateId}
                 selectedLayout={selectedLayout}
                 editorMode={editorMode} setEditorMode={setEditorMode}
                 templates={templates}
-                onSelectLayout={(key, html) => { setSelectedLayout(key); setSelectedTemplateId(null); setHtmlBody(html) }}
-                onSelectTemplate={(id, html) => { setSelectedTemplateId(id); setSelectedLayout(''); setHtmlBody(html) }}
+                onSelectLayout={(key) => {
+                  const template = starterTemplateForLayout(key)
+                  setSelectedLayout(key)
+                  setSelectedTemplateId(null)
+                  setEmailTemplate(template)
+                  setHtmlBody(compileToHtml(template))
+                  setVariables([])
+                }}
+                onSelectTemplate={(template) => {
+                  const storedEmailTemplate = isEmailTemplate(template.emailBuilderTemplate) ? template.emailBuilderTemplate : null
+                  setSelectedTemplateId(template.id)
+                  setSelectedLayout('')
+                  if (storedEmailTemplate) {
+                    const syncedTemplate = {
+                      ...storedEmailTemplate,
+                      subject: template.subject ?? subject,
+                      previewText,
+                    }
+                    setEmailTemplate(syncedTemplate)
+                    setHtmlBody(compileToHtml(syncedTemplate))
+                  } else {
+                    setHtmlBody(template.htmlBody ?? BLANK_HTML)
+                  }
+                  setSubject(template.subject ?? subject)
+                  setVariables(template.variables ?? [])
+                  setEditorMode(storedEmailTemplate ? 'visual' : 'preview')
+                }}
                 onPreviewTemplate={setPreviewTemplate}
+                inputClass={inputClass}
+              />
+            ) : isWhatsapp ? (
+              <Step2WhatsappContent
+                templates={whatsappTemplates}
+                selectedTemplateId={selectedTemplateId}
+                variables={variables}
+                onSelectTemplate={(template) => {
+                  setSelectedTemplateId(template.id)
+                  setBodyText(template.bodyText)
+                  setVariables(seedWhatsappTemplateVariables(template))
+                }}
+                onSync={() => syncWhatsappTemplates.mutate()}
+                syncing={syncWhatsappTemplates.isPending}
                 inputClass={inputClass}
               />
             ) : (
@@ -398,8 +835,52 @@ function CreateCampaignContent() {
                 pushTitle={pushTitle} setPushTitle={setPushTitle}
                 pushImageUrl={pushImageUrl} setPushImageUrl={setPushImageUrl}
                 templates={templates}
+                variables={variables}
+                setVariables={setVariables}
+                utmEnabled={utmEnabled} setUtmEnabled={setUtmEnabled}
+                utmSource={utmSource} setUtmSource={setUtmSource}
+                utmMedium={utmMedium} setUtmMedium={setUtmMedium}
+                utmCampaign={utmCampaign} setUtmCampaign={setUtmCampaign}
+                utmCustomParams={utmCustomParams} setUtmCustomParams={setUtmCustomParams}
                 inputClass={inputClass}
               />
+            )}
+
+            <VariablePanel
+              variables={variables}
+              onChange={setVariables}
+              contentSources={[
+                isEmail ? subject : channel === 'push' ? pushTitle : null,
+                isEmail ? htmlBody : bodyText,
+                supportsLinkTracking ? utmSource : null,
+                supportsLinkTracking ? utmMedium : null,
+                supportsLinkTracking ? utmCampaign : null,
+                ...utmCustomParams.map(p => p.value),
+                abTestEnabled ? abVariantBSubject : null,
+                abTestEnabled ? abVariantBHtmlBody : null,
+                abTestEnabled ? abVariantBBodyText : null,
+              ]}
+              preview={{
+                subject: isEmail ? subject : channel === 'push' ? pushTitle : null,
+                htmlBody: isEmail ? htmlBody : null,
+                bodyText: !isEmail ? bodyText : null,
+              }}
+            />
+            {saveValidationIssues.length > 0 && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
+                  <Info className="h-4 w-4" />
+                  Fix these variable mappings before saving
+                </div>
+                <ul className="mt-2 space-y-1 text-sm text-red-700">
+                  {saveValidationIssues.map((issue, idx) => (
+                    <li key={`${issue.code ?? issue.key ?? 'issue'}-${idx}`}>
+                      {issue.key ? <code className="mr-1 rounded bg-red-100 px-1 py-0.5 text-xs">{`{{${issue.key}}}`}</code> : null}
+                      {issue.message ?? 'Invalid variable mapping'}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
 
             {/* A/B Testing Section */}
@@ -424,6 +905,7 @@ function CreateCampaignContent() {
             sendTiming={sendTiming} setSendTiming={setSendTiming}
             scheduledDate={scheduledDate} setScheduledDate={setScheduledDate}
             scheduledTime={scheduledTime} setScheduledTime={setScheduledTime}
+            scheduleTimezone={scheduleTimezone} setScheduleTimezone={setScheduleTimezone}
             periodicFrequency={periodicFrequency} setPeriodicFrequency={setPeriodicFrequency}
             periodicDayOfWeek={periodicDayOfWeek} setPeriodicDayOfWeek={setPeriodicDayOfWeek}
             periodicDayOfMonth={periodicDayOfMonth} setPeriodicDayOfMonth={setPeriodicDayOfMonth}
@@ -433,6 +915,7 @@ function CreateCampaignContent() {
             goalTrackingHours={goalTrackingHours} setGoalTrackingHours={setGoalTrackingHours}
             deliveryLimit={deliveryLimit} setDeliveryLimit={setDeliveryLimit}
             ignoreFreqCapping={ignoreFreqCapping} setIgnoreFreqCapping={setIgnoreFreqCapping}
+            countForFreqCapping={countForFreqCapping} setCountForFreqCapping={setCountForFreqCapping}
             inputClass={inputClass} selectClass={selectClass}
           />
         )}
@@ -492,21 +975,28 @@ function CreateCampaignContent() {
 
 function Step1TargetUsers({
   channel, name, setName, tags, setTags, contentType, setContentType,
+  subscriptionCategories, subscriptionCategoryIds, setSubscriptionCategoryIds,
   audienceMode, setAudienceMode, segmentId, setSegmentId,
   audienceFilter, setAudienceFilter,
+  excludeAudienceEnabled, setExcludeAudienceEnabled, excludeAudienceFilter, setExcludeAudienceFilter,
   audienceCapEnabled, setAudienceCapEnabled, audienceCap, setAudienceCap,
   controlGroupEnabled, setControlGroupEnabled, controlGroupPct, setControlGroupPct,
   segments, selectedSegment,
   showReachability, setShowReachability,
+  audiencePreview, onPreviewAudience, previewPending,
   inputClass, selectClass,
 }: {
   channel: CampaignChannel
   name: string; setName: (v: string) => void
   tags: string[]; setTags: (v: string[]) => void
   contentType: CampaignContentType; setContentType: (v: CampaignContentType) => void
+  subscriptionCategories: Array<{ id: string; name: string; description: string | null; channel: CampaignChannel | 'whatsapp' | null }>
+  subscriptionCategoryIds: string[]; setSubscriptionCategoryIds: (v: string[]) => void
   audienceMode: 'all' | 'segment' | 'filter'; setAudienceMode: (v: 'all' | 'segment' | 'filter') => void
   segmentId: string; setSegmentId: (v: string) => void
   audienceFilter: FilterConfig; setAudienceFilter: (v: FilterConfig) => void
+  excludeAudienceEnabled: boolean; setExcludeAudienceEnabled: (v: boolean) => void
+  excludeAudienceFilter: FilterConfig; setExcludeAudienceFilter: (v: FilterConfig) => void
   audienceCapEnabled: boolean; setAudienceCapEnabled: (v: boolean) => void
   audienceCap: string; setAudienceCap: (v: string) => void
   controlGroupEnabled: boolean; setControlGroupEnabled: (v: boolean) => void
@@ -514,6 +1004,9 @@ function Step1TargetUsers({
   segments: Array<{ id: string; name: string; memberCount: number }>
   selectedSegment?: { id: string; name: string; memberCount: number }
   showReachability: boolean; setShowReachability: (v: boolean) => void
+  audiencePreview: CampaignAudiencePreview | null
+  onPreviewAudience: () => void
+  previewPending: boolean
   inputClass: string; selectClass: string
 }) {
   const reachable = selectedSegment ? Math.round(selectedSegment.memberCount * 0.9) : 0
@@ -532,6 +1025,13 @@ function Step1TargetUsers({
     setTagDraft('')
   }
   const removeTag = (t: string) => setTags(tags.filter(x => x !== t))
+  const toggleSubscriptionCategory = (id: string) => {
+    setSubscriptionCategoryIds(
+      subscriptionCategoryIds.includes(id)
+        ? subscriptionCategoryIds.filter(x => x !== id)
+        : [...subscriptionCategoryIds, id],
+    )
+  }
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -605,6 +1105,50 @@ function Step1TargetUsers({
           ))}
         </div>
       </div>
+
+      {/* Subscription categories */}
+      {contentType === 'promotional' && (
+        <div className="bg-white border border-border rounded-xl p-6">
+          <label className="block text-sm font-medium text-text-primary mb-1.5">Subscription category</label>
+          <p className="text-xs text-text-muted mb-3">Restrict this campaign to users opted into specific message categories.</p>
+          <div className="space-y-2">
+            {subscriptionCategories.map(category => {
+              const selected = subscriptionCategoryIds.includes(category.id)
+              return (
+                <button
+                  key={category.id}
+                  type="button"
+                  onClick={() => toggleSubscriptionCategory(category.id)}
+                  className={cn(
+                    'w-full flex items-start gap-3 p-3.5 rounded-lg border text-left transition-all duration-150',
+                    selected
+                      ? 'border-accent bg-accent/[0.03] ring-1 ring-accent/20'
+                      : 'border-border hover:border-text-muted/30',
+                  )}
+                >
+                  <span className={cn(
+                    'mt-0.5 h-4 w-4 rounded border flex-shrink-0',
+                    selected ? 'border-accent bg-accent shadow-inner' : 'border-border bg-white',
+                  )}>
+                    {selected && <Check className="h-3.5 w-3.5 text-white" />}
+                  </span>
+                  <span>
+                    <span className="block text-sm font-medium text-text-primary">{category.name}</span>
+                    {category.description && (
+                      <span className="block text-xs text-text-muted mt-0.5">{category.description}</span>
+                    )}
+                  </span>
+                </button>
+              )
+            })}
+            {subscriptionCategories.length === 0 && (
+              <p className="text-xs text-text-muted rounded-lg border border-dashed border-border p-3">
+                No subscription categories have been configured yet.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Audience */}
       <div className="bg-white border border-border rounded-xl p-6">
@@ -684,6 +1228,38 @@ function Step1TargetUsers({
         )}
       </div>
 
+      <div className="bg-white border border-border rounded-xl p-6">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <label className="block text-sm font-medium text-text-primary">Exclude users</label>
+            <p className="text-xs text-text-muted mt-0.5">Remove users matching a filter from the selected audience.</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={excludeAudienceEnabled}
+            onClick={() => setExcludeAudienceEnabled(!excludeAudienceEnabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors duration-150',
+              excludeAudienceEnabled ? 'bg-accent' : 'bg-border',
+            )}
+          >
+            <span className={cn(
+              'absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
+              excludeAudienceEnabled ? 'translate-x-4' : 'translate-x-0',
+            )} />
+          </button>
+        </div>
+        {excludeAudienceEnabled && (
+          <div className="rounded-lg border border-border bg-surface/40 p-3">
+            <SegmentFilterBuilder filters={excludeAudienceFilter} onChange={setExcludeAudienceFilter} />
+            {excludeAudienceFilter.rules.length === 0 && (
+              <p className="text-xs text-text-muted mt-3">Add rules to exclude users from this campaign.</p>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Audience cap — limit recipient count even if audience is larger.
           Useful for staged rollouts ("send to 1,000 first") and rate-limit
           tests. Cap is enforced at staging time as a LIMIT on the page query. */}
@@ -704,8 +1280,8 @@ function Step1TargetUsers({
             )}
           >
             <span className={cn(
-              'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
-              audienceCapEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+              'absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
+              audienceCapEnabled ? 'translate-x-4' : 'translate-x-0',
             )} />
           </button>
         </div>
@@ -746,8 +1322,8 @@ function Step1TargetUsers({
             )}
           >
             <span className={cn(
-              'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
-              controlGroupEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+              'absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-150',
+              controlGroupEnabled ? 'translate-x-4' : 'translate-x-0',
             )} />
           </button>
         </div>
@@ -764,11 +1340,10 @@ function Step1TargetUsers({
               />
               <div className="flex items-center gap-1 w-16">
                 <input
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={controlGroupPct}
-                  onChange={e => setControlGroupPct(Math.max(1, Math.min(50, parseInt(e.target.value) || 0)))}
+                  type="text"
+                  inputMode="numeric"
+                  value={String(controlGroupPct)}
+                  onChange={e => setControlGroupPct(Math.max(1, Math.min(50, parseInt(e.target.value.replace(/[^0-9]/g, ''), 10) || 0)))}
                   className={cn(inputClass, 'w-14 h-8 text-center')}
                 />
                 <span className="text-xs text-text-muted">%</span>
@@ -780,17 +1355,231 @@ function Step1TargetUsers({
           </div>
         )}
       </div>
+
+      <div className="bg-white border border-border rounded-xl p-6">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="block text-sm font-medium text-text-primary">Audience preview</label>
+            <p className="text-xs text-text-muted mt-0.5">Calculate reachability, consent blocks, category blocks, holdout, and cap before saving.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onPreviewAudience}
+            disabled={previewPending}
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium border border-border rounded-lg bg-white hover:bg-surface transition-colors disabled:opacity-50"
+          >
+            {previewPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Preview
+          </button>
+        </div>
+        {audiencePreview && (
+          <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              ['Candidates', audiencePreview.totalCandidates],
+              ['Reachable', audiencePreview.reachable],
+              ['Deliverable', audiencePreview.deliverable],
+              ['Recipients', audiencePreview.estimatedRecipients],
+              ['Suppressed', audiencePreview.suppressed],
+              ['Opted out', audiencePreview.optedOut],
+              ['Category blocked', audiencePreview.subscriptionBlocked],
+              ['24h window blocked', audiencePreview.serviceWindowBlocked],
+              ['Holdouts', audiencePreview.estimatedHoldouts],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-border bg-surface/40 p-3">
+                <div className="text-[10px] uppercase tracking-wide text-text-muted font-semibold">{label}</div>
+                <div className="text-lg font-semibold text-text-primary tabular-nums mt-0.5">{Number(value).toLocaleString()}</div>
+              </div>
+            ))}
+            {audiencePreview.warning && (
+              <div className="col-span-2 sm:col-span-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                {audiencePreview.warning}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
 /* ─── Step 2: Email Content (unchanged from before) ─── */
 
-type TemplateItem = { id: string; name: string; htmlBody?: string | null; subject?: string | null; bodyText?: string | null }
+type TemplateItem = {
+  id: string
+  name: string
+  htmlBody?: string | null
+  emailBuilderTemplate?: Record<string, unknown> | null
+  subject?: string | null
+  bodyText?: string | null
+  variables?: TemplateVariable[]
+}
+
+function isEmailTemplate(value: unknown): value is EmailTemplate {
+  if (!value || typeof value !== 'object') return false
+  const template = value as Partial<EmailTemplate>
+  return Array.isArray(template.blocks)
+    && !!template.globalStyles
+    && typeof template.globalStyles === 'object'
+}
+
+function splitEmails(value: string): string[] {
+  return value.split(',').map(v => v.trim()).filter(Boolean)
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function fileToAttachment(file: File): Promise<DraftAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`))
+    reader.onload = () => resolve({
+      localId: `${file.name}-${file.size}-${file.lastModified}`,
+      filename: file.name,
+      mime: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+      contentBase64: String(reader.result ?? ''),
+    })
+    reader.readAsDataURL(file)
+  })
+}
+
+function emailPreviewSrcDoc(html: string, theme: PreviewTheme): string {
+  if (theme === 'light') return html
+  return `
+    <style>
+      :root { color-scheme: dark; }
+      html, body { background: #111827 !important; }
+      body { filter: invert(1) hue-rotate(180deg); }
+      img, picture, video { filter: invert(1) hue-rotate(180deg); }
+    </style>
+    ${html}
+  `
+}
+
+function buildUtmParameters(input: {
+  enabled: boolean
+  source: string
+  medium: string
+  campaign: string
+  custom: CampaignUtmParameter[]
+}): CampaignUtmParameters | null {
+  if (!input.enabled) return null
+  const params = [
+    { key: 'utm_source', value: input.source },
+    { key: 'utm_medium', value: input.medium },
+    { key: 'utm_campaign', value: input.campaign },
+    ...input.custom,
+  ].map(p => ({ key: p.key.trim(), value: p.value.trim() })).filter(p => p.key && p.value)
+  return params.length > 0 ? { enabled: true, params } : null
+}
+
+function BasicLayoutPreview({ layoutKey }: { layoutKey: string }) {
+  const columns = layoutKey === '4col' || layoutKey === 'product-grid' ? 4 : layoutKey === '3col' ? 3 : layoutKey === '2col' || layoutKey === 'cart' || layoutKey === 'newsletter' ? 2 : 0
+
+  if (layoutKey === 'blank') {
+    return (
+      <div className="flex h-full items-center justify-center bg-white">
+        <Plus className="h-14 w-14 text-text-secondary" />
+      </div>
+    )
+  }
+
+  if (layoutKey === 'promo') {
+    return (
+      <div className="flex h-full flex-col bg-white">
+        <div className="flex h-24 items-center justify-center bg-gradient-to-br from-gray-100 via-gray-200 to-gray-100">
+          <div className="h-14 w-20 rounded-lg border-4 border-gray-300 bg-gray-100 shadow-sm" />
+        </div>
+        <div className="space-y-3 px-8 py-6 text-center">
+          <div className="mx-auto h-4 w-40 rounded bg-gray-300" />
+          <div className="mx-auto h-2.5 w-52 rounded bg-gray-200" />
+          <div className="mx-auto h-8 w-24 rounded-md bg-sky-400" />
+        </div>
+        <div className="grid flex-1 grid-cols-3 gap-3 px-6 pb-5">
+          {Array.from({ length: 3 }).map((_, idx) => <div key={idx} className="rounded-md bg-gray-100" />)}
+        </div>
+      </div>
+    )
+  }
+
+  if (layoutKey === 'cart') {
+    return (
+      <div className="flex h-full flex-col bg-white px-7 py-6">
+        <div className="mx-auto mb-3 h-4 w-36 rounded bg-gray-300" />
+        <div className="mx-auto mb-6 h-2.5 w-48 rounded bg-gray-200" />
+        <div className="grid flex-1 grid-cols-2 gap-5">
+          {Array.from({ length: 2 }).map((_, idx) => (
+            <div key={idx} className="space-y-2">
+              <div className="aspect-square rounded-lg bg-gradient-to-br from-gray-100 via-gray-200 to-gray-100" />
+              <div className="h-2.5 rounded bg-gray-200" />
+              <div className="h-7 rounded-md bg-gray-800" />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  if (layoutKey === 'newsletter') {
+    return (
+      <div className="flex h-full flex-col bg-white px-7 py-6">
+        <div className="mb-3 h-4 w-36 rounded bg-gray-300" />
+        <div className="mb-2 h-2.5 w-full rounded bg-gray-200" />
+        <div className="mb-5 h-2.5 w-3/4 rounded bg-gray-200" />
+        <div className="h-px bg-gray-200" />
+        <div className="grid flex-1 grid-cols-2 gap-5 py-5">
+          {Array.from({ length: 2 }).map((_, idx) => (
+            <div key={idx} className="space-y-2">
+              <div className="h-20 rounded-lg bg-gradient-to-br from-gray-100 via-gray-200 to-gray-100" />
+              <div className="h-2.5 rounded bg-gray-300" />
+              <div className="h-2 rounded bg-gray-200" />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full flex-col bg-white">
+      <div className="h-12 bg-gradient-to-r from-gray-100 via-gray-200 to-gray-100" />
+      <div className="h-4 bg-white" />
+      <div className="grid flex-1 gap-4 px-7 py-5" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+        {Array.from({ length: columns }).map((_, idx) => (
+          <div key={idx} className="space-y-2">
+            <div className="aspect-square rounded-md bg-gradient-to-br from-gray-100 via-gray-200 to-gray-100 shadow-sm" />
+            <div className="h-2.5 rounded bg-gray-200" />
+            {(layoutKey === '4col' || layoutKey === 'product-grid') && <div className="h-6 rounded-md bg-sky-400" />}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function Step2EmailContent({
   subject, setSubject, previewText, setPreviewText,
-  fromName, setFromName, htmlBody, setHtmlBody, emailTemplate, setEmailTemplate,
+  fromName, setFromName, fromEmail, setFromEmail, replyToEmail, setReplyToEmail,
+  ccEmails, setCcEmails, bccEmails, setBccEmails,
+  verifiedSenders,
+  attachments, setAttachments,
+  gmailAnnotationEnabled, setGmailAnnotationEnabled,
+  gmailImageUrl, setGmailImageUrl,
+  gmailDealText, setGmailDealText,
+  gmailDescription, setGmailDescription,
+  gmailOfferCode, setGmailOfferCode,
+  gmailStartsAt, setGmailStartsAt,
+  gmailExpiresAt, setGmailExpiresAt,
+  utmEnabled, setUtmEnabled,
+  utmSource, setUtmSource,
+  utmMedium, setUtmMedium,
+  utmCampaign, setUtmCampaign,
+  utmCustomParams, setUtmCustomParams,
+  htmlBody, setHtmlBody, variables, emailTemplate, setEmailTemplate,
   selectedTemplateId, selectedLayout,
   editorMode, setEditorMode,
   templates, onSelectLayout, onSelectTemplate, onPreviewTemplate,
@@ -799,88 +1588,333 @@ function Step2EmailContent({
   subject: string; setSubject: (v: string) => void
   previewText: string; setPreviewText: (v: string) => void
   fromName: string; setFromName: (v: string) => void
+  fromEmail: string; setFromEmail: (v: string) => void
+  replyToEmail: string; setReplyToEmail: (v: string) => void
+  ccEmails: string; setCcEmails: (v: string) => void
+  bccEmails: string; setBccEmails: (v: string) => void
+  verifiedSenders: ProjectEmailSender[]
+  attachments: DraftAttachment[]; setAttachments: (v: DraftAttachment[]) => void
+  gmailAnnotationEnabled: boolean; setGmailAnnotationEnabled: (v: boolean) => void
+  gmailImageUrl: string; setGmailImageUrl: (v: string) => void
+  gmailDealText: string; setGmailDealText: (v: string) => void
+  gmailDescription: string; setGmailDescription: (v: string) => void
+  gmailOfferCode: string; setGmailOfferCode: (v: string) => void
+  gmailStartsAt: string; setGmailStartsAt: (v: string) => void
+  gmailExpiresAt: string; setGmailExpiresAt: (v: string) => void
+  utmEnabled: boolean; setUtmEnabled: (v: boolean) => void
+  utmSource: string; setUtmSource: (v: string) => void
+  utmMedium: string; setUtmMedium: (v: string) => void
+  utmCampaign: string; setUtmCampaign: (v: string) => void
+  utmCustomParams: CampaignUtmParameter[]; setUtmCustomParams: (v: CampaignUtmParameter[]) => void
   htmlBody: string; setHtmlBody: (v: string) => void
+  variables: TemplateVariable[]
   emailTemplate: EmailTemplate; setEmailTemplate: (v: EmailTemplate) => void
   selectedTemplateId: string | null
   selectedLayout: string
   editorMode: EditorMode; setEditorMode: (v: EditorMode) => void
   templates: TemplateItem[]
-  onSelectLayout: (key: string, html: string) => void
-  onSelectTemplate: (id: string, html: string) => void
+  onSelectLayout: (key: string) => void
+  onSelectTemplate: (template: TemplateItem) => void
   onPreviewTemplate: (t: { name: string; html: string } | null) => void
   inputClass: string
 }) {
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  const [previewDevice, setPreviewDevice] = useState<PreviewDevice>('desktop')
+  const [previewTheme, setPreviewTheme] = useState<PreviewTheme>('light')
+  const [sampleCustomerId, setSampleCustomerId] = useState('')
+  const [templateSource, setTemplateSource] = useState<'prebuilt' | 'saved' | 'api'>('prebuilt')
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [saveTemplateName, setSaveTemplateName] = useState('')
+  const [saveTemplateMessage, setSaveTemplateMessage] = useState<string | null>(null)
+  const createTemplate = useCreateTemplate()
+  const customers = useCustomers({ page: 1, pageSize: 20, sortBy: 'lastSeen', sortOrder: 'desc' })
+  const renderedPreview = usePreviewTemplate()
+  const sampleCustomers = customers.data?.data ?? []
+  const rendered = renderedPreview.data?.data.rendered
+  const previewHtml = rendered?.htmlBody ?? htmlBody
+  const previewSubject = rendered?.subject ?? subject
+  const addAttachments = async (files: FileList | null) => {
+    if (!files?.length) return
+    setAttachmentError(null)
+    const next: DraftAttachment[] = []
+    for (const file of Array.from(files)) {
+      if (file.size > 25 * 1024 * 1024) {
+        setAttachmentError(`${file.name} is larger than 25MB`)
+        continue
+      }
+      next.push(await fileToAttachment(file))
+    }
+    if (next.length > 0) setAttachments([...attachments, ...next])
+  }
+
   return (
     <div className="space-y-6">
       {/* Editor Mode Tabs */}
-      <div className="flex items-center gap-1 border-b border-border">
-        {([
-          { key: 'templates' as EditorMode, label: 'My Templates', icon: Layout },
-          { key: 'visual' as EditorMode, label: 'Visual Builder', icon: Layers },
-          { key: 'html' as EditorMode, label: 'Custom HTML', icon: Mail },
-          { key: 'preview' as EditorMode, label: 'Preview', icon: Eye },
-        ]).map(tab => (
+      <div className="flex flex-col gap-3 border-b border-border pb-0 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex items-center gap-1">
+          {([
+            { key: 'templates' as EditorMode, label: 'My Templates', icon: Layout },
+            { key: 'visual' as EditorMode, label: 'Visual Builder', icon: Layers },
+            { key: 'html' as EditorMode, label: 'Custom HTML', icon: Mail },
+            { key: 'preview' as EditorMode, label: 'Preview', icon: Eye },
+          ]).map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setEditorMode(tab.key)}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-[1px]',
+                editorMode === tab.key
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-text-secondary hover:text-text-primary',
+              )}
+            >
+              <tab.icon className="h-3.5 w-3.5" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 pb-2">
+          {saveTemplateMessage && <span className="text-xs text-emerald-600">{saveTemplateMessage}</span>}
           <button
-            key={tab.key}
-            onClick={() => setEditorMode(tab.key)}
-            className={cn(
-              'inline-flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-[1px]',
-              editorMode === tab.key
-                ? 'border-accent text-accent'
-                : 'border-transparent text-text-secondary hover:text-text-primary',
-            )}
+            type="button"
+            onClick={() => {
+              onSelectLayout(selectedLayout || 'blank')
+              setEditorMode('visual')
+              setSaveTemplateMessage('Starter reset')
+            }}
+            className="inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-white px-3 text-xs font-medium text-text-primary hover:border-accent hover:text-accent"
           >
-            <tab.icon className="h-3.5 w-3.5" />
-            {tab.label}
+            <RefreshCw className="h-3.5 w-3.5" />
+            Reset starter
           </button>
-        ))}
+          <button
+            type="button"
+            disabled={createTemplate.isPending}
+            onClick={() => {
+              setSaveTemplateMessage(null)
+              createTemplate.mutate({
+                name: `${subject || 'Campaign email template'} copy`,
+                channel: 'email',
+                subject,
+                htmlBody,
+                emailBuilderTemplate: { ...emailTemplate, subject, previewText },
+                variables,
+              }, {
+                onSuccess: () => {
+                  setSaveTemplateMessage('Template duplicated')
+                  setTemplateSource('saved')
+                },
+                onError: (error) => setSaveTemplateMessage(error instanceof Error ? error.message : 'Failed to duplicate template'),
+              })
+            }}
+            className="inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-white px-3 text-xs font-medium text-text-primary hover:border-accent hover:text-accent disabled:opacity-60"
+          >
+            {createTemplate.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />}
+            Duplicate
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSaveTemplateOpen(v => !v)
+              setSaveTemplateMessage(null)
+              if (!saveTemplateName) setSaveTemplateName(subject || 'Campaign email template')
+            }}
+            className="inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-white px-3 text-xs font-medium text-text-primary hover:border-accent hover:text-accent"
+          >
+            <Save className="h-3.5 w-3.5" />
+            Save as template
+          </button>
+        </div>
       </div>
 
-      {editorMode === 'templates' && (
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-sm font-medium text-text-primary mb-1">Start from a layout</h3>
-            <p className="text-xs text-text-muted mb-3">Click on any tile to select the template.</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {LAYOUT_STARTERS.map(layout => {
-                const Icon = layout.icon
-                const isSelected = selectedLayout === layout.key && !selectedTemplateId
-                return (
-                  <button key={layout.key} onClick={() => onSelectLayout(layout.key, layout.html)}
-                    className={cn('flex flex-col items-center justify-center p-5 rounded-xl border-2 transition-all h-32',
-                      isSelected ? 'border-accent bg-accent/5' : 'border-border hover:border-gray-300',
-                      layout.key === 'blank' && !isSelected && 'border-dashed',
-                    )}>
-                    <div className={cn('w-10 h-10 rounded-lg flex items-center justify-center mb-2', isSelected ? 'bg-accent/10' : 'bg-gray-100')}>
-                      <Icon className={cn('h-5 w-5', isSelected ? 'text-accent' : 'text-text-muted')} />
-                    </div>
-                    <span className="text-xs font-medium text-text-primary">{layout.label}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-          {templates.length > 0 && (
+      {saveTemplateOpen && (
+        <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div>
-              <h3 className="text-sm font-medium text-text-primary mb-1">Pre-built templates</h3>
-              <p className="text-xs text-text-muted mb-3">Choose from your saved templates.</p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {templates.map(t => (
-                  <TemplatePreviewCard key={t.id} name={t.name} htmlBody={t.htmlBody} subject={t.subject}
-                    selected={selectedTemplateId === t.id}
-                    onChoose={() => onSelectTemplate(t.id, t.htmlBody ?? BLANK_HTML)}
-                    onPreview={() => onPreviewTemplate({ name: t.name, html: t.htmlBody ?? '' })}
-                  />
+              <label className="mb-1 block text-xs font-medium text-text-secondary">Template name</label>
+              <input
+                value={saveTemplateName}
+                onChange={e => setSaveTemplateName(e.target.value)}
+                placeholder="Campaign email template"
+                className={inputClass}
+              />
+            </div>
+            <button
+              type="button"
+              disabled={createTemplate.isPending || !saveTemplateName.trim()}
+              onClick={() => {
+                setSaveTemplateMessage(null)
+                createTemplate.mutate({
+                  name: saveTemplateName.trim(),
+                  channel: 'email',
+                  subject,
+                  htmlBody,
+                  emailBuilderTemplate: { ...emailTemplate, subject, previewText },
+                  variables,
+                }, {
+                  onSuccess: () => {
+                    setSaveTemplateMessage('Template saved')
+                    setSaveTemplateOpen(false)
+                    setTemplateSource('saved')
+                  },
+                  onError: (error) => setSaveTemplateMessage(error instanceof Error ? error.message : 'Failed to save template'),
+                })
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-60"
+            >
+              {createTemplate.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Save template
+            </button>
+          </div>
+        </div>
+      )}
+
+      {editorMode === 'templates' && (
+        <div className="overflow-hidden rounded-xl border border-border bg-white">
+          <div className="grid min-h-[640px] grid-cols-[280px_minmax(0,1fr)]">
+            <aside className="border-r border-border bg-surface/30">
+              <div className="border-b border-border p-4">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+                  <input placeholder="Search template & folder" className="h-10 w-full rounded-lg border border-border bg-white pl-9 pr-3 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20" />
+                </div>
+              </div>
+              <div className="border-b border-border p-4">
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                    <Filter className="h-4 w-4 text-text-muted" />
+                    Filters
+                  </div>
+                  <button type="button" onClick={() => setTemplateSource('prebuilt')} className="text-xs font-medium text-accent">Reset</button>
+                </div>
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold text-text-muted uppercase">Template source</p>
+                  {([
+                    { key: 'prebuilt' as const, label: 'Pre-built' },
+                    { key: 'saved' as const, label: 'Saved templates' },
+                    { key: 'api' as const, label: 'API templates' },
+                  ]).map(source => (
+                    <button
+                      key={source.key}
+                      type="button"
+                      onClick={() => setTemplateSource(source.key)}
+                      className="flex w-full items-center gap-3 text-left text-sm text-text-primary"
+                    >
+                      <span className={cn('h-5 w-5 rounded-full border flex items-center justify-center', templateSource === source.key ? 'border-accent' : 'border-border')}>
+                        {templateSource === source.key && <span className="h-2.5 w-2.5 rounded-full bg-accent" />}
+                      </span>
+                      {source.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </aside>
+
+            <section className="min-w-0">
+              <div className="flex items-center gap-6 border-b border-border px-5 pt-4">
+                {([
+                  { key: 'drag' as const, label: 'Drag and drop editor' },
+                  { key: 'html' as const, label: 'Custom HTML editor' },
+                ]).map(tab => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => tab.key === 'html' ? setEditorMode('html') : setEditorMode('templates')}
+                    className={cn(
+                      'border-b-2 px-1 pb-3 text-sm font-medium',
+                      tab.key === 'drag' ? 'border-accent text-accent' : 'border-transparent text-text-secondary hover:text-text-primary',
+                    )}
+                  >
+                    {tab.label}
+                  </button>
                 ))}
               </div>
-            </div>
-          )}
+
+              <div className="p-5">
+                {templateSource === 'prebuilt' && (
+                  <div>
+                    {['Basic templates', 'Prebuilt templates'].map(group => (
+                      <div key={group} className="mb-8 last:mb-0">
+                        <h3 className="mb-4 text-sm font-semibold text-text-secondary">{group}</h3>
+                        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+                          {LAYOUT_STARTERS.filter(layout => layout.group === group).map(layout => {
+                            const isSelected = selectedLayout === layout.key && !selectedTemplateId
+                            const LayoutIcon = layout.icon
+                            return (
+                              <button
+                                key={layout.key}
+                                type="button"
+                                onClick={() => {
+                                  onSelectLayout(layout.key)
+                                  setEditorMode('visual')
+                                }}
+                                className={cn(
+                                  'overflow-hidden rounded-lg border bg-white text-left transition-all hover:border-accent hover:shadow-sm',
+                                  isSelected ? 'border-accent ring-1 ring-accent/20' : 'border-border',
+                                )}
+                              >
+                                <div className="h-52 border-b border-border bg-white">
+                                  <BasicLayoutPreview layoutKey={layout.key} />
+                                </div>
+                                <div className="flex items-start gap-3 px-4 py-3">
+                                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-100">
+                                    <LayoutIcon className="h-4 w-4 text-cyan-700" />
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block text-sm font-medium text-text-primary">{layout.label}</span>
+                                    <span className="mt-0.5 block text-xs leading-5 text-text-muted">{layout.description}</span>
+                                  </span>
+                                </div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {templateSource === 'saved' && (
+                  <div>
+                    <h3 className="mb-4 text-sm font-semibold text-text-secondary">Saved templates</h3>
+                    {templates.length > 0 ? (
+                      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+                        {templates.map(t => (
+                          <TemplatePreviewCard key={t.id} name={t.name} htmlBody={t.htmlBody} subject={t.subject}
+                            selected={selectedTemplateId === t.id}
+                            onChoose={() => {
+                              onSelectTemplate(t)
+                            }}
+                            onPreview={() => onPreviewTemplate({ name: t.name, html: t.htmlBody ?? '' })}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-text-muted">No saved templates yet.</div>
+                    )}
+                  </div>
+                )}
+
+                {templateSource === 'api' && (
+                  <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-text-muted">
+                    API templates will appear here once external template sync is configured.
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
         </div>
       )}
 
       {editorMode === 'visual' && (
         <EmailBuilder
           value={emailTemplate}
+          aiContext={{
+            subject,
+            previewText,
+            fullHtml: htmlBody,
+            campaignGoal: `Email campaign${subject ? ` about ${subject}` : ''}`,
+          }}
           onChange={(t) => {
             setEmailTemplate(t)
             setHtmlBody(compileToHtml(t))
@@ -904,13 +1938,62 @@ function Step2EmailContent({
 
       {editorMode === 'preview' && (
         <div className="bg-white border border-border rounded-xl overflow-hidden">
-          <div className="px-5 py-3 bg-surface border-b border-border flex items-center justify-between">
+          <div className="px-5 py-3 bg-surface border-b border-border flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <h2 className="text-sm font-semibold text-text-primary">Email Preview</h2>
-            <span className="text-xs text-text-muted">Subject: <strong className="text-text-primary">{subject || '(empty)'}</strong></span>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs text-text-muted">Subject: <strong className="text-text-primary">{previewSubject || '(empty)'}</strong></span>
+              <select
+                value={sampleCustomerId}
+                onChange={e => setSampleCustomerId(e.target.value)}
+                className="h-8 min-w-[220px] rounded-lg border border-border bg-white px-2.5 text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20"
+              >
+                <option value="">Auto sample customer</option>
+                {sampleCustomers.map(customer => (
+                  <option key={customer.id} value={customer.id}>
+                    {customer.name || customer.email || customer.phone || customer.id}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => renderedPreview.mutate({
+                  subject,
+                  htmlBody,
+                  variables,
+                  sampleCustomerId: sampleCustomerId || undefined,
+                })}
+                disabled={renderedPreview.isPending}
+                className="inline-flex h-8 items-center gap-2 rounded-lg border border-accent/30 px-3 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-60"
+              >
+                {renderedPreview.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                Render data
+              </button>
+              <div className="flex items-center gap-1 bg-white border border-border rounded-lg p-0.5">
+                <button type="button" onClick={() => setPreviewDevice('desktop')} className={cn('p-1.5 rounded-md transition-colors', previewDevice === 'desktop' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')} title="Desktop preview">
+                  <Monitor className="h-3.5 w-3.5" />
+                </button>
+                <button type="button" onClick={() => setPreviewDevice('mobile')} className={cn('p-1.5 rounded-md transition-colors', previewDevice === 'mobile' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')} title="Mobile preview">
+                  <Smartphone className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="flex items-center gap-1 bg-white border border-border rounded-lg p-0.5">
+                <button type="button" onClick={() => setPreviewTheme('light')} className={cn('p-1.5 rounded-md transition-colors', previewTheme === 'light' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')} title="Light preview">
+                  <Sun className="h-3.5 w-3.5" />
+                </button>
+                <button type="button" onClick={() => setPreviewTheme('dark')} className={cn('p-1.5 rounded-md transition-colors', previewTheme === 'dark' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')} title="Dark preview">
+                  <Moon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
           </div>
-          <div className="p-5">
-            <div className="border border-border rounded-lg overflow-hidden">
-              <iframe srcDoc={htmlBody} title="Email Preview" className="w-full h-[500px]" sandbox="allow-same-origin" />
+          {renderedPreview.data?.data && (
+            <div className="border-b border-border bg-emerald-50 px-5 py-2 text-xs text-emerald-700">
+              Rendered with {renderedPreview.data.data.sampleCustomer.name || renderedPreview.data.data.sampleCustomer.email || renderedPreview.data.data.sampleSource}.
+            </div>
+          )}
+          <div className="p-5 bg-surface/40">
+            <div className={cn('mx-auto border border-border rounded-lg overflow-hidden bg-white transition-all', previewDevice === 'mobile' ? 'w-[375px] max-w-full' : 'w-full max-w-[640px]')}>
+              <iframe srcDoc={emailPreviewSrcDoc(previewHtml, previewTheme)} title="Email Preview" className="w-full h-[500px]" sandbox="allow-same-origin" />
             </div>
           </div>
         </div>
@@ -923,10 +2006,10 @@ function Step2EmailContent({
           <h2 className="text-sm font-semibold text-text-primary">Email Details</h2>
         </div>
         <div className="p-5 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-primary mb-1.5">Subject<span className="text-red-400">*</span></label>
-            <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Don't sweat the heat, our Summer Sale is here!" className={inputClass} />
-          </div>
+	          <div>
+	            <label className="block text-sm font-medium text-text-primary mb-1.5">Subject<span className="text-red-400">*</span></label>
+	            <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Don't sweat the heat, our Summer Sale is here!" className={inputClass} />
+	          </div>
           <div>
             <label className="block text-sm font-medium text-text-primary mb-1.5">Preview Text <span className="text-text-muted font-normal">(optional)</span></label>
             <input value={previewText} onChange={e => setPreviewText(e.target.value)} placeholder="Short preview shown in inbox next to subject line" className={inputClass} />
@@ -938,13 +2021,553 @@ function Step2EmailContent({
             </div>
             <div>
               <label className="block text-sm font-medium text-text-primary mb-1.5">From email</label>
-              <input value="noreply@yourdomain.com" disabled className={cn(inputClass, 'bg-gray-50 text-text-muted cursor-not-allowed')} />
+              {verifiedSenders.length > 0 ? (
+                <select value={fromEmail} onChange={e => setFromEmail(e.target.value)} className={inputClass}>
+                  <option value="">Use project default sender</option>
+                  {verifiedSenders.map(sender => (
+                    <option key={sender.id} value={sender.address}>
+                      {sender.displayName ? `${sender.displayName} <${sender.address}>` : sender.address}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input value={fromEmail} onChange={e => setFromEmail(e.target.value)} placeholder="Uses project/shared default until a domain is verified" className={inputClass} />
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium text-text-primary mb-1.5">Reply-to email</label>
-              <input value="" placeholder="Same as from email" disabled className={cn(inputClass, 'bg-gray-50 cursor-not-allowed')} />
+              <input value={replyToEmail} onChange={e => setReplyToEmail(e.target.value)} placeholder="Same as from email" className={inputClass} />
             </div>
           </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-1.5">Cc</label>
+              <input value={ccEmails} onChange={e => setCcEmails(e.target.value)} placeholder="ops@example.com, finance@example.com" className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-1.5">Bcc</label>
+              <input value={bccEmails} onChange={e => setBccEmails(e.target.value)} placeholder="archive@example.com" className={inputClass} />
+            </div>
+          </div>
+	        </div>
+	      </div>
+
+      <CampaignAiCopywriter
+        channel="email"
+        subject={subject}
+        body={htmlBody}
+        onApplySubject={setSubject}
+        onApplyBody={setHtmlBody}
+        inputClass={inputClass}
+      />
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-5 py-3 bg-surface border-b border-border">
+          <div className="flex items-center gap-2">
+            <Mail className="h-4 w-4 text-text-muted" />
+            <h2 className="text-sm font-semibold text-text-primary">Gmail Annotation</h2>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={gmailAnnotationEnabled}
+            onClick={() => setGmailAnnotationEnabled(!gmailAnnotationEnabled)}
+            className={cn('relative h-5 w-9 rounded-full transition-colors', gmailAnnotationEnabled ? 'bg-accent' : 'bg-border')}
+          >
+            <span className={cn('absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform', gmailAnnotationEnabled ? 'translate-x-4' : 'translate-x-0')} />
+          </button>
+        </div>
+        {gmailAnnotationEnabled && (
+          <div className="p-5 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-1.5">Promo image URL</label>
+              <input value={gmailImageUrl} onChange={e => setGmailImageUrl(e.target.value)} placeholder="https://cdn.example.com/sale.jpg" className={inputClass} />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Deal text</label>
+                <input value={gmailDealText} onChange={e => setGmailDealText(e.target.value)} placeholder="20% off today" className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Offer code</label>
+                <input value={gmailOfferCode} onChange={e => setGmailOfferCode(e.target.value)} placeholder="SUMMER20" className={inputClass} />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-1.5">Short description</label>
+              <input value={gmailDescription} onChange={e => setGmailDescription(e.target.value)} placeholder="Limited-time summer collection offer" className={inputClass} />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Starts</label>
+                <input type="datetime-local" value={gmailStartsAt} onChange={e => setGmailStartsAt(e.target.value)} className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Expires</label>
+                <input type="datetime-local" value={gmailExpiresAt} onChange={e => setGmailExpiresAt(e.target.value)} className={inputClass} />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-5 py-3 bg-surface border-b border-border">
+          <div className="flex items-center gap-2">
+            <Link2 className="h-4 w-4 text-text-muted" />
+            <h2 className="text-sm font-semibold text-text-primary">UTM Parameters</h2>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={utmEnabled}
+            onClick={() => setUtmEnabled(!utmEnabled)}
+            className={cn('relative h-5 w-9 rounded-full transition-colors', utmEnabled ? 'bg-accent' : 'bg-border')}
+          >
+            <span className={cn('absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform', utmEnabled ? 'translate-x-4' : 'translate-x-0')} />
+          </button>
+        </div>
+        {utmEnabled && (
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Source</label>
+                <input value={utmSource} onChange={e => setUtmSource(e.target.value)} placeholder="storees" className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Medium</label>
+                <input value={utmMedium} onChange={e => setUtmMedium(e.target.value)} placeholder="email" className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Campaign</label>
+                <input value={utmCampaign} onChange={e => setUtmCampaign(e.target.value)} placeholder="{{campaign_name}}" className={inputClass} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              {utmCustomParams.map((param, idx) => (
+                <div key={idx} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-2">
+                  <input value={param.key} onChange={e => setUtmCustomParams(utmCustomParams.map((p, i) => i === idx ? { ...p, key: e.target.value } : p))} placeholder="utm_term" className={inputClass} />
+                  <input value={param.value} onChange={e => setUtmCustomParams(utmCustomParams.map((p, i) => i === idx ? { ...p, value: e.target.value } : p))} placeholder="{{customer_region}}" className={inputClass} />
+                  <button type="button" onClick={() => setUtmCustomParams(utmCustomParams.filter((_, i) => i !== idx))} className="h-10 w-10 inline-flex items-center justify-center rounded-lg border border-border text-text-muted hover:text-red-600 hover:bg-red-50 transition-colors" title="Remove parameter">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button type="button" onClick={() => setUtmCustomParams([...utmCustomParams, { key: '', value: '' }])} className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-accent border border-accent/30 rounded-lg hover:bg-accent/5 transition-colors">
+                <Plus className="h-4 w-4" />
+                Custom parameter
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="flex items-center gap-2 px-5 py-3 bg-surface border-b border-border">
+          <Paperclip className="h-4 w-4 text-text-muted" />
+          <h2 className="text-sm font-semibold text-text-primary">Attachments</h2>
+          <span className="text-xs text-text-muted">Up to 25MB each</span>
+        </div>
+        <div className="p-5 space-y-3">
+          <label className="flex h-24 cursor-pointer items-center justify-center rounded-lg border border-dashed border-border bg-surface/50 text-sm text-text-secondary hover:border-accent/40 hover:bg-accent/5 transition-colors">
+            <input
+              type="file"
+              multiple
+              className="sr-only"
+              onChange={e => {
+                void addAttachments(e.target.files)
+                e.currentTarget.value = ''
+              }}
+            />
+            <span className="inline-flex items-center gap-2">
+              <Upload className="h-4 w-4" />
+              Add files
+            </span>
+          </label>
+          {attachmentError && <p className="text-xs text-red-600">{attachmentError}</p>}
+          {attachments.length > 0 && (
+            <div className="divide-y divide-border rounded-lg border border-border">
+              {attachments.map(file => (
+                <div key={file.localId} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-text-primary">{file.filename}</p>
+                    <p className="text-xs text-text-muted">{formatBytes(file.sizeBytes)} · {file.mime}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAttachments(attachments.filter(item => item.localId !== file.localId))}
+                    className="p-1.5 rounded-md text-text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
+                    title="Remove attachment"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── Step 2: WhatsApp Template Content ─── */
+
+function Step2WhatsappContent({
+  templates,
+  selectedTemplateId,
+  variables,
+  onSelectTemplate,
+  onSync,
+  syncing,
+  inputClass,
+}: {
+  templates: WhatsappTemplate[]
+  selectedTemplateId: string | null
+  variables: TemplateVariable[]
+  onSelectTemplate: (template: WhatsappTemplate) => void
+  onSync: () => void
+  syncing: boolean
+  inputClass: string
+}) {
+  const providerStatus = useWhatsappProviderStatus()
+  const submitTemplate = useSubmitWhatsappTemplate()
+  const refreshStatus = useRefreshTemplateStatus()
+  const approved = templates.filter(t => t.status === 'APPROVED')
+  const pending = templates.filter(t => !['APPROVED'].includes(t.status))
+  const selected = approved.find(t => t.id === selectedTemplateId) ?? null
+  const headerType = (selected?.header?.format ?? selected?.header?.type ?? '').toUpperCase()
+  const mediaHeader = ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerType)
+  const urlButtons = selected?.buttons?.filter(b => b.type?.toUpperCase() === 'URL') ?? []
+  const customers = useCustomers({ page: 1, pageSize: 20, sortBy: 'lastSeen', sortOrder: 'desc' })
+  const renderedPreview = usePreviewTemplate()
+  const sampleCustomers = customers.data?.data ?? []
+  const [sampleCustomerId, setSampleCustomerId] = useState('')
+  const [showTemplateForm, setShowTemplateForm] = useState(false)
+  const [draftTemplate, setDraftTemplate] = useState<SubmitInput>({
+    name: '',
+    language: 'en_US',
+    category: 'MARKETING',
+    bodyText: '',
+    footer: '',
+  })
+  const provider = providerStatus.data?.data
+  const canSubmitTemplate = !!provider?.configured && !!provider.capabilities.submitTemplate
+  const draftParamCount = countWhatsappTemplateParameters(draftTemplate.bodyText)
+  const previewBody = renderedPreview.data?.data.rendered.bodyText ?? selected?.bodyText ?? ''
+  const grouped = approved.reduce<Record<string, WhatsappTemplate[]>>((acc, template) => {
+    acc[template.name] = [...(acc[template.name] ?? []), template]
+    return acc
+  }, {})
+  const submitForApproval = () => {
+    submitTemplate.mutate({
+      ...draftTemplate,
+      bodyExample: draftParamCount > 0
+        ? Array.from({ length: draftParamCount }, (_, idx) => draftTemplate.bodyExample?.[idx]?.trim() || whatsappSampleValue(idx))
+        : undefined,
+    }, {
+      onSuccess: () => {
+        setShowTemplateForm(false)
+        setDraftTemplate({
+          name: '',
+          language: 'en_US',
+          category: 'MARKETING',
+          bodyText: '',
+          footer: '',
+        })
+      },
+    })
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-5 py-3 bg-surface border-b border-border">
+          <div className="flex items-center gap-2">
+            <Phone className="h-4 w-4 text-text-muted" />
+            <h2 className="text-sm font-semibold text-text-primary">WhatsApp Template</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onSync}
+            disabled={syncing}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary border border-border rounded-lg hover:bg-white disabled:opacity-50 transition-colors"
+          >
+            {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Sync
+          </button>
+        </div>
+        <div className="p-5 space-y-5">
+          <div className={cn('rounded-lg border p-4', canSubmitTemplate ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/70')}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className={cn('text-sm font-semibold', canSubmitTemplate ? 'text-emerald-900' : 'text-amber-900')}>
+                  {provider?.provider ? `Connected provider: ${provider.provider}` : 'No WhatsApp provider connected'}
+                </p>
+                <p className={cn('mt-1 text-xs', canSubmitTemplate ? 'text-emerald-700' : 'text-amber-800')}>
+                  Create a template here, submit it for provider approval, then sync/refresh until it is approved and selectable.
+                </p>
+                {provider?.missingConfig?.length ? (
+                  <p className="mt-1 text-xs text-amber-800">Missing config: {provider.missingConfig.join(', ')}</p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTemplateForm(v => !v)}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-accent/30 bg-white px-3 text-xs font-semibold text-accent hover:bg-accent/5"
+              >
+                {showTemplateForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                {showTemplateForm ? 'Close' : 'Create template'}
+              </button>
+            </div>
+
+            {showTemplateForm && (
+              <div className="mt-4 rounded-lg border border-border bg-white p-4">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-text-secondary">Name</label>
+                    <input
+                      value={draftTemplate.name}
+                      onChange={e => setDraftTemplate(t => ({ ...t, name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') }))}
+                      placeholder="campaign_offer"
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-text-secondary">Language</label>
+                    <input
+                      value={draftTemplate.language}
+                      onChange={e => setDraftTemplate(t => ({ ...t, language: e.target.value }))}
+                      placeholder="en_US"
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-text-secondary">Category</label>
+                    <select
+                      value={draftTemplate.category}
+                      onChange={e => setDraftTemplate(t => ({ ...t, category: e.target.value as SubmitInput['category'] }))}
+                      className={inputClass}
+                    >
+                      <option value="MARKETING">Marketing</option>
+                      <option value="UTILITY">Utility</option>
+                      <option value="AUTHENTICATION">Authentication</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-medium text-text-secondary">Template body</label>
+                  <textarea
+                    value={draftTemplate.bodyText}
+                    onChange={e => setDraftTemplate(t => ({ ...t, bodyText: e.target.value }))}
+                    rows={5}
+                    placeholder="Hi {{1}}, your exclusive offer is ready."
+                    className={cn(inputClass, 'h-28 resize-none')}
+                  />
+                  <p className="mt-1 text-xs text-text-muted">Use numbered Meta parameters like {'{{1}}'}, {'{{2}}'}.</p>
+                </div>
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-medium text-text-secondary">Footer</label>
+                  <input
+                    value={draftTemplate.footer ?? ''}
+                    onChange={e => setDraftTemplate(t => ({ ...t, footer: e.target.value }))}
+                    placeholder="Reply STOP to unsubscribe"
+                    className={inputClass}
+                  />
+                </div>
+                {draftParamCount > 0 && (
+                  <div className="mt-3 rounded-lg border border-border bg-surface/60 p-3">
+                    <p className="text-xs font-semibold text-text-primary">Meta review examples</p>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {Array.from({ length: draftParamCount }, (_, idx) => (
+                        <div key={idx}>
+                          <label className="mb-1 block text-xs font-medium text-text-secondary">{`{{${idx + 1}}}`} example</label>
+                          <input
+                            value={draftTemplate.bodyExample?.[idx] ?? ''}
+                            onChange={e => setDraftTemplate(t => {
+                              const examples = Array.from({ length: draftParamCount }, (_, i) => t.bodyExample?.[i] ?? whatsappSampleValue(i))
+                              examples[idx] = e.target.value
+                              return { ...t, bodyExample: examples }
+                            })}
+                            placeholder={whatsappSampleValue(idx)}
+                            className={inputClass}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={submitForApproval}
+                    disabled={submitTemplate.isPending || !canSubmitTemplate || !draftTemplate.name.trim() || !draftTemplate.bodyText.trim()}
+                    className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-4 text-xs font-semibold text-white hover:bg-accent-hover disabled:opacity-60"
+                  >
+                    {submitTemplate.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    Submit for approval
+                  </button>
+                  {!canSubmitTemplate && <span className="text-xs text-amber-700">Provider cannot submit templates or is missing required config.</span>}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {pending.length > 0 && (
+            <div className="rounded-lg border border-border bg-surface/40 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-text-primary">Pending provider approval</p>
+                <button type="button" onClick={onSync} disabled={syncing} className="text-xs font-medium text-accent hover:text-accent-hover disabled:opacity-60">
+                  Sync all
+                </button>
+              </div>
+              <div className="space-y-2">
+                {pending.map(template => (
+                  <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-white px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-text-primary">{template.name} · {template.language}</p>
+                      <p className={cn('mt-0.5 text-[11px]', template.status === 'REJECTED' ? 'text-red-600' : 'text-amber-700')}>
+                        {template.status}{template.rejectionReason ? `: ${template.rejectionReason}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => refreshStatus.mutate(template.id)}
+                      disabled={refreshStatus.isPending && refreshStatus.variables === template.id}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2 text-[11px] font-medium text-text-secondary hover:bg-surface disabled:opacity-60"
+                    >
+                      {refreshStatus.isPending && refreshStatus.variables === template.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                      Status
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {approved.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-8 text-center">
+              <p className="text-sm font-medium text-text-primary">No approved WhatsApp templates yet</p>
+              <p className="mt-1 text-xs text-text-muted">Create one above or sync templates from your provider.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {Object.entries(grouped).map(([name, variants]) => (
+                <div key={name} className="rounded-lg border border-border overflow-hidden">
+                  <div className="flex items-center justify-between gap-3 px-4 py-3 bg-surface/70 border-b border-border">
+                    <div>
+                      <p className="text-sm font-semibold text-text-primary">{name}</p>
+                      <p className="text-xs text-text-muted">{variants.length} language variant{variants.length === 1 ? '' : 's'}</p>
+                    </div>
+                    <span className="text-[11px] font-medium text-green-700 bg-green-50 border border-green-100 rounded-full px-2 py-0.5">APPROVED</span>
+                  </div>
+                  <div className="divide-y divide-border">
+                    {variants.map(template => {
+                      const isSelected = template.id === selectedTemplateId
+                      return (
+                        <button
+                          key={template.id}
+                          type="button"
+                          onClick={() => onSelectTemplate(template)}
+                          className={cn('w-full text-left px-4 py-3 transition-colors', isSelected ? 'bg-accent/5' : 'hover:bg-surface/60')}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={cn('h-2 w-2 rounded-full', isSelected ? 'bg-accent' : 'bg-border')} />
+                                <span className="text-xs font-semibold text-text-primary">{template.language}</span>
+                                {template.category && <span className="text-[10px] text-text-muted uppercase">{template.category}</span>}
+                              </div>
+                              <p className="mt-1 text-xs text-text-secondary line-clamp-2">{template.bodyText}</p>
+                            </div>
+                            <span className="shrink-0 text-[11px] text-text-muted">{template.parameterCount} vars</span>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <CampaignAiCopywriter
+        channel="whatsapp"
+        body={selected?.bodyText ?? draftTemplate.bodyText}
+        onApplyBody={(value) => {
+          setShowTemplateForm(true)
+          setDraftTemplate(template => ({ ...template, bodyText: value }))
+        }}
+        inputClass={inputClass}
+        lockedReason="WhatsApp sends only approved template text. Apply generated copy into the template form, submit for approval, then select it after approval."
+      />
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="px-5 py-3 bg-surface border-b border-border flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <h2 className="text-sm font-semibold text-text-primary">Live Preview</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={sampleCustomerId} onChange={e => setSampleCustomerId(e.target.value)} className="h-8 min-w-[190px] rounded-lg border border-border bg-white px-2.5 text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20">
+              <option value="">Auto sample customer</option>
+              {sampleCustomers.map(customer => (
+                <option key={customer.id} value={customer.id}>{customer.name || customer.email || customer.phone || customer.id}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => renderedPreview.mutate({
+                bodyText: selected?.bodyText ?? '',
+                variables,
+                sampleCustomerId: sampleCustomerId || undefined,
+              })}
+              disabled={renderedPreview.isPending || !selected}
+              className="inline-flex h-8 items-center gap-2 rounded-lg border border-accent/30 px-3 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-60"
+            >
+              {renderedPreview.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Render data
+            </button>
+          </div>
+        </div>
+        {renderedPreview.data?.data && (
+          <div className="border-b border-border bg-emerald-50 px-5 py-2 text-xs text-emerald-700">
+            Rendered with {renderedPreview.data.data.sampleCustomer.name || renderedPreview.data.data.sampleCustomer.email || renderedPreview.data.data.sampleSource}.
+          </div>
+        )}
+        <div className="p-5 bg-[#e5ddd5] min-h-[360px]">
+          <div className="ml-auto max-w-[280px] rounded-lg bg-[#dcf8c6] px-3 py-2 shadow-sm">
+            <p className="whitespace-pre-wrap text-sm text-slate-900">{previewBody || 'Select an approved template to preview it.'}</p>
+            {selected?.footer && <p className="mt-2 text-[11px] text-slate-500">{selected.footer}</p>}
+            {selected?.buttons && selected.buttons.length > 0 && (
+              <div className="mt-2 space-y-1 border-t border-green-200 pt-2">
+                {selected.buttons.map((button, idx) => (
+                  <div key={`${button.text}-${idx}`} className="text-center text-xs font-medium text-blue-600">
+                    {button.text}
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="mt-1 text-right text-[10px] text-slate-500">12:45</p>
+          </div>
+          {selected && (
+            <div className="mt-4 rounded-lg bg-white/80 border border-white/70 p-3">
+              <p className="text-xs font-medium text-slate-700">Template details</p>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-600">
+                <span>Language: {selected.language}</span>
+                <span>Provider: {selected.provider}</span>
+                <span>Header: {selected.header?.type ?? selected.header?.format ?? 'none'}</span>
+                <span>Variables: {selected.parameterCount}</span>
+              </div>
+              {(mediaHeader || urlButtons.length > 0) && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800">
+                  {mediaHeader && <p>Map <code>wa_header_media_url</code> for the {headerType.toLowerCase()} header.</p>}
+                  {urlButtons.map((button, idx) => (
+                    <p key={`${button.text}-${idx}`}>Map <code>{`wa_button_url_${idx + 1}`}</code> for URL button "{button.text}".</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -954,19 +2577,35 @@ function Step2EmailContent({
 /* ─── Step 2: SMS / Push Content ─── */
 
 function Step2TextContent({
-  channel, bodyText, setBodyText, pushTitle, setPushTitle, pushImageUrl, setPushImageUrl, templates, inputClass,
+  channel, bodyText, setBodyText, pushTitle, setPushTitle, pushImageUrl, setPushImageUrl, templates, variables, setVariables,
+  utmEnabled, setUtmEnabled, utmSource, setUtmSource, utmMedium, setUtmMedium, utmCampaign, setUtmCampaign,
+  utmCustomParams, setUtmCustomParams, inputClass,
 }: {
   channel: CampaignChannel
   bodyText: string; setBodyText: (v: string) => void
   pushTitle: string; setPushTitle: (v: string) => void
   pushImageUrl: string; setPushImageUrl: (v: string) => void
   templates: TemplateItem[]
+  variables: TemplateVariable[]
+  setVariables: (v: TemplateVariable[]) => void
+  utmEnabled: boolean; setUtmEnabled: (v: boolean) => void
+  utmSource: string; setUtmSource: (v: string) => void
+  utmMedium: string; setUtmMedium: (v: string) => void
+  utmCampaign: string; setUtmCampaign: (v: string) => void
+  utmCustomParams: CampaignUtmParameter[]; setUtmCustomParams: (v: CampaignUtmParameter[]) => void
   inputClass: string
 }) {
   const isSms = channel === 'sms'
   const isPush = channel === 'push'
   const ChannelIcon = CHANNEL_ICONS[channel] ?? MessageSquare
   const channelLabel = CHANNEL_LABELS[channel] ?? channel
+  const customers = useCustomers({ page: 1, pageSize: 20, sortBy: 'lastSeen', sortOrder: 'desc' })
+  const renderedPreview = usePreviewTemplate()
+  const sampleCustomers = customers.data?.data ?? []
+  const [sampleCustomerId, setSampleCustomerId] = useState('')
+  const rendered = renderedPreview.data?.data.rendered
+  const previewSubject = rendered?.subject ?? pushTitle
+  const previewBody = rendered?.bodyText ?? bodyText
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -981,6 +2620,7 @@ function Step2TextContent({
                 onClick={() => {
                   if (t.bodyText) setBodyText(t.bodyText)
                   if (isPush && t.subject) setPushTitle(t.subject)
+                  setVariables(t.variables ?? [])
                 }}
                 className="w-full text-left p-3 rounded-lg border border-border hover:border-accent hover:bg-accent/5 transition-colors"
               >
@@ -1017,7 +2657,7 @@ function Step2TextContent({
               placeholder="https://example.com/banner.jpg"
               className={inputClass}
             />
-            <p className="text-xs text-text-muted mt-1">Shown as a large image in the push notification (Android + iOS)</p>
+            <p className="text-xs text-text-muted mt-1">Use {'{{recipient_image:promo}}'} to pull from customer attribute images.promo.</p>
           </div>
         </div>
       )}
@@ -1052,10 +2692,100 @@ function Step2TextContent({
         </div>
       </div>
 
+      <CampaignAiCopywriter
+        channel={channel}
+        subject={isPush ? pushTitle : undefined}
+        body={bodyText}
+        onApplySubject={isPush ? setPushTitle : undefined}
+        onApplyBody={setBodyText}
+        inputClass={inputClass}
+      />
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-5 py-3 bg-surface border-b border-border">
+          <div className="flex items-center gap-2">
+            <Link2 className="h-4 w-4 text-text-muted" />
+            <h2 className="text-sm font-semibold text-text-primary">Link Tracking</h2>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={utmEnabled}
+            onClick={() => setUtmEnabled(!utmEnabled)}
+            className={cn('relative h-5 w-9 rounded-full transition-colors', utmEnabled ? 'bg-accent' : 'bg-border')}
+          >
+            <span className={cn('absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform', utmEnabled ? 'translate-x-4' : 'translate-x-0')} />
+          </button>
+        </div>
+        {utmEnabled && (
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Source</label>
+                <input value={utmSource} onChange={e => setUtmSource(e.target.value)} placeholder="storees" className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Medium</label>
+                <input value={utmMedium} onChange={e => setUtmMedium(e.target.value)} placeholder={channel} className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Campaign</label>
+                <input value={utmCampaign} onChange={e => setUtmCampaign(e.target.value)} placeholder="{{campaign_name}}" className={inputClass} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              {utmCustomParams.map((param, idx) => (
+                <div key={idx} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-2">
+                  <input value={param.key} onChange={e => setUtmCustomParams(utmCustomParams.map((p, i) => i === idx ? { ...p, key: e.target.value } : p))} placeholder="utm_term" className={inputClass} />
+                  <input value={param.value} onChange={e => setUtmCustomParams(utmCustomParams.map((p, i) => i === idx ? { ...p, value: e.target.value } : p))} placeholder="{{customer_city}}" className={inputClass} />
+                  <button type="button" onClick={() => setUtmCustomParams(utmCustomParams.filter((_, i) => i !== idx))} className="h-10 w-10 inline-flex items-center justify-center rounded-lg border border-border text-text-muted hover:text-red-600 hover:bg-red-50 transition-colors" title="Remove parameter">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button type="button" onClick={() => setUtmCustomParams([...utmCustomParams, { key: '', value: '' }])} className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-accent border border-accent/30 rounded-lg hover:bg-accent/5 transition-colors">
+                <Plus className="h-4 w-4" />
+                Custom parameter
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Preview card */}
       {(isPush || isSms) && bodyText.trim() && (
-        <div className="bg-white border border-border rounded-xl p-5">
-          <h3 className="text-sm font-medium text-text-primary mb-3">Preview</h3>
+        <div className="bg-white border border-border rounded-xl overflow-hidden">
+          <div className="flex flex-col gap-3 border-b border-border bg-surface px-5 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <h3 className="text-sm font-medium text-text-primary">Preview</h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <select value={sampleCustomerId} onChange={e => setSampleCustomerId(e.target.value)} className="h-8 min-w-[190px] rounded-lg border border-border bg-white px-2.5 text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20">
+                <option value="">Auto sample customer</option>
+                {sampleCustomers.map(customer => (
+                  <option key={customer.id} value={customer.id}>{customer.name || customer.email || customer.phone || customer.id}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => renderedPreview.mutate({
+                  subject: isPush ? pushTitle : undefined,
+                  bodyText,
+                  variables,
+                  sampleCustomerId: sampleCustomerId || undefined,
+                })}
+                disabled={renderedPreview.isPending || (!bodyText.trim() && !(isPush && pushTitle.trim()))}
+                className="inline-flex h-8 items-center gap-2 rounded-lg border border-accent/30 px-3 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-60"
+              >
+                {renderedPreview.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                Render data
+              </button>
+            </div>
+          </div>
+          {renderedPreview.data?.data && (
+            <div className="border-b border-border bg-emerald-50 px-5 py-2 text-xs text-emerald-700">
+              Rendered with {renderedPreview.data.data.sampleCustomer.name || renderedPreview.data.data.sampleCustomer.email || renderedPreview.data.data.sampleSource}.
+            </div>
+          )}
+          <div className="p-5">
           {isPush ? (
             <div className="max-w-xs mx-auto bg-gray-50 rounded-2xl p-4 border border-gray-200 shadow-sm">
               <div className="flex items-start gap-3">
@@ -1063,8 +2793,8 @@ function Step2TextContent({
                   <Bell className="h-4 w-4 text-accent" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold text-text-primary">{pushTitle || 'App Name'}</p>
-                  <p className="text-xs text-text-secondary mt-0.5 line-clamp-3">{bodyText}</p>
+                  <p className="text-xs font-semibold text-text-primary">{previewSubject || 'App Name'}</p>
+                  <p className="text-xs text-text-secondary mt-0.5 line-clamp-3">{previewBody}</p>
                   <p className="text-[10px] text-text-muted mt-1">now</p>
                 </div>
               </div>
@@ -1076,11 +2806,12 @@ function Step2TextContent({
                   <MessageSquare className="h-4 w-4 text-green-600" />
                 </div>
                 <div className="bg-white rounded-xl rounded-tl-none p-3 shadow-sm border border-gray-100 max-w-[240px]">
-                  <p className="text-sm text-text-primary whitespace-pre-wrap">{bodyText}</p>
+                  <p className="text-sm text-text-primary whitespace-pre-wrap">{previewBody}</p>
                 </div>
               </div>
             </div>
           )}
+          </div>
         </div>
       )}
     </div>
@@ -1123,7 +2854,7 @@ function AbTestSection({
           onClick={() => setEnabled(!enabled)}
           className={cn('relative w-10 h-5 rounded-full transition-colors', enabled ? 'bg-purple-500' : 'bg-gray-200')}
         >
-          <div className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', enabled ? 'translate-x-5' : 'translate-x-0.5')} />
+          <div className={cn('absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', enabled ? 'translate-x-4' : 'translate-x-0')} />
         </button>
       </div>
 
@@ -1230,7 +2961,7 @@ function AbTestSection({
                 onClick={() => setAutoSendWinner(!autoSendWinner)}
                 className={cn('relative w-10 h-5 rounded-full transition-colors mt-2', autoSendWinner ? 'bg-accent' : 'bg-gray-200')}
               >
-                <div className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', autoSendWinner ? 'translate-x-5' : 'translate-x-0.5')} />
+                <div className={cn('absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', autoSendWinner ? 'translate-x-4' : 'translate-x-0')} />
               </button>
               <p className="text-[10px] text-text-muted mt-1">
                 {autoSendWinner ? 'Winner sent to remaining audience' : 'Manual selection required'}
@@ -1256,11 +2987,13 @@ function AbTestSection({
 /* ─── Step 3: Schedule and Goals ─── */
 
 const DAYS_OF_WEEK = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const TIMEZONE_OPTIONS = ['Asia/Kolkata', 'UTC', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Asia/Dubai', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney']
 
 function Step3ScheduleGoals({
   isPeriodic, channel,
   sendTiming, setSendTiming, scheduledDate, setScheduledDate,
   scheduledTime, setScheduledTime,
+  scheduleTimezone, setScheduleTimezone,
   periodicFrequency, setPeriodicFrequency,
   periodicDayOfWeek, setPeriodicDayOfWeek,
   periodicDayOfMonth, setPeriodicDayOfMonth,
@@ -1270,6 +3003,7 @@ function Step3ScheduleGoals({
   goalTrackingHours, setGoalTrackingHours,
   deliveryLimit, setDeliveryLimit,
   ignoreFreqCapping, setIgnoreFreqCapping,
+  countForFreqCapping, setCountForFreqCapping,
   inputClass, selectClass,
 }: {
   isPeriodic: boolean
@@ -1277,6 +3011,7 @@ function Step3ScheduleGoals({
   sendTiming: SendTiming; setSendTiming: (v: SendTiming) => void
   scheduledDate: string; setScheduledDate: (v: string) => void
   scheduledTime: string; setScheduledTime: (v: string) => void
+  scheduleTimezone: string; setScheduleTimezone: (v: string) => void
   periodicFrequency: 'daily' | 'weekly' | 'monthly'; setPeriodicFrequency: (v: 'daily' | 'weekly' | 'monthly') => void
   periodicDayOfWeek: number; setPeriodicDayOfWeek: (v: number) => void
   periodicDayOfMonth: number; setPeriodicDayOfMonth: (v: number) => void
@@ -1286,6 +3021,7 @@ function Step3ScheduleGoals({
   goalTrackingHours: number; setGoalTrackingHours: (v: number) => void
   deliveryLimit: string; setDeliveryLimit: (v: string) => void
   ignoreFreqCapping: boolean; setIgnoreFreqCapping: (v: boolean) => void
+  countForFreqCapping: boolean; setCountForFreqCapping: (v: boolean) => void
   inputClass: string; selectClass: string
 }) {
   const eventOptions = ['order_completed', 'product_viewed', 'added_to_cart', 'checkout_started', 'page_viewed', 'app_opened', 'signed_up']
@@ -1294,6 +3030,35 @@ function Step3ScheduleGoals({
   const removeGoal = (idx: number) => setConversionGoals(conversionGoals.filter((_, i) => i !== idx))
   const updateGoal = (idx: number, field: keyof ConversionGoal, value: string) => {
     setConversionGoals(conversionGoals.map((g, i) => i === idx ? { ...g, [field]: value } : g))
+  }
+  const addGoalAttribute = (idx: number) => {
+    setConversionGoals(conversionGoals.map((goal, goalIdx) => {
+      if (goalIdx !== idx) return goal
+      const attrs = { ...(goal.attributes ?? {}) }
+      let key = 'property_1'
+      let n = 1
+      while (key in attrs) {
+        n += 1
+        key = `property_${n}`
+      }
+      return { ...goal, attributes: { ...attrs, [key]: '' } }
+    }))
+  }
+  const updateGoalAttribute = (idx: number, oldKey: string, nextKey: string, value: string) => {
+    setConversionGoals(conversionGoals.map((goal, goalIdx) => {
+      if (goalIdx !== idx) return goal
+      const attrs = { ...(goal.attributes ?? {}) }
+      delete attrs[oldKey]
+      return { ...goal, attributes: { ...attrs, [nextKey.trim() || oldKey]: value } }
+    }))
+  }
+  const removeGoalAttribute = (idx: number, key: string) => {
+    setConversionGoals(conversionGoals.map((goal, goalIdx) => {
+      if (goalIdx !== idx) return goal
+      const attrs = { ...(goal.attributes ?? {}) }
+      delete attrs[key]
+      return { ...goal, attributes: Object.keys(attrs).length > 0 ? attrs : undefined }
+    }))
   }
 
   const channelLabel = CHANNEL_LABELS[channel] ?? 'message'
@@ -1400,10 +3165,12 @@ function Step3ScheduleGoals({
         ) : (
           <>
             <div className="flex gap-4 mb-4">
-              {([
-                { value: 'asap' as const, label: 'As soon as possible', icon: Zap },
-                { value: 'scheduled' as const, label: 'At specific date and time', icon: Clock },
-              ]).map(opt => (
+	              {([
+	                { value: 'asap' as const, label: 'As soon as possible', icon: Zap },
+	                { value: 'fixed' as const, label: 'Fixed date and time', icon: Clock },
+	                { value: 'user_timezone' as const, label: "User's timezone", icon: CalendarClock },
+	                { value: 'best_time' as const, label: 'Best time for user', icon: Target },
+	              ]).map(opt => (
                 <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
                   <div className={cn('w-4 h-4 rounded-full border-2 flex items-center justify-center', sendTiming === opt.value ? 'border-accent' : 'border-gray-300')}>
                     {sendTiming === opt.value && <div className="w-2 h-2 rounded-full bg-accent" />}
@@ -1413,18 +3180,24 @@ function Step3ScheduleGoals({
                 </label>
               ))}
             </div>
-            {sendTiming === 'scheduled' && (
-              <div className="grid grid-cols-2 gap-4 p-4 bg-surface rounded-lg border border-border">
-                <div>
-                  <label className="block text-xs font-medium text-text-secondary mb-1">Start date</label>
-                  <input type="date" value={scheduledDate} onChange={e => setScheduledDate(e.target.value)} className={inputClass} />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-text-secondary mb-1">Send time</label>
-                  <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)} className={inputClass} />
-                </div>
-              </div>
-            )}
+	            {sendTiming !== 'asap' && (
+	              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 bg-surface rounded-lg border border-border">
+	                <div>
+	                  <label className="block text-xs font-medium text-text-secondary mb-1">Anchor date</label>
+	                  <input type="date" value={scheduledDate} onChange={e => setScheduledDate(e.target.value)} className={inputClass} />
+	                </div>
+	                <div>
+	                  <label className="block text-xs font-medium text-text-secondary mb-1">Send time</label>
+	                  <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)} className={inputClass} />
+	                </div>
+	                <div>
+	                  <label className="block text-xs font-medium text-text-secondary mb-1">Timezone</label>
+	                  <select value={scheduleTimezone} onChange={e => setScheduleTimezone(e.target.value)} className={selectClass}>
+	                    {TIMEZONE_OPTIONS.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+	                  </select>
+	                </div>
+	              </div>
+	            )}
           </>
         )}
       </div>
@@ -1459,6 +3232,27 @@ function Step3ScheduleGoals({
                   </select>
                 </div>
               </div>
+              <div className="mt-3 rounded-lg border border-border bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-text-secondary">Event attributes</span>
+                  <button type="button" onClick={() => addGoalAttribute(idx)} className="text-xs font-medium text-accent hover:text-accent-hover">
+                    Add filter
+                  </button>
+                </div>
+                {Object.entries(goal.attributes ?? {}).length > 0 && (
+                  <div className="mt-2 space-y-2">
+                    {Object.entries(goal.attributes ?? {}).map(([key, value]) => (
+                      <div key={key} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                        <input value={key} onChange={e => updateGoalAttribute(idx, key, e.target.value, value)} placeholder="property" className={inputClass} />
+                        <input value={value} onChange={e => updateGoalAttribute(idx, key, key, e.target.value)} placeholder="value" className={inputClass} />
+                        <button type="button" onClick={() => removeGoalAttribute(idx, key)} className="h-10 w-10 inline-flex items-center justify-center rounded-lg border border-border text-text-muted hover:text-red-600 hover:bg-red-50">
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -1489,7 +3283,21 @@ function Step3ScheduleGoals({
             onClick={() => setIgnoreFreqCapping(!ignoreFreqCapping)}
             className={cn('relative w-10 h-5 rounded-full transition-colors', ignoreFreqCapping ? 'bg-accent' : 'bg-gray-200')}
           >
-            <div className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', ignoreFreqCapping ? 'translate-x-5' : 'translate-x-0.5')} />
+            <div className={cn('absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', ignoreFreqCapping ? 'translate-x-4' : 'translate-x-0')} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between mb-4 pb-4 border-b border-border">
+          <div>
+            <p className="text-sm text-text-primary">Count toward frequency capping</p>
+            <p className="text-xs text-text-muted">Future campaigns will include this send when checking caps.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCountForFreqCapping(!countForFreqCapping)}
+            className={cn('relative w-10 h-5 rounded-full transition-colors', countForFreqCapping ? 'bg-accent' : 'bg-gray-200')}
+          >
+            <div className={cn('absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', countForFreqCapping ? 'translate-x-4' : 'translate-x-0')} />
           </button>
         </div>
 

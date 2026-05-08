@@ -339,7 +339,7 @@ function PreviewResult({ result }: { result: PreviewResponse }) {
 
 // ----- helpers -----
 
-const SYSTEM_KEYS = new Set(['customer_name', 'customer_email', 'store_name', 'unsubscribe_url'])
+const SYSTEM_KEYS = new Set(['customer_name', 'customer_email', 'store_name', 'campaign_name', 'unsubscribe_url'])
 
 function extractKeys(...contents: Array<string | null | undefined>): string[] {
   const keys = new Set<string>()

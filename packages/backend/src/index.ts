@@ -15,6 +15,8 @@ import aiRoutes from './routes/ai.js'
 import productRoutes from './routes/products.js'
 import campaignRoutes from './routes/campaigns.js'
 import templateRoutes from './routes/templates.js'
+import emailSenderRoutes from './routes/emailSenders.js'
+import subscriptionCategoryRoutes from './routes/subscriptionCategories.js'
 import v1EventRoutes from './routes/v1Events.js'
 import v1OptInRoutes from './routes/v1OptIn.js'
 import v1ApiKeyRoutes from './routes/v1ApiKeys.js'
@@ -39,6 +41,7 @@ import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
+import assetRoutes from './routes/assets.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { startSyncWorker } from './workers/syncWorker.js'
@@ -71,6 +74,10 @@ app.use('/api/webhooks/shopify', express.raw({ type: 'application/json' }))
 // Resend webhooks use svix HMAC signing — verification needs the raw body
 app.use('/api/webhooks/resend', express.raw({ type: 'application/json' }))
 
+// Campaign drafts can include attachment uploads as base64 payloads.
+app.use('/api/campaigns', express.json({ limit: '30mb' }))
+// Email builder image uploads are passed as base64 JSON and then served as public assets.
+app.use('/api/assets', express.json({ limit: '8mb' }))
 // JSON parser — 1MB limit for SDK batch events (default 100KB too small)
 app.use(express.json({ limit: '1mb' }))
 // Twilio + some Gupshup webhooks send form-encoded payloads
@@ -95,6 +102,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 app.use('/sdk', cors({ origin: '*' }), express.static(
   path.resolve(__dirname, '../../sdk/dist'),
   { maxAge: '1h', setHeaders: (res) => { res.setHeader('Access-Control-Allow-Origin', '*') } },
+))
+app.use('/uploads/email-assets', cors({ origin: '*' }), express.static(
+  process.env.ASSET_UPLOAD_ROOT ?? path.resolve(process.cwd(), '.storees/uploads/email-assets'),
+  { maxAge: '30d', immutable: true, setHeaders: (res) => { res.setHeader('Access-Control-Allow-Origin', '*') } },
 ))
 
 // Health check
@@ -131,6 +142,8 @@ app.use('/api/ai', requireAuth, aiRoutes)
 app.use('/api/products', requireAuth, productRoutes)
 app.use('/api/campaigns', requireAuth, campaignRoutes)
 app.use('/api/templates', requireAuth, templateRoutes)
+app.use('/api/email-senders', requireAuth, emailSenderRoutes)
+app.use('/api/subscription-categories', requireAuth, subscriptionCategoryRoutes)
 app.use('/api/whatsapp', requireAuth, whatsappAdminRoutes)
 app.use('/api/api-keys', requireAuth, v1ApiKeyRoutes)
 app.use('/api/schema', requireAuth, v1SchemaRoutes)
@@ -148,6 +161,7 @@ app.use('/api/send-time', requireAuth, sendTimeRoutes)
 app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
+app.use('/api/assets', requireAuth, assetRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)

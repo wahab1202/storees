@@ -2,11 +2,22 @@
 
 export type HeaderBlockProps = { text: string; level: 1 | 2 | 3; align: 'left' | 'center' | 'right'; color: string }
 export type TextBlockProps = { html: string; align: 'left' | 'center' | 'right'; color: string; fontSize: number }
-export type ImageBlockProps = { src: string; alt: string; width: string; link?: string; align: 'left' | 'center' | 'right' }
-export type ButtonBlockProps = { text: string; url: string; bgColor: string; textColor: string; align: 'left' | 'center' | 'right'; borderRadius: number; fullWidth: boolean }
+export type ImageBlockProps = { src: string; alt: string; width: string; link?: string; align: 'left' | 'center' | 'right'; fullWidthOnMobile?: boolean }
+export type ButtonBlockProps = { text: string; url: string; bgColor: string; textColor: string; align: 'left' | 'center' | 'right'; borderRadius: number; fullWidth: boolean; fullWidthOnMobile?: boolean; paddingX?: number; paddingY?: number }
 export type DividerBlockProps = { color: string; thickness: number; padding: number }
 export type SpacerBlockProps = { height: number }
-export type ColumnsBlockProps = { columns: EmailBlock[][]; ratio: '1:1' | '1:2' | '2:1' | '1:1:1' | '1:2:1' }
+export type ColumnsBlockProps = {
+  columns: EmailBlock[][]
+  ratio: '1:1' | '1:2' | '2:1' | '1:1:1' | '1:2:1' | '1:1:1:1'
+  padding?: number
+  gap?: number
+  rowBgColor?: string
+  contentBgColor?: string
+  borderColor?: string
+  borderWidth?: number
+  borderRadius?: number
+  stackOnMobile?: boolean
+}
 export type ProductBlockProps = { productName: string; price: string; imageUrl: string; ctaUrl: string; ctaText: string; description?: string }
 export type SocialBlockProps = { links: Array<{ platform: 'facebook' | 'twitter' | 'instagram' | 'linkedin' | 'youtube' | 'whatsapp'; url: string }>; align: 'left' | 'center' | 'right' }
 export type FooterBlockProps = { text: string; unsubscribeText: string; align: 'center' | 'left' }
@@ -42,11 +53,22 @@ export type BlockType = EmailBlock['type']
 export const BLOCK_DEFAULTS: Record<BlockType, () => EmailBlock['props']> = {
   header: () => ({ text: 'Your headline here', level: 1, align: 'center', color: '#1a1a2e' }),
   text: () => ({ html: '<p>Write your message here. Use <strong>bold</strong> and <em>italic</em> for emphasis.</p>', align: 'left', color: '#374151', fontSize: 16 }),
-  image: () => ({ src: '', alt: 'Image', width: '100%', align: 'center' }),
-  button: () => ({ text: 'Click Here', url: 'https://', bgColor: '#4F46E5', textColor: '#ffffff', align: 'center', borderRadius: 8, fullWidth: false }),
+  image: () => ({ src: '', alt: 'Image', width: '100%', align: 'center', fullWidthOnMobile: true }),
+  button: () => ({ text: 'Click Here', url: 'https://', bgColor: '#4F46E5', textColor: '#ffffff', align: 'center', borderRadius: 8, fullWidth: false, fullWidthOnMobile: false, paddingX: 32, paddingY: 14 }),
   divider: () => ({ color: '#e5e7eb', thickness: 1, padding: 16 }),
   spacer: () => ({ height: 24 }),
-  columns: () => ({ columns: [[], []], ratio: '1:1' as const }),
+  columns: () => ({
+    columns: [[], []],
+    ratio: '1:1' as const,
+    padding: 8,
+    gap: 16,
+    rowBgColor: 'transparent',
+    contentBgColor: 'transparent',
+    borderColor: 'transparent',
+    borderWidth: 0,
+    borderRadius: 0,
+    stackOnMobile: true,
+  }),
   product: () => ({ productName: 'Product Name', price: '₹999', imageUrl: '', ctaUrl: 'https://', ctaText: 'Buy Now', description: '' }),
   social: () => ({ links: [{ platform: 'facebook' as const, url: '' }, { platform: 'twitter' as const, url: '' }, { platform: 'instagram' as const, url: '' }], align: 'center' as const }),
   footer: () => ({ text: '© {{store_name}} · Powered by Storees', unsubscribeText: 'Unsubscribe', align: 'center' as const }),

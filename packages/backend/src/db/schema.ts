@@ -33,6 +33,10 @@ export const projects = pgTable('projects', {
   emailFromAddress: varchar('email_from_address', { length: 255 }),
   emailFromName: varchar('email_from_name', { length: 255 }),
   resendDomainId: varchar('resend_domain_id', { length: 255 }),
+  emailMarketingProvider: varchar('email_marketing_provider', { length: 20 }).notNull().default('resend'),
+  emailTransactionalProvider: varchar('email_transactional_provider', { length: 20 }).notNull().default('resend'),
+  emailDomainProvider: varchar('email_domain_provider', { length: 20 }).notNull().default('resend'),
+  emailDomainProviderId: varchar('email_domain_provider_id', { length: 255 }),
   emailDomainVerifiedAt: timestamp('email_domain_verified_at', { withTimezone: true }),
   // Phase E3.1 — per-tenant rate budget for email sends (per-minute).
   emailRatePerMinute: integer('email_rate_per_minute').notNull().default(60),
@@ -48,6 +52,34 @@ export const projects = pgTable('projects', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+export const projectEmailSenders = pgTable('project_email_senders', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  address: varchar('address', { length: 255 }).notNull(),
+  displayName: varchar('display_name', { length: 255 }),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uniq_project_email_sender_address').on(table.projectId, table.address),
+  index('idx_project_email_senders_project').on(table.projectId),
+])
+
+export const projectEmailConnectors = pgTable('project_email_connectors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  provider: varchar('provider', { length: 20 }).notNull(),
+  displayName: varchar('display_name', { length: 255 }),
+  credentialsEncrypted: text('credentials_encrypted'),
+  settings: jsonb('settings').notNull().default('{}'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uniq_project_email_connector_provider').on(table.projectId, table.provider),
+  index('idx_project_email_connectors_project').on(table.projectId),
+])
 
 // ============ AGENTS (B2B distributors / regional reps) ============
 
@@ -314,13 +346,24 @@ export const campaigns = pgTable('campaigns', {
   subject: varchar('subject', { length: 500 }),
   previewText: varchar('preview_text', { length: 500 }),
   htmlBody: text('html_body'),
+  emailBuilderTemplate: jsonb('email_builder_template'),
   bodyText: text('body_text'),
   fromName: varchar('from_name', { length: 255 }),
+  fromEmail: varchar('from_email', { length: 255 }),
+  replyToEmail: varchar('reply_to_email', { length: 255 }),
+  ccEmails: jsonb('cc_emails').notNull().default('[]'),
+  bccEmails: jsonb('bcc_emails').notNull().default('[]'),
+  gmailAnnotation: jsonb('gmail_annotation'),
+  utmParameters: jsonb('utm_parameters'),
   periodicSchedule: jsonb('periodic_schedule'),
   templateId: uuid('template_id'),
   conversionGoals: jsonb('conversion_goals').notNull().default([]),
   goalTrackingHours: integer('goal_tracking_hours').notNull().default(36),
   deliveryLimit: integer('delivery_limit'),
+  ignoreFrequencyCap: boolean('ignore_frequency_cap').notNull().default(false),
+  countForFrequencyCap: boolean('count_for_frequency_cap').notNull().default(true),
+  sendTimeMode: varchar('send_time_mode', { length: 32 }).notNull().default('asap'),
+  scheduleTimezone: varchar('schedule_timezone', { length: 64 }),
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
   sentAt: timestamp('sent_at', { withTimezone: true }),
   totalRecipients: integer('total_recipients').notNull().default(0),
@@ -348,6 +391,7 @@ export const campaigns = pgTable('campaigns', {
   // segment_id), tags for list filtering, audience cap, control-group split.
   tags: jsonb('tags').notNull().default('[]'),
   audienceFilter: jsonb('audience_filter'),
+  excludeAudienceFilter: jsonb('exclude_audience_filter'),
   audienceCap: integer('audience_cap'),
   controlGroupPct: integer('control_group_pct').notNull().default(0),
   controlGroupSeed: varchar('control_group_seed', { length: 64 }),
@@ -377,12 +421,26 @@ export const campaignSends = pgTable('campaign_sends', {
   complainedAt: timestamp('complained_at', { withTimezone: true }),
   resendMessageId: varchar('resend_message_id', { length: 255 }),
   variant: varchar('variant', { length: 1 }),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  uniqueIndex('uniq_campaign_sends_campaign_customer').on(table.campaignId, table.customerId),
   index('idx_campaign_sends_campaign').on(table.campaignId, table.status),
   index('idx_campaign_sends_customer').on(table.customerId),
   index('idx_campaign_sends_resend_id').on(table.resendMessageId),
   index('idx_campaign_sends_variant').on(table.campaignId, table.variant),
+])
+
+export const campaignAttachments = pgTable('campaign_attachments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  campaignId: uuid('campaign_id').notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
+  filename: varchar('filename', { length: 255 }).notNull(),
+  mime: varchar('mime', { length: 255 }).notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  s3Key: text('s3_key').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_campaign_attachments_campaign').on(table.campaignId),
 ])
 
 // ============ CAMPAIGN HOLDOUTS (control group) ============
@@ -412,6 +470,7 @@ export const emailTemplates = pgTable('email_templates', {
   channel: varchar('channel', { length: 20 }).notNull().default('email'),
   subject: varchar('subject', { length: 500 }),
   htmlBody: text('html_body'),
+  emailBuilderTemplate: jsonb('email_builder_template'),
   bodyText: text('body_text'),
   // Per-template variable mappings. See services/templateContext.ts for shape.
   variables: jsonb('variables').notNull().default('[]'),
@@ -494,6 +553,47 @@ export const consents = pgTable('consents', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_consents_customer').on(table.projectId, table.customerId, table.channel),
+])
+
+// ============ SUBSCRIPTION CATEGORIES ============
+
+export const subscriptionCategories = pgTable('subscription_categories', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  description: text('description'),
+  channel: varchar('channel', { length: 20 }), // null = all channels
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uniq_subscription_category_name').on(table.projectId, table.name),
+  index('idx_subscription_categories_project').on(table.projectId, table.isActive),
+])
+
+export const customerSubscriptions = pgTable('customer_subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  categoryId: uuid('category_id').notNull().references(() => subscriptionCategories.id, { onDelete: 'cascade' }),
+  optedInAt: timestamp('opted_in_at', { withTimezone: true }).notNull().defaultNow(),
+  optedOutAt: timestamp('opted_out_at', { withTimezone: true }),
+  source: varchar('source', { length: 30 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uniq_customer_subscription_category').on(table.customerId, table.categoryId),
+  index('idx_customer_subscriptions_category').on(table.projectId, table.categoryId, table.optedOutAt),
+  index('idx_customer_subscriptions_customer').on(table.customerId),
+])
+
+export const campaignSubscriptionCategories = pgTable('campaign_subscription_categories', {
+  campaignId: uuid('campaign_id').notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
+  categoryId: uuid('category_id').notNull().references(() => subscriptionCategories.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uniq_campaign_subscription_category').on(table.campaignId, table.categoryId),
+  index('idx_campaign_subscription_categories_category').on(table.categoryId),
 ])
 
 // ============ EMAIL SUPPRESSIONS (per-tenant block list) ============
@@ -614,6 +714,7 @@ export const messages = pgTable('messages', {
   // 'queued' | 'sent' | 'delivered' | 'read' | 'clicked' | 'failed' | 'blocked'
   blockReason: varchar('block_reason', { length: 50 }),
   // 'consent_blocked' | 'frequency_capped' | 'user_inactive' | 'no_channel_reachability'
+  countsTowardFrequencyCap: boolean('counts_toward_frequency_cap').notNull().default(true),
   provider: varchar('provider', { length: 20 }), // 'pinnacle' | 'resend'
   providerMessageId: varchar('provider_message_id', { length: 255 }),
   flowTripId: uuid('flow_trip_id').references(() => flowTrips.id),

@@ -5,6 +5,7 @@ import { db } from '../db/connection.js'
 import { campaignSends, campaigns, messages, emailSuppressions } from '../db/schema.js'
 import { redis } from '../services/redis.js'
 import { handleDeliveryReceipt } from '../services/messageStatusService.js'
+import { pushSuppressionToProvider, type SuppressionReason } from '../services/suppressionSync.js'
 
 const router = Router()
 
@@ -120,7 +121,7 @@ async function resolveProjectId(emailId: string): Promise<string | null> {
 async function suppressEmail(
   projectId: string,
   email: string,
-  reason: 'hard_bounce' | 'complained' | 'unsubscribed' | 'manual',
+  reason: SuppressionReason,
   metadata: Record<string, unknown> = {},
 ): Promise<void> {
   await db
@@ -133,6 +134,7 @@ async function suppressEmail(
       metadata,
     })
     .onConflictDoNothing()
+  await pushSuppressionToProvider(projectId, email, reason)
 }
 
 // Campaign tracking: column + counter (email-specific aggregate counters live here, not in
@@ -154,6 +156,7 @@ const RECEIPT_STATUS_MAP: Record<string, 'delivered' | 'read' | 'clicked' | 'fai
   'email.opened': 'read',
   'email.clicked': 'clicked',
   'email.bounced': 'failed',
+  'email.complained': 'failed',
 }
 
 /**

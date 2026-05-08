@@ -6,6 +6,7 @@ import { redis } from './redis.js'
 import type { SendCommand, MessageChannel } from '@storees/shared'
 
 import { getChannelProvider } from './channelProviderRegistry.js'
+import { mirrorCampaignReceipt } from './messageStatusService.js'
 
 type DeliveryProvider = {
   name: string
@@ -37,10 +38,12 @@ export async function send(command: SendCommand): Promise<string | null> {
   }
 
   // 2. Frequency cap check
-  const capped = await checkFrequencyCap(command.projectId, command.userId, command.channel)
-  if (capped) {
-    await recordMessage(command, 'blocked', 'frequency_capped')
-    return null
+  if (!command.ignoreFrequencyCap) {
+    const capped = await checkFrequencyCap(command.projectId, command.userId, command.channel)
+    if (capped) {
+      await recordMessage(command, 'blocked', 'frequency_capped')
+      return null
+    }
   }
 
   // 3. Channel reachability check
@@ -88,7 +91,14 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
           params.push(command.variables?.[String(i)] ?? '')
         }
         sendResult = await channelResult.provider.sendTemplate(
-          { ...command, templateName: waTemplate.providerTemplateId, templateLanguage: waTemplate.language, templateParams: params },
+          {
+            ...command,
+            templateName: waTemplate.providerTemplateId,
+            templateLanguage: waTemplate.language,
+            templateParams: params,
+            templateHeader: waTemplate.header,
+            templateButtons: waTemplate.buttons,
+          },
           channelResult.config,
         )
       } else {
@@ -108,6 +118,7 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
         status: 'failed',
         failedAt: new Date(),
       }).where(eq(messages.id, messageId))
+      await mirrorCampaignProviderFailure(command)
       return
     }
 
@@ -123,7 +134,13 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
       status: 'failed',
       failedAt: new Date(),
     }).where(eq(messages.id, messageId))
+    await mirrorCampaignProviderFailure(command)
   }
+}
+
+async function mirrorCampaignProviderFailure(command: SendCommand): Promise<void> {
+  if (!command.campaignId) return
+  await mirrorCampaignReceipt(command.campaignId, command.userId, 'failed')
 }
 
 /**
@@ -133,13 +150,18 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
 async function resolveWhatsappTemplate(
   command: SendCommand,
   providerName: string,
-): Promise<{ providerTemplateId: string; language: string; parameterCount: number } | null> {
+): Promise<{ providerTemplateId: string; name: string; language: string; parameterCount: number; header: unknown; buttons: unknown } | null> {
   if (command.channel !== 'whatsapp' || !command.templateId) return null
-  const [row] = await db
+  const [selected] = await db
     .select({
+      id: whatsappTemplates.id,
+      name: whatsappTemplates.name,
       providerTemplateId: whatsappTemplates.providerTemplateId,
       language: whatsappTemplates.language,
       parameterCount: whatsappTemplates.parameterCount,
+      status: whatsappTemplates.status,
+      header: whatsappTemplates.header,
+      buttons: whatsappTemplates.buttons,
     })
     .from(whatsappTemplates)
     .where(and(
@@ -148,7 +170,36 @@ async function resolveWhatsappTemplate(
       eq(whatsappTemplates.provider, providerName),
     ))
     .limit(1)
-  return row ?? null
+  if (!selected || selected.status !== 'APPROVED') return null
+
+  const [customer] = await db
+    .select({ customAttributes: customers.customAttributes })
+    .from(customers)
+    .where(eq(customers.id, command.userId))
+    .limit(1)
+  const attrs = (customer?.customAttributes ?? {}) as Record<string, unknown>
+  const preferredLanguage = String(attrs.language ?? attrs.locale ?? '').trim()
+  if (!preferredLanguage || preferredLanguage === selected.language) return selected
+
+  const [localized] = await db
+    .select({
+      providerTemplateId: whatsappTemplates.providerTemplateId,
+      name: whatsappTemplates.name,
+      language: whatsappTemplates.language,
+      parameterCount: whatsappTemplates.parameterCount,
+      header: whatsappTemplates.header,
+      buttons: whatsappTemplates.buttons,
+    })
+    .from(whatsappTemplates)
+    .where(and(
+      eq(whatsappTemplates.projectId, command.projectId),
+      eq(whatsappTemplates.provider, providerName),
+      eq(whatsappTemplates.name, selected.name),
+      eq(whatsappTemplates.language, preferredLanguage),
+      eq(whatsappTemplates.status, 'APPROVED'),
+    ))
+    .limit(1)
+  return localized ?? selected
 }
 
 /**
@@ -266,6 +317,7 @@ async function checkFrequencyCap(
       eq(messages.customerId, customerId),
       eq(messages.channel, channel),
       eq(messages.messageType, 'promotional'),
+      eq(messages.countsTowardFrequencyCap, true),
       gte(messages.createdAt, sql`NOW() - (${cap.perDays}::int * INTERVAL '1 day')`),
     ))
 
@@ -323,6 +375,7 @@ async function recordMessage(
     variables: command.variables,
     status,
     blockReason: blockReason ?? null,
+    countsTowardFrequencyCap: command.countForFrequencyCap ?? true,
     flowTripId: command.flowTripId ?? null,
     campaignId: command.campaignId ?? null,
     scheduledAt: command.scheduledAt ?? null,

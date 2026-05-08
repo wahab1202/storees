@@ -4,14 +4,47 @@ import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useTemplateDetail, useUpdateTemplate } from '@/hooks/useTemplates'
 import { VariablePanel } from '@/components/templates/VariablePanel'
-import { ArrowLeft, Loader2 } from 'lucide-react'
+import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
+import { compileToHtml } from '@/lib/emailCompiler'
+import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
+import { ArrowLeft, Eye, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateVariable } from '@storees/shared'
 
 const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
 
 const CHANNEL_LABELS: Record<string, string> = {
   email: 'Email', sms: 'SMS', push: 'Push', whatsapp: 'WhatsApp',
+}
+
+function emailTemplateFromHtml(subject: string, htmlBody: string): EmailTemplate {
+  return {
+    ...DEFAULT_TEMPLATE,
+    subject,
+    previewText: '',
+    blocks: [
+      {
+        id: generateBlockId(),
+        type: 'text',
+        props: {
+          html: htmlBody.trim() || '<p>Write your message here.</p>',
+          align: 'left',
+          color: '#374151',
+          fontSize: 16,
+        },
+      },
+    ],
+    globalStyles: { ...DEFAULT_TEMPLATE.globalStyles },
+  }
+}
+
+function isEmailBuilderTemplate(value: unknown): value is EmailTemplate {
+  if (!value || typeof value !== 'object') return false
+  const template = value as Partial<EmailTemplate>
+  return Array.isArray(template.blocks)
+    && !!template.globalStyles
+    && typeof template.globalStyles === 'object'
 }
 
 export default function EditTemplatePage() {
@@ -25,8 +58,10 @@ export default function EditTemplatePage() {
   const [name, setName] = useState('')
   const [subject, setSubject] = useState('')
   const [htmlBody, setHtmlBody] = useState('')
+  const [emailTemplate, setEmailTemplate] = useState<EmailTemplate>(() => emailTemplateFromHtml('', ''))
   const [bodyText, setBodyText] = useState('')
   const [variables, setVariables] = useState<TemplateVariable[]>([])
+  const [tab, setTab] = useState<'visual' | 'html' | 'preview'>('visual')
 
   useEffect(() => {
     if (data?.data) {
@@ -36,6 +71,11 @@ export default function EditTemplatePage() {
       setHtmlBody(t.htmlBody ?? '')
       setBodyText(t.bodyText ?? '')
       setVariables(t.variables ?? [])
+      if (t.channel === 'email') {
+        const storedTemplate = isEmailBuilderTemplate(t.emailBuilderTemplate) ? t.emailBuilderTemplate : null
+        setEmailTemplate(storedTemplate ?? emailTemplateFromHtml(t.subject ?? '', t.htmlBody ?? ''))
+        setTab(storedTemplate ? 'visual' : 'html')
+      }
     }
   }, [data])
 
@@ -66,6 +106,7 @@ export default function EditTemplatePage() {
         name,
         subject: isEmail ? subject : undefined,
         htmlBody: isEmail ? htmlBody : undefined,
+        emailBuilderTemplate: isEmail ? { ...emailTemplate, subject, previewText: '' } : undefined,
         bodyText: !isEmail ? bodyText : undefined,
         variables,
       },
@@ -136,24 +177,57 @@ export default function EditTemplatePage() {
         <div className="min-w-0">
           {isEmail ? (
             <div className="bg-white border border-border rounded-xl overflow-hidden">
-              <div className="px-5 py-3 bg-surface border-b border-border">
-                <h2 className="text-sm font-semibold text-text-primary">Email Body — Editor & Live Preview</h2>
+              <div className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border">
+                <h2 className="text-sm font-semibold text-text-primary">Email Body</h2>
+                <div className="flex items-center gap-1 bg-white border border-border rounded-lg p-0.5">
+                  <button
+                    onClick={() => setTab('visual')}
+                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'visual' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
+                  >
+                    Visual Builder
+                  </button>
+                  <button
+                    onClick={() => setTab('html')}
+                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'html' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
+                  >
+                    Edit HTML
+                  </button>
+                  <button
+                    onClick={() => setTab('preview')}
+                    className={cn('inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'preview' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
+                  >
+                    <Eye className="h-3 w-3" />
+                    Preview
+                  </button>
+                </div>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 divide-x divide-border">
-                {/* Left: Editor */}
-                <div className="p-4">
-                  <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">HTML Editor</p>
+              <div className="p-5">
+                {tab === 'visual' ? (
+                  <EmailBuilder
+                    value={{ ...emailTemplate, subject, previewText: '' }}
+                    aiContext={{
+                      subject,
+                      fullHtml: htmlBody,
+                      campaignGoal: `Reusable ${name || 'email'} template`,
+                    }}
+                    onChange={nextTemplate => {
+                      const synced = { ...nextTemplate, subject, previewText: '' }
+                      setEmailTemplate(synced)
+                      setHtmlBody(compileToHtml(synced))
+                    }}
+                  />
+                ) : tab === 'html' ? (
                   <textarea
                     value={htmlBody}
-                    onChange={e => setHtmlBody(e.target.value)}
+                    onChange={e => {
+                      setHtmlBody(e.target.value)
+                      setEmailTemplate(emailTemplateFromHtml(subject, e.target.value))
+                    }}
                     rows={24}
                     className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
                     spellCheck={false}
                   />
-                </div>
-                {/* Right: Live preview */}
-                <div className="p-4 bg-gray-50/50">
-                  <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Live Preview</p>
+                ) : (
                   <div className="border border-border rounded-lg overflow-hidden bg-white">
                     <iframe
                       srcDoc={htmlBody}
@@ -162,7 +236,7 @@ export default function EditTemplatePage() {
                       sandbox="allow-same-origin"
                     />
                   </div>
-                </div>
+                )}
               </div>
             </div>
           ) : (

@@ -13,7 +13,7 @@ export type WhatsappTemplate = {
   category: string | null
   status: string
   bodyText: string
-  header: { type?: string; text?: string } | null
+  header: { type?: string; format?: string; text?: string } | null
   footer: string | null
   buttons: Array<{ type: string; text: string; url?: string; phone?: string }> | null
   parameterCount: number
@@ -43,6 +43,28 @@ export type LintInput = {
 }
 
 export type SubmitInput = LintInput & { bodyExample?: string[] }
+
+export type WhatsappProviderStatus = {
+  configured: boolean
+  provider: string | null
+  capabilities: {
+    sendText: boolean
+    sendTemplate: boolean
+    syncTemplates: boolean
+    submitTemplate: boolean
+    getTemplateStatus: boolean
+    parseInbound: boolean
+  }
+  missingConfig: string[]
+}
+
+export function useWhatsappProviderStatus() {
+  return useQuery({
+    queryKey: ['whatsapp-provider-status'],
+    queryFn: () => api.get<WhatsappProviderStatus>(withProject('/api/whatsapp/provider-status')),
+    staleTime: 60_000,
+  })
+}
 
 export function useWhatsappTemplates() {
   return useQuery({

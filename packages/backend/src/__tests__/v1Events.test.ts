@@ -32,10 +32,30 @@ vi.mock('../middleware/apiKeyAuth.js', () => ({
     req.apiKeyPermissions = ['read', 'write']
     next()
   },
+  requirePublicKeyAuth: () => (req: Record<string, unknown>, _res: unknown, next: () => void) => {
+    req.projectId = 'proj_test'
+    req.apiKeyId = 'key_test'
+    req.apiKeyPermissions = ['read', 'write']
+    next()
+  },
 }))
 
 vi.mock('../middleware/dataMasking.js', () => ({
   dataMaskingMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+}))
+
+vi.mock('../middleware/rateLimiter.js', () => ({
+  rateLimiter: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+}))
+
+vi.mock('../services/customerService.js', () => ({
+  resolveCustomer: vi.fn().mockResolvedValue('cust_existing'),
+}))
+
+vi.mock('../services/queue.js', () => ({
+  eventsQueue: { add: vi.fn().mockResolvedValue({ id: 'job_event' }), addBulk: vi.fn().mockResolvedValue([]) },
+  metricsQueue: { add: vi.fn().mockResolvedValue({ id: 'job_metrics' }), addBulk: vi.fn().mockResolvedValue([]) },
+  identityMergeQueue: { add: vi.fn().mockResolvedValue({ id: 'job_identity' }) },
 }))
 
 import express from 'express'
@@ -126,6 +146,7 @@ describe('POST /api/v1/events', () => {
     // Mock event insert
     const insertChain = {
       values: vi.fn().mockReturnThis(),
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       returning: vi.fn().mockResolvedValue([{ id: 'evt_new' }]),
     }
     mockDb.insert = vi.fn().mockReturnValue(insertChain)

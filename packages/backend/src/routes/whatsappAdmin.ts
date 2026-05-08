@@ -6,8 +6,56 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { getChannelProvider, getProviderCapabilities } from '../services/channelProviderRegistry.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters } from '../services/providers/whatsappUtils.js'
+import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
 
 const router = Router()
+
+/**
+ * GET /api/whatsapp/provider-status?projectId=...
+ * Shows the currently resolved WhatsApp provider and whether it can sync,
+ * submit templates for approval, and refresh approval status.
+ */
+router.get('/provider-status', requireProjectId, async (req, res) => {
+  try {
+    const channelResult = await getChannelProvider(req.projectId!, 'whatsapp')
+    if (!channelResult) {
+      return res.json({
+        success: true,
+        data: {
+          configured: false,
+          provider: null,
+          capabilities: {
+            sendText: false,
+            sendTemplate: false,
+            syncTemplates: false,
+            submitTemplate: false,
+            getTemplateStatus: false,
+            parseInbound: false,
+          },
+          missingConfig: [],
+        },
+      })
+    }
+
+    const { provider, config } = channelResult
+    const missingConfig = provider.name === 'meta'
+      ? ['phoneNumberId', 'wabaId', 'accessToken'].filter(key => !String(config[key] ?? '').trim())
+      : []
+
+    res.json({
+      success: true,
+      data: {
+        configured: missingConfig.length === 0,
+        provider: provider.name,
+        capabilities: getProviderCapabilities(provider),
+        missingConfig,
+      },
+    })
+  } catch (err) {
+    console.error('GET /whatsapp/provider-status error:', err)
+    res.status(500).json({ success: false, error: 'Failed to load WhatsApp provider status' })
+  }
+})
 
 /**
  * GET /api/whatsapp/templates?projectId=...
@@ -37,54 +85,8 @@ router.post('/sync-templates', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
 
-    const channelResult = await getChannelProvider(projectId, 'whatsapp')
-    if (!channelResult) {
-      return res.status(400).json({ success: false, error: 'No WhatsApp provider configured for this project' })
-    }
-    const { provider, config } = channelResult
-    const caps = getProviderCapabilities(provider)
-    if (!caps.syncTemplates || !provider.syncTemplates) {
-      return res.status(400).json({ success: false, error: `Provider '${provider.name}' does not support template sync` })
-    }
-
-    const templates = await provider.syncTemplates(config)
-
-    let upserted = 0
-    for (const t of templates) {
-      await db.insert(whatsappTemplates).values({
-        projectId,
-        provider: provider.name,
-        providerTemplateId: t.providerTemplateId,
-        name: t.name,
-        language: t.language,
-        category: t.category,
-        status: t.status,
-        bodyText: t.bodyText,
-        header: t.header as object | null,
-        footer: t.footer,
-        buttons: t.buttons as object | null,
-        parameterCount: t.parameterCount,
-        rawPayload: t.rawPayload as object | null,
-      }).onConflictDoUpdate({
-        target: [whatsappTemplates.projectId, whatsappTemplates.provider, whatsappTemplates.name, whatsappTemplates.language],
-        set: {
-          providerTemplateId: t.providerTemplateId,
-          category: t.category,
-          status: t.status,
-          bodyText: t.bodyText,
-          header: t.header as object | null,
-          footer: t.footer,
-          buttons: t.buttons as object | null,
-          parameterCount: t.parameterCount,
-          rawPayload: t.rawPayload as object | null,
-          syncedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      })
-      upserted++
-    }
-
-    res.json({ success: true, data: { provider: provider.name, count: upserted } })
+    const result = await syncWhatsappTemplatesForProject(projectId)
+    res.json({ success: true, data: result })
   } catch (err) {
     console.error('POST /whatsapp/sync-templates error:', err)
     res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Sync failed' })

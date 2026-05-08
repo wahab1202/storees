@@ -7,11 +7,12 @@
  * 3. A/B variant comparison
  */
 
-import { eq, and, sql, gte, lte, inArray, desc } from 'drizzle-orm'
+import { eq, and, or, sql, gte, lte, inArray, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import {
   campaigns,
   campaignSends,
+  campaignHoldouts,
   events,
   customers,
 } from '../db/schema.js'
@@ -29,6 +30,19 @@ type ConversionResult = {
   conversionRate: number
   totalRecipients: number
   revenue: number
+}
+
+type ControlGroupLift = {
+  goalName: string
+  eventName: string
+  sentRecipients: number
+  sentConversions: number
+  sentConversionRate: number
+  holdoutRecipients: number
+  holdoutConversions: number
+  holdoutConversionRate: number
+  liftPct: number | null
+  incrementalConversions: number
 }
 
 type DeliveryFunnel = {
@@ -56,6 +70,7 @@ type EngagementTimeline = Array<{
 type CampaignAnalytics = {
   funnel: DeliveryFunnel
   conversions: ConversionResult[]
+  controlGroupLift: ControlGroupLift[]
   timeline: EngagementTimeline
   topRecipients: Array<{
     customerId: string
@@ -124,7 +139,7 @@ export async function evaluateConversions(campaignId: string): Promise<Conversio
       .where(
         and(
           eq(events.projectId, campaign.projectId),
-          eq(events.eventName, goal.eventName),
+          goalEventPredicate(goal),
           inArray(events.customerId, recipientIds),
           gte(events.timestamp, campaign.sentAt!),
           lte(events.timestamp, trackingWindowEnd),
@@ -151,6 +166,87 @@ export async function evaluateConversions(campaignId: string): Promise<Conversio
   return results
 }
 
+export async function evaluateControlGroupLift(campaignId: string): Promise<ControlGroupLift[]> {
+  const [campaign] = await db
+    .select()
+    .from(campaigns)
+    .where(eq(campaigns.id, campaignId))
+    .limit(1)
+
+  if (!campaign || !campaign.sentAt) return []
+
+  const goals = (campaign.conversionGoals ?? []) as ConversionGoal[]
+  if (goals.length === 0) return []
+
+  const sentRows = await db
+    .select({ customerId: campaignSends.customerId })
+    .from(campaignSends)
+    .where(eq(campaignSends.campaignId, campaignId))
+  const holdoutRows = await db
+    .select({ customerId: campaignHoldouts.customerId })
+    .from(campaignHoldouts)
+    .where(and(
+      eq(campaignHoldouts.campaignId, campaignId),
+      eq(campaignHoldouts.reason, 'control_group'),
+    ))
+
+  if (sentRows.length === 0 || holdoutRows.length === 0) return []
+
+  const sentIds = sentRows.map(r => r.customerId)
+  const holdoutIds = holdoutRows.map(r => r.customerId)
+  const trackingWindowEnd = new Date(
+    campaign.sentAt.getTime() + (campaign.goalTrackingHours ?? 36) * 60 * 60 * 1000,
+  )
+
+  const out: ControlGroupLift[] = []
+  for (const goal of goals) {
+    const [sentMatch] = await db
+      .select({ count: sql<number>`count(DISTINCT ${events.customerId})` })
+      .from(events)
+      .where(and(
+        eq(events.projectId, campaign.projectId),
+        goalEventPredicate(goal),
+        inArray(events.customerId, sentIds),
+        gte(events.timestamp, campaign.sentAt),
+        lte(events.timestamp, trackingWindowEnd),
+      ))
+    const [holdoutMatch] = await db
+      .select({ count: sql<number>`count(DISTINCT ${events.customerId})` })
+      .from(events)
+      .where(and(
+        eq(events.projectId, campaign.projectId),
+        goalEventPredicate(goal),
+        inArray(events.customerId, holdoutIds),
+        gte(events.timestamp, campaign.sentAt),
+        lte(events.timestamp, trackingWindowEnd),
+      ))
+
+    const sentConversions = Number(sentMatch?.count ?? 0)
+    const holdoutConversions = Number(holdoutMatch?.count ?? 0)
+    const sentConversionRate = sentRows.length > 0 ? (sentConversions / sentRows.length) * 100 : 0
+    const holdoutConversionRate = holdoutRows.length > 0 ? (holdoutConversions / holdoutRows.length) * 100 : 0
+    const liftPct = holdoutConversionRate > 0
+      ? ((sentConversionRate - holdoutConversionRate) / holdoutConversionRate) * 100
+      : sentConversionRate > 0 ? null : 0
+    const expectedWithoutCampaign = (holdoutConversionRate / 100) * sentRows.length
+
+    out.push({
+      goalName: goal.name,
+      eventName: goal.eventName,
+      sentRecipients: sentRows.length,
+      sentConversions,
+      sentConversionRate,
+      holdoutRecipients: holdoutRows.length,
+      holdoutConversions,
+      holdoutConversionRate,
+      liftPct,
+      incrementalConversions: Math.max(0, sentConversions - expectedWithoutCampaign),
+    })
+  }
+
+  return out
+}
+
 /**
  * Get full campaign analytics: funnel, timeline, conversions, top recipients.
  */
@@ -165,6 +261,7 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
 
   // Delivery funnel
   const conversions = await evaluateConversions(campaignId)
+  const controlGroupLift = await evaluateControlGroupLift(campaignId)
   const totalConverted = conversions.reduce((sum, c) => sum + c.conversions, 0)
   const totalRevenue = conversions.reduce((sum, c) => sum + c.revenue, 0)
 
@@ -235,13 +332,12 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
 
   // Check which top recipients also converted
   const goals = (campaign.conversionGoals ?? []) as ConversionGoal[]
-  const goalEventNames = goals.map(g => g.eventName)
   const topCustomerIds = topSends.map(s => s.customerId)
 
   let convertedSet = new Set<string>()
   let revenueMap = new Map<string, number>()
 
-  if (goalEventNames.length > 0 && topCustomerIds.length > 0 && campaign.sentAt) {
+  if (goals.length > 0 && topCustomerIds.length > 0 && campaign.sentAt) {
     const trackingEnd = new Date(
       campaign.sentAt.getTime() + (campaign.goalTrackingHours ?? 36) * 60 * 60 * 1000,
     )
@@ -260,7 +356,7 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
       .where(
         and(
           eq(events.projectId, campaign.projectId),
-          inArray(events.eventName, goalEventNames),
+          or(...goals.map(goalEventPredicate)),
           inArray(events.customerId, topCustomerIds),
           gte(events.timestamp, campaign.sentAt),
           lte(events.timestamp, trackingEnd),
@@ -291,6 +387,7 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
   return {
     funnel,
     conversions,
+    controlGroupLift,
     timeline,
     topRecipients,
     summary: {
@@ -302,6 +399,18 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
       bestPerformingGoal: bestGoal?.goalName ?? null,
     },
   }
+}
+
+function goalEventPredicate(goal: ConversionGoal) {
+  const attributePredicates = Object.entries(goal.attributes ?? {})
+    .map(([key, value]) => [key.trim(), value.trim()] as const)
+    .filter(([key, value]) => key && value)
+    .map(([key, value]) => sql`${events.properties}->>${key} = ${value}`)
+
+  return and(
+    eq(events.eventName, goal.eventName),
+    ...attributePredicates,
+  )
 }
 
 /**
@@ -316,10 +425,7 @@ export async function compareAbVariants(campaignId: string): Promise<{
 } | null> {
   const rows = await db.execute(sql`
     SELECT
-      COALESCE(
-        (properties->>'variant'),
-        CASE WHEN ROW_NUMBER() OVER (ORDER BY id) <= (COUNT(*) OVER ()) / 2 THEN 'A' ELSE 'B' END
-      ) AS variant,
+      COALESCE(variant, 'A') AS variant,
       COUNT(*) AS sent,
       COUNT(*) FILTER (WHERE opened_at IS NOT NULL) AS opened,
       COUNT(*) FILTER (WHERE clicked_at IS NOT NULL) AS clicked

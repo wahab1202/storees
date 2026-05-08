@@ -4,8 +4,12 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useCreateTemplate } from '@/hooks/useTemplates'
 import { VariablePanel } from '@/components/templates/VariablePanel'
+import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
+import { compileToHtml } from '@/lib/emailCompiler'
+import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
 import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Eye, Loader2, Columns2, Columns3, Columns4, LayoutTemplate } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateChannel, TemplateVariable } from '@storees/shared'
 
 const CHANNELS: { value: TemplateChannel; label: string; icon: typeof Mail; description: string }[] = [
@@ -106,13 +110,142 @@ const FOUR_COL_HTML = `<table width="100%" cellpadding="0" cellspacing="0" style
 </table>`
 
 const LAYOUT_STARTERS = [
-  { label: 'Blank', icon: LayoutTemplate, html: BLANK_HTML },
-  { label: '2 Columns', icon: Columns2, html: TWO_COL_HTML },
-  { label: '3 Columns', icon: Columns3, html: THREE_COL_HTML },
-  { label: '4 Columns', icon: Columns4, html: FOUR_COL_HTML },
+  { key: 'blank', label: 'Blank', icon: LayoutTemplate, html: BLANK_HTML },
+  { key: '2col', label: '2 Columns', icon: Columns2, html: TWO_COL_HTML },
+  { key: '3col', label: '3 Columns', icon: Columns3, html: THREE_COL_HTML },
+  { key: '4col', label: '4 Columns', icon: Columns4, html: FOUR_COL_HTML },
 ]
 
 const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
+
+function emailTemplateFromHtml(subject: string, htmlBody: string): EmailTemplate {
+  return {
+    ...DEFAULT_TEMPLATE,
+    subject,
+    previewText: '',
+    blocks: [
+      {
+        id: generateBlockId(),
+        type: 'text',
+        props: {
+          html: htmlBody.trim() || '<p>Write your message here.</p>',
+          align: 'left',
+          color: '#374151',
+          fontSize: 16,
+        },
+      },
+    ],
+    globalStyles: { ...DEFAULT_TEMPLATE.globalStyles },
+  }
+}
+
+function makeTemplateColumn(index: number): EmailBlock[] {
+  return [
+    {
+      id: generateBlockId(),
+      type: 'image',
+      props: { src: '', alt: `Feature ${index}`, width: '82%', align: 'center' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'header',
+      props: { text: `Feature ${index}`, level: 3, align: 'center', color: '#111827' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'text',
+      props: { html: '<p>Description here</p>', align: 'center', color: '#4b5563', fontSize: 14 },
+    },
+  ]
+}
+
+function makeProductColumn(index: number): EmailBlock[] {
+  return [
+    {
+      id: generateBlockId(),
+      type: 'image',
+      props: { src: '', alt: `Product ${index}`, width: '86%', align: 'center' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'text',
+      props: { html: `<p><strong>Product ${index}</strong><br/>Fresh pick for {{customer_name}}</p>`, align: 'center', color: '#374151', fontSize: 14 },
+    },
+    {
+      id: generateBlockId(),
+      type: 'button',
+      props: { text: 'View', url: 'https://', bgColor: '#38A9D6', textColor: '#ffffff', align: 'center', borderRadius: 6, fullWidth: false },
+    },
+  ]
+}
+
+function makeColumnBlock(columnCount: 2 | 3 | 4, columnFactory: (index: number) => EmailBlock[] = makeTemplateColumn): EmailBlock {
+  const ratio: '1:1:1:1' | '1:1:1' | '1:1' = columnCount === 4 ? '1:1:1:1' : columnCount === 3 ? '1:1:1' : '1:1'
+  return {
+    id: generateBlockId(),
+    type: 'columns',
+    props: {
+      ratio,
+      columns: Array.from({ length: columnCount }, (_, idx) => columnFactory(idx + 1)),
+      padding: 8,
+      gap: 16,
+      rowBgColor: 'transparent',
+      contentBgColor: 'transparent',
+      borderColor: 'transparent',
+      borderWidth: 0,
+      borderRadius: 0,
+      stackOnMobile: true,
+    },
+  }
+}
+
+function starterTemplateForLayout(key: string, subject: string): EmailTemplate {
+  const base: EmailTemplate = {
+    ...DEFAULT_TEMPLATE,
+    subject,
+    previewText: '',
+    blocks: [],
+    globalStyles: { ...DEFAULT_TEMPLATE.globalStyles },
+  }
+  const introBlocks: EmailBlock[] = [
+    {
+      id: generateBlockId(),
+      type: 'header',
+      props: { text: 'Hi {{customer_name}},', level: 1, align: 'center', color: '#111827' },
+    },
+    {
+      id: generateBlockId(),
+      type: 'text',
+      props: { html: '<p>Use this section to introduce the offer, update, or announcement.</p>', align: 'center', color: '#4b5563', fontSize: 16 },
+    },
+  ]
+  if (key === 'blank') {
+    return {
+      ...base,
+      blocks: [
+        ...introBlocks,
+        {
+          id: generateBlockId(),
+          type: 'button',
+          props: { text: 'Learn More', url: 'https://', bgColor: '#4F46E5', textColor: '#ffffff', align: 'center', borderRadius: 8, fullWidth: false },
+        },
+      ],
+    }
+  }
+  const columnCount = key === '4col' ? 4 : key === '3col' ? 3 : 2
+  return {
+    ...base,
+    blocks: [
+      ...introBlocks,
+      makeColumnBlock(columnCount, key === '4col' ? makeProductColumn : makeTemplateColumn),
+      {
+        id: generateBlockId(),
+        type: 'button',
+        props: { text: 'Shop Now', url: 'https://', bgColor: '#4F46E5', textColor: '#ffffff', align: 'center', borderRadius: 8, fullWidth: false },
+      },
+    ],
+  }
+}
 
 export default function CreateTemplatePage() {
   const router = useRouter()
@@ -121,10 +254,12 @@ export default function CreateTemplatePage() {
   const [channel, setChannel] = useState<TemplateChannel>('email')
   const [name, setName] = useState('')
   const [subject, setSubject] = useState('')
-  const [htmlBody, setHtmlBody] = useState(BLANK_HTML)
+  const [htmlBody, setHtmlBody] = useState(() => compileToHtml(starterTemplateForLayout('blank', '')))
+  const [emailTemplate, setEmailTemplate] = useState<EmailTemplate>(() => starterTemplateForLayout('blank', ''))
   const [bodyText, setBodyText] = useState('')
   const [variables, setVariables] = useState<TemplateVariable[]>([])
-  const [tab, setTab] = useState<'edit' | 'preview'>('edit')
+  const [tab, setTab] = useState<'visual' | 'html' | 'preview'>('visual')
+  const [selectedLayout, setSelectedLayout] = useState('blank')
 
   const isEmail = channel === 'email'
   const canSave = name.trim() && (isEmail ? subject.trim() && htmlBody.trim() : bodyText.trim())
@@ -136,6 +271,7 @@ export default function CreateTemplatePage() {
         channel,
         subject: isEmail ? subject : undefined,
         htmlBody: isEmail ? htmlBody : undefined,
+        emailBuilderTemplate: isEmail ? { ...emailTemplate, subject, previewText: '' } : undefined,
         bodyText: !isEmail ? bodyText : undefined,
         variables,
       },
@@ -214,13 +350,19 @@ export default function CreateTemplatePage() {
               <div className="grid grid-cols-4 gap-3">
                 {LAYOUT_STARTERS.map(layout => {
                   const Icon = layout.icon
-                  return (
+                return (
                     <button
                       key={layout.label}
-                      onClick={() => setHtmlBody(layout.html)}
+                      onClick={() => {
+                        const nextTemplate = starterTemplateForLayout(layout.key, subject)
+                        setEmailTemplate(nextTemplate)
+                        setHtmlBody(compileToHtml(nextTemplate))
+                        setSelectedLayout(layout.key)
+                        setTab('visual')
+                      }}
                       className={cn(
                         'flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-all hover:border-accent hover:bg-accent/5',
-                        htmlBody === layout.html
+                        selectedLayout === layout.key
                           ? 'border-accent bg-accent/5'
                           : 'border-border',
                       )}
@@ -240,13 +382,19 @@ export default function CreateTemplatePage() {
           <div className="bg-white border border-border rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border">
               <h2 className="text-sm font-semibold text-text-primary">
-                {isEmail ? 'Email Body (HTML)' : 'Message Body'}
+                {isEmail ? 'Email Body' : 'Message Body'}
               </h2>
               {isEmail && (
                 <div className="flex items-center gap-1 bg-white border border-border rounded-lg p-0.5">
                   <button
-                    onClick={() => setTab('edit')}
-                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'edit' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
+                    onClick={() => setTab('visual')}
+                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'visual' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
+                  >
+                    Visual Builder
+                  </button>
+                  <button
+                    onClick={() => setTab('html')}
+                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'html' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
                   >
                     Edit HTML
                   </button>
@@ -263,11 +411,28 @@ export default function CreateTemplatePage() {
 
             <div className="p-5">
               {isEmail ? (
-                tab === 'edit' ? (
+                tab === 'visual' ? (
+                  <EmailBuilder
+                    value={{ ...emailTemplate, subject, previewText: '' }}
+                    aiContext={{
+                      subject,
+                      fullHtml: htmlBody,
+                      campaignGoal: `Reusable ${name || 'email'} template`,
+                    }}
+                    onChange={nextTemplate => {
+                      const synced = { ...nextTemplate, subject, previewText: '' }
+                      setEmailTemplate(synced)
+                      setHtmlBody(compileToHtml(synced))
+                    }}
+                  />
+                ) : tab === 'html' ? (
                   <>
                     <textarea
                       value={htmlBody}
-                      onChange={e => setHtmlBody(e.target.value)}
+                      onChange={e => {
+                        setHtmlBody(e.target.value)
+                        setEmailTemplate(emailTemplateFromHtml(subject, e.target.value))
+                      }}
                       rows={18}
                       className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
                       spellCheck={false}

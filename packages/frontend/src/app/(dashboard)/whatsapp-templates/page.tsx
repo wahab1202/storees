@@ -3,17 +3,19 @@
 import { useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import {
+  useWhatsappProviderStatus,
   useWhatsappTemplates,
   useLintWhatsappTemplate,
   useSubmitWhatsappTemplate,
   useSyncWhatsappTemplates,
   useRefreshTemplateStatus,
   type WhatsappTemplate,
+  type WhatsappProviderStatus,
   type LintFinding,
   type SubmitInput,
 } from '@/hooks/useWhatsappTemplates'
 import { cn } from '@/lib/utils'
-import { Loader2, RefreshCw, AlertCircle, CheckCircle2, Clock, Plus, X } from 'lucide-react'
+import { Loader2, RefreshCw, AlertCircle, CheckCircle2, Clock, Plus, X, Send } from 'lucide-react'
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; icon: typeof Clock }> = {
   APPROVED:   { bg: 'bg-emerald-100', text: 'text-emerald-700', icon: CheckCircle2 },
@@ -32,6 +34,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 }
 
 export default function WhatsappTemplatesPage() {
+  const providerStatus = useWhatsappProviderStatus()
   const { data, isLoading } = useWhatsappTemplates()
   const sync = useSyncWhatsappTemplates()
   const refresh = useRefreshTemplateStatus()
@@ -45,6 +48,8 @@ export default function WhatsappTemplatesPage() {
         title="WhatsApp Templates"
         description="Submit, track approval status, and monitor re-categorisations."
       />
+
+      <ProviderStatusBanner status={providerStatus.data?.data} loading={providerStatus.isLoading} />
 
       <div className="flex flex-wrap gap-2">
         <button
@@ -64,7 +69,7 @@ export default function WhatsappTemplatesPage() {
         </button>
       </div>
 
-      {showForm && <SubmitForm onDone={() => setShowForm(false)} />}
+      {showForm && <SubmitForm onDone={() => setShowForm(false)} canSubmit={!!providerStatus.data?.data?.capabilities.submitTemplate && !!providerStatus.data?.data?.configured} />}
 
       <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
         <header className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
@@ -106,6 +111,66 @@ export default function WhatsappTemplatesPage() {
         )}
       </section>
     </div>
+  )
+}
+
+function ProviderStatusBanner({ status, loading }: {
+  status?: WhatsappProviderStatus
+  loading: boolean
+}) {
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
+        <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+        Checking connected WhatsApp provider...
+      </div>
+    )
+  }
+
+  if (!status?.provider) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        No WhatsApp provider is connected. Connect WhatsApp Cloud API in Settings before syncing or submitting templates.
+      </div>
+    )
+  }
+
+  const canSubmit = status.configured && status.capabilities.submitTemplate
+  const canSync = status.configured && status.capabilities.syncTemplates
+  const canRefresh = status.configured && status.capabilities.getTemplateStatus
+
+  return (
+    <div className={cn('rounded-lg border px-4 py-3', canSubmit ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50')}>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className={cn('text-sm font-semibold', canSubmit ? 'text-emerald-900' : 'text-amber-900')}>
+            Connected provider: {status.provider}
+          </p>
+          <p className={cn('mt-0.5 text-xs', canSubmit ? 'text-emerald-700' : 'text-amber-800')}>
+            Templates are submitted through the connected provider. Meta approval status is stored and refreshed here.
+          </p>
+          {status.missingConfig.length > 0 && (
+            <p className="mt-1 text-xs text-amber-800">
+              Missing config: {status.missingConfig.join(', ')}. For Meta, template approval needs Phone Number ID, WABA ID, and Access Token.
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <CapabilityPill enabled={canSubmit} label="Submit for approval" />
+          <CapabilityPill enabled={canSync} label="Sync templates" />
+          <CapabilityPill enabled={canRefresh} label="Refresh status" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CapabilityPill({ enabled, label }: { enabled: boolean; label: string }) {
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium', enabled ? 'bg-white text-emerald-700' : 'bg-white text-amber-700')}>
+      {enabled ? <CheckCircle2 className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+      {label}
+    </span>
   )
 }
 
@@ -159,7 +224,7 @@ function TemplateRow({ template: t, onRefresh, isRefreshing }: {
   )
 }
 
-function SubmitForm({ onDone }: { onDone: () => void }) {
+function SubmitForm({ onDone, canSubmit }: { onDone: () => void; canSubmit: boolean }) {
   const lint = useLintWhatsappTemplate()
   const submit = useSubmitWhatsappTemplate()
 
@@ -175,11 +240,15 @@ function SubmitForm({ onDone }: { onDone: () => void }) {
   const blocking = lint.data?.data?.blocking ?? false
   const errors = findings.filter(f => f.severity === 'error')
   const warnings = findings.filter(f => f.severity === 'warning')
+  const parameterCount = countTemplateParameters(form.bodyText)
 
   const handleLint = () => lint.mutate(form)
 
   const handleSubmit = () => {
-    submit.mutate(form, { onSuccess: () => onDone() })
+    submit.mutate({
+      ...form,
+      bodyExample: parameterCount > 0 ? Array.from({ length: parameterCount }, (_, idx) => form.bodyExample?.[idx]?.trim() || sampleValueFor(idx)) : undefined,
+    }, { onSuccess: () => onDone() })
   }
 
   return (
@@ -231,6 +300,30 @@ function SubmitForm({ onDone }: { onDone: () => void }) {
         <span className="text-xs text-slate-500 mt-1 block">Use {`{{1}}`}, {`{{2}}`}, ... for parameters. Max 1024 chars.</span>
       </label>
 
+      {parameterCount > 0 && (
+        <div className="mb-3 rounded-lg border border-slate-200 bg-white p-3">
+          <p className="text-sm font-medium text-slate-700">Meta review examples</p>
+          <p className="mt-0.5 text-xs text-slate-500">Meta requires sample values for every body parameter before it will review the template.</p>
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {Array.from({ length: parameterCount }, (_, idx) => (
+              <label key={idx} className="text-sm">
+                <span className="mb-1 block font-medium text-slate-700">{`{{${idx + 1}}}`} example</span>
+                <input
+                  value={form.bodyExample?.[idx] ?? ''}
+                  onChange={e => setForm(f => {
+                    const examples = Array.from({ length: parameterCount }, (_, i) => f.bodyExample?.[i] ?? sampleValueFor(i))
+                    examples[idx] = e.target.value
+                    return { ...f, bodyExample: examples }
+                  })}
+                  placeholder={sampleValueFor(idx)}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
       <label className="block text-sm mb-3">
         <span className="block font-medium text-slate-700 mb-1">Footer (optional)</span>
         <input
@@ -267,14 +360,24 @@ function SubmitForm({ onDone }: { onDone: () => void }) {
         </button>
         <button
           onClick={handleSubmit}
-          disabled={submit.isPending || blocking || !form.name || !form.bodyText}
+          disabled={submit.isPending || blocking || !canSubmit || !form.name || !form.bodyText}
           className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          {submit.isPending && <Loader2 className="h-4 w-4 animate-spin inline mr-1" />}
-          Submit to provider
+          {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin inline mr-1" /> : <Send className="h-4 w-4 inline mr-1" />}
+          Submit for approval
         </button>
         {blocking && <span className="text-xs text-red-600">Resolve blocking errors before submitting</span>}
+        {!canSubmit && <span className="text-xs text-amber-700">Connected provider cannot submit templates or is missing required config.</span>}
       </div>
     </section>
   )
+}
+
+function countTemplateParameters(body: string): number {
+  const matches = Array.from(body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)).map(match => Number(match[1]))
+  return matches.length > 0 ? Math.max(...matches) : 0
+}
+
+function sampleValueFor(idx: number): string {
+  return ['Wahab', 'ORD-1001', 'Storees', '20%'][idx] ?? `sample ${idx + 1}`
 }

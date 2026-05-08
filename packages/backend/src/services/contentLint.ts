@@ -1,3 +1,6 @@
+import { SYSTEM_VARIABLE_KEYS, extractVariableKeys } from './templateContext.js'
+import type { TemplateVariable } from '@storees/shared'
+
 /**
  * Pre-send content lint for marketing email (Phase E3.3).
  *
@@ -31,6 +34,7 @@ export type LintInput = {
   subject: string
   html: string
   text?: string | null
+  variables?: TemplateVariable[] | null
 }
 
 export function lintCampaignContent(input: LintInput): LintFinding[] {
@@ -49,7 +53,7 @@ export function lintCampaignContent(input: LintInput): LintFinding[] {
     })
   }
 
-  if (subject.length > 0 && subject.length === subject.toUpperCase().length && /[A-Z]/.test(subject) && subject.length >= 8) {
+  if (subject.length > 0 && subject === subject.toUpperCase() && /[A-Z]/.test(subject) && subject.length >= 8) {
     findings.push({
       code: 'subject_all_caps',
       severity: 'warning',
@@ -123,12 +127,19 @@ export function lintCampaignContent(input: LintInput): LintFinding[] {
 
   // Unrendered template variables — common bug where the template engine
   // didn't get a value and "{{firstName}}" lands in the customer's inbox.
-  const unrenderedVars = html.match(/\{\{\s*[a-zA-Z_][\w.]*\s*\}\}/g)
-  if (unrenderedVars && unrenderedVars.length > 0) {
+  const allowedVariableKeys = new Set<string>(SYSTEM_VARIABLE_KEYS)
+  for (const variable of input.variables ?? []) {
+    const key = String(variable.key ?? '').trim()
+    if (key) allowedVariableKeys.add(key)
+  }
+  const unmanagedVariables = extractVariableKeys(html)
+    .filter(key => !allowedVariableKeys.has(key))
+    .map(key => `{{${key}}}`)
+  if (unmanagedVariables.length > 0) {
     findings.push({
       code: 'unrendered_template_var',
       severity: 'warning',
-      message: `Body contains ${unrenderedVars.length} unrendered template variable(s) (e.g. ${unrenderedVars[0]}). Customers will see literal {{...}} text.`,
+      message: `Body contains ${unmanagedVariables.length} unmanaged template variable(s) (e.g. ${unmanagedVariables[0]}). Customers may see literal {{...}} text unless the variable is mapped.`,
     })
   }
 

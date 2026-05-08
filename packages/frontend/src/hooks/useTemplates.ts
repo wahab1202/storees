@@ -9,12 +9,14 @@ import type {
   TemplateVariable,
   VariableSourceCatalog,
 } from '@storees/shared'
+import type { EmailTemplate as BuilderEmailTemplate } from '@/lib/emailTypes'
 
 type CreateTemplateInput = {
   name: string
   channel: TemplateChannel
   subject?: string
   htmlBody?: string
+  emailBuilderTemplate?: BuilderEmailTemplate | null
   bodyText?: string
   variables?: TemplateVariable[]
 }

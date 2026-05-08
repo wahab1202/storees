@@ -9,8 +9,18 @@ import { birdSmsProvider, birdWhatsappProvider } from './birdProvider.js'
 import { vonageSmsProvider, vonageWhatsappProvider } from './vonageProvider.js'
 import { metaWhatsappProvider } from './metaWhatsappProvider.js'
 import { fcmProvider } from './fcmProvider.js'
+import { registerEmailProvider } from '../emailProviderRegistry.js'
+import { resendEmailProvider } from './resendEmailProvider.js'
+import { mailgunEmailProvider, postmarkEmailProvider, sendgridEmailProvider, sesEmailProvider } from './httpEmailProviders.js'
 
 export function registerAllProviders(): void {
+  // Email providers
+  registerEmailProvider(resendEmailProvider)
+  registerEmailProvider(sendgridEmailProvider)
+  registerEmailProvider(mailgunEmailProvider)
+  registerEmailProvider(postmarkEmailProvider)
+  registerEmailProvider(sesEmailProvider)
+
   // SMS providers
   registerChannelProvider('sms_twilio', twilioSmsProvider)
   registerChannelProvider('sms_gupshup', gupshupSmsProvider)
@@ -27,5 +37,5 @@ export function registerAllProviders(): void {
   // Push providers
   registerChannelProvider('push_fcm', fcmProvider)
 
-  console.log('[channels] All providers registered (4 SMS, 5 WhatsApp, 1 Push)')
+  console.log('[channels] All providers registered (5 Email, 4 SMS, 5 WhatsApp, 1 Push)')
 }

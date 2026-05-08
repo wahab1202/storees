@@ -224,5 +224,6 @@ export const SYSTEM_VARIABLE_KEYS = new Set([
   'customer_name',
   'customer_email',
   'store_name',
+  'campaign_name',
   'unsubscribe_url',
 ])

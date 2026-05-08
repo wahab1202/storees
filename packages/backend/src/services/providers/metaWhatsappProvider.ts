@@ -140,12 +140,37 @@ export const metaWhatsappProvider: ChannelProvider = {
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     // Body params → ordered text components
-    const components = command.templateParams.length > 0
+    const components: Array<Record<string, unknown>> = command.templateParams.length > 0
       ? [{
           type: 'body',
           parameters: command.templateParams.map(p => ({ type: 'text', text: p })),
         }]
       : []
+    const header = command.templateHeader as { type?: string; format?: string } | null | undefined
+    const headerFormat = (header?.format ?? header?.type ?? '').toUpperCase()
+    const mediaUrl = command.variables.wa_header_media_url || command.variables.header_media_url
+    if (mediaUrl && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormat)) {
+      const mediaType = headerFormat === 'DOCUMENT' ? 'document' : headerFormat.toLowerCase()
+      components.push({
+        type: 'header',
+        parameters: [{ type: mediaType, [mediaType]: { link: mediaUrl } }],
+      })
+    }
+
+    const buttons = Array.isArray(command.templateButtons) ? command.templateButtons as Array<{ type?: string; url?: string }> : []
+    let urlButtonPosition = 0
+    buttons.forEach((button, idx) => {
+      if ((button.type ?? '').toUpperCase() !== 'URL') return
+      urlButtonPosition += 1
+      const suffix = command.variables[`wa_button_url_${urlButtonPosition}`] || command.variables[`button_url_${urlButtonPosition}`]
+      if (!suffix) return
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: String(idx),
+        parameters: [{ type: 'text', text: suffix }],
+      })
+    })
 
     const resp = await fetch(`https://graph.facebook.com/v23.0/${phoneNumberId}/messages`, {
       method: 'POST',

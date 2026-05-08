@@ -25,6 +25,8 @@ export type SendTemplateCommand = SendCommand & {
   templateName: string
   templateLanguage: string
   templateParams: string[]      // ordered substitutions for {{1}} {{2}} ...
+  templateHeader?: unknown
+  templateButtons?: unknown
 }
 
 /**
@@ -131,6 +133,10 @@ export function registerChannelProvider(key: string, provider: ChannelProvider):
 // Cache project channel config for 5 minutes
 const configCache = new Map<string, { data: Record<string, ChannelConfig>; expiresAt: number }>()
 
+export function clearProjectChannelProviderCache(projectId: string): void {
+  configCache.delete(projectId)
+}
+
 /**
  * Get the configured provider for a project + channel.
  * Reads from projects.settings.channels JSONB.
@@ -192,7 +198,14 @@ function getEnvFallback(channel: MessageChannel): { provider: ChannelProvider; c
     case 'whatsapp': {
       if (process.env.WA_PHONE_NUMBER_ID) {
         const impl = providerImpls.get('whatsapp_meta')
-        if (impl) return { provider: impl, config: { phoneNumberId: process.env.WA_PHONE_NUMBER_ID, accessToken: process.env.WA_ACCESS_TOKEN! } }
+        if (impl) return {
+          provider: impl,
+          config: {
+            phoneNumberId: process.env.WA_PHONE_NUMBER_ID,
+            wabaId: process.env.WA_WABA_ID ?? process.env.WHATSAPP_WABA_ID ?? '',
+            accessToken: process.env.WA_ACCESS_TOKEN!,
+          },
+        }
       }
       return null
     }

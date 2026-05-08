@@ -1,6 +1,8 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { messages, events } from '../db/schema.js'
+import { messages, events, campaignSends } from '../db/schema.js'
+
+type DeliveryReceiptStatus = 'delivered' | 'read' | 'clicked' | 'failed'
 
 /**
  * Unified per-message delivery-receipt handler — used by every channel
@@ -21,7 +23,7 @@ import { messages, events } from '../db/schema.js'
  */
 export async function handleDeliveryReceipt(
   providerMessageId: string,
-  status: 'delivered' | 'read' | 'clicked' | 'failed',
+  status: DeliveryReceiptStatus,
   channel: string,
   providerName: string,
 ): Promise<void> {
@@ -36,7 +38,12 @@ export async function handleDeliveryReceipt(
   if (!tsField) return
 
   const [msg] = await db
-    .select({ id: messages.id, projectId: messages.projectId, customerId: messages.customerId })
+    .select({
+      id: messages.id,
+      projectId: messages.projectId,
+      customerId: messages.customerId,
+      campaignId: messages.campaignId,
+    })
     .from(messages)
     .where(eq(messages.providerMessageId, providerMessageId))
     .limit(1)
@@ -61,6 +68,10 @@ export async function handleDeliveryReceipt(
   // Tracking event — `email_read`, `whatsapp_read`, `sms_read`, etc. Cross-channel
   // queries can do `event_name LIKE '%_read'` to find every "customer read it" event.
   if (msg.customerId) {
+    if (msg.campaignId) {
+      await mirrorCampaignReceipt(msg.campaignId, msg.customerId, status)
+    }
+
     const eventName = `${channel}_${status}`
     await db.insert(events).values({
       projectId: msg.projectId,
@@ -90,4 +101,94 @@ export async function handleDeliveryReceipt(
       }).onConflictDoNothing()
     }
   }
+}
+
+export async function mirrorCampaignReceipt(
+  campaignId: string,
+  customerId: string,
+  status: DeliveryReceiptStatus,
+): Promise<void> {
+  if (status === 'delivered') {
+    await markCampaignDelivered(campaignId, customerId)
+    return
+  }
+
+  if (status === 'read') {
+    await markCampaignDelivered(campaignId, customerId)
+    await markCampaignOpened(campaignId, customerId)
+    return
+  }
+
+  if (status === 'clicked') {
+    await markCampaignDelivered(campaignId, customerId)
+    await markCampaignOpened(campaignId, customerId)
+    await incrementCampaignSendMetric(campaignId, customerId, 'clicked_at', 'clicked_count')
+    return
+  }
+
+  await markCampaignFailed(campaignId, customerId)
+}
+
+async function markCampaignDelivered(campaignId: string, customerId: string): Promise<void> {
+  await db.execute(sql`
+    UPDATE campaign_sends
+    SET delivered_at = NOW(),
+        status = CASE
+          WHEN status IN ('pending', 'sent') THEN 'delivered'
+          ELSE status
+        END
+    WHERE campaign_id = ${campaignId}
+      AND customer_id = ${customerId}
+      AND delivered_at IS NULL
+  `).then(result => incrementCampaignCounterIfChanged(result, campaignId, 'delivered_count'))
+}
+
+async function markCampaignOpened(campaignId: string, customerId: string): Promise<void> {
+  await incrementCampaignSendMetric(campaignId, customerId, 'opened_at', 'opened_count')
+}
+
+async function markCampaignFailed(campaignId: string, customerId: string): Promise<void> {
+  const result = await db
+    .update(campaignSends)
+    .set({ status: 'failed' })
+    .where(and(
+      eq(campaignSends.campaignId, campaignId),
+      eq(campaignSends.customerId, customerId),
+      sql`${campaignSends.status} <> 'failed'`,
+    ))
+
+  await incrementCampaignCounterIfChanged(result, campaignId, 'failed_count')
+}
+
+async function incrementCampaignSendMetric(
+  campaignId: string,
+  customerId: string,
+  timestampField: 'opened_at' | 'clicked_at',
+  counterField: 'opened_count' | 'clicked_count',
+): Promise<void> {
+  const result = await db.execute(sql`
+    UPDATE campaign_sends
+    SET ${sql.raw(timestampField)} = NOW()
+    WHERE campaign_id = ${campaignId}
+      AND customer_id = ${customerId}
+      AND ${sql.raw(timestampField)} IS NULL
+  `)
+
+  await incrementCampaignCounterIfChanged(result, campaignId, counterField)
+}
+
+async function incrementCampaignCounterIfChanged(
+  result: unknown,
+  campaignId: string,
+  counterField: 'delivered_count' | 'opened_count' | 'clicked_count' | 'failed_count',
+): Promise<void> {
+  const changed = (result as { rowCount?: number }).rowCount ?? 0
+  if (changed <= 0) return
+
+  await db.execute(sql`
+    UPDATE campaigns
+    SET ${sql.raw(counterField)} = ${sql.raw(counterField)} + ${changed},
+        updated_at = NOW()
+    WHERE id = ${campaignId}
+  `)
 }

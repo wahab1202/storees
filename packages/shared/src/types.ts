@@ -116,8 +116,19 @@ export type Collection = {
 }
 
 export type CampaignContentType = 'promotional' | 'transactional'
-export type CampaignChannel = 'email' | 'sms' | 'push'
+export type CampaignChannel = 'email' | 'sms' | 'push' | 'whatsapp'
 export type CampaignDeliveryType = 'one-time' | 'periodic'
+export type CampaignSendTimeMode = 'asap' | 'fixed' | 'user_timezone' | 'best_time'
+
+export type CampaignUtmParameter = {
+  key: string
+  value: string
+}
+
+export type CampaignUtmParameters = {
+  enabled: boolean
+  params: CampaignUtmParameter[]
+}
 
 export type ConversionGoal = {
   name: string
@@ -133,6 +144,26 @@ export type PeriodicSchedule = {
   endsAt?: string     // ISO date or empty for indefinite
 }
 
+export type GmailAnnotation = {
+  enabled: boolean
+  imageUrl?: string
+  dealText?: string
+  description?: string
+  offerCode?: string
+  startsAt?: string
+  expiresAt?: string
+}
+
+export type ProjectEmailSender = {
+  id: string
+  projectId: string
+  address: string
+  displayName: string | null
+  verifiedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}
+
 export type Campaign = {
   id: string
   projectId: string
@@ -146,12 +177,24 @@ export type Campaign = {
   subject: string | null
   previewText: string | null
   htmlBody: string | null
+  emailBuilderTemplate: Record<string, unknown> | null
   bodyText: string | null
   fromName: string | null
+  fromEmail: string | null
+  replyToEmail: string | null
+  ccEmails: string[]
+  bccEmails: string[]
+  gmailAnnotation: GmailAnnotation | null
+  utmParameters: CampaignUtmParameters | null
+  attachments?: CampaignAttachment[]
   templateId: string | null
   conversionGoals: ConversionGoal[]
   goalTrackingHours: number
   deliveryLimit: number | null
+  ignoreFrequencyCap: boolean
+  countForFrequencyCap: boolean
+  sendTimeMode: CampaignSendTimeMode
+  scheduleTimezone: string | null
   periodicSchedule: PeriodicSchedule | null
   scheduledAt: Date | null
   sentAt: Date | null
@@ -184,15 +227,27 @@ export type Campaign = {
   //   deterministic hash split be audited later.
   tags: string[]
   audienceFilter: FilterConfig | null
+  excludeAudienceFilter: FilterConfig | null
   audienceCap: number | null
   controlGroupPct: number
   controlGroupSeed: string | null
+  subscriptionCategoryIds: string[]
   // Per-campaign variable mappings — overrides template defaults at send-time.
   variables: TemplateVariable[]
   // Soft-archive timestamp; null = active
   archivedAt: string | null
   createdAt: Date
   updatedAt: Date
+}
+
+export type CampaignAttachment = {
+  id: string
+  campaignId: string
+  filename: string
+  mime: string
+  sizeBytes: number
+  s3Key: string
+  createdAt: Date
 }
 
 export type CampaignHoldout = {
@@ -217,7 +272,19 @@ export type CampaignSend = {
   complainedAt: Date | null
   resendMessageId: string | null
   variant: 'A' | 'B' | null
+  scheduledAt: Date | null
   createdAt: Date
+}
+
+export type SubscriptionCategory = {
+  id: string
+  projectId: string
+  name: string
+  description: string | null
+  channel: CampaignChannel | null
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
 }
 
 export type TrackedEvent = {
@@ -287,6 +354,7 @@ export type EmailTemplate = {
   channel: TemplateChannel
   subject: string | null    // email only
   htmlBody: string | null   // email only
+  emailBuilderTemplate: Record<string, unknown> | null
   bodyText: string | null   // sms / push / whatsapp
   variables: TemplateVariable[]
   createdAt: Date
@@ -600,6 +668,8 @@ export type SendCommand = {
   flowTripId?: string
   campaignId?: string
   projectId: string
+  ignoreFrequencyCap?: boolean
+  countForFrequencyCap?: boolean
 }
 
 export type Message = {
@@ -612,6 +682,7 @@ export type Message = {
   variables: Record<string, string>
   status: 'queued' | 'sent' | 'delivered' | 'read' | 'clicked' | 'failed' | 'blocked'
   blockReason: string | null
+  countsTowardFrequencyCap: boolean
   provider: 'pinnacle' | 'resend' | null
   providerMessageId: string | null
   flowTripId: string | null

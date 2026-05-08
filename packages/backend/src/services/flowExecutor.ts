@@ -405,7 +405,7 @@ async function executeAction(
       html = interpolateTemplate(html, templateContext)
     }
 
-    await sendEmail({ to: customer.email, subject, html })
+    await sendEmail({ to: customer.email, subject, html, projectId, contentType: 'promotional' })
     console.log(`Action executed: sent email to ${customer.email} (template: ${templateId})`)
     return
   }

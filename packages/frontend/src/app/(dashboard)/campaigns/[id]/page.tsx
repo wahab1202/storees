@@ -7,6 +7,7 @@ import {
   useCampaignSends,
   useSendCampaign,
   useRetryCampaign,
+  useSendCampaignTestEmail,
   useDeleteCampaign,
   useCampaignAnalytics,
   useCampaignAbResults,
@@ -66,6 +67,7 @@ export default function CampaignDetailPage() {
   const { data: analyticsData } = useCampaignAnalytics(id)
   const sendCampaign = useSendCampaign()
   const retryCampaign = useRetryCampaign()
+  const testEmail = useSendCampaignTestEmail()
   const deleteCampaign = useDeleteCampaign()
 
   const [showPreview, setShowPreview] = useState(false)
@@ -123,6 +125,11 @@ export default function CampaignDetailPage() {
   const handleDelete = () => {
     deleteCampaign.mutate(id, { onSuccess: () => router.push('/campaigns') })
   }
+  const handleTestEmail = () => {
+    const to = window.prompt('Send test email to:')
+    if (!to?.trim()) return
+    testEmail.mutate({ id, to: to.trim() })
+  }
 
   // Compute rates from analytics or campaign counters
   const total = campaign.totalRecipients
@@ -175,6 +182,16 @@ export default function CampaignDetailPage() {
           </button>
           {campaign.status !== 'sent' && campaign.status !== 'sending' && (
             <>
+              {campaign.channel === 'email' && (
+                <button
+                  onClick={handleTestEmail}
+                  disabled={testEmail.isPending}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+                >
+                  {testEmail.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                  Test Email
+                </button>
+              )}
               <Link
                 href={`/campaigns/${id}/edit`}
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:bg-surface transition-colors"
@@ -485,6 +502,45 @@ export default function CampaignDetailPage() {
                       />
                     </div>
                     <p className="text-[10px] text-text-muted mt-1">Event: {goal.eventName}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {analytics && analytics.controlGroupLift.length > 0 && (
+            <div className="bg-white border border-border rounded-xl p-5 mb-6">
+              <h3 className="text-sm font-semibold text-heading mb-4 flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-purple-600" />
+                Control Group Lift
+              </h3>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {analytics.controlGroupLift.map(goal => (
+                  <div key={`${goal.goalName}-${goal.eventName}`} className="border border-border rounded-lg p-4">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <span className="text-sm font-medium text-text-primary">{goal.goalName}</span>
+                      <span className={cn(
+                        'text-xs font-semibold rounded-full px-2 py-0.5',
+                        goal.liftPct == null || goal.liftPct >= 0 ? 'bg-purple-50 text-purple-700' : 'bg-red-50 text-red-700',
+                      )}>
+                        {goal.liftPct == null ? 'New lift' : `${goal.liftPct.toFixed(1)}% lift`}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div className="rounded-lg bg-surface p-3">
+                        <p className="text-text-muted">Sent group</p>
+                        <p className="mt-1 text-lg font-bold text-text-primary">{goal.sentConversions.toLocaleString()}</p>
+                        <p className="text-text-muted">{goal.sentConversionRate.toFixed(1)}% of {goal.sentRecipients.toLocaleString()}</p>
+                      </div>
+                      <div className="rounded-lg bg-surface p-3">
+                        <p className="text-text-muted">Holdout group</p>
+                        <p className="mt-1 text-lg font-bold text-text-primary">{goal.holdoutConversions.toLocaleString()}</p>
+                        <p className="text-text-muted">{goal.holdoutConversionRate.toFixed(1)}% of {goal.holdoutRecipients.toLocaleString()}</p>
+                      </div>
+                    </div>
+                    <p className="mt-3 text-xs text-text-muted">
+                      Estimated incremental conversions: <span className="font-semibold text-purple-700">{goal.incrementalConversions.toFixed(1)}</span>
+                    </p>
                   </div>
                 ))}
               </div>

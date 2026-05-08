@@ -16,6 +16,33 @@ import type { TemplateVariable } from '@storees/shared'
 
 const router = Router()
 
+function builderTemplateFromHtml(subject: string | null | undefined, htmlBody: string | null | undefined) {
+  const html = htmlBody?.trim()
+  if (!html) return null
+  return {
+    subject: subject ?? '',
+    previewText: '',
+    blocks: [
+      {
+        id: `seed_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        type: 'text',
+        props: {
+          html,
+          align: 'left',
+          color: '#374151',
+          fontSize: 16,
+        },
+      },
+    ],
+    globalStyles: {
+      bgColor: '#f0f0f5',
+      contentBgColor: '#ffffff',
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+      maxWidth: 640,
+    },
+  }
+}
+
 // GET /api/templates?projectId=...
 router.get('/', requireProjectId, async (req, res) => {
   try {
@@ -60,6 +87,7 @@ router.post('/seed', requireProjectId, async (req, res) => {
       channel: t.channel,
       subject: t.subject ?? null,
       htmlBody: t.htmlBody ?? null,
+      emailBuilderTemplate: t.channel === 'email' ? builderTemplateFromHtml(t.subject, t.htmlBody) : null,
       bodyText: t.bodyText ?? null,
     }))
 
@@ -246,7 +274,7 @@ router.get('/:id', requireProjectId, async (req, res) => {
 router.post('/', requireProjectId, async (req, res) => {
   try {
     const projectId = req.query.projectId as string
-    const { name, channel = 'email', subject, htmlBody, bodyText, variables } = req.body
+    const { name, channel = 'email', subject, htmlBody, emailBuilderTemplate, bodyText, variables } = req.body
 
     if (!name?.trim()) {
       return res.status(400).json({ success: false, error: 'Template name is required' })
@@ -271,6 +299,7 @@ router.post('/', requireProjectId, async (req, res) => {
         channel,
         subject: subject?.trim() || null,
         htmlBody: htmlBody?.trim() || null,
+        emailBuilderTemplate: channel === 'email' ? emailBuilderTemplate ?? null : null,
         bodyText: bodyText?.trim() || null,
         variables: variables ?? [],
       })
@@ -287,7 +316,7 @@ router.post('/', requireProjectId, async (req, res) => {
 router.patch('/:id', requireProjectId, async (req, res) => {
   try {
     const projectId = req.query.projectId as string
-    const { name, subject, htmlBody, bodyText, variables } = req.body
+    const { name, subject, htmlBody, emailBuilderTemplate, bodyText, variables } = req.body
 
     const [existing] = await db
       .select()
@@ -313,6 +342,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     if (name !== undefined) updates.name = name.trim()
     if (subject !== undefined) updates.subject = subject?.trim() || null
     if (htmlBody !== undefined) updates.htmlBody = htmlBody?.trim() || null
+    if (emailBuilderTemplate !== undefined) updates.emailBuilderTemplate = emailBuilderTemplate
     if (bodyText !== undefined) updates.bodyText = bodyText?.trim() || null
     if (variables !== undefined) updates.variables = variables
 

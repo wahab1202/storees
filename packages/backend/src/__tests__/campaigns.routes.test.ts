@@ -22,16 +22,22 @@ vi.mock('../services/campaignService.js', () => ({
   listCampaigns: vi.fn(),
   getCampaignWithSegment: vi.fn(),
   dispatchCampaign: vi.fn(),
+  previewCampaignAudience: vi.fn(),
+  previewCampaignAudienceConfig: vi.fn(),
+  duplicateCampaign: vi.fn(),
 }))
 
 vi.mock('../db/schema.js', () => ({
   campaigns: {},
   campaignSends: {},
+  campaignSubscriptionCategories: {},
+  customers: {},
+  projects: {},
 }))
 
 import express from 'express'
 import campaignRoutes from '../routes/campaigns.js'
-import { listCampaigns, getCampaignWithSegment, dispatchCampaign } from '../services/campaignService.js'
+import { listCampaigns, getCampaignWithSegment, dispatchCampaign, previewCampaignAudience } from '../services/campaignService.js'
 
 // Build test app — inject projectId via middleware
 function buildApp() {
@@ -171,6 +177,7 @@ describe('POST /api/campaigns/:id/send', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('dispatches a campaign and returns recipient count', async () => {
+    vi.mocked(previewCampaignAudience).mockResolvedValue({ warning: null } as never)
     vi.mocked(dispatchCampaign).mockResolvedValue(42)
 
     const app = buildApp()
@@ -181,6 +188,7 @@ describe('POST /api/campaigns/:id/send', () => {
   })
 
   it('returns 400 if dispatch fails with user-facing error', async () => {
+    vi.mocked(previewCampaignAudience).mockResolvedValue({ warning: null } as never)
     vi.mocked(dispatchCampaign).mockRejectedValue(new Error('Target segment has no customers with email addresses'))
 
     const app = buildApp()

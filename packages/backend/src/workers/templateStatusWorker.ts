@@ -2,10 +2,11 @@ import { Worker } from 'bullmq'
 import { eq, and, or, isNull, lte, sql } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { whatsappTemplates } from '../db/schema.js'
+import { projects, whatsappTemplates } from '../db/schema.js'
 import { getChannelProvider } from '../services/channelProviderRegistry.js'
 import { templateStatusQueue } from '../services/queue.js'
 import { handleTemplateRecategorisation } from '../services/templateAlertService.js'
+import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
 
 /**
  * Phase F1b-4 — periodic poller for WhatsApp template approval status.
@@ -25,12 +26,32 @@ import { handleTemplateRecategorisation } from '../services/templateAlertService
 
 const WORKER_NAME = 'template-status'
 const POLL_INTERVAL_MS = 4 * 60 * 60 * 1000 // 4h
+const SYNC_INTERVAL_MS = 60 * 60 * 1000 // 1h
 const REVERIFY_AFTER_MS = 7 * 24 * 60 * 60 * 1000 // 7d
 
 export function startTemplateStatusWorker(): Worker {
   const worker = new Worker(
     WORKER_NAME,
-    async () => {
+    async (job) => {
+      if (job.name === 'sync') {
+        const projectRows = await db.select({ id: projects.id }).from(projects)
+        let syncedProjects = 0
+        let syncedTemplates = 0
+        for (const project of projectRows) {
+          try {
+            const result = await syncWhatsappTemplatesForProject(project.id)
+            syncedProjects++
+            syncedTemplates += result.count
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            if (!msg.includes('No WhatsApp provider configured')) {
+              console.error(`[templateStatus] template sync failed for project ${project.id}:`, err)
+            }
+          }
+        }
+        return { mode: 'sync', syncedProjects, syncedTemplates }
+      }
+
       const reverifyCutoff = new Date(Date.now() - REVERIFY_AFTER_MS)
       const rows = await db
         .select()
@@ -94,13 +115,14 @@ export function startTemplateStatusWorker(): Worker {
         }
       }
 
-      return { polled, changed, recategorised }
+      return { mode: 'poll', polled, changed, recategorised }
     },
     { connection: redisConnection, concurrency: 1 },
   )
 
   worker.on('completed', (job, result) => {
-    if ((result as { polled: number })?.polled > 0) {
+    const typed = result as { mode?: string; polled?: number; syncedTemplates?: number }
+    if ((typed.polled ?? 0) > 0 || (typed.syncedTemplates ?? 0) > 0) {
       console.log(`[templateStatus] job ${job.id} completed:`, result)
     }
   })
@@ -119,7 +141,16 @@ export function startTemplateStatusWorker(): Worker {
       opts: { removeOnComplete: true, removeOnFail: { count: 5 } },
     },
   ).catch(err => console.error('[templateStatus] failed to schedule:', err))
+  templateStatusQueue.upsertJobScheduler(
+    'sync-whatsapp-templates',
+    { every: SYNC_INTERVAL_MS },
+    {
+      name: 'sync',
+      data: {},
+      opts: { removeOnComplete: true, removeOnFail: { count: 5 } },
+    },
+  ).catch(err => console.error('[templateStatus] failed to schedule sync:', err))
 
-  console.log('[templateStatus] worker started, polling every', POLL_INTERVAL_MS / 1000 / 60, 'min')
+  console.log('[templateStatus] worker started, polling every', POLL_INTERVAL_MS / 1000 / 60, 'min, syncing every', SYNC_INTERVAL_MS / 1000 / 60, 'min')
   return worker
 }
