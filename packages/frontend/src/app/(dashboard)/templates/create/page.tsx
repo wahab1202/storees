@@ -7,7 +7,7 @@ import { VariablePanel } from '@/components/templates/VariablePanel'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
-import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Eye, Loader2, Columns2, Columns3, Columns4, LayoutTemplate } from 'lucide-react'
+import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Loader2, Columns2, Columns3, Columns4, LayoutTemplate } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateChannel, TemplateVariable } from '@storees/shared'
@@ -19,101 +19,18 @@ const CHANNELS: { value: TemplateChannel; label: string; icon: typeof Mail; desc
   { value: 'whatsapp', label: 'WhatsApp', icon: Phone,         description: 'Text message with variables' },
 ]
 
-const BLANK_HTML = `<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
-  <h1 style="color: #111; font-size: 24px; margin-bottom: 16px;">Hi {{customer_name}},</h1>
-  <p style="color: #555; font-size: 16px; line-height: 1.6;">
-    Write your message here.
-  </p>
-  <a href="#" style="display: inline-block; margin-top: 24px; padding: 12px 24px; background: #6366f1; color: white; text-decoration: none; border-radius: 8px; font-weight: 600;">
-    Learn More
-  </a>
-</div>`
-
-const TWO_COL_HTML = `<table width="100%" cellpadding="0" cellspacing="0" style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-  <tr><td style="padding: 24px;">
-    <h1 style="color: #111; font-size: 24px; margin: 0 0 16px;">Hi {{customer_name}},</h1>
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <td width="50%" valign="top" style="padding-right: 12px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 16px; min-height: 120px;">
-            <h3 style="margin: 0 0 8px; color: #111;">Column 1</h3>
-            <p style="margin: 0; color: #555; font-size: 14px;">Content here</p>
-          </div>
-        </td>
-        <td width="50%" valign="top" style="padding-left: 12px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 16px; min-height: 120px;">
-            <h3 style="margin: 0 0 8px; color: #111;">Column 2</h3>
-            <p style="margin: 0; color: #555; font-size: 14px;">Content here</p>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </td></tr>
-</table>`
-
-const THREE_COL_HTML = `<table width="100%" cellpadding="0" cellspacing="0" style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-  <tr><td style="padding: 24px;">
-    <h1 style="color: #111; font-size: 24px; margin: 0 0 16px;">Hi {{customer_name}},</h1>
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <td width="33%" valign="top" style="padding-right: 8px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 12px; min-height: 100px;">
-            <h3 style="margin: 0 0 8px; color: #111; font-size: 14px;">Col 1</h3>
-            <p style="margin: 0; color: #555; font-size: 13px;">Content</p>
-          </div>
-        </td>
-        <td width="34%" valign="top" style="padding: 0 4px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 12px; min-height: 100px;">
-            <h3 style="margin: 0 0 8px; color: #111; font-size: 14px;">Col 2</h3>
-            <p style="margin: 0; color: #555; font-size: 13px;">Content</p>
-          </div>
-        </td>
-        <td width="33%" valign="top" style="padding-left: 8px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 12px; min-height: 100px;">
-            <h3 style="margin: 0 0 8px; color: #111; font-size: 14px;">Col 3</h3>
-            <p style="margin: 0; color: #555; font-size: 13px;">Content</p>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </td></tr>
-</table>`
-
-const FOUR_COL_HTML = `<table width="100%" cellpadding="0" cellspacing="0" style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-  <tr><td style="padding: 24px;">
-    <h1 style="color: #111; font-size: 24px; margin: 0 0 16px;">Hi {{customer_name}},</h1>
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <td width="25%" valign="top" style="padding-right: 6px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 10px; min-height: 80px; text-align: center;">
-            <p style="margin: 0; color: #111; font-weight: 600; font-size: 13px;">1</p>
-          </div>
-        </td>
-        <td width="25%" valign="top" style="padding: 0 3px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 10px; min-height: 80px; text-align: center;">
-            <p style="margin: 0; color: #111; font-weight: 600; font-size: 13px;">2</p>
-          </div>
-        </td>
-        <td width="25%" valign="top" style="padding: 0 3px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 10px; min-height: 80px; text-align: center;">
-            <p style="margin: 0; color: #111; font-weight: 600; font-size: 13px;">3</p>
-          </div>
-        </td>
-        <td width="25%" valign="top" style="padding-left: 6px;">
-          <div style="background: #f3f4f6; border-radius: 8px; padding: 10px; min-height: 80px; text-align: center;">
-            <p style="margin: 0; color: #111; font-weight: 600; font-size: 13px;">4</p>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </td></tr>
-</table>`
+const CHANNEL_LABELS: Record<TemplateChannel, string> = {
+  email: 'Email',
+  sms: 'SMS',
+  push: 'Push',
+  whatsapp: 'WhatsApp',
+}
 
 const LAYOUT_STARTERS = [
-  { key: 'blank', label: 'Blank', icon: LayoutTemplate, html: BLANK_HTML },
-  { key: '2col', label: '2 Columns', icon: Columns2, html: TWO_COL_HTML },
-  { key: '3col', label: '3 Columns', icon: Columns3, html: THREE_COL_HTML },
-  { key: '4col', label: '4 Columns', icon: Columns4, html: FOUR_COL_HTML },
+  { key: 'blank', label: 'Blank', icon: LayoutTemplate },
+  { key: '2col', label: '2 Columns', icon: Columns2 },
+  { key: '3col', label: '3 Columns', icon: Columns3 },
+  { key: '4col', label: '4 Columns', icon: Columns4 },
 ]
 
 const inputClass = 'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
@@ -280,31 +197,31 @@ export default function CreateTemplatePage() {
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-8">
+    <div className="space-y-6 pb-8">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.push('/templates')}
-            className="p-2 rounded-lg border border-border hover:bg-surface transition-colors"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-white text-text-secondary transition-colors hover:bg-surface"
           >
-            <ArrowLeft className="h-4 w-4 text-text-secondary" />
+            <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">Templates</p>
             <h1 className="text-2xl font-bold text-heading">New Template</h1>
-            <p className="text-sm text-text-secondary mt-0.5">Create a reusable message template</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
           <button
             onClick={() => router.push('/templates')}
-            className="px-4 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:bg-surface transition-colors"
+            className="h-10 rounded-lg border border-border bg-white px-4 text-sm font-medium text-text-secondary transition-colors hover:bg-surface"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={!canSave || createTemplate.isPending}
-            className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {createTemplate.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             Save Template
@@ -312,207 +229,210 @@ export default function CreateTemplatePage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
-        {/* Left: Editor */}
-        <div className="space-y-6 min-w-0">
-          {/* Name */}
-          <div className="bg-white border border-border rounded-xl p-5">
-            <label className="block text-sm font-medium text-text-primary mb-1.5">Template Name</label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="e.g. KYC Verified Welcome, EMI Reminder"
-              autoFocus
-              className={inputClass}
-            />
+      <section className="rounded-xl border border-border bg-white">
+        <div className="border-b border-border px-5 py-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-sm font-semibold text-text-primary">Setup</h2>
+            <p className="text-xs text-text-muted">Choose the channel and name this reusable template.</p>
+          </div>
+        </div>
+        <div className="space-y-5 p-5">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {CHANNELS.map(ch => {
+              const Icon = ch.icon
+              const active = channel === ch.value
+              return (
+                <button
+                  key={ch.value}
+                  type="button"
+                  onClick={() => setChannel(ch.value)}
+                  className={cn(
+                    'flex min-h-[96px] flex-col items-start justify-between rounded-lg border p-4 text-left transition-colors',
+                    active
+                      ? 'border-accent bg-accent/5 text-accent'
+                      : 'border-border text-text-secondary hover:border-text-muted hover:bg-surface',
+                  )}
+                >
+                  <Icon className={cn('h-5 w-5', active ? 'text-accent' : 'text-text-muted')} />
+                  <div>
+                    <p className={cn('text-sm font-semibold', active ? 'text-accent' : 'text-text-primary')}>{ch.label}</p>
+                    <p className="mt-1 text-xs leading-5 text-text-muted">{ch.description}</p>
+                  </div>
+                </button>
+              )
+            })}
           </div>
 
-          {/* Email-specific fields */}
-          {isEmail && (
-            <div className="bg-white border border-border rounded-xl p-5 space-y-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-1.5">Template Name</label>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="e.g. Welcome offer, EMI reminder"
+                autoFocus
+                className={inputClass}
+              />
+            </div>
+            {isEmail ? (
               <div>
                 <label className="block text-sm font-medium text-text-primary mb-1.5">Subject Line</label>
                 <input
                   value={subject}
                   onChange={e => setSubject(e.target.value)}
-                  placeholder="e.g. Your KYC is verified, {{customer_name}} 🎉"
+                  placeholder="e.g. Hi {{customer_name}}, your offer is ready"
                   className={inputClass}
                 />
-                <p className="text-xs text-text-muted mt-1">Supports: {'{{customer_name}}'}, {'{{customer_email}}'}</p>
+                <p className="mt-1 text-xs text-text-muted">Supports {'{{customer_name}}'} and {'{{customer_email}}'}.</p>
               </div>
-            </div>
-          )}
-
-          {/* Layout starter cards — email only */}
-          {isEmail && (
-            <div className="bg-white border border-border rounded-xl p-5">
-              <h2 className="text-sm font-semibold text-text-primary mb-3">Start from a layout</h2>
-              <div className="grid grid-cols-4 gap-3">
-                {LAYOUT_STARTERS.map(layout => {
-                  const Icon = layout.icon
-                return (
-                    <button
-                      key={layout.label}
-                      onClick={() => {
-                        const nextTemplate = starterTemplateForLayout(layout.key, subject)
-                        setEmailTemplate(nextTemplate)
-                        setHtmlBody(compileToHtml(nextTemplate))
-                        setSelectedLayout(layout.key)
-                        setTab('visual')
-                      }}
-                      className={cn(
-                        'flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-all hover:border-accent hover:bg-accent/5',
-                        selectedLayout === layout.key
-                          ? 'border-accent bg-accent/5'
-                          : 'border-border',
-                      )}
-                    >
-                      <div className="w-12 h-12 rounded-lg bg-surface flex items-center justify-center">
-                        <Icon className="h-5 w-5 text-text-secondary" />
-                      </div>
-                      <span className="text-xs font-medium text-text-primary">{layout.label}</span>
-                    </button>
-                  )
-                })}
+            ) : (
+              <div className="rounded-lg border border-border bg-surface px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">Selected Channel</p>
+                <p className="mt-1 text-sm font-medium text-text-primary">{CHANNEL_LABELS[channel]}</p>
               </div>
-            </div>
-          )}
-
-          {/* Body */}
-          <div className="bg-white border border-border rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border">
-              <h2 className="text-sm font-semibold text-text-primary">
-                {isEmail ? 'Email Body' : 'Message Body'}
-              </h2>
-              {isEmail && (
-                <div className="flex items-center gap-1 bg-white border border-border rounded-lg p-0.5">
-                  <button
-                    onClick={() => setTab('visual')}
-                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'visual' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
-                  >
-                    Visual Builder
-                  </button>
-                  <button
-                    onClick={() => setTab('html')}
-                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'html' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
-                  >
-                    Edit HTML
-                  </button>
-                  <button
-                    onClick={() => setTab('preview')}
-                    className={cn('inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'preview' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
-                  >
-                    <Eye className="h-3 w-3" />
-                    Preview
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="p-5">
-              {isEmail ? (
-                tab === 'visual' ? (
-                  <EmailBuilder
-                    value={{ ...emailTemplate, subject, previewText: '' }}
-                    aiContext={{
-                      subject,
-                      fullHtml: htmlBody,
-                      campaignGoal: `Reusable ${name || 'email'} template`,
-                    }}
-                    onChange={nextTemplate => {
-                      const synced = { ...nextTemplate, subject, previewText: '' }
-                      setEmailTemplate(synced)
-                      setHtmlBody(compileToHtml(synced))
-                    }}
-                  />
-                ) : tab === 'html' ? (
-                  <>
-                    <textarea
-                      value={htmlBody}
-                      onChange={e => {
-                        setHtmlBody(e.target.value)
-                        setEmailTemplate(emailTemplateFromHtml(subject, e.target.value))
-                      }}
-                      rows={18}
-                      className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
-                      spellCheck={false}
-                    />
-                    <p className="text-xs text-text-muted mt-2">
-                      Variables: {'{{customer_name}}'}, {'{{customer_email}}'}
-                    </p>
-                  </>
-                ) : (
-                  <div className="border border-border rounded-lg overflow-hidden">
-                    <iframe
-                      srcDoc={htmlBody}
-                      title="Preview"
-                      className="w-full h-[400px]"
-                      sandbox="allow-same-origin"
-                    />
-                  </div>
-                )
-              ) : (
-                <>
-                  <textarea
-                    value={bodyText}
-                    onChange={e => setBodyText(e.target.value)}
-                    rows={6}
-                    placeholder={
-                      channel === 'sms'
-                        ? 'Hi {{customer_name}}, your transaction of ₹{{amount}} is complete.'
-                        : channel === 'push'
-                        ? 'Your SIP of ₹{{amount}} has been debited successfully.'
-                        : 'Hi {{customer_name}}, we have an update for your account.'
-                    }
-                    className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none placeholder:text-text-muted"
-                  />
-                  <div className="flex items-center justify-between mt-2">
-                    <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>
-                    {channel === 'sms' && (
-                      <p className={cn('text-xs font-medium', bodyText.length > 160 ? 'text-red-500' : 'text-text-muted')}>
-                        {bodyText.length}/160
-                      </p>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+            )}
           </div>
         </div>
+      </section>
 
-        {/* Right: Channel selector + Variable panel */}
-        <div className="space-y-4">
-          <div className="bg-white border border-border rounded-xl overflow-hidden">
-            <div className="px-5 py-3 bg-surface border-b border-border">
-              <h2 className="text-sm font-semibold text-text-primary">Channel</h2>
-            </div>
-            <div className="p-4 space-y-2">
-              {CHANNELS.map(ch => {
-                const Icon = ch.icon
-                return (
+      {isEmail && (
+        <section className="rounded-xl border border-border bg-white p-5">
+          <div className="mb-4 flex flex-col gap-1">
+            <h2 className="text-sm font-semibold text-text-primary">Start From A Layout</h2>
+            <p className="text-xs text-text-muted">These layouts create editable visual-builder blocks.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {LAYOUT_STARTERS.map(layout => {
+              const Icon = layout.icon
+              return (
+                <button
+                  key={layout.key}
+                  type="button"
+                  onClick={() => {
+                    const nextTemplate = starterTemplateForLayout(layout.key, subject)
+                    setEmailTemplate(nextTemplate)
+                    setHtmlBody(compileToHtml(nextTemplate))
+                    setSelectedLayout(layout.key)
+                    setTab('visual')
+                  }}
+                  className={cn(
+                    'flex h-24 items-center gap-3 rounded-lg border p-4 text-left transition-colors',
+                    selectedLayout === layout.key
+                      ? 'border-accent bg-accent/5'
+                      : 'border-border hover:border-accent hover:bg-accent/5',
+                  )}
+                >
+                  <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-surface">
+                    <Icon className="h-5 w-5 text-text-secondary" />
+                  </span>
+                  <span className="text-sm font-medium text-text-primary">{layout.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-white">
+          <div className="flex flex-col gap-3 border-b border-border bg-surface px-5 py-3 md:flex-row md:items-center md:justify-between">
+            <h2 className="text-sm font-semibold text-text-primary">
+              {isEmail ? 'Email Content' : 'Message Content'}
+            </h2>
+            {isEmail && (
+              <div className="flex w-full flex-wrap items-center gap-1 rounded-lg border border-border bg-white p-0.5 md:w-auto">
+                {([
+                  ['visual', 'Visual Builder'],
+                  ['html', 'HTML'],
+                  ['preview', 'Preview'],
+                ] as const).map(([value, label]) => (
                   <button
-                    key={ch.value}
-                    onClick={() => setChannel(ch.value)}
+                    key={value}
+                    type="button"
+                    onClick={() => setTab(value)}
                     className={cn(
-                      'w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors',
-                      channel === ch.value
-                        ? 'border-accent bg-accent/5'
-                        : 'border-border hover:border-text-muted hover:bg-surface',
+                      'h-8 flex-1 rounded-md px-3 text-xs font-medium transition-colors md:flex-none',
+                      tab === value ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary',
                     )}
                   >
-                    <Icon className={cn('h-4 w-4 flex-shrink-0', channel === ch.value ? 'text-accent' : 'text-text-muted')} />
-                    <div>
-                      <p className={cn('text-sm font-medium', channel === ch.value ? 'text-accent' : 'text-text-primary')}>
-                        {ch.label}
-                      </p>
-                      <p className="text-xs text-text-muted">{ch.description}</p>
-                    </div>
+                    {label}
                   </button>
-                )
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
+          {isEmail ? (
+            tab === 'visual' ? (
+              <div className="min-h-[640px]">
+                <EmailBuilder
+                  value={{ ...emailTemplate, subject, previewText: '' }}
+                  aiContext={{
+                    subject,
+                    fullHtml: htmlBody,
+                    campaignGoal: `Reusable ${name || 'email'} template`,
+                  }}
+                  onChange={nextTemplate => {
+                    const synced = { ...nextTemplate, subject, previewText: '' }
+                    setEmailTemplate(synced)
+                    setHtmlBody(compileToHtml(synced))
+                  }}
+                />
+              </div>
+            ) : tab === 'html' ? (
+              <div className="p-5">
+                <textarea
+                  value={htmlBody}
+                  onChange={e => {
+                    setHtmlBody(e.target.value)
+                    setEmailTemplate(emailTemplateFromHtml(subject, e.target.value))
+                  }}
+                  rows={22}
+                  className="w-full rounded-lg border border-border bg-white px-3 py-2 font-mono text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20"
+                  spellCheck={false}
+                />
+                <p className="mt-2 text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{customer_email}}'}, {'{{store_name}}'}</p>
+              </div>
+            ) : (
+              <div className="bg-surface p-5">
+                <div className="overflow-hidden rounded-lg border border-border bg-white">
+                  <iframe
+                    srcDoc={htmlBody}
+                    title="Preview"
+                    className="h-[620px] w-full"
+                    sandbox="allow-same-origin"
+                  />
+                </div>
+              </div>
+            )
+          ) : (
+            <div className="p-5">
+              <textarea
+                value={bodyText}
+                onChange={e => setBodyText(e.target.value)}
+                rows={8}
+                placeholder={
+                  channel === 'sms'
+                    ? 'Hi {{customer_name}}, your transaction of {{amount}} is complete.'
+                    : channel === 'push'
+                      ? 'Your order update is ready, {{customer_name}}.'
+                      : 'Hi {{customer_name}}, we have an update for your account.'
+                }
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
+              />
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>
+                {channel === 'sms' && (
+                  <p className={cn('text-xs font-medium', bodyText.length > 160 ? 'text-red-500' : 'text-text-muted')}>
+                    {bodyText.length}/160
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <aside className="xl:sticky xl:top-4 xl:self-start">
           <VariablePanel
             variables={variables}
             onChange={setVariables}
@@ -523,7 +443,7 @@ export default function CreateTemplatePage() {
               bodyText: !isEmail ? bodyText : null,
             }}
           />
-        </div>
+        </aside>
       </div>
     </div>
   )
