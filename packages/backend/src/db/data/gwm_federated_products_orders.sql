@@ -33,33 +33,66 @@ SET search_path = public;
 --   gwm.deleted_at IS NOT NULL → 'archived'
 --   data->>'status' = 'rejected' → 'archived'
 --   else 'active'
+--
+-- product_type + vendor: cat_product itself doesn't carry these as columns
+-- or JSONB keys, BUT order_line_item denormalises them — each line item
+-- captures the product's type at time of purchase. Use the most recent
+-- non-empty value seen for each product. Means product_type populates only
+-- for SKUs that have been ordered at least once; that's acceptable because
+-- "has_purchased <category>" segments only match buyers anyway.
 
 CREATE OR REPLACE FUNCTION sync_gwm_products(p_project_id UUID)
-RETURNS TABLE(upserted_count INT) AS $$
+RETURNS TABLE(upserted_count INT)
+SECURITY DEFINER
+SET search_path = public, gwm
+AS $$
 BEGIN
   RETURN QUERY
-  WITH applied AS (
+  WITH
+  -- For each product_id, pick the most recent line item's product_type
+  -- and product_collection (denormalised text labels — the real names).
+  -- DISTINCT ON is the standard Postgres pattern for "latest per group".
+  line_meta AS (
+    SELECT DISTINCT ON (oli.product_id)
+      oli.product_id,
+      NULLIF(TRIM(oli.product_type), '')      AS product_type,
+      NULLIF(TRIM(oli.product_collection), '') AS product_collection
+    FROM gwm.order_line_item oli
+    WHERE oli.product_id IS NOT NULL
+    ORDER BY oli.product_id, oli.created_at DESC NULLS LAST
+  ),
+  applied AS (
     INSERT INTO products (project_id, shopify_product_id, title, product_type, vendor, image_url, status)
     SELECT
       p_project_id,
       LEFT(cp.id, 255),
       LEFT(COALESCE(NULLIF(TRIM(cp.data->>'title'), ''), NULLIF(TRIM(cp.data->>'handle'), ''), 'Untitled'), 500),
-      ''::varchar,    -- product_type: no column or JSONB path on cat_product
-      ''::varchar,    -- vendor: same
-      NULL,           -- image_url: same (could query cat_product_image table later)
+      -- product_type from the latest order_line_item, falls back to ''.
+      LEFT(COALESCE(lm.product_type, ''), 255),
+      ''::varchar,    -- vendor: no source available anywhere yet
+      NULL,           -- image_url: no source available yet
       CASE
         WHEN cp.deleted_at IS NOT NULL THEN 'archived'
         WHEN cp.data->>'status' = 'rejected' THEN 'archived'
         ELSE 'active'
       END
     FROM gwm.cat_product cp
+    LEFT JOIN line_meta lm ON lm.product_id = cp.id
     ON CONFLICT (project_id, shopify_product_id) DO UPDATE SET
       title = EXCLUDED.title,
+      -- Only overwrite product_type when the new value is non-empty. Keeps
+      -- an already-classified product from being blanked out if it stops
+      -- appearing in recent line items.
+      product_type = CASE
+        WHEN EXCLUDED.product_type <> '' THEN EXCLUDED.product_type
+        ELSE products.product_type
+      END,
       status = EXCLUDED.status,
       updated_at = NOW()
     WHERE
-      products.title  IS DISTINCT FROM EXCLUDED.title
-      OR products.status IS DISTINCT FROM EXCLUDED.status
+      products.title        IS DISTINCT FROM EXCLUDED.title
+      OR products.status    IS DISTINCT FROM EXCLUDED.status
+      OR (EXCLUDED.product_type <> '' AND products.product_type IS DISTINCT FROM EXCLUDED.product_type)
     RETURNING 1
   )
   SELECT COUNT(*)::int FROM applied;
@@ -78,7 +111,10 @@ $$ LANGUAGE plpgsql;
 -- claim different collections in the same JOIN — DISTINCT collapses dupes.
 
 CREATE OR REPLACE FUNCTION sync_gwm_collections(p_project_id UUID)
-RETURNS TABLE(upserted_collections INT, linked_products INT) AS $$
+RETURNS TABLE(upserted_collections INT, linked_products INT)
+SECURITY DEFINER
+SET search_path = public, gwm
+AS $$
 DECLARE
   v_collections INT;
   v_links INT;
@@ -154,7 +190,10 @@ CREATE OR REPLACE FUNCTION sync_gwm_orders(
   p_project_id UUID,
   p_since TIMESTAMPTZ
 )
-RETURNS TABLE(upserted_count INT, max_updated_at TIMESTAMPTZ) AS $$
+RETURNS TABLE(upserted_count INT, max_updated_at TIMESTAMPTZ)
+SECURITY DEFINER
+SET search_path = public, gwm
+AS $$
 DECLARE
   v_count INT;
   v_max TIMESTAMPTZ;

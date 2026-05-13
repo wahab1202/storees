@@ -42,6 +42,7 @@ import adminUserRoutes from './routes/adminUsers.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
 import assetRoutes from './routes/assets.js'
+import federationStatusRoutes from './routes/federationStatus.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { startSyncWorker } from './workers/syncWorker.js'
@@ -162,6 +163,7 @@ app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 app.use('/api/assets', requireAuth, assetRoutes)
+app.use('/api/federation-status', requireAuth, federationStatusRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)
