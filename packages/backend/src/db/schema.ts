@@ -1020,3 +1020,52 @@ export const whatsappInboundMessages = pgTable('whatsapp_inbound_messages', {
   index('idx_wa_inbound_customer').on(table.projectId, table.customerId, table.receivedAt),
   index('idx_wa_inbound_phone').on(table.projectId, table.fromPhone, table.receivedAt),
 ])
+
+// ============ DATA SOURCE CONNECTORS ============
+// See migration 0043_data_source_connectors.sql for column-level docs.
+
+export const dataSourceConnectors = pgTable('data_source_connectors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  template: varchar('template', { length: 50 }).notNull(),
+  name: text('name').notNull(),
+  baseUrl: text('base_url').notNull(),
+  authConfig: text('auth_config').notNull(),
+  config: jsonb('config').notNull().default({}),
+  lastSyncedAt: jsonb('last_synced_at').notNull().default({}),
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_data_source_connectors_project').on(table.projectId, table.status),
+])
+
+export const dataSourceSyncs = pgTable('data_source_syncs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  connectorId: uuid('connector_id').notNull().references(() => dataSourceConnectors.id, { onDelete: 'cascade' }),
+  kind: varchar('kind', { length: 20 }).notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('queued'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  stats: jsonb('stats').notNull().default({}),
+  errorSummary: text('error_summary'),
+  triggeredBy: uuid('triggered_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_data_source_syncs_connector').on(table.connectorId, table.createdAt),
+])
+
+export const dataSourceSyncLogs = pgTable('data_source_sync_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  syncId: uuid('sync_id').notNull().references(() => dataSourceSyncs.id, { onDelete: 'cascade' }),
+  level: varchar('level', { length: 10 }).notNull(),
+  entityType: varchar('entity_type', { length: 20 }),
+  entityId: text('entity_id'),
+  message: text('message').notNull(),
+  payload: jsonb('payload'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_data_source_sync_logs_sync').on(table.syncId, table.createdAt),
+])

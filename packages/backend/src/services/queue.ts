@@ -135,3 +135,17 @@ export const customerAggregateQueue = new Queue('customer-aggregates', {
     removeOnFail: { count: 200 },
   },
 })
+
+// Data-source sync queue. One job per sync run (manual "Sync Now" from the
+// project page or programmatic). Heavy long-running jobs (paginated HTTP +
+// field mapping + batched imports) — keep attempts low so a deterministic
+// failure (bad creds, broken endpoint) doesn't retry uselessly.
+export const dataSyncQueue = new Queue('data-sync', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 30_000 },
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 200 },
+  },
+})

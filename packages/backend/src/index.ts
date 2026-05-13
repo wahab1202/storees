@@ -36,6 +36,7 @@ import predictionRoutes from './routes/predictions.js'
 import sendTimeRoutes from './routes/sendTime.js'
 import channelWebhookRoutes from './routes/channelWebhooks.js'
 import whatsappAdminRoutes from './routes/whatsappAdmin.js'
+import dataConnectorRoutes from './routes/dataConnectors.js'
 import urlTrackerRoutes from './routes/urlTracker.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
@@ -56,6 +57,7 @@ import { startScoringWorker } from './workers/scoringWorker.js'
 import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
 import { startIdentityMergeWorker } from './workers/identityMergeWorker.js'
 import { startCustomerAggregateWorker, runStartupCatchUp } from './workers/customerAggregateWorker.js'
+import { startDataSyncWorker } from './workers/dataSyncWorker.js'
 import { startScoringScheduler } from './workers/scoringScheduler.js'
 import { startTrainingWorker } from './workers/trainingWorker.js'
 import { startCampaignScheduler } from './workers/campaignScheduler.js'
@@ -147,6 +149,7 @@ app.use('/api/templates', requireAuth, templateRoutes)
 app.use('/api/email-senders', requireAuth, emailSenderRoutes)
 app.use('/api/subscription-categories', requireAuth, subscriptionCategoryRoutes)
 app.use('/api/whatsapp', requireAuth, whatsappAdminRoutes)
+app.use('/api/data-sources', requireAuth, dataConnectorRoutes)
 app.use('/api/api-keys', requireAuth, v1ApiKeyRoutes)
 app.use('/api/schema', requireAuth, v1SchemaRoutes)
 app.use('/api/onboarding', requireAuth, onboardingRoutes)
@@ -192,6 +195,7 @@ startCampaignScheduler()
 startTemplateStatusWorker()
 startIdentityMergeWorker()
 startCustomerAggregateWorker()
+startDataSyncWorker()
 
 // One-shot catch-up: process any events ingested before the aggregate worker
 // was running. Idempotent (events.processed_at guard). Backgrounded so boot
