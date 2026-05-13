@@ -1,82 +1,337 @@
-# GoWelmart → Storees Webhook Integration Spec
+# GoWelmart → Storees Event Publishing Spec
 
-> Engineering specification for GoWelmart's team to add real-time event
-> publishing to Storees. Replaces the current 5-min FDW polling federation
-> with sub-second push events for hot-path activity.
+> How GoWelmart's backend should send real-time events to Storees, replacing
+> the 5-min FDW polling federation for hot-path activity.
 >
 > **Audience:** GWM backend engineering team
-> **Storees side:** zero new work required — endpoint, auth, and ingestion
-> already exist (used today by Storees JS SDK)
-> **Estimated GWM effort:** 2-3 weeks for Phase 1 (hot-path events)
+> **Storees side:** zero new work — endpoint, auth, idempotency, and dedup
+> already exist (same endpoint the Storees JS SDK uses today)
+> **GWM side, minimum effort:** ~1-2 days for a working integration
+>
+> **Important: no GWM schema changes are required.** The integration is
+> outbound HTTP only. Pick the tier below that matches your reliability
+> requirements.
 
 ---
 
-## Why we're doing this
+## TL;DR — three integration tiers, pick one
 
-Storees currently reads GWM's source DB directly via PostgreSQL FDW every
-5 minutes. This works but has limits:
+| Tier | What you do | Effort | When to choose | Drops events? |
+|---|---|---|---|---|
+| **1. SDK** | Drop in `@storees/sdk`, call `storees.track()` | half day | Default — most clients | Almost never (SDK handles retries) |
+| **2. Direct HTTP** | `fetch()` our endpoint from your business logic | 1-2 days | You want full control over the call | On app crash between event + send |
+| **3. Outbox** | Same as #2 + a queue table + worker | 1-2 weeks | High-volume + strict at-least-once | Never |
 
-- **Latency:** customer activity in GWM appears in Storees after 2-5 min average.
-  High-intent flows ("customer placed first order → send welcome email") fire
-  ~7min late, by which time the customer has often moved on.
-- **Source-DB load:** every Storees federation tick hits GWM's DB. Grows with
-  Storees adoption.
-- **Tight schema coupling:** any column rename in GWM's schema requires a
-  coordinated update in Storees's federation SQL.
-
-Webhooks fix all three: push instead of pull, sub-second latency, decoupled
-contracts, GWM's DB load goes to zero.
+**Recommendation: start with Tier 1 (SDK).** If you ever hit its limits, upgrade
+to Tier 2 or Tier 3. You can mix tiers per event-type (e.g. SDK for engagement,
+outbox for order_placed).
 
 ---
 
-## Architecture
+## Why we're doing this at all
+
+The current 5-min FDW federation:
+- Adds 2-5 min latency to "customer did X" → "Storees knows"
+- Makes "order placed → trigger welcome flow" fire ~7 min late
+- Couples Storees to your DB schema (column renames break us)
+
+Push-based events fix all three. Sub-second latency, schema-decoupled.
+
+We're proposing this only for **hot-path events** where latency matters:
+- `order_placed`
+- `customer_created` / `customer_updated`
+- `order_cancelled` / `order_refunded`
+
+Cold-path stuff (product catalog, dealer assignments, historical backfill)
+keeps using the FDW federation. You don't have to publish events for
+everything — just the things where seconds matter.
+
+---
+
+## Tier 1 — SDK integration (recommended)
+
+This is what most clients use. It's how Storees expects events to arrive.
+
+### Install
+
+```bash
+npm install @storees/sdk
+```
+
+### Initialize once (at app boot)
+
+```ts
+import { Storees } from '@storees/sdk'
+
+const storees = new Storees({
+  apiKey: process.env.STOREES_API_KEY,            // we provide this
+  endpoint: 'https://api.storees.io',             // or staging URL for dev
+  // SDK defaults: batches up to 100 events, flushes every 5 sec or
+  // immediately for high-priority events. Retries 3x with exponential
+  // backoff. In-memory buffer (lost on process crash — use Tier 3 if
+  // that matters).
+})
+```
+
+### Fire events from your business logic
+
+```ts
+// Inside your order-placed handler — right after you commit the order
+await storees.track({
+  event: 'order_placed',
+  customerId: order.customer_id,
+  properties: {
+    order_id: order.id,
+    order_number: order.display_id,
+    total: order.total,
+    currency: order.currency_code,
+    line_items: order.items.map(item => ({
+      product_id: item.product_id,
+      product_name: item.title,
+      product_type: item.product_type,
+      product_collection: item.product_collection,
+      quantity: item.quantity,
+      price: item.unit_price,
+    })),
+    dealer_id: order.dealer_id,
+  },
+})
+
+// Customer registration
+await storees.identify({
+  customerId: newCustomer.id,
+  email: newCustomer.email,
+  phone: newCustomer.phone,
+  name: newCustomer.name,
+  region: newCustomer.region,
+  city: newCustomer.city,
+  dealer_id: newCustomer.dealer_id,
+})
+
+// Customer update
+await storees.identify({
+  customerId: customer.id,
+  /* same fields as above — SDK upserts the full profile */
+})
+```
+
+That's it. The SDK handles:
+- Authentication (uses your API key)
+- HMAC signing of payloads
+- Batching small events together
+- Retries with exponential backoff on network failures
+- Idempotency (same event called twice = one event in Storees)
+
+No outbox table, no worker process, no queue infrastructure. Just call `track()`
+when stuff happens.
+
+### The trade-off
+
+If your app process crashes between "event happened in DB" and "SDK flushed
+to network", that batch is lost. For most clients this is fine because:
+- Most events are non-critical (engagement, page views)
+- The SDK flushes order/customer events immediately (no batching delay)
+- 99.9%+ delivery rate in practice
+
+If losing even one `order_placed` event is unacceptable for you, jump to Tier 3.
+
+---
+
+## Tier 2 — Direct HTTP from your code
+
+Same delivery model as the SDK but without the abstraction. Pick this if:
+- You want to see exactly what's going over the wire
+- The SDK isn't available for your language (it's TS/Node only today)
+- You already have an HTTP client + retry helper you trust
+
+### Single-line integration
+
+```ts
+async function trackToStorees(event: StoreesEvent): Promise<void> {
+  const body = JSON.stringify(event)
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const signature = signPayload(timestamp + '.' + body, STOREES_SIGNING_SECRET)
+
+  await fetch('https://api.storees.io/api/v1/events', {
+    method: 'POST',
+    headers: {
+      'Authorization':       `Bearer ${STOREES_API_KEY}`,
+      'Content-Type':        'application/json',
+      'X-Storees-Timestamp': timestamp,
+      'X-Storees-Signature': `v1,${signature}`,
+    },
+    body,
+    signal: AbortSignal.timeout(10_000),
+  })
+}
+```
+
+Call it from your order/customer handlers. Wrap in `try/catch` so errors don't
+break your business flow. Optionally retry on 5xx with backoff:
+
+```ts
+async function trackWithRetry(event: StoreesEvent, attempt = 0): Promise<void> {
+  try {
+    await trackToStorees(event)
+  } catch (err) {
+    if (attempt < 3) {
+      await sleep(Math.pow(2, attempt) * 1000)
+      return trackWithRetry(event, attempt + 1)
+    }
+    console.error('Storees track failed', err, event)
+  }
+}
+```
+
+That's the entire integration. No DB tables, no workers. Same reliability
+characteristics as the SDK.
+
+---
+
+## Tier 3 — Outbox pattern (only if you need bulletproof delivery)
+
+Pick this **only if** all three are true:
+- You can't tolerate any lost events (e.g. order-tracking compliance)
+- Your event volume is high (>1000/min sustained)
+- You're already comfortable running queue workers
+
+For most clients, **don't pick this.** It's correct engineering but it's
+overkill for a marketing CDP integration. The SDK's 99.9% delivery is usually
+fine because Storees backfills via FDW or you can rerun a daily reconcile job.
+
+If you genuinely need it, here's the pattern:
+
+### Schema
+
+```sql
+CREATE TABLE storees_outbox (
+  id              BIGSERIAL PRIMARY KEY,
+  event_name      TEXT NOT NULL,
+  customer_id     TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  payload         JSONB NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  delivered_at    TIMESTAMPTZ,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_outbox_pending
+  ON storees_outbox (next_attempt_at)
+  WHERE delivered_at IS NULL;
+```
+
+### Insert during your business transaction
+
+```sql
+BEGIN;
+  INSERT INTO orders (...) VALUES (...);
+  INSERT INTO storees_outbox (event_name, customer_id, idempotency_key, payload)
+    VALUES ('order_placed', $cus, $idempotency, $payload);
+COMMIT;
+```
+
+If the transaction fails, no outbox row. If it succeeds, the row is durable
+even on crash.
+
+### Worker reads + POSTs
+
+A separate process (or cron job) pulls pending rows + POSTs them via the
+same `/api/v1/events` endpoint. On success, set `delivered_at = NOW()`. On
+failure, bump `next_attempt_at` for exponential backoff.
+
+Pseudocode:
+
+```ts
+while (true) {
+  const events = await db.query(`
+    SELECT id, payload FROM storees_outbox
+    WHERE delivered_at IS NULL AND next_attempt_at <= NOW()
+    ORDER BY id ASC
+    LIMIT 50
+    FOR UPDATE SKIP LOCKED
+  `)
+
+  for (const event of events) {
+    const status = await postToStorees(event.payload)
+    if (status === 200 || status === 409) {
+      await markDelivered(event.id)
+    } else {
+      await scheduleRetry(event.id, exponentialBackoff(event.failed_count))
+    }
+  }
+
+  if (events.length === 0) await sleep(1000)
+}
+```
+
+Run 2-4 worker instances in parallel; `FOR UPDATE SKIP LOCKED` lets them share
+the queue without conflict.
+
+---
+
+## Shared reference (all tiers)
+
+These details apply regardless of which tier you pick.
+
+### Endpoint
+
+| Env | URL |
+|---|---|
+| Production | `https://api.storees.io/api/v1/events` |
+| Staging    | `https://staging-api.storees.io/api/v1/events` |
+
+### Auth — API key + HMAC
+
+We provide two values per environment:
+
+- **API key**: `sk_live_<random>` → `Authorization: Bearer ...`
+- **Signing secret**: 32-byte random → used to compute HMAC
 
 ```
-┌─────────────────────────┐                ┌──────────────────────────┐
-│   GoWelmart (Medusa)    │                │   Storees Backend        │
-│                         │                │                          │
-│   ┌──────────────────┐  │  HTTPS POST    │  ┌────────────────────┐  │
-│   │ Event detector   │──┼───────────────→│  │ /api/v1/events     │  │
-│   │ (Medusa subscribers)│ │ signed JSON  │  │ (already exists)   │  │
-│   └────────┬─────────┘  │                │  └─────────┬──────────┘  │
-│            │            │                │            │             │
-│            ▼            │                │            ▼             │
-│   ┌──────────────────┐  │                │  ┌────────────────────┐  │
-│   │ Outbox queue     │  │                │  │ Event normaliser   │  │
-│   │ (durability +    │  │                │  │ → BullMQ           │  │
-│   │  retry)          │  │                │  └────────────────────┘  │
-│   └──────────────────┘  │                │                          │
-└─────────────────────────┘                └──────────────────────────┘
+sig_payload = "${timestamp}.${request_body}"
+signature   = base64( HMAC_SHA256(signing_secret, sig_payload) )
 ```
 
-GWM detects business events, queues them in an outbox table, and a worker
-process POSTs each one to Storees. Storees normalises, persists, and
-triggers downstream flows / segments.
+Required headers on every POST:
+```
+Authorization:        Bearer <api_key>
+Content-Type:         application/json
+X-Storees-Timestamp:  <unix_seconds>
+X-Storees-Signature:  v1,<base64_sig>
+```
 
----
+The SDK (Tier 1) handles all of this automatically.
 
-## Phase 1 — hot-path events (week 1-2)
+### Event envelope
 
-Implement these four events first. They unlock real-time campaigns + flows
-for the biggest customer journeys.
+Every event uses the same shape:
 
-### Event 1: `order_placed`
+```json
+{
+  "event_name": "<snake_case>",
+  "customer_id": "<gwm cus_* id>",
+  "timestamp": "<ISO 8601 — when it actually happened>",
+  "idempotency_key": "<unique per event — same key twice returns 409>",
+  "source": "server",
+  "properties": { /* event-specific */ }
+}
+```
 
-Fired when a customer completes checkout (NOT draft order creation).
+Recommended idempotency key pattern: `<event_name>:<entity_id>` (e.g.
+`order_placed:order_01K8AZ2QXY3...`). Same key arriving twice returns
+`409 Conflict` — treat as success.
 
-**When to send:** after the order row is committed AND its line items + dealer
-assignment are saved. Send-once semantics — if you retry due to network
-error, set `idempotency_key` so Storees dedupes.
+### Hot-path events to publish
 
-**Payload:**
+Implement these four first. Storees triggers flows + updates segments based on them.
+
+**`order_placed`** — customer completes checkout
 ```json
 {
   "event_name": "order_placed",
   "customer_id": "cus_01K571QCJEYJX2YTFAQJWK183P",
   "timestamp": "2026-05-13T05:42:17.123Z",
   "idempotency_key": "order_placed:order_01K8AZ2QXY3...",
-  "session_id": null,
-  "source": "server",
   "properties": {
     "order_id": "order_01K8AZ2QXY3...",
     "order_number": 1234,
@@ -97,17 +352,13 @@ error, set `idempotency_key` so Storees dedupes.
 }
 ```
 
-### Event 2: `customer_created`
-
-When a new customer registers.
-
+**`customer_created`** — new customer registers
 ```json
 {
   "event_name": "customer_created",
   "customer_id": "cus_01K8...",
   "timestamp": "2026-05-13T05:42:17.123Z",
   "idempotency_key": "customer_created:cus_01K8...",
-  "source": "server",
   "properties": {
     "email": "alex@example.com",
     "phone": "+919876543210",
@@ -119,18 +370,13 @@ When a new customer registers.
 }
 ```
 
-### Event 3: `customer_updated`
-
-When key customer fields change (name, email, phone, region, city, dealer).
-Coalesce changes within a 5-second window into one event.
-
+**`customer_updated`** — key fields changed
 ```json
 {
   "event_name": "customer_updated",
   "customer_id": "cus_01K8...",
   "timestamp": "2026-05-13T05:42:17.123Z",
   "idempotency_key": "customer_updated:cus_01K8...:1715579337123",
-  "source": "server",
   "properties": {
     "changed": ["phone", "city"],
     "email": "alex@example.com",
@@ -143,338 +389,132 @@ Coalesce changes within a 5-second window into one event.
 }
 ```
 
-Send the full current state under `properties`, not just diffs — Storees uses
-the full payload to upsert the customer row.
+Send the full current state under `properties` (not just diffs) — Storees upserts.
 
-### Event 4: `order_cancelled` and `order_refunded`
-
-```json
-{
-  "event_name": "order_cancelled",
-  "customer_id": "cus_01K571QCJEYJX2YTFAQJWK183P",
-  "timestamp": "2026-05-13T06:01:23Z",
-  "idempotency_key": "order_cancelled:order_01K8AZ2QXY3...",
-  "source": "server",
-  "properties": {
-    "order_id": "order_01K8AZ2QXY3...",
-    "cancellation_reason": "customer_request"
-  }
-}
-```
-
----
-
-## Phase 2 — engagement events (week 3+, optional)
-
-These let Storees build real-time engagement metrics + behavioural segments
-without needing the Storees JS SDK on every page. Implement once Phase 1 is
-stable in prod.
-
-| Event | When |
-|---|---|
-| `product_viewed` | Customer opens a product detail page |
-| `cart_updated` | Item added/removed from cart |
-| `wishlist_added` | Item saved to wishlist |
-| `category_browsed` | Category page viewed |
-| `search_performed` | Customer searches catalog |
-| `checkout_started` | Customer enters checkout flow but not yet placed |
-
-Payload shape: same envelope as Phase 1, with `properties` matching the event.
-
----
-
-## Endpoint, auth, and signing
-
-### URL
-
-| Env | URL |
-|---|---|
-| Production | `https://api.storees.io/api/v1/events` |
-| Staging | `https://staging-api.storees.io/api/v1/events` |
-
-### Auth — API key + HMAC
-
-You'll receive two values from Storees admin:
-
-1. **API key** (public id): `sk_live_<random>` — sent in `Authorization: Bearer <key>` header
-2. **Webhook signing secret**: 32-byte random string — used to compute the HMAC on each payload
-
-Per-request signature:
-
-```
-sig_payload = "${timestamp}.${request_body}"
-signature   = base64( HMAC_SHA256(signing_secret, sig_payload) )
-```
-
-Headers on every POST:
-
-```
-Authorization:        Bearer sk_live_<your_key>
-Content-Type:         application/json
-X-Storees-Timestamp:  1715579337     # epoch seconds
-X-Storees-Signature:  v1,<base64>    # may carry multiple "v1,..." entries
-                                     # separated by spaces during rotation
-```
-
-Storees rejects requests where:
-- `Authorization` doesn't match a known API key
-- `X-Storees-Timestamp` is more than 5 minutes off from server time
-- `X-Storees-Signature` doesn't match the recomputed HMAC
+**`order_cancelled`** / **`order_refunded`** — same shape as order_placed minus line_items.
 
 ### Response codes
 
 | Code | Meaning | What to do |
 |---|---|---|
-| `200 OK` | Accepted, queued for processing | Mark event delivered, advance outbox |
-| `400 Bad Request` | Malformed JSON or missing required field | Log, do NOT retry — fix the bug |
-| `401 Unauthorized` | Bad API key or signature | Stop sending, check credentials |
-| `409 Conflict` | Idempotency key already seen | Treat as success, advance outbox |
-| `429 Too Many Requests` | Rate-limited | Honour `Retry-After` header, exponential backoff |
-| `500/502/503/504` | Storees error | Retry with exponential backoff |
-| `timeout` | Network issue | Retry with exponential backoff |
-
----
-
-## Outbox pattern (required, not optional)
-
-Don't POST directly from your business-logic transactions. Use the outbox
-pattern — it's the only way to guarantee at-least-once delivery while keeping
-your transactional consistency.
-
-### Why
-
-If you POST inside the transaction that created the order:
-- Webhook succeeds, transaction fails → customer not actually checked out, Storees thinks they did
-- Transaction succeeds, webhook fails → Storees never sees the event
-
-If you POST after the transaction commits, before logging the success:
-- Process crashes between commit and POST → event lost
-
-The outbox pattern fixes both. Atomically insert a "to-publish" row inside
-the business transaction. A separate worker process reads from the outbox
-and POSTs. If the POST fails, the row stays in the outbox for retry.
-
-### Schema
-
-```sql
-CREATE TABLE storees_outbox (
-  id              BIGSERIAL PRIMARY KEY,
-  event_name      TEXT NOT NULL,
-  customer_id     TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL UNIQUE,
-  payload         JSONB NOT NULL,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  delivered_at    TIMESTAMPTZ,
-  failed_count    INTEGER NOT NULL DEFAULT 0,
-  last_error      TEXT,
-  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_outbox_pending
-  ON storees_outbox (next_attempt_at)
-  WHERE delivered_at IS NULL;
-```
-
-### Worker loop (pseudocode)
-
-```ts
-async function publishLoop() {
-  while (true) {
-    const events = await db.query(`
-      SELECT id, payload FROM storees_outbox
-      WHERE delivered_at IS NULL AND next_attempt_at <= NOW()
-      ORDER BY id ASC
-      LIMIT 50 FOR UPDATE SKIP LOCKED
-    `)
-
-    for (const event of events) {
-      try {
-        const sig = signPayload(event.payload, SIGNING_SECRET)
-        const res = await fetch('https://api.storees.io/api/v1/events', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${API_KEY}`,
-            'Content-Type': 'application/json',
-            'X-Storees-Timestamp': Math.floor(Date.now() / 1000).toString(),
-            'X-Storees-Signature': `v1,${sig}`,
-          },
-          body: JSON.stringify(event.payload),
-          signal: AbortSignal.timeout(10_000),
-        })
-
-        if (res.status === 200 || res.status === 409) {
-          await db.query(
-            `UPDATE storees_outbox SET delivered_at = NOW() WHERE id = $1`,
-            [event.id],
-          )
-        } else if (res.status === 400 || res.status === 401) {
-          // Bug or auth issue — don't retry forever
-          await db.query(
-            `UPDATE storees_outbox
-             SET failed_count = failed_count + 1,
-                 last_error = $2,
-                 next_attempt_at = NOW() + INTERVAL '1 hour'
-             WHERE id = $1`,
-            [event.id, `${res.status}: ${await res.text()}`],
-          )
-        } else {
-          // 5xx, timeout, network — exponential backoff
-          const delay = Math.min(60 * Math.pow(2, event.failed_count), 3600)
-          await db.query(
-            `UPDATE storees_outbox
-             SET failed_count = failed_count + 1,
-                 last_error = $2,
-                 next_attempt_at = NOW() + ($3 || ' seconds')::INTERVAL
-             WHERE id = $1`,
-            [event.id, `${res.status}`, delay],
-          )
-        }
-      } catch (err) {
-        // Network failure — also exponential backoff
-      }
-    }
-
-    if (events.length === 0) await sleep(1000)
-  }
-}
-```
-
-Run 2-4 worker instances in parallel. `FOR UPDATE SKIP LOCKED` lets them
-process the queue concurrently without stepping on each other.
+| `200 OK` | Accepted | Mark delivered |
+| `400 Bad Request` | Malformed payload | Log + don't retry (bug) |
+| `401 Unauthorized` | Bad key/signature | Stop sending, check credentials |
+| `409 Conflict` | Idempotency dedup | Treat as success |
+| `429 Too Many Requests` | Rate-limited | Honour `Retry-After` |
+| `5xx` / timeout | Storees problem | Retry with backoff |
 
 ---
 
 ## Initial backfill
 
-Webhooks only cover events going forward. You still need a one-time batch
-import of historical data.
+Webhooks only cover events from now forward. Historical data already lives in
+Storees via the FDW federation — 16K+ customers and product catalog are
+already synced. Once your webhook integration is stable, we'll disable the
+FDW cron for the GWM project.
 
-Two options:
-
-**A. Keep the existing Storees FDW federation running.** It already pulled
-all 16K customers + 16K products. Once webhooks are stable in prod, Storees
-disables the FDW cron and webhooks take over. **Recommended** — zero work.
-
-**B. Send historical events via the same outbox.** For every existing order,
-generate an `order_placed` event with the original `created_at` and queue
-it. The endpoint accepts past timestamps. Higher throughput needed but gives
-you a single uniform pipeline.
-
-Pick A unless you specifically need to retire the FDW connection.
+**You don't need to backfill historical events.** Don't replay every order
+ever placed. The FDW federation has already loaded that.
 
 ---
 
-## Testing protocol
+## Testing
 
-### 1. Local development against staging
-
-Storees provides a staging endpoint. Use it for all development.
+### Local smoke test
 
 ```bash
+# Generate signature
+TS=$(date +%s)
+BODY='{"event_name":"order_placed","customer_id":"test_cus_001","timestamp":"2026-05-13T05:42:17Z","idempotency_key":"test_001","properties":{"order_id":"test_order_001","total":100}}'
+SIG=$(echo -n "$TS.$BODY" | openssl dgst -sha256 -hmac "$STOREES_SIGNING_SECRET" -binary | base64)
+
 curl -X POST https://staging-api.storees.io/api/v1/events \
-  -H "Authorization: Bearer sk_test_<your_staging_key>" \
+  -H "Authorization: Bearer $STOREES_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "X-Storees-Timestamp: $(date +%s)" \
-  -H "X-Storees-Signature: v1,<computed_sig>" \
-  -d '{
-    "event_name": "order_placed",
-    "customer_id": "test_cus_001",
-    "timestamp": "2026-05-13T05:42:17.123Z",
-    "idempotency_key": "test_001",
-    "properties": { "order_id": "test_order_001", "total": 100 }
-  }'
+  -H "X-Storees-Timestamp: $TS" \
+  -H "X-Storees-Signature: v1,$SIG" \
+  -d "$BODY"
 ```
 
-Expected response: `{"success": true, "data": {"event_id": "evt_..."}}`
+Expected: `{"success": true, "data": {"event_id": "evt_..."}}`
 
-### 2. End-to-end smoke
+### Pre-prod checklist
 
-Pre-prod checklist:
+- [ ] One `customer_created` event lands → confirm in Storees admin → Customers
+- [ ] One `order_placed` for that customer → confirm in their timeline
+- [ ] Re-send the same `order_placed` → confirm `409 Conflict` (dedup works)
+- [ ] Tamper one char in signature → confirm `401 Unauthorized`
 
-- [ ] Send 1 `customer_created` event for a test customer — confirm it appears in Storees admin
-- [ ] Send 1 `order_placed` event for that customer — confirm the order shows up in their timeline
-- [ ] Wait 1 minute, check the same `order_placed` payload sends again — confirm `409 Conflict` returned (dedup works)
-- [ ] Tamper with the signature header by one char — confirm `401 Unauthorized`
-- [ ] Send with a 10-minute-old timestamp — confirm `401 Unauthorized` (replay protection)
-- [ ] Restart your outbox worker mid-burst — confirm no events lost or duplicated
+### Rollout
 
-### 3. Production rollout
+Day 1: enable `customer_created` (lowest volume — sanity check)
+Day 2-3: monitor — check Storees `/api/federation-status` for arrival rate
+Day 4: enable `order_placed`
+Day 5+: enable rest
 
-- Day 1: deploy outbox + worker, disabled flag
-- Day 2: turn on `customer_created` events only (lowest volume)
-- Day 3-4: monitor — check Storees dashboard for arrival rate, latency, errors
-- Day 5: turn on `order_placed`
-- Day 6+: turn on remaining events
-
-Roll back at any point by flipping the flag — outbox keeps queueing, just
-stops POSTing.
+Flag-gate at the call site — flip back to "do nothing" if anything is
+off. The Storees FDW federation keeps running in parallel until you're confident.
 
 ---
 
 ## Observability
 
-### What GWM should monitor
+Both sides have visibility:
 
-- **Outbox depth** — pending events waiting to send. Healthy: < 100 at any time. Alert: > 1000 sustained for 5+ min.
-- **Webhook success rate** — `delivered_at` rows / total rows in last hour. Healthy: > 99%. Alert: < 95%.
-- **Per-event latency** — time from `created_at` to `delivered_at`. Healthy: p95 < 5 sec. Alert: p95 > 30 sec.
-- **Failed-count distribution** — events that hit retry. Healthy: < 1% of total. Alert: > 5%.
+**On your side** — log every call:
+- Outbound rate (events/min)
+- Success rate (% of POSTs returning 200/409)
+- Per-event-type latency
 
-### What Storees exposes to GWM
+If you go Tier 3 (outbox), also monitor outbox depth (should stay near zero).
 
-Storees admin has a "Data Sources" page that shows, per project:
-- Total events ingested in last 24h, broken down by event type
+**On Storees side** — `GET /api/federation-status?projectId=<your_id>` returns:
 - Last event arrival time per event type
-- Rejection counts (signature failures, dedup hits, validation errors)
+- Total events ingested in last 24h
+- Rejection counts (signature failures, validation errors)
 
-The same data is queryable via `GET /api/admin/federation-status` for
-programmatic monitoring on the GWM side.
-
----
-
-## Reference — full event envelope
-
-Every event uses this envelope. `event_name` and `properties` vary.
-
-```json
-{
-  "event_name": "<required snake_case>",
-  "customer_id": "<required Medusa customer id>",
-  "timestamp": "<ISO 8601, when the event actually happened>",
-  "idempotency_key": "<unique per event; format suggested: <event>:<entity_id>:<unix>>",
-  "session_id": "<optional, for engagement events>",
-  "source": "server",
-  "properties": {
-    /* event-specific shape per the type definitions above */
-  }
-}
-```
-
-Rules:
-- `event_name`: snake_case, must match a published type — see Phase 1 + Phase 2 lists
-- `customer_id`: Medusa's `cus_*` id. Storees joins to its `customers.external_id` column
-- `timestamp`: when it happened, NOT when the webhook fires (could differ by hours for retried events)
-- `idempotency_key`: must be globally unique. Storees stores these for 24h; same key arriving twice → `409 Conflict`. Recommended pattern: `<event_name>:<entity_id>:<unix_ms>`
-- `source`: always `"server"` for GWM-published events (distinguishes from SDK-published browser events)
+Same URL is what we use internally — poll it for monitoring on your end too.
 
 ---
 
-## Timeline + handoff
+## Handoff package
 
-Suggested phasing:
+When you're ready to start, ping wahab@waioz.com for:
 
-| Week | GWM Work | Storees Work |
-|---|---|---|
-| 1 | Build outbox table + worker; integrate with order/customer event detectors | Provision API key + signing secret on staging |
-| 2 | Implement Phase 1 events (`order_placed`, `customer_created`, `customer_updated`, `order_cancelled`); integration test on staging | (idle — already implemented) |
-| 3 | Prod rollout with feature flag; turn on events incrementally | Monitor inbound, validate flows fire correctly |
-| 4 | Phase 2 engagement events (optional) | (idle) |
-| 5+ | Storees disables FDW cron once webhook coverage is verified | Switch off federation worker for GWM project |
+1. Staging + prod API keys
+2. Staging + prod signing secrets
+3. Two test customer IDs to integration-test against
+4. A live "I'll watch" window for the first smoke test
 
-**First handoff package from Storees to GWM (when you're ready to start):**
-1. Staging + prod API keys (one each)
-2. Staging + prod signing secrets (one each)
-3. Two test customer IDs to use during integration
-4. A live "I'll watch for incoming" window for the first smoke test
+**Suggested first commit:** Tier 1 (SDK) for `order_placed` only, gated behind
+a feature flag, in staging. Once that's green for 24h, expand to other events
+and flip prod.
 
-Ping wahab@waioz.com to kick off provisioning.
+---
+
+## FAQ
+
+**Q: Do we have to add tables to our DB?**
+A: No. Tiers 1 and 2 require zero schema changes. Tier 3 has an outbox table
+but is opt-in for the rare case where you can't lose any events.
+
+**Q: What if our app crashes mid-flush?**
+A: Tier 1/2: the in-memory batch is lost. For most events this is fine; the
+FDW federation will catch up the order on its next 5-min tick. For events
+where this matters, upgrade to Tier 3.
+
+**Q: Do we have to publish ALL events or just some?**
+A: Just the ones where latency matters. The FDW federation keeps syncing
+everything else. You can publish just `order_placed` and let FDW handle the
+rest.
+
+**Q: How is this different from the JS SDK in our storefront?**
+A: Same endpoint, same auth. The browser SDK fires user-side events
+(`product_viewed`, `cart_updated`). This server-side integration fires
+events from your backend transactions (`order_placed`, `customer_created`).
+They're complementary; you can use both.
+
+**Q: What's the latency budget?**
+A: Storees adds < 100ms server-side processing per event. Your network +
+your processing dominates. Practical end-to-end latency: 200-500ms for a
+single event call.
