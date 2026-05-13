@@ -35,7 +35,7 @@ export default function DataSourcesPage() {
       />
 
       <p className="text-sm text-text-muted max-w-3xl">
-        Connectors pull customers, products, and orders from a client's stack on demand. Onboarding team commissions one per project — clients don't need to ship any code. After setup, marketing presses <strong>Sync Now</strong> from this page whenever they want fresh data.
+        Connectors pull customers, products, and orders from a client's stack on demand — works for any vertical (BFSI, sporttech, edtech, ecommerce) and any tech stack. Onboarding commissions one per project; clients ship no code. After setup, press <strong>Sync Now</strong> from this page whenever you need fresh data.
       </p>
 
       {isLoading ? (
