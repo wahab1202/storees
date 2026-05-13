@@ -1,9 +1,10 @@
 # Client Onboarding — Storees Event Integration
 
 > **The standard, universal onboarding path for every Storees client.**
-> Same shape for ecommerce, fintech, SaaS, B2B. No DB access required.
-> No bespoke SQL. The same endpoints handle live activity, historical
-> backfill, and aggregate maintenance.
+> Same shape for ecommerce, fintech, edtech, sporttech, SaaS, B2B. No DB
+> access required. No bespoke SQL. The same endpoints handle live activity,
+> historical backfill, and aggregate maintenance — regardless of what the
+> client's "product" actually is (SKU / loan / course / arena / plan).
 
 ---
 
@@ -120,21 +121,99 @@ push it explicitly. Otherwise, the live event pipeline auto-extracts
 products from each `order_placed` event's line items — no separate import
 needed for SKUs that have been sold.
 
+**The product shape is vertical-agnostic.** Every Storees client uses the
+same endpoint with the same envelope; only `product_type` and the
+`attributes` JSONB carry vertical-specific data. Examples per vertical:
+
+**E-commerce (the classic case)**
+```json
+{
+  "product_id": "sku_001",
+  "title": "Wireless Earbuds Pro",
+  "product_type": "Audio",
+  "vendor": "Brand X",
+  "base_price": 4280.00,
+  "currency": "INR",
+  "image_url": "https://...",
+  "status": "active",
+  "collections": ["Summer Sale", "Bestsellers"]
+}
+```
+
+**Banking / Fintech** — loans, insurance, debit/credit cards. `attributes`
+holds the financial-product metadata. Each loan disbursement / card issuance
+fires an `order_placed` event with the loan id as `line_items[0].product_id`.
+```json
+{
+  "product_id": "loan_personal_a",
+  "title": "Personal Loan Plus",
+  "product_type": "personal_loan",
+  "vendor": "Acme Bank",
+  "base_price": null,
+  "currency": "INR",
+  "attributes": {
+    "apr_min": 10.5,
+    "apr_max": 18.0,
+    "max_amount": 500000,
+    "tenure_months_max": 60,
+    "min_credit_score": 700,
+    "category": "unsecured"
+  },
+  "collections": ["Personal Loans", "Featured"]
+}
+```
+
+**EdTech** — courses, certifications, subscriptions. `attributes` holds
+the instructional metadata. Enrollment = an `order_placed` event with
+total = tuition paid.
+```json
+{
+  "product_id": "course_des_101",
+  "title": "Design Fundamentals",
+  "product_type": "course",
+  "vendor": "Skills Academy",
+  "base_price": 4999.00,
+  "currency": "INR",
+  "attributes": {
+    "instructor": "Priya Rao",
+    "duration_weeks": 8,
+    "level": "beginner",
+    "certification": true,
+    "language": "en"
+  },
+  "collections": ["Design", "Beginner-Friendly"]
+}
+```
+
+**SportTech** — arenas, memberships, event bookings. A booking event fires
+`order_placed` with arena id + slot time in properties.
+```json
+{
+  "product_id": "arena_north_a",
+  "title": "North Field — Premium",
+  "product_type": "arena",
+  "base_price": 1200.00,
+  "currency": "INR",
+  "image_url": "https://...",
+  "attributes": {
+    "capacity": 22,
+    "sport": "football",
+    "city": "Chennai",
+    "covered": true,
+    "peak_hour_multiplier": 1.5
+  },
+  "collections": ["Premium Fields"]
+}
+```
+
+**Universal POST shape — same endpoint regardless of vertical:**
 ```bash
 curl -X POST https://api.storees.io/api/v1/import/products \
   -H "Authorization: Bearer sk_live_..." \
   -H "Content-Type: application/json" \
   -d '{
     "products": [
-      {
-        "product_id": "sku_001",
-        "title": "Wireless Earbuds Pro",
-        "product_type": "Audio",
-        "vendor": "Brand X",
-        "image_url": "https://...",
-        "status": "active",
-        "collections": ["Summer Sale", "Bestsellers"]
-      },
+      { /* one of the shapes above */ },
       /* ... up to 1000 per batch ... */
     ]
   }'
@@ -145,9 +224,19 @@ Response: `{ "imported": N, "errors": [...] }`
 What happens server-side:
 - Upserts into `products` table by `(project_id, product_id)`. Existing
   fields preserved if the new payload omits them.
+- `attributes` are **shallow-merged** on top of existing — different events
+  contributing different keys accumulate (a loan event with `apr` + a
+  credit-check event with `credit_score_used` both stay on the row).
 - For each `collections[]` value, upserts a collection (deterministic id
   per name) + links product↔collection in `product_collections`.
 - Same dedup semantics: re-running the same import is a no-op.
+
+**Dashboard labelling per vertical:** the underlying column names
+(`title`, `product_type`, `total_spent`, etc.) stay constant. The Storees
+admin UI displays domain-appropriate labels based on the project's
+`domainType`: "Products" / "Loans" / "Courses" / "Bookings". A banking
+client sees "Total Disbursed" where an e-commerce client sees "Total Spent",
+both backed by the same `customers.total_spent` column.
 
 **Step 2 — upload historical orders**:
 

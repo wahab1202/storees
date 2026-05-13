@@ -38,6 +38,14 @@ export type LineItemForCatalog = {
   productType?: string | null
   product_collection?: string | null
   productCollection?: string | null
+  // Vertical-specific extension. Banking loan disbursed event might send
+  // line_items[0].attributes = { apr: 12.5, tenure: 36 }. EdTech course
+  // enrollment: { duration_weeks: 8, instructor: "Priya" }. The catalogue
+  // upsert preserves these on the product row so segments can filter by
+  // attributes.level = 'beginner' etc.
+  attributes?: Record<string, unknown> | null
+  price?: number | string | null         // per-unit price for this line item
+  currency?: string | null               // ISO 4217
 }
 
 export type ProductImport = {
@@ -48,6 +56,10 @@ export type ProductImport = {
   image_url?: string
   status?: 'active' | 'archived' | 'draft'
   collections?: string[]                 // collection names; auto-upserted
+  // Vertical-specific metadata (banking APR, edtech instructor, etc.)
+  attributes?: Record<string, unknown>
+  base_price?: number
+  currency?: string                      // ISO 4217
 }
 
 // ── Normalisation helpers ────────────────────────────────────────────────
@@ -70,14 +82,24 @@ function normaliseLineItem(item: LineItemForCatalog): {
   title: string | null
   productType: string | null
   collection: string | null
+  attributes: Record<string, unknown> | null
+  basePrice: number | null
+  currency: string | null
 } | null {
   const productId = trimOrNull(item.product_id ?? item.productId)
   if (!productId) return null
+  const priceRaw = item.price
+  const priceNum = priceRaw == null ? null
+    : typeof priceRaw === 'number' ? priceRaw
+    : Number.isFinite(Number(priceRaw)) ? Number(priceRaw) : null
   return {
     productId,
     title: trimOrNull(item.product_name ?? item.productName),
     productType: trimOrNull(item.product_type ?? item.productType),
     collection: trimOrNull(item.product_collection ?? item.productCollection),
+    attributes: item.attributes && typeof item.attributes === 'object' ? item.attributes : null,
+    basePrice: priceNum,
+    currency: trimOrNull(item.currency),
   }
 }
 
@@ -95,22 +117,40 @@ type UpsertResult = {
  * to call from the event worker on every order — bulk SQL, ON CONFLICT
  * doing the heavy lifting.
  */
+type NormalisedCatalogItem = {
+  productId: string
+  title: string | null
+  productType: string | null
+  collection: string | null
+  attributes: Record<string, unknown> | null
+  basePrice: number | null
+  currency: string | null
+}
+
 async function upsertCatalogBatch(
   projectId: string,
-  items: Array<{ productId: string; title: string | null; productType: string | null; collection: string | null }>,
+  items: NormalisedCatalogItem[],
 ): Promise<UpsertResult> {
   if (items.length === 0) return { productsUpserted: 0, collectionsUpserted: 0, linksUpserted: 0 }
 
   // ── Phase 1: dedupe products by id (latest non-empty values win) ──
   // Same product can appear in multiple line items per batch; collapse
   // before INSERT to avoid "ON CONFLICT cannot affect row a second time".
-  const byProductId = new Map<string, { productId: string; title: string | null; productType: string | null }>()
+  const byProductId = new Map<string, Omit<NormalisedCatalogItem, 'collection'>>()
   for (const item of items) {
     const existing = byProductId.get(item.productId)
+    // Shallow-merge attributes so multiple line items contributing different
+    // keys (e.g. one carries `apr`, another carries `tenure`) accumulate.
+    const mergedAttributes = item.attributes
+      ? { ...(existing?.attributes ?? {}), ...item.attributes }
+      : existing?.attributes ?? null
     byProductId.set(item.productId, {
       productId: item.productId,
       title: item.title ?? existing?.title ?? null,
       productType: item.productType ?? existing?.productType ?? null,
+      attributes: mergedAttributes,
+      basePrice: item.basePrice ?? existing?.basePrice ?? null,
+      currency: item.currency ?? existing?.currency ?? null,
     })
   }
 
@@ -122,6 +162,9 @@ async function upsertCatalogBatch(
     vendor: '',
     imageUrl: null,
     status: 'active' as const,
+    attributes: p.attributes ?? {},
+    basePrice: p.basePrice != null ? p.basePrice.toString() : null,
+    currency: p.currency ? p.currency.slice(0, 3) : null,
   }))
 
   const upsertedProducts = await db
@@ -140,6 +183,13 @@ async function upsertCatalogBatch(
           WHEN EXCLUDED.product_type <> '' THEN EXCLUDED.product_type
           ELSE ${products.productType}
         END`,
+        // Attributes: shallow-merge incoming keys on top of existing JSONB so
+        // different events contributing different fields accumulate cleanly.
+        // A banking loan event might carry { apr } while a later credit-check
+        // event carries { credit_score_used } — both stay on the product row.
+        attributes: sql`${products.attributes} || EXCLUDED.attributes`,
+        basePrice: sql`COALESCE(EXCLUDED.base_price, ${products.basePrice})`,
+        currency: sql`COALESCE(EXCLUDED.currency, ${products.currency})`,
         updatedAt: new Date(),
       },
     })
@@ -257,7 +307,8 @@ export async function bulkUpsertProducts(
   if (valid.length === 0) return { imported: 0, errors }
 
   // First pass: rich-shape upsert for products themselves (vendor, image,
-  // status that line-item path doesn't have).
+  // status, attributes, base_price, currency — fields the line-item path
+  // doesn't necessarily carry but the bulk import API does).
   const productRows = valid.map(p => ({
     projectId,
     shopifyProductId: p.product_id.slice(0, 255),
@@ -266,6 +317,9 @@ export async function bulkUpsertProducts(
     vendor: (p.vendor ?? '').slice(0, 255),
     imageUrl: p.image_url ? p.image_url.slice(0, 2048) : null,
     status: (p.status ?? 'active') as 'active' | 'archived' | 'draft',
+    attributes: p.attributes && typeof p.attributes === 'object' ? p.attributes : {},
+    basePrice: p.base_price != null && Number.isFinite(p.base_price) ? p.base_price.toString() : null,
+    currency: p.currency ? p.currency.slice(0, 3) : null,
   }))
 
   const upsertedProducts = await db
@@ -279,6 +333,9 @@ export async function bulkUpsertProducts(
         vendor: sql`CASE WHEN EXCLUDED.vendor <> '' THEN EXCLUDED.vendor ELSE ${products.vendor} END`,
         imageUrl: sql`COALESCE(EXCLUDED.image_url, ${products.imageUrl})`,
         status: sql`EXCLUDED.status`,
+        attributes: sql`${products.attributes} || EXCLUDED.attributes`,
+        basePrice: sql`COALESCE(EXCLUDED.base_price, ${products.basePrice})`,
+        currency: sql`COALESCE(EXCLUDED.currency, ${products.currency})`,
         updatedAt: new Date(),
       },
     })
@@ -286,13 +343,10 @@ export async function bulkUpsertProducts(
 
   // Second pass: collections + junction via the shared upsertCatalogBatch.
   // Build pseudo-line-items so we reuse the dedup + link logic.
-  const pseudoLineItems: Array<{ productId: string; title: string | null; productType: string | null; collection: string | null }> = []
+  const pseudoLineItems: NormalisedCatalogItem[] = []
   for (const p of valid) {
     const collArr = Array.isArray(p.collections) ? p.collections : []
-    if (collArr.length === 0) {
-      // No collections — still register the product (already done above) but skip junction
-      continue
-    }
+    if (collArr.length === 0) continue
     for (const collName of collArr) {
       const name = trimOrNull(collName)
       if (!name) continue
@@ -301,6 +355,9 @@ export async function bulkUpsertProducts(
         title: trimOrNull(p.title),
         productType: trimOrNull(p.product_type),
         collection: name,
+        attributes: null,    // already applied in first pass
+        basePrice: null,
+        currency: null,
       })
     }
   }

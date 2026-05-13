@@ -203,12 +203,30 @@ export const events = pgTable('events', {
 export const products = pgTable('products', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').notNull().references(() => projects.id),
+  // shopify_product_id is a historical name; semantically it's the external
+  // id from ANY source system (Shopify SKU, Medusa product id, loan id from
+  // a banking core, course id from an LMS, arena id from a venue system).
   shopifyProductId: varchar('shopify_product_id', { length: 255 }).notNull(),
   title: varchar('title', { length: 500 }).notNull(),
+  // product_type is the vertical-specific category label:
+  //   ecommerce: "Audio" / "Apparel"
+  //   banking:   "personal_loan" / "home_loan" / "credit_card"
+  //   edtech:    "course" / "certification" / "subscription"
+  //   sporttech: "arena" / "membership" / "booking"
   productType: varchar('product_type', { length: 255 }).default(''),
   vendor: varchar('vendor', { length: 255 }).default(''),
   imageUrl: varchar('image_url', { length: 2048 }),
   status: varchar('status', { length: 20 }).notNull().default('active'),
+  // Vertical-specific metadata. Domain registry declares which keys are
+  // filterable in segments. Banking: { apr_min, max_amount, tenure_months }.
+  // EdTech: { instructor, duration_weeks, level }. SportTech: { capacity,
+  // sport, city }. GIN-indexed for fast containment queries.
+  attributes: jsonb('attributes').notNull().default('{}'),
+  // List price + currency. Every vertical has these even if implicit today:
+  // loan principal, course tuition, arena hourly rate. Optional because
+  // some products are quote-based (custom loans, enterprise courses).
+  basePrice: decimal('base_price', { precision: 12, scale: 2 }),
+  currency: varchar('currency', { length: 3 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

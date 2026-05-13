@@ -94,12 +94,23 @@ export type LineItem = {
 export type Product = {
   id: string
   projectId: string
+  /** External id from the source system (Shopify SKU, banking loan id,
+   *  LMS course id, venue arena id, etc.). Column is named
+   *  `shopify_product_id` for historical reasons but is source-agnostic. */
   shopifyProductId: string
   title: string
+  /** Vertical-specific category: "Audio", "personal_loan", "course", "arena" */
   productType: string
   vendor: string
   imageUrl: string | null
   status: 'active' | 'draft' | 'archived'
+  /** Vertical-specific JSONB metadata. Examples:
+   *  - banking:  { apr_min, apr_max, max_amount, tenure_months_max }
+   *  - edtech:   { instructor, duration_weeks, level, certification }
+   *  - sporttech:{ capacity, sport, city, covered } */
+  attributes: Record<string, unknown>
+  basePrice: string | null   // numeric column comes back as string
+  currency: string | null
   createdAt: Date
   updatedAt: Date
 }
