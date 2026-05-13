@@ -65,8 +65,10 @@ type SourceConfig = {
 }
 
 async function refreshMedusaGwm(projectId: string, config: SourceConfig): Promise<{ stats: RefreshStats; nextConfig: SourceConfig }> {
-  // Step 1: refresh the customer-attr MV (live FDW pull from gwm)
-  await db.execute(sql`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_gwm_customer_attrs`)
+  // Step 1: refresh the customer-attr MV (live FDW pull from gwm). Wrapped
+  // in a SECURITY DEFINER function so the worker's app role doesn't need to
+  // own the MV — see gwm_federated_permissions_fix.sql for context.
+  await db.execute(sql`SELECT refresh_gwm_customer_attrs_mv()`)
 
   // Step 2: copy MV → customers columns (only diffs)
   const attrsResult = await db.execute(sql`SELECT * FROM sync_gwm_customer_attrs()`)
