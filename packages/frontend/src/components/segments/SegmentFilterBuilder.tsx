@@ -1,12 +1,22 @@
 'use client'
 
-import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { createContext, useContext, useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2 } from 'lucide-react'
+import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2, FolderPlus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
-import type { FilterConfig, FilterRule, FilterOperator, DomainFieldDef } from '@storees/shared'
+import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef } from '@storees/shared'
+
+// Recursive nesting depth cap. Past 3 levels the UX is unreadable; almost
+// every real-world segment can be expressed in ≤2 levels anyway.
+const MAX_NESTING_DEPTH = 3
+
+type RuleOrGroup = FilterRule | FilterGroup
+
+function isGroup(item: RuleOrGroup): item is FilterGroup {
+  return 'type' in item && item.type === 'group'
+}
 
 const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }[]> = {
   number: [
@@ -234,6 +244,324 @@ function ProductCategoryDropdown({ value, onChange }: { value: string; onChange:
   )
 }
 
+// ============ Schema context — avoids prop-drilling through nested groups ============
+
+type SchemaCtx = {
+  schemaFields: DomainFieldDef[]
+  categories: string[]
+  getFieldDef: (field: string) => DomainFieldDef | undefined
+  getFieldType: (field: string) => string
+  getOperators: (field: string) => Array<{ value: FilterOperator; label: string }>
+  firstField: string
+  defaultRuleFor: (field: string) => FilterRule
+}
+
+const SchemaContext = createContext<SchemaCtx | null>(null)
+
+function useSchema(): SchemaCtx {
+  const ctx = useContext(SchemaContext)
+  if (!ctx) throw new Error('useSchema must be inside SchemaContext')
+  return ctx
+}
+
+// ============ RuleRow — renders one FilterRule ============
+
+function RuleRow({
+  rule,
+  canRemove,
+  onChange,
+  onRemove,
+}: {
+  rule: FilterRule
+  canRemove: boolean
+  onChange: (updates: Partial<FilterRule>) => void
+  onRemove: () => void
+}) {
+  const { schemaFields, categories, getFieldDef, getFieldType, getOperators } = useSchema()
+  const fieldType = getFieldType(rule.field)
+  const fieldDef = getFieldDef(rule.field)
+  const operators = getOperators(rule.field)
+
+  const handleFieldChange = (newField: string) => {
+    if (newField === rule.field) return
+    const newType = getFieldType(newField)
+    const ops = getOperators(newField)
+    const newDef = getFieldDef(newField)
+    const defaultValue = newType === 'number' ? 0
+      : newType === 'boolean' ? true
+      : newType === 'select' ? (newDef?.optionPairs?.[0]?.value ?? newDef?.options?.[0] ?? '')
+      : ''
+    onChange({
+      field: newField,
+      operator: ops[0]?.value as FilterOperator,
+      value: defaultValue,
+    })
+  }
+
+  const handleOperatorChange = (op: FilterOperator) => {
+    const updates: Partial<FilterRule> = { operator: op }
+    // Switching to/from 'between' requires array vs scalar value shape
+    if (op === 'between' && !Array.isArray(rule.value)) updates.value = [0, 100]
+    if (op !== 'between' && Array.isArray(rule.value)) updates.value = 0
+    onChange(updates)
+  }
+
+  return (
+    <div className="group flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-white hover:border-border-focus/50 transition-colors">
+      <GripVertical className="h-4 w-4 text-text-muted/40 flex-shrink-0 hidden sm:block" />
+
+      <select
+        value={rule.field}
+        onChange={e => handleFieldChange(e.target.value)}
+        className={cn(selectClass, 'min-w-0 w-full sm:w-auto sm:min-w-[180px]')}
+      >
+        {categories.map(cat => (
+          <optgroup key={cat} label={cat}>
+            {schemaFields.filter(f => f.category === cat).map(f => (
+              <option key={f.field} value={f.field}>{f.label}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+
+      <select
+        value={rule.operator}
+        onChange={e => handleOperatorChange(e.target.value as FilterOperator)}
+        className={cn(selectClass, 'min-w-0 w-full sm:w-auto sm:min-w-[150px]')}
+      >
+        {operators.map(op => (
+          <option key={op.value} value={op.value}>{op.label}</option>
+        ))}
+      </select>
+
+      {needsValue(rule.operator) && (
+        fieldType === 'product' ? (
+          <ProductSearchDropdown
+            value={rule.value as string}
+            onChange={val => onChange({ value: val })}
+          />
+        ) : fieldType === 'product_category' ? (
+          <ProductCategoryDropdown
+            value={rule.value as string}
+            onChange={val => onChange({ value: val })}
+          />
+        ) : fieldType === 'collection' ? (
+          <CollectionDropdown
+            value={rule.value as string}
+            onChange={val => onChange({ value: val })}
+          />
+        ) : fieldType === 'select' && (fieldDef?.optionPairs || fieldDef?.options) ? (
+          <select
+            value={rule.value as string}
+            onChange={e => onChange({ value: e.target.value })}
+            className={cn(selectClass, 'min-w-[140px]')}
+          >
+            <option value="">Select...</option>
+            {fieldDef.optionPairs
+              ? fieldDef.optionPairs.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))
+              : fieldDef.options!.map(opt => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+          </select>
+        ) : rule.operator === 'between' ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={Array.isArray(rule.value) ? rule.value[0] : 0}
+              onChange={e => onChange({ value: [Number(e.target.value), Array.isArray(rule.value) ? rule.value[1] : 100] })}
+              className={cn(inputClass, 'w-24')}
+            />
+            <span className="text-xs font-medium text-text-muted">and</span>
+            <input
+              type="number"
+              value={Array.isArray(rule.value) ? rule.value[1] : 100}
+              onChange={e => onChange({ value: [Array.isArray(rule.value) ? rule.value[0] : 0, Number(e.target.value)] })}
+              className={cn(inputClass, 'w-24')}
+            />
+          </div>
+        ) : fieldType === 'number' ? (
+          <input
+            type="number"
+            value={rule.value as number}
+            onChange={e => onChange({ value: Number(e.target.value) })}
+            className={cn(inputClass, 'w-28')}
+          />
+        ) : fieldType === 'date' ? (
+          <input
+            type="date"
+            value={rule.value as string}
+            onChange={e => onChange({ value: e.target.value })}
+            className={cn(inputClass, 'w-40')}
+          />
+        ) : (
+          <input
+            type="text"
+            value={rule.value as string}
+            onChange={e => onChange({ value: e.target.value })}
+            placeholder="Enter value..."
+            className={cn(inputClass, 'w-44')}
+          />
+        )
+      )}
+
+      <div className="flex-1" />
+
+      <button
+        onClick={onRemove}
+        disabled={!canRemove}
+        className={cn(
+          'p-1.5 rounded-md transition-colors',
+          canRemove
+            ? 'text-text-muted hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100'
+            : 'text-text-muted/30 cursor-not-allowed',
+        )}
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
+// ============ GroupBuilder — recursive, renders a FilterConfig or FilterGroup ============
+
+type GroupModel = { logic: 'AND' | 'OR'; rules: RuleOrGroup[] }
+
+function GroupBuilder({
+  group,
+  onChange,
+  onRemove,        // only set when this is a nested group (root has no remove)
+  depth,
+}: {
+  group: GroupModel
+  onChange: (next: GroupModel) => void
+  onRemove?: () => void
+  depth: number
+}) {
+  const { firstField, defaultRuleFor } = useSchema()
+  const rules = group.rules
+
+  const updateItem = (index: number, item: RuleOrGroup) => {
+    const next = [...rules]
+    next[index] = item
+    onChange({ ...group, rules: next })
+  }
+
+  const removeItem = (index: number) => {
+    onChange({ ...group, rules: rules.filter((_, i) => i !== index) })
+  }
+
+  const addRule = () => {
+    onChange({ ...group, rules: [...rules, defaultRuleFor(firstField)] })
+  }
+
+  const addGroup = () => {
+    // Nested group starts with one rule so it's visible + functional
+    const newGroup: FilterGroup = {
+      type: 'group',
+      logic: 'AND',
+      rules: [defaultRuleFor(firstField)],
+    }
+    onChange({ ...group, rules: [...rules, newGroup] })
+  }
+
+  const toggleLogic = () => {
+    onChange({ ...group, logic: group.logic === 'AND' ? 'OR' : 'AND' })
+  }
+
+  const isRoot = depth === 0
+  const canNest = depth + 1 < MAX_NESTING_DEPTH
+
+  return (
+    <div
+      className={cn(
+        'relative',
+        !isRoot && 'rounded-xl border bg-surface/30 p-3',
+        !isRoot && (group.logic === 'AND' ? 'border-accent/30' : 'border-blue-300/60'),
+      )}
+    >
+      {!isRoot && (
+        <div className="flex items-center justify-between mb-2 px-1">
+          <span className={cn(
+            'text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded',
+            group.logic === 'AND' ? 'bg-accent/10 text-accent' : 'bg-blue-100 text-blue-700',
+          )}>
+            Group · match {group.logic}
+          </span>
+          {onRemove && (
+            <button
+              onClick={onRemove}
+              className="p-1 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 transition-colors"
+              aria-label="Remove group"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="space-y-0">
+        {rules.map((item, index) => (
+          <div key={index} className="relative">
+            {index > 0 && (
+              <div className="flex items-center py-2 pl-3">
+                <button
+                  onClick={toggleLogic}
+                  className={cn(
+                    'relative z-10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider rounded-full border transition-colors',
+                    group.logic === 'AND'
+                      ? 'bg-accent/10 text-accent border-accent/20 hover:bg-accent/20'
+                      : 'bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100',
+                  )}
+                >
+                  {group.logic}
+                </button>
+              </div>
+            )}
+
+            {isGroup(item) ? (
+              <GroupBuilder
+                group={item}
+                onChange={(next: GroupModel) => updateItem(index, { type: 'group', ...next })}
+                onRemove={() => removeItem(index)}
+                depth={depth + 1}
+              />
+            ) : (
+              <RuleRow
+                rule={item}
+                canRemove={rules.length > 1 || !isRoot}
+                onChange={(updates: Partial<FilterRule>) => updateItem(index, { ...item, ...updates })}
+                onRemove={() => removeItem(index)}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 pl-3 flex flex-wrap items-center gap-2">
+        <button
+          onClick={addRule}
+          className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-accent hover:text-accent-hover border border-dashed border-accent/30 hover:border-accent/60 rounded-lg transition-colors hover:bg-accent/5"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add condition
+        </button>
+        {canNest && (
+          <button
+            onClick={addGroup}
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-text-secondary hover:text-text-primary border border-dashed border-border hover:border-text-muted/40 rounded-lg transition-colors hover:bg-surface"
+            title="Group conditions together with their own AND/OR logic"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+            Add group
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ============ Main Component ============
 
 type SegmentFilterBuilderProps = {
@@ -243,25 +571,15 @@ type SegmentFilterBuilderProps = {
 
 export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilderProps) {
   const { data: schemaData, isLoading: schemaLoading } = useDomainSchema()
-  const rules = filters.rules as FilterRule[]
-
-  // Build category → fields map from schema
   const schemaFields: DomainFieldDef[] = schemaData?.data.fields ?? []
   const categories = schemaData?.data.categories ?? []
 
-  function getFieldDef(field: string): DomainFieldDef | undefined {
-    return schemaFields.find(f => f.field === field)
-  }
-
-  function getFieldType(field: string): string {
-    return getFieldDef(field)?.type ?? 'string'
-  }
-
-  function getFieldLabel(field: string): string {
-    return getFieldDef(field)?.label ?? field.replace(/_/g, ' ')
-  }
-
-  function getOperators(field: string) {
+  // Schema helpers exposed to nested components via context — avoids
+  // threading them through every level of recursion.
+  const getFieldDef = (field: string): DomainFieldDef | undefined =>
+    schemaFields.find(f => f.field === field)
+  const getFieldType = (field: string): string => getFieldDef(field)?.type ?? 'string'
+  const getOperators = (field: string) => {
     const def = getFieldDef(field)
     if (def?.operators?.length) {
       return def.operators.map(op => ({
@@ -271,46 +589,16 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
     }
     return OPERATORS_BY_TYPE[getFieldType(field)] ?? OPERATORS_BY_TYPE.string
   }
-
   const firstField = schemaFields[0]?.field ?? 'email'
-
-  const updateRule = (index: number, updates: Partial<FilterRule>) => {
-    const newRules = [...rules]
-    const current = newRules[index]
-
-    if (updates.field && updates.field !== current.field) {
-      const newType = getFieldType(updates.field)
-      const ops = getOperators(updates.field)
-      updates.operator = ops[0]?.value as FilterOperator
-      updates.value = newType === 'number' ? 0 : newType === 'boolean' ? true : ''
-    }
-
-    if (updates.operator === 'between' && !Array.isArray(current.value)) {
-      updates.value = [0, 100]
-    }
-
-    newRules[index] = { ...current, ...updates }
-    onChange({ ...filters, rules: newRules })
-  }
-
-  const addRule = () => {
-    const def = getFieldDef(firstField)
-    const ops = getOperators(firstField)
-    const op = (ops[0]?.value ?? 'is') as FilterOperator
+  const defaultRuleFor = (field: string): FilterRule => {
+    const def = getFieldDef(field)
+    const ops = getOperators(field)
     const type = def?.type ?? 'string'
-    const defaultValue = type === 'number' ? 0 : type === 'boolean' ? true : type === 'select' ? (def?.optionPairs?.[0]?.value ?? def?.options?.[0] ?? '') : ''
-    onChange({
-      ...filters,
-      rules: [...rules, { field: firstField, operator: op, value: defaultValue }],
-    })
-  }
-
-  const removeRule = (index: number) => {
-    onChange({ ...filters, rules: rules.filter((_, i) => i !== index) })
-  }
-
-  const toggleLogic = () => {
-    onChange({ ...filters, logic: filters.logic === 'AND' ? 'OR' : 'AND' })
+    const value = type === 'number' ? 0
+      : type === 'boolean' ? true
+      : type === 'select' ? (def?.optionPairs?.[0]?.value ?? def?.options?.[0] ?? '')
+      : ''
+    return { field, operator: (ops[0]?.value ?? 'is') as FilterOperator, value }
   }
 
   if (schemaLoading) {
@@ -323,183 +611,37 @@ export function SegmentFilterBuilder({ filters, onChange }: SegmentFilterBuilder
   }
 
   return (
-    <div className="relative">
-      {rules.length > 1 && (
-        <div className="absolute left-6 top-[44px] bottom-[44px] w-px bg-border" />
-      )}
-
-      <div className="space-y-0">
-        {rules.map((rule, index) => {
-          const fieldType = getFieldType(rule.field)
-          const fieldDef = getFieldDef(rule.field)
-          const operators = getOperators(rule.field)
-
-          return (
-            <div key={index} className="relative">
-              {index > 0 && (
-                <div className="flex items-center py-2 pl-3">
-                  <button
-                    onClick={toggleLogic}
-                    className={cn(
-                      'relative z-10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider rounded-full border transition-colors',
-                      filters.logic === 'AND'
-                        ? 'bg-accent/10 text-accent border-accent/20 hover:bg-accent/20'
-                        : 'bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100',
-                    )}
-                  >
-                    {filters.logic}
-                  </button>
-                </div>
-              )}
-
-              <div className="group flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-white hover:border-border-focus/50 transition-colors">
-                <GripVertical className="h-4 w-4 text-text-muted/40 flex-shrink-0 hidden sm:block" />
-
-                {/* Field selector */}
-                <select
-                  value={rule.field}
-                  onChange={e => updateRule(index, { field: e.target.value })}
-                  className={cn(selectClass, 'min-w-0 w-full sm:w-auto sm:min-w-[180px]')}
-                >
-                  {categories.map(cat => (
-                    <optgroup key={cat} label={cat}>
-                      {schemaFields.filter(f => f.category === cat).map(f => (
-                        <option key={f.field} value={f.field}>{f.label}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-
-                {/* Operator selector */}
-                <select
-                  value={rule.operator}
-                  onChange={e => updateRule(index, { operator: e.target.value as FilterOperator })}
-                  className={cn(selectClass, 'min-w-0 w-full sm:w-auto sm:min-w-[150px]')}
-                >
-                  {operators.map(op => (
-                    <option key={op.value} value={op.value}>{op.label}</option>
-                  ))}
-                </select>
-
-                {/* Value input */}
-                {needsValue(rule.operator) && (
-                  fieldType === 'product' ? (
-                    <ProductSearchDropdown
-                      value={rule.value as string}
-                      onChange={val => updateRule(index, { value: val })}
-                    />
-                  ) : fieldType === 'product_category' ? (
-                    <ProductCategoryDropdown
-                      value={rule.value as string}
-                      onChange={val => updateRule(index, { value: val })}
-                    />
-                  ) : fieldType === 'collection' ? (
-                    <CollectionDropdown
-                      value={rule.value as string}
-                      onChange={val => updateRule(index, { value: val })}
-                    />
-                  ) : fieldType === 'select' && (fieldDef?.optionPairs || fieldDef?.options) ? (
-                    <select
-                      value={rule.value as string}
-                      onChange={e => updateRule(index, { value: e.target.value })}
-                      className={cn(selectClass, 'min-w-[140px]')}
-                    >
-                      <option value="">Select...</option>
-                      {fieldDef.optionPairs
-                        ? fieldDef.optionPairs.map(opt => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                          ))
-                        : fieldDef.options!.map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                    </select>
-                  ) : rule.operator === 'between' ? (
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        value={Array.isArray(rule.value) ? rule.value[0] : 0}
-                        onChange={e => updateRule(index, { value: [Number(e.target.value), Array.isArray(rule.value) ? rule.value[1] : 100] })}
-                        className={cn(inputClass, 'w-24')}
-                      />
-                      <span className="text-xs font-medium text-text-muted">and</span>
-                      <input
-                        type="number"
-                        value={Array.isArray(rule.value) ? rule.value[1] : 100}
-                        onChange={e => updateRule(index, { value: [Array.isArray(rule.value) ? rule.value[0] : 0, Number(e.target.value)] })}
-                        className={cn(inputClass, 'w-24')}
-                      />
-                    </div>
-                  ) : fieldType === 'number' ? (
-                    <input
-                      type="number"
-                      value={rule.value as number}
-                      onChange={e => updateRule(index, { value: Number(e.target.value) })}
-                      className={cn(inputClass, 'w-28')}
-                    />
-                  ) : fieldType === 'date' ? (
-                    <input
-                      type="date"
-                      value={rule.value as string}
-                      onChange={e => updateRule(index, { value: e.target.value })}
-                      className={cn(inputClass, 'w-40')}
-                    />
-                  ) : (
-                    <input
-                      type="text"
-                      value={rule.value as string}
-                      onChange={e => updateRule(index, { value: e.target.value })}
-                      placeholder="Enter value..."
-                      className={cn(inputClass, 'w-44')}
-                    />
-                  )
-                )}
-
-                <div className="flex-1" />
-
-                <button
-                  onClick={() => removeRule(index)}
-                  disabled={rules.length <= 1}
-                  className={cn(
-                    'p-1.5 rounded-md transition-colors',
-                    rules.length > 1
-                      ? 'text-text-muted hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100'
-                      : 'text-text-muted/30 cursor-not-allowed',
-                  )}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="mt-3 pl-3">
-        <button
-          onClick={addRule}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-accent hover:text-accent-hover border border-dashed border-accent/30 hover:border-accent/60 rounded-lg transition-colors hover:bg-accent/5"
-        >
-          <Plus className="h-4 w-4" />
-          Add condition
-        </button>
-      </div>
-    </div>
+    <SchemaContext.Provider value={{
+      schemaFields, categories, getFieldDef, getFieldType, getOperators, firstField, defaultRuleFor,
+    }}>
+      <GroupBuilder
+        group={{ logic: filters.logic, rules: filters.rules as RuleOrGroup[] }}
+        onChange={(next: GroupModel) => onChange({ logic: next.logic, rules: next.rules })}
+        depth={0}
+      />
+    </SchemaContext.Provider>
   )
 }
 
-/** Generates a human-readable summary of a filter config (field labels may be IDs if schema not loaded) */
+/** Generates a human-readable summary of a filter config (handles nested groups) */
 export function filterSummary(filters: FilterConfig): string {
-  const rules = filters.rules as FilterRule[]
-  if (rules.length === 0) return 'No conditions'
+  return summariseRules(filters.rules as RuleOrGroup[], filters.logic)
+}
 
-  const parts = rules.slice(0, 3).map(rule => {
-    const field = rule.field.replace(/_/g, ' ')
-    const opLabel = rule.operator.replace(/_/g, ' ')
-    if (['is_true', 'is_false'].includes(rule.operator)) return `${field} ${opLabel}`
-    if (['has_purchased', 'has_not_purchased'].includes(rule.operator)) return `${opLabel} "${rule.value}"`
-    return `${field} ${opLabel} ${rule.value}`
+function summariseRules(items: RuleOrGroup[], logic: 'AND' | 'OR'): string {
+  if (items.length === 0) return 'No conditions'
+
+  const parts = items.slice(0, 3).map(item => {
+    if (isGroup(item)) {
+      return `(${summariseRules(item.rules, item.logic)})`
+    }
+    const field = item.field.replace(/_/g, ' ')
+    const opLabel = item.operator.replace(/_/g, ' ')
+    if (['is_true', 'is_false'].includes(item.operator)) return `${field} ${opLabel}`
+    if (['has_purchased', 'has_not_purchased'].includes(item.operator)) return `${opLabel} "${item.value}"`
+    return `${field} ${opLabel} ${item.value}`
   })
 
-  const joined = parts.join(` ${filters.logic} `)
-  return rules.length > 3 ? `${joined} (+${rules.length - 3} more)` : joined
+  const joined = parts.join(` ${logic} `)
+  return items.length > 3 ? `${joined} (+${items.length - 3} more)` : joined
 }

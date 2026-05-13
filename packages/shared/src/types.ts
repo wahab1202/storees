@@ -376,11 +376,14 @@ export type FilterConfig = {
   rules: (FilterRule | FilterGroup)[]
 }
 
-/** Nested group — allows AND within OR and vice versa */
+/** Nested group — allows AND within OR and vice versa.
+ *  Groups can contain rules or further groups (recursive). The segment
+ *  evaluator handles arbitrary depth via `ruleOrGroupToSql`. The UI caps
+ *  practical depth at 3 levels for usability. */
 export type FilterGroup = {
   type: 'group'
   logic: 'AND' | 'OR'
-  rules: FilterRule[]
+  rules: (FilterRule | FilterGroup)[]
 }
 
 export type FilterRule = {

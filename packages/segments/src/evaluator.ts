@@ -55,7 +55,9 @@ function ruleOrGroupToSql(item: FilterRule | FilterGroup): SQL {
 }
 
 function groupToSql(group: FilterGroup): SQL {
-  const clauses = group.rules.map(ruleToSql)
+  // Groups can contain rules OR nested groups. Recurse through
+  // ruleOrGroupToSql so arbitrary depth works.
+  const clauses = group.rules.map(ruleOrGroupToSql)
   if (clauses.length === 0) return sql`TRUE`
   if (clauses.length === 1) return clauses[0]
   return group.logic === 'AND' ? and(...clauses)! : or(...clauses)!
@@ -493,7 +495,14 @@ export function evaluateFilter(filters: FilterConfig, customer: Customer): boole
 }
 
 function evaluateGroup(group: FilterGroup, customer: Customer): boolean {
-  const results = group.rules.map(rule => evaluateRule(rule, customer))
+  // Recurse through nested groups — mirrors groupToSql so the SQL and in-memory
+  // paths produce identical results.
+  const results = group.rules.map(item => {
+    if ('type' in item && item.type === 'group') {
+      return evaluateGroup(item, customer)
+    }
+    return evaluateRule(item as FilterRule, customer)
+  })
   return group.logic === 'AND'
     ? results.every(Boolean)
     : results.some(Boolean)
