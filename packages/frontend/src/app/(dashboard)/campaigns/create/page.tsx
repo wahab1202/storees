@@ -11,6 +11,7 @@ import { useEmailSenders } from '@/hooks/useEmailSenders'
 import {
   useRefreshTemplateStatus,
   useSubmitWhatsappTemplate,
+  useTestSendWhatsappTemplate,
   useWhatsappProviderStatus,
   useWhatsappTemplates,
   useSyncWhatsappTemplates,
@@ -2233,6 +2234,8 @@ function Step2WhatsappContent({
   const providerStatus = useWhatsappProviderStatus()
   const submitTemplate = useSubmitWhatsappTemplate()
   const refreshStatus = useRefreshTemplateStatus()
+  const testSend = useTestSendWhatsappTemplate()
+  const [testPhone, setTestPhone] = useState('')
   const approved = templates.filter(t => t.status === 'APPROVED')
   const pending = templates.filter(t => !['APPROVED'].includes(t.status))
   const selected = approved.find(t => t.id === selectedTemplateId) ?? null
@@ -2535,20 +2538,11 @@ function Step2WhatsappContent({
           </div>
         )}
         <div className="p-5 bg-[#e5ddd5] min-h-[360px]">
-          <div className="ml-auto max-w-[280px] rounded-lg bg-[#dcf8c6] px-3 py-2 shadow-sm">
-            <p className="whitespace-pre-wrap text-sm text-slate-900">{previewBody || 'Select an approved template to preview it.'}</p>
-            {selected?.footer && <p className="mt-2 text-[11px] text-slate-500">{selected.footer}</p>}
-            {selected?.buttons && selected.buttons.length > 0 && (
-              <div className="mt-2 space-y-1 border-t border-green-200 pt-2">
-                {selected.buttons.map((button, idx) => (
-                  <div key={`${button.text}-${idx}`} className="text-center text-xs font-medium text-blue-600">
-                    {button.text}
-                  </div>
-                ))}
-              </div>
-            )}
-            <p className="mt-1 text-right text-[10px] text-slate-500">12:45</p>
-          </div>
+          <WhatsappBubblePreview
+            template={selected}
+            previewBody={previewBody}
+            substitutions={renderedPreview.data?.data.substitutions}
+          />
           {selected && (
             <div className="mt-4 rounded-lg bg-white/80 border border-white/70 p-3">
               <p className="text-xs font-medium text-slate-700">Template details</p>
@@ -2568,8 +2562,121 @@ function Step2WhatsappContent({
               )}
             </div>
           )}
+
+          {/* Test send panel — fires a single rendered template to an
+              admin-provided phone before launching the campaign. Doesn't
+              touch the campaign send pipeline or frequency caps; pure
+              "let me eyeball it on my phone first". */}
+          {selected && (
+            <div className="mt-4 rounded-lg bg-white border border-border p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-text-primary">Send a test message</p>
+                <span className="text-[10px] text-text-muted">E.164 format · doesn't count against caps</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="tel"
+                  value={testPhone}
+                  onChange={e => setTestPhone(e.target.value)}
+                  placeholder="+919876543210"
+                  className={cn(inputClass, 'h-8 flex-1 min-w-[180px]')}
+                />
+                <button
+                  type="button"
+                  onClick={() => testSend.mutate({
+                    templateId: selected.id,
+                    phone: testPhone.trim(),
+                    variables,
+                    sampleCustomerId: sampleCustomerId || undefined,
+                  })}
+                  disabled={!testPhone.trim() || testSend.isPending}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                >
+                  {testSend.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                  Send test
+                </button>
+              </div>
+              {testSend.data?.data && (
+                <p className="text-[11px] text-emerald-700">
+                  ✓ Delivered to {testSend.data.data.to} (message {testSend.data.data.messageId.slice(0, 18)}…)
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * WhatsApp message bubble preview — renders a Meta-style template card so
+ * the admin can eyeball the final result inside the campaign builder before
+ * pressing send. Mimics what the recipient will see on their phone:
+ *   - Header: text (bold) / image / video / document placeholder
+ *   - Body: with variables interpolated from the preview substitutions map
+ *   - Footer (if set on the template)
+ *   - Buttons: distinguished by type (URL → ↗, Phone → phone icon, Quick Reply → reply)
+ */
+function WhatsappBubblePreview({
+  template,
+  previewBody,
+  substitutions,
+}: {
+  template: WhatsappTemplate | null
+  previewBody: string
+  substitutions?: Record<string, string>
+}) {
+  const headerFormat = (template?.header?.format ?? template?.header?.type ?? '').toUpperCase()
+  const headerText = template?.header?.text ?? ''
+  const headerMediaUrl = substitutions?.wa_header_media_url || substitutions?.header_media_url || ''
+
+  return (
+    <div className="ml-auto max-w-[280px] rounded-lg bg-[#dcf8c6] px-3 py-2 shadow-sm">
+      {/* Header — TEXT format shows bold text at top; media formats show a
+          preview tile that uses the resolved media URL when available. */}
+      {headerFormat === 'TEXT' && headerText && (
+        <p className="mb-1.5 text-sm font-semibold text-slate-900">{headerText}</p>
+      )}
+      {headerFormat === 'IMAGE' && (
+        headerMediaUrl
+          ? <img src={headerMediaUrl} alt="" className="mb-1.5 w-full rounded object-cover max-h-40" />
+          : <div className="mb-1.5 flex h-32 items-center justify-center rounded bg-slate-200 text-[11px] text-slate-500">Image header (map wa_header_media_url)</div>
+      )}
+      {headerFormat === 'VIDEO' && (
+        <div className="mb-1.5 flex h-32 items-center justify-center rounded bg-slate-200 text-[11px] text-slate-500">
+          {headerMediaUrl ? '▶ Video header' : 'Video header (map wa_header_media_url)'}
+        </div>
+      )}
+      {headerFormat === 'DOCUMENT' && (
+        <div className="mb-1.5 flex items-center gap-2 rounded bg-slate-100 px-2 py-1.5 text-[11px] text-slate-700">
+          📎 {headerMediaUrl ? 'Document attached' : 'Document header (map wa_header_media_url)'}
+        </div>
+      )}
+
+      <p className="whitespace-pre-wrap text-sm text-slate-900">{previewBody || 'Select an approved template to preview it.'}</p>
+
+      {template?.footer && <p className="mt-2 text-[11px] text-slate-500">{template.footer}</p>}
+
+      {template?.buttons && template.buttons.length > 0 && (
+        <div className="mt-2 space-y-0.5 border-t border-green-200 pt-2">
+          {template.buttons.map((button, idx) => {
+            const type = button.type?.toUpperCase() ?? 'QUICK_REPLY'
+            const icon = type === 'URL' ? '↗' : type === 'PHONE_NUMBER' ? '📞' : '↩'
+            return (
+              <div
+                key={`${button.text}-${idx}`}
+                className="flex items-center justify-center gap-1 py-1 text-center text-xs font-medium text-blue-600"
+              >
+                <span className="text-[10px] opacity-70">{icon}</span>
+                <span>{button.text}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <p className="mt-1 text-right text-[10px] text-slate-500">12:45</p>
     </div>
   )
 }

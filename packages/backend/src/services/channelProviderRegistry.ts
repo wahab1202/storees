@@ -27,6 +27,10 @@ export type SendTemplateCommand = SendCommand & {
   templateParams: string[]      // ordered substitutions for {{1}} {{2}} ...
   templateHeader?: unknown
   templateButtons?: unknown
+  /** Test-send: bypass customer.phone lookup and deliver to this E.164 number
+   *  instead. Used by POST /api/whatsapp/test-send to preview a template
+   *  against the admin's own phone before campaign go-live. */
+  phoneOverride?: string
 }
 
 /**

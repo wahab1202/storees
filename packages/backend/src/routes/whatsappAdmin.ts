@@ -1,12 +1,14 @@
 import { Router } from 'express'
 import { eq, and, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { whatsappTemplates, ctwaAttributions } from '../db/schema.js'
+import { whatsappTemplates, ctwaAttributions, customers, projects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { getChannelProvider, getProviderCapabilities } from '../services/channelProviderRegistry.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters } from '../services/providers/whatsappUtils.js'
 import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
+import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from '../services/templateContext.js'
+import type { TemplateVariable } from '@storees/shared'
 
 const router = Router()
 
@@ -264,6 +266,131 @@ router.post('/templates/:id/refresh-status', requireProjectId, async (req, res) 
   } catch (err) {
     console.error('POST /whatsapp/templates/:id/refresh-status error:', err)
     res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Refresh failed' })
+  }
+})
+
+/**
+ * POST /api/whatsapp/templates/:id/test-send
+ *
+ * Send a single rendered template message to an admin-provided phone before
+ * launching the campaign to thousands of customers. Mirrors the actual
+ * dispatch path (same provider.sendTemplate call, same variable resolver)
+ * but bypasses the customer.phone lookup via phoneOverride.
+ *
+ * Body shape:
+ *   {
+ *     phone: "+919876543210",         // E.164, who to send to
+ *     variables: TemplateVariable[],  // mappings from the campaign draft
+ *     sampleCustomerId?: string       // resolve variables using a real
+ *                                     // customer's data (optional)
+ *   }
+ *
+ * Returns the provider message id on success. Useful for the admin to
+ * eyeball the rendered template in their own WhatsApp before going live.
+ */
+router.post('/templates/:id/test-send', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+
+    const body = req.body as {
+      phone?: string
+      variables?: TemplateVariable[]
+      sampleCustomerId?: string
+    }
+
+    const phone = (body.phone ?? '').trim()
+    if (!phone) return res.status(400).json({ success: false, error: 'phone is required (E.164 format)' })
+    // Cheap E.164 validation — must start with + and have 7-15 digits after.
+    if (!/^\+[1-9]\d{6,14}$/.test(phone)) {
+      return res.status(400).json({ success: false, error: 'phone must be E.164, e.g. +919876543210' })
+    }
+
+    const [tmpl] = await db
+      .select()
+      .from(whatsappTemplates)
+      .where(and(eq(whatsappTemplates.id, id), eq(whatsappTemplates.projectId, projectId)))
+      .limit(1)
+    if (!tmpl) return res.status(404).json({ success: false, error: 'Template not found' })
+    if (tmpl.status !== 'APPROVED') {
+      return res.status(400).json({ success: false, error: `Template status is ${tmpl.status}; only APPROVED templates can be sent` })
+    }
+
+    const channelResult = await getChannelProvider(projectId, 'whatsapp')
+    if (!channelResult) {
+      return res.status(400).json({ success: false, error: 'No WhatsApp provider configured for this project' })
+    }
+    const { provider, config } = channelResult
+    if (!provider.sendTemplate) {
+      return res.status(400).json({ success: false, error: `Provider '${provider.name}' does not support sendTemplate` })
+    }
+
+    // Resolve variables → substitution map. Same code path as send-time, so
+    // what the test recipient receives is exactly what the campaign would.
+    const [projectRow] = await db
+      .select({
+        id: projects.id, name: projects.name,
+        emailFromAddress: projects.emailFromAddress, emailFromName: projects.emailFromName,
+      })
+      .from(projects).where(eq(projects.id, projectId)).limit(1)
+    const project: ProjectLike = projectRow ?? { id: projectId, name: '' }
+
+    // Sample customer for variable resolution (optional). Falls back to a
+    // placeholder if not supplied — variables resolve to defaultValue.
+    let customer: CustomerLike = { id: 'test_send_placeholder' }
+    if (body.sampleCustomerId) {
+      const [row] = await db.select({
+        id: customers.id, externalId: customers.externalId,
+        email: customers.email, phone: customers.phone, name: customers.name,
+        region: customers.region, city: customers.city,
+        totalOrders: customers.totalOrders, totalSpent: customers.totalSpent,
+        avgOrderValue: customers.avgOrderValue, clv: customers.clv,
+        firstOrderDate: customers.firstOrderDate, lastOrderDate: customers.lastOrderDate,
+        lastSeen: customers.lastSeen, customAttributes: customers.customAttributes,
+      })
+        .from(customers)
+        .where(and(eq(customers.id, body.sampleCustomerId), eq(customers.projectId, projectId)))
+        .limit(1)
+      if (row) customer = row as CustomerLike
+    }
+
+    const substitutions = resolveTemplateVariables({
+      variables: body.variables ?? [],
+      customer,
+      project,
+    })
+
+    // Ordered body params {{1}}..{{N}} pulled from the substitutions map.
+    const templateParams: string[] = []
+    for (let i = 1; i <= (tmpl.parameterCount ?? 0); i++) {
+      templateParams.push(substitutions[String(i)] ?? '')
+    }
+
+    const result = await provider.sendTemplate(
+      {
+        projectId,
+        userId: 'test_send_placeholder',  // bypassed by phoneOverride
+        channel: 'whatsapp',
+        templateId: tmpl.id,
+        templateName: tmpl.providerTemplateId,
+        templateLanguage: tmpl.language,
+        templateParams,
+        templateHeader: tmpl.header,
+        templateButtons: tmpl.buttons,
+        variables: substitutions,
+        messageType: 'promotional',
+        phoneOverride: phone,
+      },
+      config,
+    )
+
+    if (result.error) {
+      return res.status(502).json({ success: false, error: result.error })
+    }
+    res.json({ success: true, data: { messageId: result.messageId, to: phone } })
+  } catch (err) {
+    console.error('POST /whatsapp/templates/:id/test-send error:', err)
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Test send failed' })
   }
 })
 

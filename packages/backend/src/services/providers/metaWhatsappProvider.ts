@@ -135,8 +135,13 @@ export const metaWhatsappProvider: ChannelProvider = {
    */
   async sendTemplate(command, config) {
     const { phoneNumberId, accessToken } = config
-    const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
-    const to = customer?.phone
+    // Test-send path bypasses customer lookup and delivers to an admin-provided
+    // phone number. Otherwise resolve from the customer row.
+    let to: string | null | undefined = command.phoneOverride
+    if (!to) {
+      const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
+      to = customer?.phone
+    }
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     // Body params → ordered text components

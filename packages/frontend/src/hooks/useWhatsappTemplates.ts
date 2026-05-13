@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { toast } from 'sonner'
+import type { TemplateVariable } from '@storees/shared'
 
 export type WhatsappTemplate = {
   id: string
@@ -119,5 +120,31 @@ export function useRefreshTemplateStatus() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['whatsapp-templates'] })
     },
+  })
+}
+
+/**
+ * Send a single rendered template to a phone number for testing. Doesn't
+ * count against frequency caps, doesn't create a campaign — just a quick
+ * "did this actually render right?" before launching to thousands.
+ */
+export function useTestSendWhatsappTemplate() {
+  return useMutation({
+    mutationFn: (input: {
+      templateId: string
+      phone: string
+      variables?: TemplateVariable[]
+      sampleCustomerId?: string
+    }) =>
+      api.post<{ messageId: string; to: string }>(
+        withProject(`/api/whatsapp/templates/${input.templateId}/test-send`),
+        {
+          phone: input.phone,
+          variables: input.variables,
+          sampleCustomerId: input.sampleCustomerId,
+        },
+      ),
+    onSuccess: () => toast.success('Test message sent — check WhatsApp'),
+    onError: (err: Error) => toast.error(err.message ?? 'Test send failed'),
   })
 }
