@@ -4,6 +4,7 @@ import { events } from '../db/schema.js'
 import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
+import { bulkUpsertProducts, type ProductImport } from '../services/productCatalogService.js'
 import { customerAggregateQueue } from '../services/queue.js'
 
 /**
@@ -257,6 +258,42 @@ router.post('/import/orders', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Bulk order import error:', err)
     res.status(500).json({ success: false, error: 'Failed to import orders' })
+  }
+})
+
+// ── /api/v1/import/products ──────────────────────────────────────────────────
+// Upsert catalogue products. Optionally each row carries a `collections`
+// array of names — those auto-upsert into the collections table and link
+// via product_collections. Use when the client has a catalog to sync
+// independent of orders (browse pages, recommendations, etc.).
+//
+// Live activity (order_placed events) already auto-populates products via
+// customerAggregateWorker's line-item extraction, so this endpoint is for
+// the cold-path case: initial catalogue load, or merchandising imports
+// of products that haven't sold yet.
+
+router.post('/import/products', async (req: Request, res: Response) => {
+  try {
+    const projectId = req.projectId!
+    const body = req.body as { products?: ProductImport[] }
+    const inputs = body.products ?? []
+
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      return res.status(400).json({ success: false, error: 'products array required' })
+    }
+    if (inputs.length > MAX_BATCH) {
+      return res.status(400).json({ success: false, error: `Batch size limited to ${MAX_BATCH}` })
+    }
+
+    const { imported, errors } = await bulkUpsertProducts(projectId, inputs)
+
+    res.json({
+      success: true,
+      data: { imported, errors: errors.slice(0, 20) },
+    })
+  } catch (err) {
+    console.error('Bulk product import error:', err)
+    res.status(500).json({ success: false, error: 'Failed to import products' })
   }
 })
 

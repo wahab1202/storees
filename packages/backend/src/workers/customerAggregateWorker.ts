@@ -1,8 +1,9 @@
 import { Worker } from 'bullmq'
-import { eq, and, sql, isNull, asc } from 'drizzle-orm'
+import { eq, sql, isNull, asc } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { customers, events } from '../db/schema.js'
+import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
 
 /**
  * Customer-aggregate worker — the heart of the event-driven CDP.
@@ -39,6 +40,7 @@ type AggregateJob = {
 }
 
 type ResolvedAggregateInput = {
+  projectId: string
   customerId: string
   eventName: string
   properties: Record<string, unknown>
@@ -79,6 +81,7 @@ export function startCustomerAggregateWorker(): Worker {
 
       const ts = new Date(evt.timestamp)
       await applyEvent({
+        projectId: evt.projectId,
         customerId: evt.customerId,
         eventName: evt.eventName,
         properties: evt.properties,
@@ -111,6 +114,21 @@ export function startCustomerAggregateWorker(): Worker {
 async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> {
   const customerId = evt.customerId
   const eventName = evt.eventName
+
+  // Side-effect: keep the product catalog fresh from line items.
+  // Best-effort — failures are logged but don't fail the customer-aggregate
+  // contract. The aggregator's primary job is customer totals; catalogue
+  // maintenance is bonus.
+  if (REVENUE_INCREMENT_EVENTS.has(eventName)) {
+    const lineItems = evt.properties.line_items as unknown[] | undefined
+    if (lineItems && lineItems.length > 0) {
+      try {
+        await upsertProductsFromLineItems(evt.projectId, lineItems)
+      } catch (err) {
+        console.error('[customer-aggregate] product catalog upsert failed (non-fatal):', (err as Error).message)
+      }
+    }
+  }
 
   if (REVENUE_INCREMENT_EVENTS.has(eventName)) {
     const total = Number(evt.properties.total ?? 0)
@@ -216,6 +234,7 @@ export async function runStartupCatchUp(): Promise<{ processed: number }> {
         continue
       }
       await applyEvent({
+        projectId: ev.projectId,
         customerId: ev.customerId,
         eventName: ev.eventName,
         properties: (ev.properties as Record<string, unknown>) ?? {},

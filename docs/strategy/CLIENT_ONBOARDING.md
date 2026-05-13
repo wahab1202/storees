@@ -112,6 +112,43 @@ curl -X POST https://api.storees.io/api/v1/import/customers \
 
 Response: `{ "resolved": N, "failed": M, "errors": [...] }`
 
+**Step 1b (optional) — upload product catalogue**:
+
+If the client has a product catalog they want browseable in the segment
+builder (and the catalog has products that haven't been ordered yet),
+push it explicitly. Otherwise, the live event pipeline auto-extracts
+products from each `order_placed` event's line items — no separate import
+needed for SKUs that have been sold.
+
+```bash
+curl -X POST https://api.storees.io/api/v1/import/products \
+  -H "Authorization: Bearer sk_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "products": [
+      {
+        "product_id": "sku_001",
+        "title": "Wireless Earbuds Pro",
+        "product_type": "Audio",
+        "vendor": "Brand X",
+        "image_url": "https://...",
+        "status": "active",
+        "collections": ["Summer Sale", "Bestsellers"]
+      },
+      /* ... up to 1000 per batch ... */
+    ]
+  }'
+```
+
+Response: `{ "imported": N, "errors": [...] }`
+
+What happens server-side:
+- Upserts into `products` table by `(project_id, product_id)`. Existing
+  fields preserved if the new payload omits them.
+- For each `collections[]` value, upserts a collection (deterministic id
+  per name) + links product↔collection in `product_collections`.
+- Same dedup semantics: re-running the same import is a no-op.
+
 **Step 2 — upload historical orders**:
 
 ```bash
@@ -183,8 +220,9 @@ curl "https://api.storees.io/api/customers?projectId=<id>&orderBy=total_spent" \
 | File | Purpose |
 |---|---|
 | `packages/backend/src/routes/v1Events.ts` | Live event ingestion endpoint |
-| `packages/backend/src/routes/v1Import.ts` | Bulk historical import endpoints |
-| `packages/backend/src/workers/customerAggregateWorker.ts` | Folds events → customer aggregates |
+| `packages/backend/src/routes/v1Import.ts` | Bulk historical import endpoints (customers / orders / products) |
+| `packages/backend/src/services/productCatalogService.ts` | Shared product+collection upsert logic (used by worker + import) |
+| `packages/backend/src/workers/customerAggregateWorker.ts` | Folds events → customer aggregates; auto-extracts products from line items |
 | `packages/backend/src/workers/triggerWorker.ts` | Fires flow trips on event (skips `historical: true`) |
 | `packages/backend/src/db/migrations/0040_events_processed_at.sql` | Adds idempotency column |
 | `docs/strategy/GWM_WEBHOOK_INTEGRATION.md` | Per-client integration spec (SDK / direct API / outbox tiers) |

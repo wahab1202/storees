@@ -79,6 +79,11 @@ This is the only time we ever touch the FDW connection again. We use it once
 to convert every historical gwm.order into a synthetic `order_placed` event
 (marked `historical: true`), then the FDW connection can be removed.
 
+**Bonus side-effect:** the aggregator's product-extraction (Option A) runs
+on every replayed `order_placed`, so this same step re-populates the
+`products` + `collections` + `product_collections` tables from line item
+data. No separate product backfill needed.
+
 ```bash
 sudo -u postgres psql storees_prod \
   -f packages/backend/src/db/data/gwm_one_time_event_backfill.sql
