@@ -275,6 +275,31 @@ BEGIN
       orders.status     IS DISTINCT FROM EXCLUDED.status
       OR orders.total      IS DISTINCT FROM EXCLUDED.total
       OR orders.line_items IS DISTINCT FROM EXCLUDED.line_items
+    RETURNING customer_id, created_at
+  )
+  -- Bump customers.last_seen to the order's created_at when a real order
+  -- is attached. Two reasons:
+  --   1. The customers list page sorts by last_seen — a customer who placed
+  --      an order yesterday should appear "active" even if they haven't
+  --      visited the website (no SDK events).
+  --   2. Cart abandonment / "active in last 7 days" segments use last_seen.
+  --      Without this bump, a federated-only customer never qualifies.
+  -- Only advance forward — GREATEST() so a stale order doesn't roll back a
+  -- newer SDK event timestamp.
+  -- Aggregate per-customer first: one tick can apply multiple orders for the
+  -- same customer; updating the target row multiple times is undefined in
+  -- Postgres. Take MAX(created_at) per customer to update once.
+  , bumped AS (
+    UPDATE customers c
+    SET last_seen = GREATEST(c.last_seen, latest.max_created_at),
+        updated_at = NOW()
+    FROM (
+      SELECT customer_id, MAX(created_at) AS max_created_at
+      FROM applied
+      GROUP BY customer_id
+    ) latest
+    WHERE c.id = latest.customer_id
+      AND c.last_seen < latest.max_created_at
     RETURNING 1
   )
   SELECT COUNT(*)::int INTO v_count FROM applied;
