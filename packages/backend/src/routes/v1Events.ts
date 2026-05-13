@@ -5,7 +5,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { dataMaskingMiddleware } from '../middleware/dataMasking.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
-import { eventsQueue, metricsQueue, identityMergeQueue } from '../services/queue.js'
+import { eventsQueue, metricsQueue, identityMergeQueue, customerAggregateQueue } from '../services/queue.js'
 import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
 import type { EventIngestionPayload } from '@storees/shared'
 
@@ -125,6 +125,16 @@ router.post('/events', async (req: Request, res: Response) => {
     }
     await eventsQueue.add(payload.event_name, jobPayload)
     await metricsQueue.add('recompute', jobPayload)
+    // Customer-aggregate worker — folds the event into total_orders /
+    // total_spent / last_order_date / etc. Replaces the FDW federation cron.
+    await customerAggregateQueue.add(payload.event_name, {
+      eventId,
+      projectId,
+      customerId,
+      eventName: payload.event_name.trim(),
+      properties: payload.properties ?? {},
+      timestamp: eventTimestamp.toISOString(),
+    })
 
     res.status(201).json({ success: true, data: { id: eventId } })
   } catch (err) {
@@ -319,10 +329,26 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       },
     }))
 
+    // Customer-aggregate jobs need the event id (so the worker can stamp
+    // processed_at). Build that list separately from the trigger/metrics
+    // payloads which don't.
+    const aggregateJobs = insertedEvents.map(e => ({
+      name: e.payload.event_name,
+      data: {
+        eventId: e.id,
+        projectId,
+        customerId: e.customerId,
+        eventName: e.payload.event_name.trim(),
+        properties: e.payload.properties ?? {},
+        timestamp: (e.payload.timestamp ? new Date(e.payload.timestamp) : new Date()).toISOString(),
+      },
+    }))
+
     if (jobPayloads.length > 0) {
       await Promise.all([
         eventsQueue.addBulk(jobPayloads),
         metricsQueue.addBulk(jobPayloads.map(j => ({ name: 'recompute', data: j.data }))),
+        customerAggregateQueue.addBulk(aggregateJobs),
       ])
     }
 

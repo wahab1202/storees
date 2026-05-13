@@ -1,0 +1,263 @@
+import { Router, Request, Response } from 'express'
+import { db } from '../db/connection.js'
+import { events } from '../db/schema.js'
+import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
+import { rateLimiter } from '../middleware/rateLimiter.js'
+import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
+import { customerAggregateQueue } from '../services/queue.js'
+
+/**
+ * Bulk import endpoints — one-time historical data loaders.
+ *
+ * Use case: a new client signs up with N years of order history sitting in
+ * their DB. Without these endpoints, their Storees dashboard starts empty —
+ * total_spent = 0 for everyone, no segments work, no LTV signal.
+ *
+ * Pattern: client POSTs arrays of records, we generate synthetic events with
+ * the ORIGINAL timestamp and `historical: true` flag. The customer-aggregate
+ * worker folds them into the running totals (same pipeline as live events).
+ * The trigger worker skips them so a "welcome email" flow doesn't fire for
+ * 16,000 customers from last year.
+ *
+ * Auth: same API key as /v1/events. Rate limited but generously — bulk
+ * imports are heavy by nature.
+ *
+ * Same shape as Klaviyo / Customer.io / Iterable historical-import APIs.
+ */
+
+const router = Router()
+
+router.use(requirePublicKeyAuth())
+router.use(rateLimiter(2000))  // higher than events — bulk import is the point
+
+const MAX_BATCH = 1000
+
+// ── /api/v1/import/customers ─────────────────────────────────────────────────
+// Upsert customer profiles. No event emitted — customers table itself is
+// updated. Use this BEFORE /import/orders so the order JOIN finds them.
+
+type CustomerImport = {
+  customer_id?: string          // becomes external_id in Storees
+  email?: string
+  phone?: string
+  name?: string
+  region?: string
+  city?: string
+  email_subscribed?: boolean
+  sms_subscribed?: boolean
+}
+
+router.post('/import/customers', async (req: Request, res: Response) => {
+  try {
+    const projectId = req.projectId!
+    const body = req.body as { customers?: CustomerImport[] }
+    const inputs = body.customers ?? []
+
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      return res.status(400).json({ success: false, error: 'customers array required' })
+    }
+    if (inputs.length > MAX_BATCH) {
+      return res.status(400).json({ success: false, error: `Batch size limited to ${MAX_BATCH}` })
+    }
+
+    let resolved = 0
+    let failed = 0
+    const errors: Array<{ index: number; error: string }> = []
+
+    // Bounded concurrency. resolveCustomer has its own ON CONFLICT path so
+    // races between two imports of the same external_id are safe.
+    const CONCURRENCY = 20
+    for (let i = 0; i < inputs.length; i += CONCURRENCY) {
+      const batch = inputs.slice(i, i + CONCURRENCY)
+      const results = await Promise.allSettled(
+        batch.map(async (input, batchIdx) => {
+          try {
+            await resolveCustomerService({
+              projectId,
+              externalId: input.customer_id,
+              email: input.email ?? null,
+              phone: input.phone ?? null,
+              name: input.name ?? null,
+              region: input.region ?? null,
+              city: input.city ?? null,
+              emailSubscribed: input.email_subscribed,
+              smsSubscribed: input.sms_subscribed,
+            })
+            resolved++
+          } catch (err) {
+            failed++
+            errors.push({
+              index: i + batchIdx,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }),
+      )
+      // results array exists for completeness — Promise.allSettled never throws
+      void results
+    }
+
+    res.json({
+      success: true,
+      data: { resolved, failed, errors: errors.slice(0, 20) },
+    })
+  } catch (err) {
+    console.error('Bulk customer import error:', err)
+    res.status(500).json({ success: false, error: 'Failed to import customers' })
+  }
+})
+
+// ── /api/v1/import/orders ────────────────────────────────────────────────────
+// Insert historical orders as `order_placed` events. Flagged historical:true
+// so flows + campaign triggers skip them; aggregator still folds them into
+// customer totals.
+
+type OrderImport = {
+  customer_id: string                  // external_id of the customer
+  order_id: string                     // unique per merchant — becomes idempotency_key
+  timestamp: string                    // ISO 8601 — when the order originally happened
+  total: number                        // numeric, in the same currency as `currency`
+  currency?: string                    // ISO 4217 — default 'INR'
+  line_items?: Array<{
+    product_id?: string
+    product_name?: string
+    product_type?: string
+    product_collection?: string
+    quantity?: number
+    price?: number
+  }>
+}
+
+router.post('/import/orders', async (req: Request, res: Response) => {
+  try {
+    const projectId = req.projectId!
+    const body = req.body as { orders?: OrderImport[] }
+    const inputs = body.orders ?? []
+
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      return res.status(400).json({ success: false, error: 'orders array required' })
+    }
+    if (inputs.length > MAX_BATCH) {
+      return res.status(400).json({ success: false, error: `Batch size limited to ${MAX_BATCH}` })
+    }
+
+    let imported = 0
+    let deduped = 0
+    let unresolved = 0
+    const errors: Array<{ index: number; error: string }> = []
+
+    // Phase 1 — resolve every customer_id (external_id) → Storees customer.id.
+    // Skip records whose customer isn't found; client should have called
+    // /import/customers first.
+    type ResolvedOrder = { idx: number; input: OrderImport; customerId: string }
+    const resolvedOrders: ResolvedOrder[] = []
+
+    const CONCURRENCY = 20
+    for (let i = 0; i < inputs.length; i += CONCURRENCY) {
+      const batch = inputs.slice(i, i + CONCURRENCY)
+      const results = await Promise.allSettled(
+        batch.map(async (input, batchIdx) => {
+          if (!input.customer_id || !input.order_id || !input.timestamp) {
+            errors.push({ index: i + batchIdx, error: 'customer_id, order_id, timestamp required' })
+            return null
+          }
+          try {
+            const customerId = await resolveCustomerService({
+              projectId,
+              externalId: input.customer_id,
+            })
+            return { idx: i + batchIdx, input, customerId }
+          } catch {
+            unresolved++
+            return null
+          }
+        }),
+      )
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) resolvedOrders.push(r.value)
+      }
+    }
+
+    // Phase 2 — bulk insert events with `historical: true` flag. Idempotency
+    // key = "order_placed_historical:<order_id>" so re-imports dedup.
+    const INSERT_BATCH = 500
+    type InsertedEvent = { id: string; customerId: string; eventName: string; properties: Record<string, unknown>; timestamp: Date }
+    const inserted: InsertedEvent[] = []
+
+    for (let i = 0; i < resolvedOrders.length; i += INSERT_BATCH) {
+      const chunk = resolvedOrders.slice(i, i + INSERT_BATCH)
+      const rows = chunk.map(r => ({
+        projectId,
+        customerId: r.customerId,
+        eventName: 'order_placed',
+        properties: {
+          order_id: r.input.order_id,
+          total: r.input.total,
+          currency: r.input.currency ?? 'INR',
+          line_items: r.input.line_items ?? [],
+          historical: true,
+        },
+        platform: 'api',
+        source: 'import',
+        idempotencyKey: `order_placed_historical:${r.input.order_id}`,
+        timestamp: new Date(r.input.timestamp),
+      }))
+
+      // ON CONFLICT DO NOTHING for idempotency_key — re-running an import
+      // for the same order doesn't double-count.
+      const insertedRows = await db
+        .insert(events)
+        .values(rows)
+        .onConflictDoNothing({ target: [events.projectId, events.idempotencyKey] })
+        .returning({
+          id: events.id,
+          customerId: events.customerId,
+          eventName: events.eventName,
+          properties: events.properties,
+          timestamp: events.timestamp,
+        })
+
+      imported += insertedRows.length
+      deduped += chunk.length - insertedRows.length
+      for (const row of insertedRows) {
+        if (!row.customerId) continue
+        inserted.push({
+          id: row.id,
+          customerId: row.customerId,
+          eventName: row.eventName,
+          properties: (row.properties as Record<string, unknown>) ?? {},
+          timestamp: row.timestamp,
+        })
+      }
+    }
+
+    // Phase 3 — enqueue aggregate jobs so customer totals reflect the import.
+    // Same pipeline as live events; the historical:true flag will tell the
+    // trigger worker to skip flow firing.
+    if (inserted.length > 0) {
+      await customerAggregateQueue.addBulk(
+        inserted.map(ev => ({
+          name: ev.eventName,
+          data: {
+            eventId: ev.id,
+            projectId,
+            customerId: ev.customerId,
+            eventName: ev.eventName,
+            properties: ev.properties,
+            timestamp: ev.timestamp.toISOString(),
+          },
+        })),
+      )
+    }
+
+    res.json({
+      success: true,
+      data: { imported, deduped, unresolved, errors: errors.slice(0, 20) },
+    })
+  } catch (err) {
+    console.error('Bulk order import error:', err)
+    res.status(500).json({ success: false, error: 'Failed to import orders' })
+  }
+})
+
+export default router

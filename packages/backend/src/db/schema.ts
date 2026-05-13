@@ -187,6 +187,10 @@ export const events = pgTable('events', {
   idempotencyKey: varchar('idempotency_key', { length: 255 }),
   timestamp: timestamp('timestamp', { withTimezone: true }).notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  // Set by customerAggregateWorker once the event has been folded into the
+  // customer's running aggregates (total_spent / total_orders / etc.). NULL
+  // = pending aggregation; partial index in migration 0040 keeps lookups fast.
+  processedAt: timestamp('processed_at', { withTimezone: true }),
 }, (table) => [
   index('idx_events_trigger').on(table.projectId, table.eventName, table.timestamp),
   index('idx_events_customer').on(table.projectId, table.customerId, table.timestamp),
@@ -890,26 +894,6 @@ export const oauthAccounts = pgTable('oauth_accounts', {
   uniqueIndex('idx_oauth_provider_account').on(table.provider, table.providerAccountId),
   index('idx_oauth_user').on(table.userId),
 ])
-
-// ============ PROJECT DATA SOURCES (Phase F-fed — federation) ============
-// Tells the refresh worker which projects pull live data from an external
-// DB via postgres_fdw, vs. those that own their data natively. The actual
-// FDW server + user mapping live at the Postgres level; this row tells the
-// app "for project X, refresh the materialised view from server Y."
-
-export const projectDataSources = pgTable('project_data_sources', {
-  projectId: uuid('project_id').primaryKey().references(() => projects.id, { onDelete: 'cascade' }),
-  sourceType: varchar('source_type', { length: 40 }).notNull(),
-  fdwServerName: varchar('fdw_server_name', { length: 64 }),
-  config: jsonb('config').notNull().default('{}'),
-  lastRefreshAt: timestamp('last_refresh_at', { withTimezone: true }),
-  lastRefreshStatus: varchar('last_refresh_status', { length: 20 }),
-  lastRefreshError: text('last_refresh_error'),
-  lastRefreshDurationMs: integer('last_refresh_duration_ms'),
-  isActive: boolean('is_active').notNull().default(true),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-})
 
 // ============ OPT-IN WIDGETS (Phase F2b) ============
 // Configurable storefront opt-in forms; merchant CRUDs in the admin panel,

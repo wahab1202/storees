@@ -18,6 +18,7 @@ import templateRoutes from './routes/templates.js'
 import emailSenderRoutes from './routes/emailSenders.js'
 import subscriptionCategoryRoutes from './routes/subscriptionCategories.js'
 import v1EventRoutes from './routes/v1Events.js'
+import v1ImportRoutes from './routes/v1Import.js'
 import v1OptInRoutes from './routes/v1OptIn.js'
 import v1ApiKeyRoutes from './routes/v1ApiKeys.js'
 import v1SchemaRoutes from './routes/v1Schema.js'
@@ -42,7 +43,6 @@ import adminUserRoutes from './routes/adminUsers.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
 import assetRoutes from './routes/assets.js'
-import federationStatusRoutes from './routes/federationStatus.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { startSyncWorker } from './workers/syncWorker.js'
@@ -55,7 +55,7 @@ import { startInteractionWorker } from './workers/interactionWorker.js'
 import { startScoringWorker } from './workers/scoringWorker.js'
 import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
 import { startIdentityMergeWorker } from './workers/identityMergeWorker.js'
-import { startFederationRefreshWorker } from './workers/federationRefreshWorker.js'
+import { startCustomerAggregateWorker, runStartupCatchUp } from './workers/customerAggregateWorker.js'
 import { startScoringScheduler } from './workers/scoringScheduler.js'
 import { startTrainingWorker } from './workers/trainingWorker.js'
 import { startCampaignScheduler } from './workers/campaignScheduler.js'
@@ -124,6 +124,7 @@ app.use('/api/webhooks/channel', channelWebhookRoutes)
 
 // v1 API — generic event ingestion (API key auth, not admin auth)
 app.use('/api/v1', v1EventRoutes)
+app.use('/api/v1', v1ImportRoutes)
 app.use('/api/v1', v1OptInRoutes)
 
 // URL tracker — public (redirect links)
@@ -163,7 +164,6 @@ app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 app.use('/api/assets', requireAuth, assetRoutes)
-app.use('/api/federation-status', requireAuth, federationStatusRoutes)
 
 // Error handler — must be last
 app.use(errorHandler)
@@ -191,7 +191,14 @@ startTrainingWorker()
 startCampaignScheduler()
 startTemplateStatusWorker()
 startIdentityMergeWorker()
-startFederationRefreshWorker()
+startCustomerAggregateWorker()
+
+// One-shot catch-up: process any events ingested before the aggregate worker
+// was running. Idempotent (events.processed_at guard). Backgrounded so boot
+// isn't blocked on large historical scans.
+runStartupCatchUp().catch(err => {
+  console.error('[customer-aggregate] startup catch-up failed:', err)
+})
 
 app.listen(port, () => {
   console.log(`Storees backend running on port ${port}`)

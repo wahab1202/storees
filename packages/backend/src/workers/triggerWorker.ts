@@ -27,6 +27,15 @@ export function startTriggerWorker(): Worker {
     async (job) => {
       const event = job.data as EventJob
 
+      // Historical / backfilled events skip flow triggers — they reflect
+      // activity that already happened. Without this check, replaying a
+      // year of historical orders would fan out to flow trips for every
+      // matching customer (welcome emails for orders placed 6mo ago, etc.).
+      // Aggregates still update via customerAggregateWorker.
+      if ((event.properties as Record<string, unknown> | undefined)?.historical === true) {
+        return
+      }
+
       // Exit events processed BEFORE trigger evaluation (order of operations)
       await checkExitEvents(event.customerId, event.eventName)
 

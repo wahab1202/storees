@@ -117,15 +117,21 @@ export const identityMergeQueue = new Queue('identity-merge', {
   },
 })
 
-// Phase F-fed — periodic refresh of federated materialised views
-// (mv_gwm_customer_attrs etc.) plus the customers-table sync that makes
-// region/city/total_orders/etc. live in segment queries.
-export const federationRefreshQueue = new Queue('federation-refresh', {
+// Customer-aggregate worker — consumes events and folds them into
+// customers.total_orders / total_spent / first_order_date / last_order_date /
+// avg_order_value. Now the canonical path for keeping customer aggregates
+// fresh (was FDW federation cron, removed).
+//
+// Dedicated queue (separate from `events`) so:
+//   - The trigger worker and the aggregate worker can fail independently
+//   - We can pause aggregates for maintenance without blocking flow triggers
+//   - Retry/backoff is tuned for write contention on customers, not flow logic
+export const customerAggregateQueue = new Queue('customer-aggregates', {
   connection: redisConnection,
   defaultJobOptions: {
-    attempts: 2,
-    backoff: { type: 'exponential', delay: 10_000 },
+    attempts: 5,
+    backoff: { type: 'exponential', delay: 1000 },
     removeOnComplete: true,
-    removeOnFail: { count: 20 },
+    removeOnFail: { count: 200 },
   },
 })
