@@ -46,8 +46,25 @@ type ResolvedAggregateInput = {
   properties: Record<string, unknown>
 }
 
-const REVENUE_INCREMENT_EVENTS = new Set(['order_placed'])
-const REVENUE_DECREMENT_EVENTS = new Set(['order_refunded', 'order_cancelled'])
+// Events that net-add revenue to a customer's total_spent. order_placed
+// covers one-shot purchases; subscription_started + subscription_renewed
+// cover recurring revenue (each billing cycle is a separate event with
+// its own idempotency key and the cycle amount in properties.total).
+const REVENUE_INCREMENT_EVENTS = new Set([
+  'order_placed',
+  'subscription_started',
+  'subscription_renewed',
+])
+
+// Events that net-subtract revenue. order_returned mirrors order_refunded
+// for physical-goods returns (return + restock vs refund + no restock).
+// order_cancelled stays in this set because legacy historical-import flows
+// emit it on canceled orders that previously counted as order_placed.
+const REVENUE_DECREMENT_EVENTS = new Set([
+  'order_refunded',
+  'order_returned',
+  'order_cancelled',
+])
 
 export function startCustomerAggregateWorker(): Worker {
   const worker = new Worker(

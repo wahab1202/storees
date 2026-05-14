@@ -6,6 +6,13 @@ export const STANDARD_EVENTS = {
   ORDER_PLACED: 'order_placed',
   ORDER_FULFILLED: 'order_fulfilled',
   ORDER_CANCELLED: 'order_cancelled',
+  // Revenue decrement events — counted by customerAggregateWorker as
+  // negative revenue. order_refunded was already handled by the
+  // aggregator before being added here; order_returned mirrors it for
+  // physical-goods returns (return + restock vs refund + no restock).
+  ORDER_REFUNDED: 'order_refunded',
+  ORDER_RETURNED: 'order_returned',
+  PAYMENT_FAILED: 'payment_failed',
   CUSTOMER_CREATED: 'customer_created',
   CUSTOMER_UPDATED: 'customer_updated',
 
@@ -14,6 +21,19 @@ export const STANDARD_EVENTS = {
   ADDED_TO_CART: 'added_to_cart',
   ADDED_TO_WISHLIST: 'added_to_wishlist',
   COLLECTION_VIEWED: 'collection_viewed',
+  SEARCH_PERFORMED: 'search_performed',
+  COUPON_APPLIED: 'coupon_applied',
+  REVIEW_SUBMITTED: 'review_submitted',
+
+  // Subscription lifecycle — each renewal is recurring revenue, so
+  // subscription_started + subscription_renewed are counted as revenue
+  // increments by the aggregator (treat like order_placed with the
+  // billing-cycle amount in properties.total). subscription_cancelled is
+  // a lifecycle marker only — no revenue movement (the customer keeps
+  // whatever they paid up to that point).
+  SUBSCRIPTION_STARTED: 'subscription_started',
+  SUBSCRIPTION_RENEWED: 'subscription_renewed',
+  SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
 
   // Segment engine-sourced
   ENTERS_SEGMENT: 'enters_segment',
