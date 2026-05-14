@@ -6,10 +6,11 @@ import { useSyncHistory, useSyncLogs, type SyncRun } from '@/hooks/useDataConnec
 
 type Props = {
   connectorId: string
+  projectId: string
 }
 
-export function SyncHistoryTable({ connectorId }: Props) {
-  const { data: historyRes, isLoading } = useSyncHistory(connectorId)
+export function SyncHistoryTable({ connectorId, projectId }: Props) {
+  const { data: historyRes, isLoading } = useSyncHistory(connectorId, projectId)
   const runs: SyncRun[] = historyRes?.data ?? []
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
@@ -47,6 +48,7 @@ export function SyncHistoryTable({ connectorId }: Props) {
               <RunRow
                 key={run.id}
                 run={run}
+                projectId={projectId}
                 expanded={expanded}
                 onToggle={() => setExpandedId(expanded ? null : run.id)}
               />
@@ -58,7 +60,7 @@ export function SyncHistoryTable({ connectorId }: Props) {
   )
 }
 
-function RunRow({ run, expanded, onToggle }: { run: SyncRun; expanded: boolean; onToggle: () => void }) {
+function RunRow({ run, projectId, expanded, onToggle }: { run: SyncRun; projectId: string; expanded: boolean; onToggle: () => void }) {
   const c = run.stats.customers
   const p = run.stats.products
   const o = run.stats.orders
@@ -94,7 +96,7 @@ function RunRow({ run, expanded, onToggle }: { run: SyncRun; expanded: boolean; 
                 {run.errorSummary}
               </div>
             )}
-            <SyncLogsView syncId={run.id} />
+            <SyncLogsView syncId={run.id} projectId={projectId} />
           </td>
         </tr>
       )}
@@ -102,10 +104,11 @@ function RunRow({ run, expanded, onToggle }: { run: SyncRun; expanded: boolean; 
   )
 }
 
-function SyncLogsView({ syncId }: { syncId: string }) {
+function SyncLogsView({ syncId, projectId }: { syncId: string; projectId: string }) {
   const [filter, setFilter] = useState<'all' | 'error' | 'warn'>('all')
   const { data: logsRes, isLoading } = useSyncLogs(
     syncId,
+    projectId,
     filter === 'all' ? undefined : filter,
   )
   const logs = logsRes?.data ?? []

@@ -25,7 +25,9 @@ import {
   Calendar,
   Shield,
   Activity,
+  Database,
 } from 'lucide-react'
+import { ConnectorsSection } from '@/components/data-sources/ConnectorsSection'
 import type { DomainType } from '@storees/shared'
 
 const DOMAIN_CONFIG: Record<string, { label: string; icon: typeof Globe; color: string }> = {
@@ -281,6 +283,15 @@ export default function ProjectsPage() {
                         <span className="text-xs font-medium text-text-secondary">API Keys</span>
                       </div>
                       <ApiKeysSection projectId={project.id} />
+                    </div>
+
+                    {/* Data Sources */}
+                    <div className="border-t border-border">
+                      <div className="px-4 py-2 bg-surface/30 flex items-center gap-2">
+                        <Database size={12} className="text-text-muted" />
+                        <span className="text-xs font-medium text-text-secondary">Data Sources</span>
+                      </div>
+                      <ConnectorsSection projectId={project.id} />
                     </div>
                   </div>
                 )}

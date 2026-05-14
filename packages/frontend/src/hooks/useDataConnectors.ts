@@ -1,11 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { withProject } from '@/lib/project'
 import { toast } from 'sonner'
 
-// Data-source connector hooks. Used by the project page's "Data Sources" tab.
-// Connectors are commissioned once by the onboarding team and run on a manual
-// "Sync Now" button afterwards.
+// Data-source connector hooks. Scoped to an explicit `projectId` argument
+// (not the global project context) so we can render connector lists inline
+// inside any project's card on the Projects page without forcing the user
+// to switch active projects.
 
 export type ConnectorTemplate = {
   id: string
@@ -68,28 +68,29 @@ export function useConnectorTemplates() {
   })
 }
 
-export function useConnectors() {
+export function useConnectors(projectId: string) {
   return useQuery({
-    queryKey: ['connectors'],
-    queryFn: () => api.get<Connector[]>(withProject('/api/data-sources/connectors')),
+    queryKey: ['connectors', projectId],
+    queryFn: () => api.get<Connector[]>(`/api/data-sources/connectors?projectId=${projectId}`),
+    enabled: !!projectId,
   })
 }
 
-export function useConnector(id: string | undefined) {
+export function useConnector(connectorId: string | undefined, projectId: string) {
   return useQuery({
-    queryKey: ['connector', id],
-    queryFn: () => api.get<Connector>(withProject(`/api/data-sources/connectors/${id}`)),
-    enabled: !!id,
+    queryKey: ['connector', projectId, connectorId],
+    queryFn: () => api.get<Connector>(`/api/data-sources/connectors/${connectorId}?projectId=${projectId}`),
+    enabled: !!connectorId && !!projectId,
   })
 }
 
-export function useSyncHistory(connectorId: string | undefined) {
+export function useSyncHistory(connectorId: string | undefined, projectId: string) {
   return useQuery({
-    queryKey: ['connector-syncs', connectorId],
-    queryFn: () => api.get<SyncRun[]>(withProject(`/api/data-sources/connectors/${connectorId}/syncs`)),
-    enabled: !!connectorId,
+    queryKey: ['connector-syncs', projectId, connectorId],
+    queryFn: () =>
+      api.get<SyncRun[]>(`/api/data-sources/connectors/${connectorId}/syncs?projectId=${projectId}`),
+    enabled: !!connectorId && !!projectId,
     refetchInterval: (q) => {
-      // Poll while any sync is running so the UI updates without manual refresh
       const data = q.state.data?.data
       const hasActive = Array.isArray(data) && data.some((s) => s.status === 'running' || s.status === 'queued')
       return hasActive ? 3_000 : false
@@ -97,17 +98,24 @@ export function useSyncHistory(connectorId: string | undefined) {
   })
 }
 
-export function useSyncLogs(syncId: string | undefined, level?: 'info' | 'warn' | 'error') {
+export function useSyncLogs(
+  syncId: string | undefined,
+  projectId: string,
+  level?: 'info' | 'warn' | 'error',
+) {
   return useQuery({
-    queryKey: ['sync-logs', syncId, level ?? 'all'],
-    queryFn: () => api.get<SyncLog[]>(withProject(`/api/data-sources/syncs/${syncId}/logs${level ? `?level=${level}` : ''}`)),
-    enabled: !!syncId,
+    queryKey: ['sync-logs', projectId, syncId, level ?? 'all'],
+    queryFn: () =>
+      api.get<SyncLog[]>(
+        `/api/data-sources/syncs/${syncId}/logs?projectId=${projectId}${level ? `&level=${level}` : ''}`,
+      ),
+    enabled: !!syncId && !!projectId,
   })
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────
 
-export function useCreateConnector() {
+export function useCreateConnector(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: {
@@ -116,16 +124,16 @@ export function useCreateConnector() {
       baseUrl: string
       authValue: string
       configOverride?: Record<string, unknown>
-    }) => api.post<{ id: string }>(withProject('/api/data-sources/connectors'), input),
+    }) => api.post<{ id: string }>(`/api/data-sources/connectors?projectId=${projectId}`, input),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['connectors'] })
+      qc.invalidateQueries({ queryKey: ['connectors', projectId] })
       toast.success('Connector created')
     },
     onError: (err: Error) => toast.error(err.message ?? 'Failed to create connector'),
   })
 }
 
-export function useUpdateConnector() {
+export function useUpdateConnector(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, ...input }: {
@@ -135,32 +143,32 @@ export function useUpdateConnector() {
       authValue?: string
       configOverride?: Record<string, unknown>
       status?: string
-    }) => api.patch(withProject(`/api/data-sources/connectors/${id}`), input),
+    }) => api.patch(`/api/data-sources/connectors/${id}?projectId=${projectId}`, input),
     onSuccess: (_res, vars) => {
-      qc.invalidateQueries({ queryKey: ['connectors'] })
-      qc.invalidateQueries({ queryKey: ['connector', vars.id] })
+      qc.invalidateQueries({ queryKey: ['connectors', projectId] })
+      qc.invalidateQueries({ queryKey: ['connector', projectId, vars.id] })
       toast.success('Connector updated')
     },
     onError: (err: Error) => toast.error(err.message ?? 'Failed to update'),
   })
 }
 
-export function useDeleteConnector() {
+export function useDeleteConnector(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => api.delete(withProject(`/api/data-sources/connectors/${id}`)),
+    mutationFn: (id: string) => api.delete(`/api/data-sources/connectors/${id}?projectId=${projectId}`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['connectors'] })
+      qc.invalidateQueries({ queryKey: ['connectors', projectId] })
       toast.success('Connector removed')
     },
     onError: (err: Error) => toast.error(err.message ?? 'Failed to remove'),
   })
 }
 
-export function useTestConnector() {
+export function useTestConnector(projectId: string) {
   return useMutation({
     mutationFn: (id: string) =>
-      api.post<TestConnectionResult>(withProject(`/api/data-sources/connectors/${id}/test`), {}),
+      api.post<TestConnectionResult>(`/api/data-sources/connectors/${id}/test?projectId=${projectId}`, {}),
     onSuccess: (res) => {
       if (res.data?.ok) toast.success('Connection test passed')
       else toast.error('Connection test failed — see results below')
@@ -169,16 +177,16 @@ export function useTestConnector() {
   })
 }
 
-export function useTriggerSync() {
+export function useTriggerSync(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ connectorId, kind }: { connectorId: string; kind: 'full' | 'incremental' }) =>
       api.post<{ syncId: string; kind: string }>(
-        withProject(`/api/data-sources/connectors/${connectorId}/sync`),
+        `/api/data-sources/connectors/${connectorId}/sync?projectId=${projectId}`,
         { kind },
       ),
     onSuccess: (res, vars) => {
-      qc.invalidateQueries({ queryKey: ['connector-syncs', vars.connectorId] })
+      qc.invalidateQueries({ queryKey: ['connector-syncs', projectId, vars.connectorId] })
       toast.success(`${res.data?.kind === 'full' ? 'Full' : 'Incremental'} sync queued`)
     },
     onError: (err: Error) => toast.error(err.message ?? 'Failed to start sync'),

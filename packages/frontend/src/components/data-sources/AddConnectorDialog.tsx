@@ -7,9 +7,10 @@ import { useConnectorTemplates, useCreateConnector } from '@/hooks/useDataConnec
 type Props = {
   open: boolean
   onClose: () => void
+  projectId: string
 }
 
-export function AddConnectorDialog({ open, onClose }: Props) {
+export function AddConnectorDialog({ open, onClose, projectId }: Props) {
   const { data: templatesRes } = useConnectorTemplates()
   const templates = templatesRes?.data ?? []
 
@@ -18,7 +19,7 @@ export function AddConnectorDialog({ open, onClose }: Props) {
   const [baseUrl, setBaseUrl] = useState('')
   const [authValue, setAuthValue] = useState('')
 
-  const createMutation = useCreateConnector()
+  const createMutation = useCreateConnector(projectId)
 
   function reset() {
     setTemplate('virpanai')

@@ -28,7 +28,6 @@ import {
   LogOut,
   ShieldCheck,
   UserCircle,
-  Database,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -61,7 +60,6 @@ const bottomItems: NavItem[] = [
   { href: '/onboarding', label: 'New Project', icon: Plus, adminOnly: true },
   { href: '/settings', label: 'Settings', icon: Settings },
   { href: '/integrations', label: 'Connected Stores', icon: Store, adminOnly: true },
-  { href: '/data-sources', label: 'Data Sources', icon: Database, adminOnly: true },
 ]
 
 function visibleFor(role: AdminRole | undefined, items: NavItem[]): NavItem[] {
