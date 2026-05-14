@@ -37,6 +37,7 @@ import sendTimeRoutes from './routes/sendTime.js'
 import channelWebhookRoutes from './routes/channelWebhooks.js'
 import whatsappAdminRoutes from './routes/whatsappAdmin.js'
 import dataConnectorRoutes from './routes/dataConnectors.js'
+import adConversionRoutes from './routes/adConversions.js'
 import urlTrackerRoutes from './routes/urlTracker.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
@@ -151,6 +152,7 @@ app.use('/api/email-senders', requireAuth, emailSenderRoutes)
 app.use('/api/subscription-categories', requireAuth, subscriptionCategoryRoutes)
 app.use('/api/whatsapp', requireAuth, whatsappAdminRoutes)
 app.use('/api/data-sources', requireAuth, dataConnectorRoutes)
+app.use('/api/ad-conversions', requireAuth, adConversionRoutes)
 app.use('/api/api-keys', requireAuth, v1ApiKeyRoutes)
 app.use('/api/schema', requireAuth, v1SchemaRoutes)
 app.use('/api/onboarding', requireAuth, onboardingRoutes)

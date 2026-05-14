@@ -12,6 +12,7 @@ type Tab = { href: string; label: string; adminOnly?: boolean; featureFlag?: 'ag
 const tabs: Tab[] = [
   { href: '/settings', label: 'SDK & Integration', adminOnly: true },
   { href: '/settings/project', label: 'Project', adminOnly: true },
+  { href: '/settings/ad-conversions', label: 'Ad Conversions', adminOnly: true },
   { href: '/settings/account', label: 'Account' },
   { href: '/settings/security', label: 'Security' },
   { href: '/settings/dealers', label: 'Dealers', adminOnly: true, featureFlag: 'agentRbac' },

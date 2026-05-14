@@ -1074,3 +1074,28 @@ export const dataSourceSyncLogs = pgTable('data_source_sync_logs', {
 }, (table) => [
   index('idx_data_source_sync_logs_sync').on(table.syncId, table.createdAt),
 ])
+
+// ============ AD CONVERSION DESTINATIONS (Gap 9) ============
+// See migration 0046 for the column-level docs.
+
+export const adConversionDestinations = pgTable('ad_conversion_destinations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  platform: varchar('platform', { length: 20 }).notNull(),
+  name: text('name').notNull(),
+  pixelId: text('pixel_id').notNull(),
+  accessToken: text('access_token').notNull(),  // encrypted at rest
+  testEventCode: text('test_event_code'),
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  eventsSent: integer('events_sent').notNull().default(0),
+  eventsFailed: integer('events_failed').notNull().default(0),
+  lastSentAt: timestamp('last_sent_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_ad_conv_dest_unique').on(table.projectId, table.platform, table.pixelId),
+  index('idx_ad_conv_dest_project_active').on(table.projectId, table.status),
+])

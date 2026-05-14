@@ -4,6 +4,7 @@ import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { customers, events } from '../db/schema.js'
 import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
+import { relayConversionEvent } from '../services/conversionApiService.js'
 
 /**
  * Customer-aggregate worker — the heart of the event-driven CDP.
@@ -121,6 +122,25 @@ export function startCustomerAggregateWorker(): Worker {
         properties: evt.properties,
       }, ts)
       await markProcessed(evt.eventId)
+
+      // Gap 9: fan a server-side conversion event out to configured ad
+      // platforms. Only relays REVENUE-increment events (Purchase /
+      // Subscribe / etc. — see META_EVENT_NAME_MAP in
+      // conversionApiService). Backfilled historical:true events are
+      // skipped so initial-import doesn't blast a year of orders to
+      // Meta. Failures are logged inside the service and never bubble.
+      const isHistorical = (evt.properties as { historical?: unknown }).historical === true
+      if (!isHistorical && REVENUE_INCREMENT_EVENTS.has(evt.eventName)) {
+        relayConversionEvent({
+          projectId: evt.projectId,
+          customerId: evt.customerId,
+          eventName: evt.eventName,
+          eventTime: ts,
+          properties: evt.properties,
+        }).catch((err) => {
+          console.error(`[customer-aggregate] conversion-api relay failed for event ${evt.eventId}:`, (err as Error).message)
+        })
+      }
     },
     {
       connection: redisConnection,
