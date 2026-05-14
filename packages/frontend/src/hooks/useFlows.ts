@@ -211,7 +211,7 @@ export function useCloneFlow() {
 export function useUpdateFlow() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: string; name?: string; description?: string; nodes?: unknown; exitConfig?: unknown }) =>
+    mutationFn: ({ id, ...data }: { id: string; name?: string; description?: string; nodes?: unknown; exitConfig?: unknown; triggerConfig?: unknown }) =>
       api.patch<Flow>(withProject(`/api/flows/${id}`), data),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['flows'] })

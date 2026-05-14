@@ -61,6 +61,7 @@ import { startDataSyncWorker } from './workers/dataSyncWorker.js'
 import { startScoringScheduler } from './workers/scoringScheduler.js'
 import { startTrainingWorker } from './workers/trainingWorker.js'
 import { startCampaignScheduler } from './workers/campaignScheduler.js'
+import { startFlowFixedTimeScheduler } from './workers/flowFixedTimeScheduler.js'
 import { registerProvider } from './services/deliveryService.js'
 import { resendProvider } from './services/resendProvider.js'
 import { pinnacleProvider } from './services/pinnacleProvider.js'
@@ -192,6 +193,7 @@ startScoringWorker()
 startScoringScheduler()
 startTrainingWorker()
 startCampaignScheduler()
+startFlowFixedTimeScheduler()
 startTemplateStatusWorker()
 startIdentityMergeWorker()
 startCustomerAggregateWorker()

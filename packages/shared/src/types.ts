@@ -448,11 +448,46 @@ export type FilterOperator =
   | 'has_viewed' | 'has_not_viewed'
   | 'has_wishlisted' | 'has_not_wishlisted'
 
+// Gap 11: flow trigger has 4 kinds — matches MoEngage's entry-type picker.
+//
+//   event           — user-action event (existing default). Pre-Gap 11
+//                     triggers all behave as if kind='event'.
+//   business_event  — backend / system event (e.g. price_drop, inventory_low,
+//                     restock). Same delivery path as 'event' (event arrives
+//                     in the events table) but distinct in UI so marketers
+//                     don't confuse "user added to cart" with "we dropped a
+//                     product price".
+//   fixed_time      — cron-style recurring entry. Fires every configured
+//                     interval, enrols customers matching audienceFilter.
+//                     Used for "first of every month: re-engage dormant".
+//   flow_exit       — chain a follow-up flow to the completion of another.
+//                     Source flow's completeTrip enrols the customer into
+//                     the dependent flow. Used for cascading journeys
+//                     (welcome series → onboarding → first-purchase nudge).
+export type TriggerKind = 'event' | 'business_event' | 'fixed_time' | 'flow_exit'
+
+export type FixedTimeSchedule = {
+  frequency: 'daily' | 'weekly' | 'monthly'
+  time: string                  // HH:mm — local to project timezone
+  dayOfWeek?: number            // 0=Sun..6=Sat (weekly)
+  dayOfMonth?: number           // 1-28 (monthly)
+  timezone?: string             // IANA tz, defaults to project tz
+}
+
 export type TriggerConfig = {
+  /**
+   * Default 'event' for back-compat with all pre-Gap 11 triggers that
+   * stored only { event, filters, audienceFilter }. New triggers pick
+   * one of the 4 kinds explicitly.
+   */
+  kind?: TriggerKind
   event: string
   filters?: FilterConfig
   audienceFilter?: FilterConfig
   inactivityTime?: { value: number; unit: 'minutes' | 'hours' | 'days' }
+  // Kind-specific configs (only one populated based on kind)
+  fixedTimeSchedule?: FixedTimeSchedule
+  sourceFlowId?: string         // kind=flow_exit
 }
 
 export type ExitConfig = {

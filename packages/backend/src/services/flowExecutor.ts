@@ -1,4 +1,4 @@
-import { eq, and, gt } from 'drizzle-orm'
+import { eq, and, gt, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
 import { flowActionsQueue } from './queue.js'
@@ -294,12 +294,92 @@ async function updateTripNode(tripId: string, nodeId: string): Promise<void> {
 }
 
 async function completeTrip(tripId: string, label?: string): Promise<void> {
+  // Read the trip BEFORE marking it complete so flow-exit chaining can
+  // see which flow + customer just finished.
+  const [trip] = await db
+    .select({ flowId: flowTrips.flowId, customerId: flowTrips.customerId })
+    .from(flowTrips)
+    .where(eq(flowTrips.id, tripId))
+    .limit(1)
+
   await db.update(flowTrips).set({
     status: 'completed',
     exitedAt: new Date(),
   }).where(eq(flowTrips.id, tripId))
 
   console.log(`Trip ${tripId} completed${label ? ` (${label})` : ''}`)
+
+  // Gap 11: chain follow-up flows triggered on this flow's exit. Each
+  // dependent flow with triggerConfig.kind='flow_exit' + sourceFlowId
+  // pointing at the just-finished flow enrols the same customer.
+  if (trip) await fireFlowExitTriggers(trip.flowId, trip.customerId)
+}
+
+async function fireFlowExitTriggers(sourceFlowId: string, customerId: string): Promise<void> {
+  try {
+    const dependents = await db
+      .select({ id: flows.id, projectId: flows.projectId, triggerConfig: flows.triggerConfig })
+      .from(flows)
+      .where(and(eq(flows.status, 'active'), sql`trigger_config->>'kind' = 'flow_exit' AND trigger_config->>'sourceFlowId' = ${sourceFlowId}`))
+
+    for (const dep of dependents) {
+      // Enrol via a synthetic event row so the trigger worker handles the
+      // rest of the audience filter + duplicate-trip guard. The event
+      // never reaches the customer-aggregate worker because the event_name
+      // 'flow_exit_chain:<sourceId>' doesn't match any revenue event.
+      const [inserted] = await db
+        .insert(events)
+        .values({
+          projectId: dep.projectId,
+          customerId,
+          eventName: `flow_exit_chain:${sourceFlowId}`,
+          platform: 'api',
+          source: 'system',
+          timestamp: new Date(),
+          idempotencyKey: `flow_exit_chain:${sourceFlowId}:${customerId}:${Date.now()}`,
+          properties: { sourceFlowId, dependentFlowId: dep.id },
+        })
+        .onConflictDoNothing({ target: [events.projectId, events.idempotencyKey] })
+        .returning({ id: events.id })
+
+      if (inserted) {
+        // Directly start the dependent trip — the trigger worker normally
+        // matches event name to triggerConfig.event, but flow_exit triggers
+        // don't have a user-event name. We bypass and enrol directly.
+        await db.insert(flowTrips).values({
+          flowId: dep.id,
+          customerId,
+          status: 'active',
+          currentNodeId: 'trigger_1',  // by convention; first trigger node
+          triggerEventId: inserted.id,
+        }).onConflictDoNothing()
+
+        // Find the actual first node id from the flow + advance
+        const [depFlow] = await db
+          .select({ nodes: flows.nodes })
+          .from(flows)
+          .where(eq(flows.id, dep.id))
+          .limit(1)
+        if (depFlow) {
+          const depNodes = depFlow.nodes as FlowNode[]
+          const triggerNode = depNodes.find((n) => n.type === 'trigger')
+          if (triggerNode) {
+            const [newTrip] = await db
+              .select({ id: flowTrips.id })
+              .from(flowTrips)
+              .where(and(eq(flowTrips.flowId, dep.id), eq(flowTrips.customerId, customerId), eq(flowTrips.triggerEventId, inserted.id)))
+              .limit(1)
+            if (newTrip) {
+              await db.update(flowTrips).set({ currentNodeId: triggerNode.id }).where(eq(flowTrips.id, newTrip.id))
+              await flowActionsQueue.add('advance', { tripId: newTrip.id })
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[flow-exit-chain] sourceFlowId=${sourceFlowId} customerId=${customerId} failed:`, (err as Error).message)
+  }
 }
 
 async function evaluateCondition(

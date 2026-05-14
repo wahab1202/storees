@@ -95,7 +95,18 @@ function getMeta(node: FlowNode) {
 
 function getSubtitle(node: FlowNode): string {
   switch (node.type) {
-    case 'trigger': return node.config?.event ? fmtEvent(node.config.event) : 'Select trigger event'
+    case 'trigger': {
+      const kind = node.config?.kind ?? 'event'
+      if (kind === 'fixed_time') {
+        const s = node.config?.fixedTimeSchedule
+        return s ? `${s.frequency} at ${s.time}` : 'Fixed time — not configured'
+      }
+      if (kind === 'flow_exit') {
+        return node.config?.sourceFlowId ? `On exit of ${node.config.sourceFlowId.slice(0, 8)}…` : 'Select source flow'
+      }
+      const label = kind === 'business_event' ? 'Business event' : 'Event'
+      return node.config?.event ? `${label}: ${fmtEvent(node.config.event)}` : `Select ${label.toLowerCase()}`
+    }
     case 'delay': return `${node.config.value} ${node.config.unit}`
     case 'condition':
       return node.config.check === 'event_occurred'
@@ -444,12 +455,7 @@ function ConfigDrawer({
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {node.type === 'trigger' && (
-          <Fld label="Event">
-            <select value={node.config?.event ?? ''} onChange={e => onUpdate({ ...node, config: { event: e.target.value, filters: { logic: 'AND', rules: [] } } } as FlowNode)} className={INPUT}>
-              <option value="">Select event...</option>
-              {events.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-            </select>
-          </Fld>
+          <TriggerKindBlock node={node} onUpdate={onUpdate} events={events} />
         )}
         {node.type === 'delay' && (
           <Fld label="Duration">
@@ -512,6 +518,151 @@ function ConfigDrawer({
 
 function Fld({ label, children }: { label: string; children: React.ReactNode }) {
   return <div><label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">{label}</label>{children}</div>
+}
+
+// Gap 11: trigger node now supports 4 kinds. Default kind='event' for
+// back-compat with pre-Gap 11 flows.
+const TRIGGER_KINDS: Array<{ value: 'event' | 'business_event' | 'fixed_time' | 'flow_exit'; label: string; desc: string }> = [
+  { value: 'event',          label: 'User event',     desc: 'Fires when a customer performs an event (cart_created, order_placed, etc.)' },
+  { value: 'business_event', label: 'Business event', desc: 'Fires on a backend signal (price_drop, inventory_low, new_product_launch)' },
+  { value: 'fixed_time',     label: 'At fixed time',  desc: 'Recurring cron-style entry (daily / weekly / monthly at a specific time)' },
+  { value: 'flow_exit',      label: 'On flow exit',   desc: 'Cascades from another flow — runs when that flow completes for a customer' },
+]
+
+const BUSINESS_EVENT_PRESETS = [
+  'price_drop', 'inventory_low', 'restock', 'new_product_launch', 'margin_threshold_hit',
+]
+
+function TriggerKindBlock({ node, onUpdate, events }: { node: FlowNode & { type: 'trigger' }; onUpdate: (n: FlowNode) => void; events: readonly string[] }) {
+  const cfg = node.config ?? { event: '' }
+  const kind = (cfg.kind as typeof TRIGGER_KINDS[number]['value'] | undefined) ?? 'event'
+
+  function patch(next: Partial<typeof cfg>) {
+    onUpdate({ ...node, config: { ...cfg, ...next } } as FlowNode)
+  }
+
+  return (
+    <>
+      <Fld label="Trigger kind">
+        <select
+          value={kind}
+          onChange={(e) => patch({ kind: e.target.value as typeof TRIGGER_KINDS[number]['value'] })}
+          className={INPUT}
+        >
+          {TRIGGER_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
+        </select>
+        <p className="mt-1 text-[11px] text-gray-500">
+          {TRIGGER_KINDS.find((k) => k.value === kind)?.desc}
+        </p>
+      </Fld>
+
+      {kind === 'event' && (
+        <Fld label="Event">
+          <select
+            value={cfg.event ?? ''}
+            onChange={(e) => patch({ event: e.target.value })}
+            className={INPUT}
+          >
+            <option value="">Select event...</option>
+            {events.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
+          </select>
+        </Fld>
+      )}
+
+      {kind === 'business_event' && (
+        <Fld label="Business event">
+          <select
+            value={cfg.event ?? ''}
+            onChange={(e) => patch({ event: e.target.value })}
+            className={INPUT}
+          >
+            <option value="">Select…</option>
+            {BUSINESS_EVENT_PRESETS.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
+          </select>
+          <p className="mt-1 text-[11px] text-gray-500">
+            Your backend fires these via POST /v1/events with the event name above. See docs for the standard business-event taxonomy.
+          </p>
+        </Fld>
+      )}
+
+      {kind === 'fixed_time' && (
+        <FixedTimeFields cfg={cfg} patch={patch} />
+      )}
+
+      {kind === 'flow_exit' && (
+        <Fld label="Source flow id">
+          <input
+            type="text"
+            value={cfg.sourceFlowId ?? ''}
+            onChange={(e) => patch({ sourceFlowId: e.target.value })}
+            placeholder="flow uuid that triggers this one on completion"
+            className={INPUT}
+          />
+          <p className="mt-1 text-[11px] text-gray-500">
+            When that flow completes for a customer, this flow enrols them. Find the source flow's id in its URL.
+          </p>
+        </Fld>
+      )}
+    </>
+  )
+}
+
+function FixedTimeFields({ cfg, patch }: { cfg: Record<string, unknown>; patch: (p: Record<string, unknown>) => void }) {
+  const sched = (cfg.fixedTimeSchedule as { frequency?: string; time?: string; dayOfWeek?: number; dayOfMonth?: number } | undefined) ?? { frequency: 'daily', time: '09:00' }
+  function patchSched(p: Partial<typeof sched>) {
+    patch({ fixedTimeSchedule: { ...sched, ...p } })
+  }
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  return (
+    <>
+      <Fld label="Repeat">
+        <select
+          value={sched.frequency}
+          onChange={(e) => patchSched({ frequency: e.target.value as 'daily' | 'weekly' | 'monthly' })}
+          className={INPUT}
+        >
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+      </Fld>
+      <Fld label="Time (UTC)">
+        <input
+          type="time"
+          value={sched.time ?? '09:00'}
+          onChange={(e) => patchSched({ time: e.target.value })}
+          className={INPUT}
+        />
+      </Fld>
+      {sched.frequency === 'weekly' && (
+        <Fld label="Day of week">
+          <select
+            value={sched.dayOfWeek ?? 1}
+            onChange={(e) => patchSched({ dayOfWeek: parseInt(e.target.value) })}
+            className={INPUT}
+          >
+            {days.map((d, i) => <option key={d} value={i}>{d}</option>)}
+          </select>
+        </Fld>
+      )}
+      {sched.frequency === 'monthly' && (
+        <Fld label="Day of month">
+          <input
+            type="number"
+            min={1}
+            max={28}
+            value={sched.dayOfMonth ?? 1}
+            onChange={(e) => patchSched({ dayOfMonth: parseInt(e.target.value) || 1 })}
+            className={INPUT}
+          />
+          <p className="mt-1 text-[11px] text-gray-500">1–28 (avoids month-end edge cases)</p>
+        </Fld>
+      )}
+      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+        Fixed-time flows enrol every customer matching the audience filter when the schedule fires. Make sure an audience filter is set on this flow.
+      </p>
+    </>
+  )
 }
 
 // ─── Validation ─────────────────────────────────────────

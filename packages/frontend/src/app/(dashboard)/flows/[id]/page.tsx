@@ -25,7 +25,13 @@ export default function FlowDetailPage() {
   const cloneFlow = useCloneFlow()
 
   const handleSave = (nodes: FlowNode[], exitConfig: ExitConfig | null) => {
-    updateFlow.mutate({ id, nodes, exitConfig })
+    // Extract trigger node config so the runtime-evaluator sees changes
+    // (the flow's triggerConfig column is the source of truth, separate
+    // from the visual node config). Gap 11 made this critical because
+    // the trigger now has a 'kind' field plus per-kind sub-configs.
+    const triggerNode = nodes.find((n): n is FlowNode & { type: 'trigger' } => n.type === 'trigger')
+    const triggerConfig = triggerNode?.config ?? undefined
+    updateFlow.mutate({ id, nodes, exitConfig, triggerConfig })
   }
 
   if (isLoading) {
