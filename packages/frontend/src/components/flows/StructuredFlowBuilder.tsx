@@ -8,7 +8,9 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
-import type { FlowNode, ExitConfig } from '@storees/shared'
+import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
+import { useVariableSources } from '@/hooks/useTemplates'
+import { useProducts } from '@/hooks/useProducts'
 
 type Props = {
   flowNodes: FlowNode[]
@@ -105,7 +107,10 @@ function getSubtitle(node: FlowNode): string {
         return node.config?.sourceFlowId ? `On exit of ${node.config.sourceFlowId.slice(0, 8)}…` : 'Select source flow'
       }
       const label = kind === 'business_event' ? 'Business event' : 'Event'
-      return node.config?.event ? `${label}: ${fmtEvent(node.config.event)}` : `Select ${label.toLowerCase()}`
+      if (!node.config?.event) return `Select ${label.toLowerCase()}`
+      const ruleCount = (node.config.filters?.rules ?? []).length
+      const suffix = ruleCount > 0 ? ` · ${ruleCount} filter${ruleCount > 1 ? 's' : ''}` : ''
+      return `${label}: ${fmtEvent(node.config.event)}${suffix}`
     }
     case 'delay': return `${node.config.value} ${node.config.unit}`
     case 'condition':
@@ -533,6 +538,190 @@ const BUSINESS_EVENT_PRESETS = [
   'price_drop', 'inventory_low', 'restock', 'new_product_launch', 'margin_threshold_hit',
 ]
 
+// Curated per-event property hints. Used as a fallback when the project hasn't
+// ingested enough events for the variable-sources catalog to surface real
+// property keys. Lets a marketer pick "Product Viewed → product_id is X"
+// before the first event lands.
+const EVENT_PROPERTY_HINTS: Record<string, string[]> = {
+  product_viewed:    ['product_id', 'product_name', 'category', 'price', 'brand', 'vendor'],
+  add_to_cart:       ['product_id', 'product_name', 'quantity', 'price'],
+  cart_created:      ['cart_id', 'item_count', 'cart_value', 'currency'],
+  checkout_started:  ['cart_id', 'cart_value', 'currency', 'item_count'],
+  order_placed:      ['order_id', 'total', 'currency', 'item_count', 'payment_method'],
+  order_fulfilled:   ['order_id', 'total', 'currency'],
+  order_cancelled:   ['order_id', 'total', 'currency', 'reason'],
+  wishlist_added:    ['product_id', 'product_name', 'price'],
+  page_viewed:       ['url', 'page_type', 'referrer'],
+  search:            ['query', 'results_count'],
+  // BFSI defaults
+  loan_application_submitted: ['application_id', 'amount', 'tenure_months', 'product_type'],
+  emi_due:                    ['loan_id', 'amount', 'days_overdue'],
+  policy_purchased:           ['policy_id', 'premium', 'policy_type'],
+  kyc_completed:              ['method', 'status'],
+}
+
+// Operators the backend's evaluateEventFilters() honours.
+const TRIGGER_FILTER_OPERATORS: Array<{ value: FilterOperator; label: string }> = [
+  { value: 'is',           label: 'is' },
+  { value: 'is_not',       label: 'is not' },
+  { value: 'greater_than', label: 'greater than' },
+  { value: 'less_than',    label: 'less than' },
+  { value: 'contains',     label: 'contains' },
+  { value: 'is_true',      label: 'is true' },
+  { value: 'is_false',     label: 'is false' },
+]
+
+function isUnaryOperator(op: FilterOperator | undefined): boolean {
+  return op === 'is_true' || op === 'is_false'
+}
+
+function TriggerFiltersBlock({
+  event, filters, onChange,
+}: {
+  event: string
+  filters: FilterConfig | undefined
+  onChange: (next: FilterConfig | undefined) => void
+}) {
+  const { data: catalog } = useVariableSources()
+  const observedProperties = catalog?.data.events.find(e => e.name === event)?.properties ?? []
+  const hintedProperties = EVENT_PROPERTY_HINTS[event] ?? []
+  // Merge — observed first (real data), then hints not already covered.
+  const propertyOptions = Array.from(new Set([...observedProperties, ...hintedProperties]))
+
+  const productsRequired = (filters?.rules ?? []).some(r =>
+    !('type' in r) && (r.field === 'product_id' || r.field === 'product_external_id'),
+  )
+  const { data: productsData } = useProducts(productsRequired ? '' : undefined)
+  const products = productsData?.data ?? []
+
+  const rules = (filters?.rules ?? []).filter((r): r is FilterRule => !('type' in r))
+  const logic = filters?.logic ?? 'AND'
+
+  function patchRules(next: FilterRule[]) {
+    if (next.length === 0) {
+      onChange(undefined)
+    } else {
+      onChange({ logic, rules: next })
+    }
+  }
+
+  function addRule() {
+    const defaultField = propertyOptions[0] ?? ''
+    patchRules([...rules, { field: defaultField, operator: 'is', value: '' }])
+  }
+
+  function updateRule(idx: number, partial: Partial<FilterRule>) {
+    const next = rules.map((r, i) => (i === idx ? { ...r, ...partial } : r))
+    patchRules(next)
+  }
+
+  function removeRule(idx: number) {
+    patchRules(rules.filter((_, i) => i !== idx))
+  }
+
+  if (!event) return null
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-gray-100">
+      <div className="flex items-center justify-between">
+        <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+          Event property filters
+        </label>
+        {rules.length > 1 && (
+          <select
+            value={logic}
+            onChange={(e) => onChange({ logic: e.target.value as 'AND' | 'OR', rules })}
+            className="text-[11px] font-medium text-gray-600 border border-gray-200 rounded px-1.5 py-0.5 bg-white"
+          >
+            <option value="AND">Match all</option>
+            <option value="OR">Match any</option>
+          </select>
+        )}
+      </div>
+
+      {rules.length === 0 && (
+        <p className="text-[11px] text-gray-500 leading-relaxed">
+          Trigger fires on every <code className="bg-gray-100 px-1 rounded text-[10px]">{event}</code>.
+          Add a filter to narrow it — e.g. only when <code className="bg-gray-100 px-1 rounded text-[10px]">product_id</code> matches a specific product.
+        </p>
+      )}
+
+      {rules.map((rule, idx) => {
+        const isProductField = rule.field === 'product_id' || rule.field === 'product_external_id'
+        const unary = isUnaryOperator(rule.operator)
+        return (
+          <div key={idx} className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <select
+                value={rule.field}
+                onChange={(e) => updateRule(idx, { field: e.target.value })}
+                className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+                {propertyOptions.length === 0 && <option value="">No properties yet</option>}
+                {propertyOptions.map(prop => (
+                  <option key={prop} value={prop}>{prop}</option>
+                ))}
+                {rule.field && !propertyOptions.includes(rule.field) && (
+                  <option value={rule.field}>{rule.field}</option>
+                )}
+              </select>
+              <button
+                type="button"
+                onClick={() => removeRule(idx)}
+                className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-700"
+                title="Remove condition"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <select
+                value={rule.operator}
+                onChange={(e) => updateRule(idx, { operator: e.target.value as FilterOperator })}
+                className="text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+                {TRIGGER_FILTER_OPERATORS.map(op => (
+                  <option key={op.value} value={op.value}>{op.label}</option>
+                ))}
+              </select>
+              {!unary && (
+                isProductField ? (
+                  <select
+                    value={String(rule.value ?? '')}
+                    onChange={(e) => updateRule(idx, { value: e.target.value })}
+                    className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  >
+                    <option value="">Pick a product…</option>
+                    {products.map(p => (
+                      <option key={p.id} value={p.shopifyProductId ?? p.id}>{p.title}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={String(rule.value ?? '')}
+                    onChange={(e) => updateRule(idx, { value: e.target.value })}
+                    placeholder="value"
+                    className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  />
+                )
+              )}
+            </div>
+          </div>
+        )
+      })}
+
+      <button
+        type="button"
+        onClick={addRule}
+        className="w-full text-[11px] h-7 rounded border border-dashed border-gray-300 text-gray-600 hover:border-purple-300 hover:text-purple-700 hover:bg-purple-50 transition-colors flex items-center justify-center gap-1"
+      >
+        <Plus className="h-3 w-3" /> Add condition
+      </button>
+    </div>
+  )
+}
+
 function TriggerKindBlock({ node, onUpdate, events }: { node: FlowNode & { type: 'trigger' }; onUpdate: (n: FlowNode) => void; events: readonly string[] }) {
   const cfg = node.config ?? { event: '' }
   const kind = (cfg.kind as typeof TRIGGER_KINDS[number]['value'] | undefined) ?? 'event'
@@ -557,32 +746,46 @@ function TriggerKindBlock({ node, onUpdate, events }: { node: FlowNode & { type:
       </Fld>
 
       {kind === 'event' && (
-        <Fld label="Event">
-          <select
-            value={cfg.event ?? ''}
-            onChange={(e) => patch({ event: e.target.value })}
-            className={INPUT}
-          >
-            <option value="">Select event...</option>
-            {events.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-          </select>
-        </Fld>
+        <>
+          <Fld label="Event">
+            <select
+              value={cfg.event ?? ''}
+              onChange={(e) => patch({ event: e.target.value, filters: undefined })}
+              className={INPUT}
+            >
+              <option value="">Select event...</option>
+              {events.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
+            </select>
+          </Fld>
+          <TriggerFiltersBlock
+            event={cfg.event ?? ''}
+            filters={cfg.filters}
+            onChange={(next) => patch({ filters: next })}
+          />
+        </>
       )}
 
       {kind === 'business_event' && (
-        <Fld label="Business event">
-          <select
-            value={cfg.event ?? ''}
-            onChange={(e) => patch({ event: e.target.value })}
-            className={INPUT}
-          >
-            <option value="">Select…</option>
-            {BUSINESS_EVENT_PRESETS.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-          </select>
-          <p className="mt-1 text-[11px] text-gray-500">
-            Your backend fires these via POST /v1/events with the event name above. See docs for the standard business-event taxonomy.
-          </p>
-        </Fld>
+        <>
+          <Fld label="Business event">
+            <select
+              value={cfg.event ?? ''}
+              onChange={(e) => patch({ event: e.target.value, filters: undefined })}
+              className={INPUT}
+            >
+              <option value="">Select…</option>
+              {BUSINESS_EVENT_PRESETS.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
+            </select>
+            <p className="mt-1 text-[11px] text-gray-500">
+              Your backend fires these via POST /v1/events with the event name above. See docs for the standard business-event taxonomy.
+            </p>
+          </Fld>
+          <TriggerFiltersBlock
+            event={cfg.event ?? ''}
+            filters={cfg.filters}
+            onChange={(next) => patch({ filters: next })}
+          />
+        </>
       )}
 
       {kind === 'fixed_time' && (
