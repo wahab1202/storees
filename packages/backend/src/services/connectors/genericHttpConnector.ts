@@ -58,6 +58,10 @@ export type ConnectorTemplate = {
     products: Record<string, FieldMapValue>
     orders: Record<string, FieldMapValue | LineItemMap>
   }
+  // Throughput controls — keep the source-side API happy. Defaults are gentle
+  // but every template can override per its API's tolerance.
+  interBatchDelayMs?: number    // Pause between successive page fetches (default 0)
+  maxFetchRetries?: number      // Retry attempts on transient HTTP errors (default 3)
 }
 
 export type RuntimeConfig = {
@@ -259,6 +263,37 @@ export async function fetchPage(
   }
 
   return { records, hasMore, nextCursor, totalCount }
+}
+
+// Retry wrapper for transient errors. A flaky source-side API or a brief
+// network blip would otherwise abort the entire entity sync. Retries with
+// exponential backoff on:
+//   - 5xx server errors
+//   - 429 rate-limit responses
+//   - DNS / connection-refused / abort
+// Permanent errors (400, 401, 403, 404) fail fast — retrying won't help.
+export async function fetchPageWithRetry(
+  cfg: RuntimeConfig,
+  opts: FetchPageOptions,
+): Promise<FetchPageResult> {
+  const maxRetries = cfg.template.maxFetchRetries ?? 3
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fetchPage(cfg, opts)
+    } catch (err) {
+      lastError = err as Error
+      const msg = lastError.message
+      // Permanent — don't retry
+      if (/HTTP 4(00|01|03|04)/.test(msg)) throw lastError
+      if (attempt === maxRetries) throw lastError
+      // Exponential backoff: 500ms, 1s, 2s, 4s, 8s (capped)
+      const delay = Math.min(500 * 2 ** attempt, 8000)
+      await new Promise((r) => setTimeout(r, delay))
+    }
+  }
+  throw lastError ?? new Error('fetchPageWithRetry: exhausted retries')
 }
 
 // ── Connection test ──────────────────────────────────────────────────────────

@@ -41,6 +41,12 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     pageSize: 100,
   },
 
+  // VirpanAI/Medusa Admin API doesn't publish a strict rate limit but it
+  // appreciates breathing room. 100ms between pages → max 10 requests/sec
+  // per entity, well within typical infra tolerances.
+  interBatchDelayMs: 100,
+  maxFetchRetries: 3,
+
   incremental: {
     customers: { param: 'updated_at[gte]', format: 'iso8601' },
     products: { param: 'updated_at[gte]', format: 'iso8601' },

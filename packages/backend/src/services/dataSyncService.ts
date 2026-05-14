@@ -7,7 +7,7 @@ import {
   events as eventsTable,
 } from '../db/schema.js'
 import {
-  fetchPage,
+  fetchPageWithRetry,
   mapRecord,
   type ConnectorTemplate,
   type EntityType,
@@ -22,8 +22,23 @@ import { customerAggregateQueue } from './queue.js'
 // else (pagination, mapping, calling import services, writing logs) lives
 // here. Failures in one entity don't abort the others — the sync ends as
 // 'partial' so other data still loads.
+//
+// Throughput design (batchwise — large datasets must not break the system):
+//   - Source API is fetched ONE page at a time (no parallel page-fetch);
+//     each page is fully processed before the next is requested.
+//   - Page-fetch is wrapped in fetchPageWithRetry — transient 5xx/429/network
+//     errors retry with exponential backoff before failing the entity.
+//   - Inter-batch delay is configurable per template — be kind to rate-limited
+//     APIs (default 0; e.g. VirpanAI uses 100ms).
+//   - Within a page, customer upserts run with bounded concurrency
+//     (CUSTOMER_PAGE_CONCURRENCY) — fast enough but doesn't saturate the
+//     DB connection pool.
+//   - Product upserts go via a single bulk-insert per page (productCatalogService).
+//   - Order events go via a single bulk-insert per page + a single
+//     queue.addBulk for the customer-aggregate workers.
 
-const MAX_PAGES_PER_ENTITY = 1000  // safety cap: 100K records at pageSize=100
+const MAX_PAGES_PER_ENTITY = 10_000   // safety cap: 1M records at pageSize=100
+const CUSTOMER_PAGE_CONCURRENCY = 10  // parallel resolveCustomer calls per page
 
 type EntityStats = { fetched: number; imported: number; failed: number }
 type SyncStats = Record<EntityType, EntityStats>
@@ -68,43 +83,52 @@ async function importCustomerBatch(
   template: ConnectorTemplate,
   stats: EntityStats,
 ): Promise<void> {
-  for (const raw of records) {
-    stats.fetched += 1
-    const mapped = mapRecord(raw, template.fieldMap.customers)
-    const externalId = mapped.external_id as string | undefined
-    const email = mapped.email as string | undefined
-    const phone = mapped.phone as string | undefined
+  // Process records in sub-chunks of CUSTOMER_PAGE_CONCURRENCY parallel
+  // resolveCustomer calls. Fast enough for large pages without saturating
+  // the DB connection pool. resolveCustomer is race-safe (ON CONFLICT) so
+  // duplicate identifiers in the same chunk are handled cleanly.
+  for (let i = 0; i < records.length; i += CUSTOMER_PAGE_CONCURRENCY) {
+    const chunk = records.slice(i, i + CUSTOMER_PAGE_CONCURRENCY)
+    await Promise.all(
+      chunk.map(async (raw) => {
+        stats.fetched += 1
+        const mapped = mapRecord(raw, template.fieldMap.customers)
+        const externalId = mapped.external_id as string | undefined
+        const email = mapped.email as string | undefined
+        const phone = mapped.phone as string | undefined
 
-    if (!externalId && !email && !phone) {
-      stats.failed += 1
-      await log(syncId, 'error', 'Customer has no external_id, email, or phone — cannot resolve identity', {
-        entityType: 'customer',
-        payload: { mapped, raw },
-      })
-      continue
-    }
+        if (!externalId && !email && !phone) {
+          stats.failed += 1
+          await log(syncId, 'error', 'Customer has no external_id, email, or phone — cannot resolve identity', {
+            entityType: 'customer',
+            payload: { mapped, raw },
+          })
+          return
+        }
 
-    try {
-      await resolveCustomer({
-        projectId,
-        externalId,
-        email,
-        phone,
-        name: (mapped.name as string | undefined) ?? null,
-        emailSubscribed: (mapped.email_subscribed as boolean | undefined) ?? false,
-        smsSubscribed: (mapped.sms_subscribed as boolean | undefined) ?? false,
-        region: (mapped.region as string | undefined) ?? null,
-        city: (mapped.city as string | undefined) ?? null,
-      })
-      stats.imported += 1
-    } catch (err) {
-      stats.failed += 1
-      await log(syncId, 'error', `Customer upsert failed: ${(err as Error).message}`, {
-        entityType: 'customer',
-        entityId: externalId ?? email ?? phone,
-        payload: { mapped },
-      })
-    }
+        try {
+          await resolveCustomer({
+            projectId,
+            externalId,
+            email,
+            phone,
+            name: (mapped.name as string | undefined) ?? null,
+            emailSubscribed: (mapped.email_subscribed as boolean | undefined) ?? false,
+            smsSubscribed: (mapped.sms_subscribed as boolean | undefined) ?? false,
+            region: (mapped.region as string | undefined) ?? null,
+            city: (mapped.city as string | undefined) ?? null,
+          })
+          stats.imported += 1
+        } catch (err) {
+          stats.failed += 1
+          await log(syncId, 'error', `Customer upsert failed: ${(err as Error).message}`, {
+            entityType: 'customer',
+            entityId: externalId ?? email ?? phone,
+            payload: { mapped },
+          })
+        }
+      }),
+    )
   }
 }
 
@@ -315,12 +339,17 @@ async function syncEntity(
     entityType: entity,
   })
 
+  const interBatchDelayMs = cfg.template.interBatchDelayMs ?? 0
+  let hitSafetyCap = false
+
   for (let i = 0; i < MAX_PAGES_PER_ENTITY; i++) {
     let pageResult
     try {
-      pageResult = await fetchPage(cfg, { entity, offset, page, cursor, updatedSince })
+      // fetchPageWithRetry — transient 5xx/429/network blips retry with backoff;
+      // permanent 4xx fails fast. See genericHttpConnector.ts.
+      pageResult = await fetchPageWithRetry(cfg, { entity, offset, page, cursor, updatedSince })
     } catch (err) {
-      await log(syncId, 'error', `${entity} fetch failed at offset ${offset}: ${(err as Error).message}`, {
+      await log(syncId, 'error', `${entity} fetch failed at offset ${offset} after retries: ${(err as Error).message}`, {
         entityType: entity,
       })
       return { ok: false, latestTimestamp: runStart }
@@ -333,14 +362,37 @@ async function syncEntity(
 
     if (!pageResult.hasMore) break
 
+    // Last iteration of the loop — hit the safety cap WITHOUT pageResult.hasMore=false
+    if (i === MAX_PAGES_PER_ENTITY - 1) {
+      hitSafetyCap = true
+      break
+    }
+
     offset += cfg.template.pagination.pageSize
     page += 1
     if (cfg.template.pagination.type === 'cursor') cursor = pageResult.nextCursor
+
+    // Be polite to the source API — sleep between consecutive page fetches
+    if (interBatchDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, interBatchDelayMs))
+    }
   }
 
-  await log(syncId, 'info', `${entity} sync complete — fetched ${stats[entity].fetched}, imported ${stats[entity].imported}, failed ${stats[entity].failed}`, {
-    entityType: entity,
-  })
+  if (hitSafetyCap) {
+    await log(
+      syncId,
+      'warn',
+      `${entity} sync hit MAX_PAGES_PER_ENTITY (${MAX_PAGES_PER_ENTITY}) at ${stats[entity].fetched} records — there may be more data on the source side. Re-run sync or raise the cap.`,
+      { entityType: entity },
+    )
+  }
+
+  await log(
+    syncId,
+    'info',
+    `${entity} sync complete — fetched ${stats[entity].fetched}, imported ${stats[entity].imported}, failed ${stats[entity].failed}`,
+    { entityType: entity },
+  )
 
   return { ok: stats[entity].failed === 0, latestTimestamp: runStart }
 }
