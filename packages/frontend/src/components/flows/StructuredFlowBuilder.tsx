@@ -9,7 +9,7 @@ import {
 import { cn } from '@/lib/utils'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
-import { useVariableSources } from '@/hooks/useTemplates'
+import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
 import { useProducts } from '@/hooks/useProducts'
 
 type Props = {
@@ -114,9 +114,17 @@ function getSubtitle(node: FlowNode): string {
     }
     case 'delay': return `${node.config.value} ${node.config.unit}`
     case 'condition':
-      return node.config.check === 'event_occurred'
-        ? `Has done: ${node.config.event ? fmtEvent(node.config.event) : '?'}`
-        : `Check: ${node.config.field ?? '?'}`
+      if (node.config.check === 'event_occurred') {
+        return `Has done: ${node.config.event ? fmtEvent(node.config.event) : '?'}`
+      }
+      if (node.config.field) {
+        const op = node.config.operator ?? 'is'
+        const val = node.config.value
+        return val !== undefined && val !== ''
+          ? `${node.config.field} ${op} ${val}`
+          : `Check: ${node.config.field}`
+      }
+      return 'Pick a field to check'
     case 'action': return node.config.templateId ? `Template: ${node.config.templateId.slice(0, 20)}` : 'No template selected'
     case 'ab_split': {
       const branches = node.config?.branches ?? []
@@ -475,41 +483,10 @@ function ConfigDrawer({
           </Fld>
         )}
         {node.type === 'condition' && (
-          <>
-            <Fld label="Check">
-              <select value={node.config.check} onChange={e => onUpdate({ ...node, config: { ...node.config, check: e.target.value as 'event_occurred' | 'attribute_check' } })} className={INPUT}>
-                <option value="event_occurred">Has Done Event</option>
-                <option value="attribute_check">Check Attribute</option>
-              </select>
-            </Fld>
-            {node.config.check === 'event_occurred' ? (
-              <Fld label="Event">
-                <select value={node.config.event ?? ''} onChange={e => onUpdate({ ...node, config: { ...node.config, event: e.target.value } })} className={INPUT}>
-                  <option value="">Select...</option>
-                  {events.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-                </select>
-              </Fld>
-            ) : (
-              <Fld label="Field">
-                <input type="text" value={node.config.field ?? ''} placeholder="e.g. totalOrders" onChange={e => onUpdate({ ...node, config: { ...node.config, field: e.target.value } })} className={INPUT} />
-              </Fld>
-            )}
-          </>
+          <ConditionBlock node={node} onUpdate={onUpdate} events={events} />
         )}
         {node.type === 'action' && (
-          <>
-            <Fld label="Channel">
-              <select value={node.config.actionType} onChange={e => onUpdate({ ...node, config: { ...node.config, actionType: e.target.value as 'send_email' | 'send_sms' | 'send_push' | 'send_whatsapp' } })} className={INPUT}>
-                <option value="send_email">Email</option>
-                <option value="send_sms">SMS</option>
-                <option value="send_push">Push Notification</option>
-                <option value="send_whatsapp">WhatsApp</option>
-              </select>
-            </Fld>
-            <Fld label="Template">
-              <input type="text" value={node.config.templateId} placeholder="template_id" onChange={e => onUpdate({ ...node, config: { ...node.config, templateId: e.target.value } })} className={INPUT} />
-            </Fld>
-          </>
+          <ActionBlock node={node} onUpdate={onUpdate} />
         )}
         {node.type === 'end' && (
           <Fld label="Label">
@@ -719,6 +696,199 @@ function TriggerFiltersBlock({
         <Plus className="h-3 w-3" /> Add condition
       </button>
     </div>
+  )
+}
+
+// Operators usable on customer attribute checks (Condition node, Check
+// Attribute). Wider than the trigger filter set because conditions run
+// against the customer DB row, not raw event properties.
+const ATTRIBUTE_CHECK_OPERATORS: Array<{ value: FilterOperator; label: string }> = [
+  { value: 'is',            label: 'is' },
+  { value: 'is_not',        label: 'is not' },
+  { value: 'greater_than',  label: 'greater than' },
+  { value: 'less_than',     label: 'less than' },
+  { value: 'contains',      label: 'contains' },
+  { value: 'begins_with',   label: 'begins with' },
+  { value: 'ends_with',     label: 'ends with' },
+  { value: 'is_true',       label: 'is true' },
+  { value: 'is_false',      label: 'is false' },
+]
+
+function ConditionBlock({
+  node, onUpdate, events,
+}: {
+  node: FlowNode & { type: 'condition' }
+  onUpdate: (n: FlowNode) => void
+  events: readonly string[]
+}) {
+  const { data: catalog } = useVariableSources()
+  const customerFields = catalog?.data.customer ?? []
+  const customAttrs = catalog?.data.attributes ?? []
+  const cfg = node.config
+
+  function patch(next: Partial<typeof cfg>) {
+    onUpdate({ ...node, config: { ...cfg, ...next } } as FlowNode)
+  }
+
+  const unary = cfg.operator === 'is_true' || cfg.operator === 'is_false'
+
+  return (
+    <>
+      <Fld label="Check">
+        <select
+          value={cfg.check}
+          onChange={e => patch({
+            check: e.target.value as 'event_occurred' | 'attribute_check',
+            // Clear cross-mode fields so stale state doesn't leak across kinds
+            event: undefined, field: undefined, operator: undefined, value: undefined,
+          })}
+          className={INPUT}
+        >
+          <option value="event_occurred">Has Done Event</option>
+          <option value="attribute_check">Check Attribute</option>
+        </select>
+      </Fld>
+
+      {cfg.check === 'event_occurred' ? (
+        <>
+          <Fld label="Event">
+            <select
+              value={cfg.event ?? ''}
+              onChange={e => patch({ event: e.target.value })}
+              className={INPUT}
+            >
+              <option value="">Select...</option>
+              {events.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
+            </select>
+          </Fld>
+          <Fld label="Time window">
+            <select
+              value={cfg.since ?? 'trip_start'}
+              onChange={e => patch({ since: e.target.value as 'trip_start' | 'flow_start' })}
+              className={INPUT}
+            >
+              <option value="trip_start">Since this customer entered the flow</option>
+              <option value="flow_start">Ever (entire history)</option>
+            </select>
+          </Fld>
+        </>
+      ) : (
+        <>
+          <Fld label="Field">
+            <select
+              value={cfg.field ?? ''}
+              onChange={e => patch({ field: e.target.value })}
+              className={INPUT}
+            >
+              <option value="">Select field…</option>
+              {customerFields.length > 0 && (
+                <optgroup label="Customer">
+                  {customerFields.map(f => (
+                    <option key={f.field} value={f.field}>{f.label}</option>
+                  ))}
+                </optgroup>
+              )}
+              {customAttrs.length > 0 && (
+                <optgroup label="Custom attributes">
+                  {customAttrs.map(a => (
+                    <option key={a.key} value={`customAttributes.${a.key}`}>{a.key}</option>
+                  ))}
+                </optgroup>
+              )}
+              {cfg.field && !customerFields.some(f => f.field === cfg.field) &&
+                !customAttrs.some(a => `customAttributes.${a.key}` === cfg.field) && (
+                <option value={cfg.field}>{cfg.field}</option>
+              )}
+            </select>
+          </Fld>
+          <Fld label="Operator">
+            <select
+              value={cfg.operator ?? 'is'}
+              onChange={e => patch({ operator: e.target.value as FilterOperator })}
+              className={INPUT}
+            >
+              {ATTRIBUTE_CHECK_OPERATORS.map(op => (
+                <option key={op.value} value={op.value}>{op.label}</option>
+              ))}
+            </select>
+          </Fld>
+          {!unary && (
+            <Fld label="Value">
+              <input
+                type="text"
+                value={String(cfg.value ?? '')}
+                onChange={e => patch({ value: e.target.value })}
+                placeholder={cfg.field === 'totalOrders' ? 'e.g. 3' : 'value to compare'}
+                className={INPUT}
+              />
+            </Fld>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
+const ACTION_CHANNEL_BY_TYPE: Record<string, 'email' | 'sms' | 'push' | 'whatsapp'> = {
+  send_email: 'email',
+  send_sms: 'sms',
+  send_push: 'push',
+  send_whatsapp: 'whatsapp',
+}
+
+function ActionBlock({
+  node, onUpdate,
+}: {
+  node: FlowNode & { type: 'action' }
+  onUpdate: (n: FlowNode) => void
+}) {
+  const cfg = node.config
+  const channel = ACTION_CHANNEL_BY_TYPE[cfg.actionType] ?? 'email'
+  const { data: templatesData, isLoading } = useTemplates()
+  const templates = (templatesData?.data ?? []).filter(t => t.channel === channel)
+
+  function patch(next: Partial<typeof cfg>) {
+    onUpdate({ ...node, config: { ...cfg, ...next } } as FlowNode)
+  }
+
+  return (
+    <>
+      <Fld label="Channel">
+        <select
+          value={cfg.actionType}
+          onChange={e => patch({
+            actionType: e.target.value as 'send_email' | 'send_sms' | 'send_push' | 'send_whatsapp',
+            templateId: '', // clear — templates don't cross channels
+          })}
+          className={INPUT}
+        >
+          <option value="send_email">Email</option>
+          <option value="send_sms">SMS</option>
+          <option value="send_push">Push Notification</option>
+          <option value="send_whatsapp">WhatsApp</option>
+        </select>
+      </Fld>
+      <Fld label="Template">
+        <select
+          value={cfg.templateId ?? ''}
+          onChange={e => patch({ templateId: e.target.value })}
+          className={INPUT}
+          disabled={isLoading}
+        >
+          <option value="">
+            {isLoading ? 'Loading…' : templates.length === 0 ? `No ${channel} templates yet` : 'Select template…'}
+          </option>
+          {templates.map(t => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        {!isLoading && templates.length === 0 && (
+          <p className="mt-1 text-[11px] text-amber-700">
+            Create a {channel} template under <a href="/templates/create" className="underline font-medium">Templates → New</a>, then come back.
+          </p>
+        )}
+      </Fld>
+    </>
   )
 }
 

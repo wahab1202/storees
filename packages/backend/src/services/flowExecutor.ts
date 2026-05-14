@@ -431,19 +431,32 @@ async function evaluateCondition(
 
     if (!customer) return false
 
-    const value = (customer as Record<string, unknown>)[config.field]
+    // Support dotted paths like "customAttributes.loyalty_tier" so the UI
+    // can target keys nested inside the customAttributes JSON blob.
+    const value = resolveDottedPath(customer as Record<string, unknown>, config.field)
     switch (config.operator) {
-      case 'is': return value === config.value
-      case 'is_not': return value !== config.value
+      case 'is':           return value === config.value
+      case 'is_not':       return value !== config.value
       case 'greater_than': return Number(value) > Number(config.value)
-      case 'less_than': return Number(value) < Number(config.value)
-      case 'is_true': return value === true
-      case 'is_false': return value === false
-      default: return false
+      case 'less_than':    return Number(value) < Number(config.value)
+      case 'contains':     return String(value ?? '').includes(String(config.value ?? ''))
+      case 'begins_with':  return String(value ?? '').startsWith(String(config.value ?? ''))
+      case 'ends_with':    return String(value ?? '').endsWith(String(config.value ?? ''))
+      case 'is_true':      return value === true
+      case 'is_false':     return value === false
+      default:             return false
     }
   }
 
   return false
+}
+
+function resolveDottedPath(obj: Record<string, unknown>, path: string): unknown {
+  if (!path.includes('.')) return obj[path]
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc == null || typeof acc !== 'object') return undefined
+    return (acc as Record<string, unknown>)[key]
+  }, obj)
 }
 
 async function executeAction(
