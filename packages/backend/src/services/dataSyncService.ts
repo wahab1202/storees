@@ -254,7 +254,7 @@ async function importOrderBatch(
           properties: ev.properties,
           timestamp: ev.timestamp,
         },
-        opts: { jobId: `agg:${ev.id}`, removeOnComplete: true, removeOnFail: false },
+        opts: { jobId: `agg-${ev.id}`, removeOnComplete: true, removeOnFail: false },
       })),
     )
   }

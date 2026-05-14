@@ -200,7 +200,7 @@ router.post('/connectors/:id/sync', requireProjectId, async (req, res) => {
       })
       .returning({ id: dataSourceSyncs.id })
 
-    await dataSyncQueue.add('sync', { syncId: sync.id }, { jobId: `sync:${sync.id}` })
+    await dataSyncQueue.add('sync', { syncId: sync.id }, { jobId: `sync-${sync.id}` })
 
     res.json({ success: true, data: { syncId: sync.id, kind: effectiveKind } })
   } catch (err) {
