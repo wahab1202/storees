@@ -1,16 +1,27 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { SlidePanel } from '@/components/shared/SlidePanel'
-import { useConnectorTemplates, useCreateConnector } from '@/hooks/useDataConnectors'
+import {
+  useConnectorTemplates,
+  useCreateConnector,
+  useUpdateConnector,
+  type Connector,
+} from '@/hooks/useDataConnectors'
 
 type Props = {
   open: boolean
   onClose: () => void
   projectId: string
+  // When provided, the dialog runs in EDIT mode: pre-fills name/baseUrl,
+  // locks the template (can't change post-creation — different field maps),
+  // and leaves the API-key field empty (server never returns it, but the
+  // existing one stays in place unless the user types a new one).
+  connector?: Connector | null
 }
 
-export function AddConnectorDialog({ open, onClose, projectId }: Props) {
+export function AddConnectorDialog({ open, onClose, projectId, connector }: Props) {
+  const isEdit = !!connector
   const { data: templatesRes } = useConnectorTemplates()
   const templates = templatesRes?.data ?? []
 
@@ -19,34 +30,70 @@ export function AddConnectorDialog({ open, onClose, projectId }: Props) {
   const [baseUrl, setBaseUrl] = useState('')
   const [authValue, setAuthValue] = useState('')
 
-  const createMutation = useCreateConnector(projectId)
+  // Sync form state with the connector being edited each time the dialog
+  // opens or the target connector changes.
+  useEffect(() => {
+    if (!open) return
+    if (connector) {
+      setTemplate(connector.template)
+      setName(connector.name)
+      setBaseUrl(connector.baseUrl)
+      setAuthValue('')   // never pre-fill; leave blank to keep existing key
+    } else {
+      setTemplate('virpanai')
+      setName('')
+      setBaseUrl('')
+      setAuthValue('')
+    }
+  }, [open, connector])
 
-  function reset() {
-    setTemplate('virpanai')
-    setName('')
-    setBaseUrl('')
-    setAuthValue('')
-  }
+  const createMutation = useCreateConnector(projectId)
+  const updateMutation = useUpdateConnector(projectId)
 
   async function handleSave() {
-    if (!name.trim() || !baseUrl.trim() || !authValue.trim()) return
-    await createMutation.mutateAsync({
-      template,
-      name: name.trim(),
-      baseUrl: baseUrl.trim(),
-      authValue: authValue.trim(),
-    })
-    reset()
+    if (!name.trim() || !baseUrl.trim()) return
+
+    if (isEdit && connector) {
+      // In edit mode only send authValue if the user typed a new one.
+      // Otherwise the encrypted key on the server stays untouched.
+      const payload: Parameters<typeof updateMutation.mutateAsync>[0] = {
+        id: connector.id,
+        name: name.trim(),
+        baseUrl: baseUrl.trim(),
+      }
+      if (authValue.trim()) payload.authValue = authValue.trim()
+      await updateMutation.mutateAsync(payload)
+    } else {
+      if (!authValue.trim()) return   // API key required for new connectors
+      await createMutation.mutateAsync({
+        template,
+        name: name.trim(),
+        baseUrl: baseUrl.trim(),
+        authValue: authValue.trim(),
+      })
+    }
     onClose()
   }
 
-  const canSave = name.trim() && baseUrl.trim() && authValue.trim() && !createMutation.isPending
+  const isPending = createMutation.isPending || updateMutation.isPending
+  const canSave =
+    name.trim() &&
+    baseUrl.trim() &&
+    !isPending &&
+    (isEdit || authValue.trim())   // new connectors require API key
+
+  const title = isEdit ? 'Edit data source' : 'Add data source'
+  const saveLabel = isPending
+    ? 'Saving…'
+    : isEdit
+      ? 'Save changes'
+      : 'Save & continue'
 
   return (
     <SlidePanel
       open={open}
       onClose={onClose}
-      title="Add data source"
+      title={title}
       footer={
         <div className="flex justify-end gap-2 px-6 py-4 border-t border-border bg-surface">
           <button
@@ -60,7 +107,7 @@ export function AddConnectorDialog({ open, onClose, projectId }: Props) {
             disabled={!canSave}
             className="px-4 py-2 text-sm font-medium bg-text-primary text-white rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {createMutation.isPending ? 'Saving…' : 'Save & continue'}
+            {saveLabel}
           </button>
         </div>
       }
@@ -69,22 +116,33 @@ export function AddConnectorDialog({ open, onClose, projectId }: Props) {
         {/* Template picker */}
         <div>
           <label className="block text-sm font-medium text-heading mb-1.5">Template</label>
-          <div className="space-y-2">
-            {templates.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTemplate(t.id)}
-                className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
-                  template === t.id
-                    ? 'border-text-primary bg-surface'
-                    : 'border-border hover:border-text-muted'
-                }`}
-              >
-                <div className="text-sm font-medium text-heading">{t.label}</div>
-                <div className="text-xs text-text-muted mt-0.5">{t.description}</div>
-              </button>
-            ))}
-          </div>
+          {isEdit ? (
+            <div className="px-4 py-3 rounded-lg border border-border bg-surface/40">
+              <div className="text-sm font-medium text-heading">
+                {templates.find((t) => t.id === template)?.label ?? template}
+              </div>
+              <div className="text-xs text-text-muted mt-0.5">
+                Template can't be changed after creation — different field mappings. Remove this connector and add a new one if you need to switch.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTemplate(t.id)}
+                  className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+                    template === t.id
+                      ? 'border-text-primary bg-surface'
+                      : 'border-border hover:border-text-muted'
+                  }`}
+                >
+                  <div className="text-sm font-medium text-heading">{t.label}</div>
+                  <div className="text-xs text-text-muted mt-0.5">{t.description}</div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Display name */}
@@ -117,22 +175,28 @@ export function AddConnectorDialog({ open, onClose, projectId }: Props) {
 
         {/* Auth */}
         <div>
-          <label className="block text-sm font-medium text-heading mb-1.5">API key / Bearer token</label>
+          <label className="block text-sm font-medium text-heading mb-1.5">
+            API key / Bearer token {isEdit && <span className="font-normal text-text-muted">(optional)</span>}
+          </label>
           <input
             type="password"
             value={authValue}
             onChange={(e) => setAuthValue(e.target.value)}
-            placeholder="sk_live_..."
+            placeholder={isEdit ? 'Leave blank to keep current key' : 'sk_live_...'}
             className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-text-primary/20 font-mono"
           />
           <p className="text-xs text-text-muted mt-1">
-            Encrypted at rest. The value is never returned to the UI once saved.
+            {isEdit
+              ? 'The existing encrypted key stays in place unless you enter a new value here.'
+              : 'Encrypted at rest. The value is never returned to the UI once saved.'}
           </p>
         </div>
 
-        <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
-          <strong>Next step:</strong> After saving, run <em>Test Connection</em> from the connector card. This fetches one record from each endpoint so you can verify the field mapping before triggering a full sync.
-        </div>
+        {!isEdit && (
+          <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
+            <strong>Next step:</strong> After saving, run <em>Test Connection</em> from the connector card. This fetches one record from each endpoint so you can verify the field mapping before triggering a full sync.
+          </div>
+        )}
       </div>
     </SlidePanel>
   )

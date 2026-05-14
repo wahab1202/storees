@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, RefreshCw, FlaskConical, Trash2, Database } from 'lucide-react'
+import { Plus, RefreshCw, FlaskConical, Trash2, Database, Pencil } from 'lucide-react'
 import { AddConnectorDialog } from './AddConnectorDialog'
 import { SyncHistoryTable } from './SyncHistoryTable'
 import {
@@ -22,6 +22,7 @@ export function ConnectorsSection({ projectId }: { projectId: string }) {
   const connectors: Connector[] = connectorsRes?.data ?? []
 
   const [addOpen, setAddOpen] = useState(false)
+  const [editingConnector, setEditingConnector] = useState<Connector | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   return (
@@ -53,12 +54,23 @@ export function ConnectorsSection({ projectId }: { projectId: string }) {
               projectId={projectId}
               expanded={expandedId === c.id}
               onToggle={() => setExpandedId(expandedId === c.id ? null : c.id)}
+              onEdit={() => setEditingConnector(c)}
             />
           ))}
         </div>
       )}
 
-      <AddConnectorDialog open={addOpen} onClose={() => setAddOpen(false)} projectId={projectId} />
+      <AddConnectorDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        projectId={projectId}
+      />
+      <AddConnectorDialog
+        open={!!editingConnector}
+        onClose={() => setEditingConnector(null)}
+        projectId={projectId}
+        connector={editingConnector}
+      />
     </div>
   )
 }
@@ -86,11 +98,13 @@ function ConnectorCard({
   projectId,
   expanded,
   onToggle,
+  onEdit,
 }: {
   connector: Connector
   projectId: string
   expanded: boolean
   onToggle: () => void
+  onEdit: () => void
 }) {
   const triggerSync = useTriggerSync(projectId)
   const testConn = useTestConnector(projectId)
@@ -157,6 +171,13 @@ function ConnectorCard({
             title="Emergency button — pulls every record regardless of last_synced_at"
           >
             Full Resync
+          </button>
+          <button
+            onClick={onEdit}
+            className="p-1 text-text-muted hover:text-text-primary rounded-md hover:bg-surface"
+            title="Edit connector"
+          >
+            <Pencil className="h-3.5 w-3.5" />
           </button>
           {confirmingDelete ? (
             <>
