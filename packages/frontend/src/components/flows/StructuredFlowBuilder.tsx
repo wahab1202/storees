@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } fr
 import {
   Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone,
   CircleStop, Plus, Trash2, LogOut, X, Save, Loader2, AlertCircle,
-  Minus, Maximize2,
+  Minus, Maximize2, Shuffle, CornerDownRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
@@ -79,6 +79,8 @@ const NODE_META: Record<string, { icon: typeof Zap; iconColor: string; iconBg: s
   trigger:       { icon: Zap,            iconColor: 'text-purple-600',  iconBg: 'bg-purple-50',   label: 'Trigger' },
   delay:         { icon: Clock,          iconColor: 'text-blue-600',    iconBg: 'bg-blue-50',     label: 'Wait / Delay' },
   condition:     { icon: GitBranch,      iconColor: 'text-amber-600',   iconBg: 'bg-amber-50',    label: 'Condition' },
+  ab_split:      { icon: Shuffle,        iconColor: 'text-fuchsia-600', iconBg: 'bg-fuchsia-50',  label: 'A/B Split' },
+  goto:          { icon: CornerDownRight, iconColor: 'text-indigo-600', iconBg: 'bg-indigo-50',   label: 'Goto' },
   send_email:    { icon: Mail,           iconColor: 'text-green-600',   iconBg: 'bg-green-50',    label: 'Email' },
   send_sms:      { icon: MessageSquare,  iconColor: 'text-teal-600',    iconBg: 'bg-teal-50',     label: 'SMS' },
   send_push:     { icon: Bell,           iconColor: 'text-violet-600',  iconBg: 'bg-violet-50',   label: 'Push Notification' },
@@ -100,6 +102,12 @@ function getSubtitle(node: FlowNode): string {
         ? `Has done: ${node.config.event ? fmtEvent(node.config.event) : '?'}`
         : `Check: ${node.config.field ?? '?'}`
     case 'action': return node.config.templateId ? `Template: ${node.config.templateId.slice(0, 20)}` : 'No template selected'
+    case 'ab_split': {
+      const branches = node.config?.branches ?? []
+      if (branches.length === 0) return 'No branches configured'
+      return branches.map((b) => `${b.label} ${b.weight}%`).join(' · ')
+    }
+    case 'goto': return node.config?.target ? `→ ${node.config.target}` : 'No target set'
     case 'end': return node.label ?? 'End'
     default: return ''
   }

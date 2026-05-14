@@ -1,6 +1,6 @@
 'use client'
 
-import { Clock, GitBranch, Mail, MessageSquare, Bell, Phone, CircleStop, LogOut } from 'lucide-react'
+import { Clock, GitBranch, Mail, MessageSquare, Bell, Phone, CircleStop, LogOut, Shuffle, CornerDownRight } from 'lucide-react'
 import type { DragEvent } from 'react'
 import { useDashboardStats } from '@/hooks/useDashboard'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
@@ -16,6 +16,8 @@ type PaletteItem = {
 const paletteItems: PaletteItem[] = [
   { type: 'delay', label: 'Wait / Delay', icon: Clock, color: 'text-blue-600 bg-blue-50 border-blue-200' },
   { type: 'condition', label: 'Condition', icon: GitBranch, color: 'text-amber-600 bg-amber-50 border-amber-200' },
+  { type: 'ab_split', label: 'A/B Split', icon: Shuffle, color: 'text-fuchsia-600 bg-fuchsia-50 border-fuchsia-200' },
+  { type: 'goto', label: 'Goto', icon: CornerDownRight, color: 'text-indigo-600 bg-indigo-50 border-indigo-200' },
   { type: 'action', subtype: 'send_email', label: 'Send Email', icon: Mail, color: 'text-green-600 bg-green-50 border-green-200' },
   { type: 'action', subtype: 'send_sms', label: 'Send SMS', icon: MessageSquare, color: 'text-teal-600 bg-teal-50 border-teal-200' },
   { type: 'action', subtype: 'send_push', label: 'Push Notification', icon: Bell, color: 'text-violet-600 bg-violet-50 border-violet-200' },

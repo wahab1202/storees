@@ -4,7 +4,16 @@ import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events, pro
 import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
-import type { FlowNode, ActionNode, DelayNode, ConditionNode, TemplateVariable } from '@storees/shared'
+import { createHash } from 'node:crypto'
+import type {
+  FlowNode,
+  ActionNode,
+  DelayNode,
+  ConditionNode,
+  AbSplitNode,
+  GotoNode,
+  TemplateVariable,
+} from '@storees/shared'
 
 const DEMO_DELAY_MINUTES = Number(process.env.DEMO_DELAY_MINUTES ?? 2)
 
@@ -35,9 +44,12 @@ export async function advanceTrip(tripId: string): Promise<void> {
   let currentNode = nodeMap.get(trip.currentNodeId)
   if (!currentNode) return
 
-  // Process nodes until we hit a delay, end, or action
+  // Process nodes until we hit a delay, end, or action.
+  // MAX_ITERATIONS guards against infinite goto/ab_split loops. Bumped
+  // to 50 (from 20) when goto landed — a legitimate retry-3-times-then-
+  // give-up flow can chew through ~6 nodes per iteration easily.
   let iterations = 0
-  const MAX_ITERATIONS = 20 // safety limit
+  const MAX_ITERATIONS = 50
 
   while (currentNode && iterations < MAX_ITERATIONS) {
     iterations++
@@ -134,6 +146,51 @@ export async function advanceTrip(tripId: string): Promise<void> {
         break
       }
 
+      case 'ab_split': {
+        // Deterministic split: hash(customerId + nodeId) → 0..99, pick the
+        // branch whose cumulative weight bucket the hash falls into. Same
+        // customer always lands on the same branch, so journeys are stable
+        // for repeat events and the debug-flows view shows a coherent path.
+        const abNode = currentNode as AbSplitNode
+        const branches = abNode.config.branches ?? []
+        if (branches.length === 0) {
+          await completeTrip(tripId, 'ab_split: no branches')
+          return
+        }
+        const bucket = hashToBucket(`${trip.customerId}:${currentNode.id}`)
+        let cumulative = 0
+        let chosen = branches[0]
+        for (const b of branches) {
+          cumulative += b.weight
+          if (bucket < cumulative) { chosen = b; break }
+        }
+        const targetNode = nodeMap.get(chosen.target)
+        if (!targetNode) {
+          console.warn(`Trip ${tripId}: ab_split target ${chosen.target} not found`)
+          await completeTrip(tripId, `ab_split: target missing`)
+          return
+        }
+        await updateTripNode(tripId, targetNode.id)
+        currentNode = targetNode
+        break
+      }
+
+      case 'goto': {
+        // Unconditional jump. Use cases: loop on retry, re-route into a
+        // sub-flow, "if did_not_open in 3 days then goto nurture_node_x".
+        // Visited-set guards against infinite loops in malformed flows.
+        const gotoNode = currentNode as GotoNode
+        const targetNode = nodeMap.get(gotoNode.config.target)
+        if (!targetNode) {
+          console.warn(`Trip ${tripId}: goto target ${gotoNode.config.target} not found`)
+          await completeTrip(tripId, 'goto: target missing')
+          return
+        }
+        await updateTripNode(tripId, targetNode.id)
+        currentNode = targetNode
+        break
+      }
+
       case 'end': {
         await completeTrip(tripId, (currentNode as { label?: string }).label)
         return
@@ -144,6 +201,13 @@ export async function advanceTrip(tripId: string): Promise<void> {
         return
     }
   }
+}
+
+// Deterministic 0..99 bucket from a string key. Used by ab_split so the
+// same customer hashes to the same branch across re-evaluations.
+function hashToBucket(key: string): number {
+  const hex = createHash('sha256').update(key).digest('hex').slice(0, 8)
+  return parseInt(hex, 16) % 100
 }
 
 /**

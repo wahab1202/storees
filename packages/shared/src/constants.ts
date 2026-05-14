@@ -149,6 +149,8 @@ export const FLOW_NODE_TYPES = [
   'delay',
   'condition',
   'action',
+  'ab_split',  // Gap 6: random split with % allocation per branch
+  'goto',      // Gap 6: jump to a specific node (loops, retries, re-routing)
   'end',
 ] as const
 

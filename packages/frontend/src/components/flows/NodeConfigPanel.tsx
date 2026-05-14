@@ -46,6 +46,12 @@ export function NodeConfigPanel({ node, onUpdate, onClose, domainType = 'ecommer
         {node.type === 'action' && (
           <ActionForm node={node} onUpdate={onUpdate} />
         )}
+        {node.type === 'ab_split' && (
+          <AbSplitForm node={node} onUpdate={onUpdate} />
+        )}
+        {node.type === 'goto' && (
+          <GotoForm node={node} onUpdate={onUpdate} />
+        )}
         {node.type === 'end' && (
           <EndForm node={node} onUpdate={onUpdate} />
         )}
@@ -286,6 +292,119 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
           </p>
         )}
       </FieldLabel>
+    </div>
+  )
+}
+
+type AbBranch = { label: string; target: string; weight: number }
+
+function AbSplitForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void }) {
+  const d = node.data as Record<string, unknown>
+  const initial = (d.branches as AbBranch[] | undefined) ?? [
+    { label: 'A', target: '', weight: 50 },
+    { label: 'B', target: '', weight: 50 },
+  ]
+  const [branches, setBranches] = useState<AbBranch[]>(initial)
+
+  useEffect(() => {
+    const fresh = (node.data as Record<string, unknown>).branches as AbBranch[] | undefined
+    setBranches(fresh ?? [
+      { label: 'A', target: '', weight: 50 },
+      { label: 'B', target: '', weight: 50 },
+    ])
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
+
+  function update(next: AbBranch[]) {
+    setBranches(next)
+    onUpdate(node.id, { ...d, branches: next })
+  }
+
+  const total = branches.reduce((s, b) => s + (b.weight || 0), 0)
+  const weightsValid = total === 100
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-text-muted">
+        Random per-customer split. Same customer always lands on the same branch (deterministic hash). Weights must sum to <strong>100</strong>.
+      </p>
+      <div className="space-y-2">
+        {branches.map((b, i) => (
+          <div key={i} className="rounded-lg border border-border bg-white p-2.5 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <input
+                value={b.label}
+                onChange={e => update(branches.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
+                placeholder="Branch label"
+                className="flex-1 h-7 px-2 text-xs border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent/30"
+              />
+              <input
+                type="number"
+                min={1}
+                max={99}
+                value={b.weight}
+                onChange={e => update(branches.map((x, j) => j === i ? { ...x, weight: parseInt(e.target.value) || 0 } : x))}
+                className="w-14 h-7 px-2 text-xs border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent/30"
+              />
+              <span className="text-xs text-text-muted">%</span>
+              {branches.length > 2 && (
+                <button
+                  onClick={() => update(branches.filter((_, j) => j !== i))}
+                  className="p-1 text-text-muted hover:text-red-600"
+                  title="Remove branch"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <input
+              value={b.target}
+              onChange={e => update(branches.map((x, j) => j === i ? { ...x, target: e.target.value } : x))}
+              placeholder="Target node id"
+              className="w-full h-7 px-2 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent/30"
+            />
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => update([...branches, { label: String.fromCharCode(65 + branches.length), target: '', weight: 0 }])}
+        className="text-xs text-accent hover:text-accent-hover"
+      >
+        + Add branch
+      </button>
+      <p className={`text-[11px] ${weightsValid ? 'text-emerald-700' : 'text-amber-700'}`}>
+        Weights total: {total}{weightsValid ? ' ✓' : ' (must equal 100)'}
+      </p>
+    </div>
+  )
+}
+
+function GotoForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void }) {
+  const d = node.data as Record<string, unknown>
+  const [target, setTarget] = useState((d.target as string) ?? '')
+
+  useEffect(() => {
+    setTarget(((node.data as Record<string, unknown>).target as string) ?? '')
+  }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-text-muted">
+        Unconditional jump to another node. Useful for loops (retry up to N times), re-routing into a nurture flow, or rejoining a main path after a side branch.
+      </p>
+      <FieldLabel label="Target node id">
+        <input
+          value={target}
+          onChange={e => {
+            setTarget(e.target.value)
+            onUpdate(node.id, { ...d, target: e.target.value })
+          }}
+          placeholder="e.g. action_1, condition_2"
+          className="w-full h-9 px-3 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30"
+        />
+      </FieldLabel>
+      <p className="text-[11px] text-text-muted">
+        Find a node's id by clicking it on the canvas — it appears in this panel's header.
+      </p>
     </div>
   )
 }

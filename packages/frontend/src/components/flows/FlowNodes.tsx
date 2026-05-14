@@ -2,7 +2,7 @@
 
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone, CircleStop } from 'lucide-react'
+import { Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone, CircleStop, Shuffle, CornerDownRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type NodeData = Record<string, unknown>
@@ -105,6 +105,51 @@ export const ActionNode = memo(function ActionNode({ data }: NodeProps) {
   )
 })
 
+type AbBranchData = { label: string; target: string; weight: number }
+
+export const AbSplitNode = memo(function AbSplitNode({ data }: NodeProps) {
+  const d = data as NodeData
+  const branches = (d.branches as AbBranchData[] | undefined) ?? []
+  return (
+    <div className={cn(nodeBase, 'border-fuchsia-400 bg-fuchsia-50')}>
+      <Handle type="target" position={Position.Top} className="!bg-fuchsia-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 font-semibold text-fuchsia-800">
+        <Shuffle className="h-4 w-4" />
+        A/B Split
+      </div>
+      <div className="mt-1 space-y-0.5">
+        {branches.length === 0 ? (
+          <p className="text-[11px] text-fuchsia-600">No branches configured</p>
+        ) : (
+          branches.map((b, i) => (
+            <p key={i} className="text-[11px] text-fuchsia-700">
+              <span className="font-semibold">{b.label}</span> {b.weight}% → <code className="text-[10px]">{b.target.slice(0, 12) || '?'}</code>
+            </p>
+          ))
+        )}
+      </div>
+      <Handle type="source" position={Position.Bottom} className="!bg-fuchsia-500 !w-3 !h-3" />
+    </div>
+  )
+})
+
+export const GotoNode = memo(function GotoNode({ data }: NodeProps) {
+  const d = data as NodeData
+  const target = (d.target as string) ?? ''
+  return (
+    <div className={cn(nodeBase, 'border-indigo-400 bg-indigo-50')}>
+      <Handle type="target" position={Position.Top} className="!bg-indigo-500 !w-3 !h-3" />
+      <div className="flex items-center gap-2 font-semibold text-indigo-800">
+        <CornerDownRight className="h-4 w-4" />
+        Goto
+      </div>
+      <p className="text-xs text-indigo-600 mt-1 font-mono truncate max-w-[160px]">
+        → {target || 'no target'}
+      </p>
+    </div>
+  )
+})
+
 export const EndNode = memo(function EndNode({ data }: NodeProps) {
   const d = data as NodeData
   return (
@@ -123,5 +168,7 @@ export const nodeTypes = {
   delay: DelayNode,
   condition: ConditionNode,
   action: ActionNode,
+  ab_split: AbSplitNode,
+  goto: GotoNode,
   end: EndNode,
 }

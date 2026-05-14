@@ -442,6 +442,8 @@ export type FlowNode =
   | DelayNode
   | ConditionNode
   | ActionNode
+  | AbSplitNode
+  | GotoNode
   | EndNode
 
 export type TriggerNode = {
@@ -478,6 +480,35 @@ export type ActionNode = {
     templateId: string
     subjectOverride?: string
     dynamicData?: string[]
+  }
+}
+
+// Gap 6: random split with deterministic per-customer assignment. Each
+// branch has a target node id and a weight (1-99); weights sum to 100.
+// The executor hashes (customerId, nodeId) so the same customer
+// always lands on the same branch — important for repeatable
+// experiments and for the per-user flow debugger to show a coherent
+// path. Two branches (A/B) is the common case; the type supports more.
+export type AbSplitNode = {
+  id: string
+  type: 'ab_split'
+  config: {
+    branches: Array<{
+      label: string             // 'A' / 'B' / 'Control'
+      target: string            // node id to jump to
+      weight: number            // 1-99, all branches must sum to 100
+    }>
+  }
+}
+
+// Gap 6: jump to an arbitrary node. Used for loops (retry-on-fail),
+// re-routing into a different sub-flow, or "if did_not_open after 3
+// days, goto pre-purchase nurture node".
+export type GotoNode = {
+  id: string
+  type: 'goto'
+  config: {
+    target: string              // node id to jump to
   }
 }
 
