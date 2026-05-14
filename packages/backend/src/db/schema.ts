@@ -1079,6 +1079,47 @@ export const dataSourceSyncLogs = pgTable('data_source_sync_logs', {
   index('idx_data_source_sync_logs_sync').on(table.syncId, table.createdAt),
 ])
 
+// ============ IN-APP MESSAGES (Gap 1) ============
+// See migration 0048 for column-level docs.
+
+export const inAppMessages = pgTable('in_app_messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('draft'),
+  title: text('title').notNull(),
+  body: text('body'),
+  imageUrl: text('image_url'),
+  ctaLabel: text('cta_label'),
+  ctaUrl: text('cta_url'),
+  position: varchar('position', { length: 20 }).notNull().default('modal'),
+  frequency: varchar('frequency', { length: 20 }).notNull().default('once'),
+  targetPages: jsonb('target_pages').notNull().default([]),
+  audienceFilter: jsonb('audience_filter'),
+  startsAt: timestamp('starts_at', { withTimezone: true }),
+  endsAt: timestamp('ends_at', { withTimezone: true }),
+  impressions: integer('impressions').notNull().default(0),
+  dismissals: integer('dismissals').notNull().default(0),
+  ctaClicks: integer('cta_clicks').notNull().default(0),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_in_app_msg_project_active').on(table.projectId, table.status),
+])
+
+export const inAppMessageViews = pgTable('in_app_message_views', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  messageId: uuid('message_id').notNull().references(() => inAppMessages.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  shownAt: timestamp('shown_at', { withTimezone: true }).notNull().defaultNow(),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+  ctaClickedAt: timestamp('cta_clicked_at', { withTimezone: true }),
+}, (table) => [
+  index('idx_in_app_views_lookup').on(table.messageId, table.customerId),
+  index('idx_in_app_views_customer_recent').on(table.customerId, table.shownAt),
+])
+
 // ============ AD CONVERSION DESTINATIONS (Gap 9) ============
 // See migration 0046 for the column-level docs.
 
