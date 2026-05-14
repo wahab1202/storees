@@ -79,7 +79,12 @@ export default function CampaignDetailPage() {
 
   const { data, isLoading, isError } = useCampaignDetail(id)
   const { data: sendsData } = useCampaignSends(id)
-  const { data: analyticsData } = useCampaignAnalytics(id)
+  // Gap 12: per-campaign attribution controls. Default 'any' matches
+  // pre-Gap 12 behaviour; users can tighten to view-through (had to open)
+  // or click-through (had to click) and switch the timeline bucket size.
+  const [attributionType, setAttributionType] = useState<'any' | 'view_through' | 'click_through'>('any')
+  const [granularity, setGranularity] = useState<'hour' | 'day' | 'week'>('hour')
+  const { data: analyticsData } = useCampaignAnalytics(id, { attributionType, granularity })
   const sendCampaign = useSendCampaign()
   const retryCampaign = useRetryCampaign()
   const testEmail = useSendCampaignTestEmail()
@@ -562,19 +567,78 @@ export default function CampaignDetailPage() {
             </div>
           )}
 
+          {/* Gap 12: attribution + granularity controls */}
+          {analytics && (
+            <div className="bg-white border border-border rounded-xl p-4 mb-6 flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-text-muted uppercase tracking-wider">Attribution</span>
+                <div className="inline-flex bg-surface rounded-md p-0.5">
+                  {([
+                    { v: 'any' as const, label: 'Any' },
+                    { v: 'view_through' as const, label: 'View-through' },
+                    { v: 'click_through' as const, label: 'Click-through' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.v}
+                      onClick={() => setAttributionType(opt.v)}
+                      className={cn(
+                        'px-2.5 py-1 text-xs font-medium rounded',
+                        attributionType === opt.v ? 'bg-white text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary',
+                      )}
+                      title={opt.v === 'any' ? 'Every recipient is in scope' : opt.v === 'view_through' ? 'Only recipients who opened' : 'Only recipients who clicked'}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-text-muted uppercase tracking-wider">Bucket</span>
+                <div className="inline-flex bg-surface rounded-md p-0.5">
+                  {([
+                    { v: 'hour' as const, label: 'Hour · 72h' },
+                    { v: 'day' as const, label: 'Day · 90d' },
+                    { v: 'week' as const, label: 'Week · 52w' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.v}
+                      onClick={() => setGranularity(opt.v)}
+                      className={cn(
+                        'px-2.5 py-1 text-xs font-medium rounded',
+                        granularity === opt.v ? 'bg-white text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary',
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[11px] text-text-muted ml-auto">
+                {attributionType === 'any' && 'All recipients count toward conversions.'}
+                {attributionType === 'view_through' && 'Only recipients who opened a send count.'}
+                {attributionType === 'click_through' && 'Only recipients who clicked count — tightest attribution.'}
+              </p>
+            </div>
+          )}
+
           {/* Engagement Timeline */}
           {analytics && analytics.timeline.length > 0 && (
             <div className="bg-white border border-border rounded-xl p-5 mb-6">
               <h3 className="text-sm font-semibold text-heading mb-4 flex items-center gap-2">
                 <TrendingUp className="h-4 w-4 text-indigo-600" />
                 Engagement Over Time
+                <span className="ml-auto text-[10px] uppercase tracking-wider text-text-muted">
+                  per {granularity}
+                </span>
               </h3>
               <div className="space-y-2">
                 {analytics.timeline.slice(0, 24).map((t, i) => {
                   const maxVal = Math.max(...analytics.timeline.map(x => x.delivered + x.opened + x.clicked), 1)
                   const totalBar = t.delivered + t.opened + t.clicked
                   const pct = (totalBar / maxVal) * 100
-                  const hourLabel = new Date(t.hour).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  const hourLabel = granularity === 'hour'
+                    ? new Date(t.hour).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : new Date(t.hour).toLocaleDateString([], { month: 'short', day: 'numeric' })
                   return (
                     <div key={i} className="flex items-center gap-2">
                       <span className="text-[10px] text-text-muted w-14 text-right tabular-nums">{hourLabel}</span>

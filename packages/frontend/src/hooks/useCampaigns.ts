@@ -403,10 +403,23 @@ export type AbTestResults = {
   confidence: number
 }
 
-export function useCampaignAnalytics(id: string) {
+export type AnalyticsAttributionType = 'any' | 'click_through' | 'view_through'
+export type AnalyticsGranularity = 'hour' | 'day' | 'week'
+
+export function useCampaignAnalytics(
+  id: string,
+  options: { attributionType?: AnalyticsAttributionType; granularity?: AnalyticsGranularity } = {},
+) {
+  const attribution = options.attributionType ?? 'any'
+  const granularity = options.granularity ?? 'hour'
   return useQuery({
-    queryKey: ['campaigns', id, 'analytics'],
-    queryFn: () => api.get<CampaignAnalytics>(withProject(`/api/campaigns/${id}/analytics`)),
+    queryKey: ['campaigns', id, 'analytics', attribution, granularity],
+    queryFn: () => api.get<CampaignAnalytics>(
+      withProject(`/api/campaigns/${id}/analytics`, {
+        attributionType: attribution,
+        granularity,
+      }),
+    ),
     enabled: !!id,
     refetchInterval: 30_000, // Refresh every 30s for live campaigns
   })

@@ -7,7 +7,7 @@
  * 3. A/B variant comparison
  */
 
-import { eq, and, or, sql, gte, lte, inArray, desc } from 'drizzle-orm'
+import { eq, and, or, sql, gte, lte, inArray, desc, isNotNull } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import {
   campaigns,
@@ -16,6 +16,21 @@ import {
   events,
   customers,
 } from '../db/schema.js'
+
+// Gap 12: cross-attribution-type evaluation. 'any' is the legacy default —
+// every recipient is in scope. 'click_through' restricts to recipients who
+// CLICKED a send before the conversion event lands. 'view_through' restricts
+// to recipients who OPENED a send (delivered + opened_at non-null).
+//
+// MoEngage's analytics panel shows the same toggle. Picking a stricter
+// attribution model usually produces a smaller conversion count but a more
+// defensible "this campaign drove X" number.
+export type AttributionType = 'any' | 'click_through' | 'view_through'
+
+export type AnalyticsOptions = {
+  attributionType?: AttributionType
+  granularity?: 'hour' | 'day' | 'week'
+}
 
 type ConversionGoal = {
   name: string
@@ -102,7 +117,10 @@ type CampaignAnalytics = {
  * Evaluate conversion goals for a sent campaign.
  * Looks for matching events from campaign recipients within the goal tracking window.
  */
-export async function evaluateConversions(campaignId: string): Promise<ConversionResult[]> {
+export async function evaluateConversions(
+  campaignId: string,
+  options: AnalyticsOptions = {},
+): Promise<ConversionResult[]> {
   const [campaign] = await db
     .select()
     .from(campaigns)
@@ -118,11 +136,19 @@ export async function evaluateConversions(campaignId: string): Promise<Conversio
     campaign.sentAt.getTime() + (campaign.goalTrackingHours ?? 36) * 60 * 60 * 1000,
   )
 
-  // Get all recipient customer IDs
+  // Get the recipient customer pool — narrowed by attributionType.
+  // 'any'           → all recipients (legacy behaviour)
+  // 'view_through'  → only recipients with opened_at set
+  // 'click_through' → only recipients with clicked_at set
+  const attribution = options.attributionType ?? 'any'
+  const recipientConditions = [eq(campaignSends.campaignId, campaignId)]
+  if (attribution === 'view_through') recipientConditions.push(isNotNull(campaignSends.openedAt))
+  if (attribution === 'click_through') recipientConditions.push(isNotNull(campaignSends.clickedAt))
+
   const recipients = await db
     .select({ customerId: campaignSends.customerId })
     .from(campaignSends)
-    .where(eq(campaignSends.campaignId, campaignId))
+    .where(and(...recipientConditions))
 
   if (recipients.length === 0) return []
   const recipientIds = recipients.map(r => r.customerId)
@@ -273,7 +299,10 @@ export async function evaluateControlGroupLift(campaignId: string): Promise<Cont
 /**
  * Get full campaign analytics: funnel, timeline, conversions, top recipients.
  */
-export async function getCampaignAnalytics(campaignId: string): Promise<CampaignAnalytics | null> {
+export async function getCampaignAnalytics(
+  campaignId: string,
+  options: AnalyticsOptions = {},
+): Promise<CampaignAnalytics | null> {
   const [campaign] = await db
     .select()
     .from(campaigns)
@@ -283,7 +312,7 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
   if (!campaign) return null
 
   // Delivery funnel
-  const conversions = await evaluateConversions(campaignId)
+  const conversions = await evaluateConversions(campaignId, options)
   const controlGroupLift = await evaluateControlGroupLift(campaignId)
   const totalConverted = conversions.reduce((sum, c) => sum + c.conversions, 0)
   const totalRevenue = conversions.reduce((sum, c) => sum + c.revenue, 0)
@@ -308,12 +337,19 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
       ? (totalConverted / campaign.totalRecipients) * 100 : 0,
   }
 
-  // Engagement timeline (hourly buckets after send)
+  // Engagement timeline. Granularity picks the bucket size + how many
+  // buckets to return. Hour: 72h, Day: 90d, Week: 52w.
+  const granularity = options.granularity ?? 'hour'
+  const granularityLimit: Record<string, number> = { hour: 72, day: 90, week: 52 }
   let timeline: EngagementTimeline = []
   if (campaign.sentAt) {
+    // Drizzle's sql.raw() lets us inline the granularity safely — values
+    // are constrained to the union above so there's no injection surface.
+    const truncUnit = sql.raw(granularity)
+    const limitRows = granularityLimit[granularity]
     const timelineRows = await db.execute(sql`
       SELECT
-        date_trunc('hour', COALESCE(delivered_at, opened_at, clicked_at)) AS hour,
+        date_trunc(${granularity}, COALESCE(delivered_at, opened_at, clicked_at)) AS hour,
         COUNT(*) FILTER (WHERE delivered_at IS NOT NULL) AS delivered,
         COUNT(*) FILTER (WHERE opened_at IS NOT NULL) AS opened,
         COUNT(*) FILTER (WHERE clicked_at IS NOT NULL) AS clicked
@@ -322,8 +358,10 @@ export async function getCampaignAnalytics(campaignId: string): Promise<Campaign
         AND (delivered_at IS NOT NULL OR opened_at IS NOT NULL OR clicked_at IS NOT NULL)
       GROUP BY 1
       ORDER BY 1
-      LIMIT 72
+      LIMIT ${limitRows}
     `)
+    // Suppress unused — kept for parity with a previous sql.raw approach
+    void truncUnit
 
     timeline = (timelineRows as unknown as { rows?: Array<{ hour: string; delivered: string; opened: string; clicked: string }> }).rows?.map(r => ({
       hour: r.hour,

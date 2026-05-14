@@ -880,7 +880,18 @@ router.get('/:id/analytics', requireProjectId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
 
-    const analytics = await getCampaignAnalytics(id)
+    // Gap 12: attribution-type + granularity query params drive the
+    // conversion-count + timeline-bucket calculations.
+    const attributionRaw = req.query.attributionType as string | undefined
+    const attributionType = (attributionRaw === 'view_through' || attributionRaw === 'click_through' || attributionRaw === 'any')
+      ? attributionRaw
+      : 'any'
+    const granularityRaw = req.query.granularity as string | undefined
+    const granularity = (granularityRaw === 'day' || granularityRaw === 'week' || granularityRaw === 'hour')
+      ? granularityRaw
+      : 'hour'
+
+    const analytics = await getCampaignAnalytics(id, { attributionType, granularity })
     res.json({ success: true, data: analytics })
   } catch (err) {
     console.error('Campaign analytics error:', err)
