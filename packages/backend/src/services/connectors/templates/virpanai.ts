@@ -94,21 +94,35 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
       collections: { fromArray: 'collections', field: 'title' },
     },
 
+    // Medusa v2 order shape (verified from a real GWM payload):
+    //   - customer_id is flat at the root (also nested in customer.id; either works)
+    //   - id is the order id
+    //   - There is NO flat `total` at the root — totals live inside `summary`
+    //     as `current_order_total` (net), `original_order_total` (gross),
+    //     `paid_total`, `accounting_total`. Reading from `summary.current_order_total`
+    //     gives the right number for active orders AND yields 0 for
+    //     canceled/refunded orders — which our zero-total guard then skips,
+    //     so cancellations don't inflate revenue.
+    //   - line item `unit_price` is a FLAT number in major currency units
+    //     (₹), NOT cents. Same for `quantity`. The `raw_*` BigNumber versions
+    //     are also present but we ignore them.
+    //   - line item also has flat `product_type` and `product_collection`
+    //     (typically nullable) — no need to crawl into nested product.
     orders: {
-      customer_id: 'customer.id',
+      customer_id: 'customer_id',
       order_id: 'id',
       timestamp: 'created_at',
-      total: { from: 'total', divideBy: 100 },
+      total: 'summary.current_order_total',
       currency: 'currency_code',
       line_items: {
         sourcePath: 'items',
         fields: {
           product_id: 'product_id',
           product_name: 'title',
-          product_type: 'product.type.value',
-          product_collection: 'product.collection.title',
+          product_type: 'product_type',
+          product_collection: 'product_collection',
           quantity: 'quantity',
-          price: { from: 'unit_price', divideBy: 100 },
+          price: 'unit_price',
         },
       },
     },
