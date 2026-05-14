@@ -6,6 +6,7 @@ import { getDomainConfig, getDomainFields, getDomainCategories } from '../servic
 import { requireProjectId } from '../middleware/projectId.js'
 import { agentRbacEnabled } from '../config/features.js'
 import { buildAgentFieldDefs } from '../services/agentFieldDefs.js'
+import { buildPredictionGoalFields } from '../services/predictionFieldDefs.js'
 import type { DomainType } from '@storees/shared'
 
 const router = Router()
@@ -35,9 +36,11 @@ router.get('/fields', async (req, res) => {
     const categories = getDomainCategories(domainType)
 
     const features = (project.features ?? {}) as Record<string, unknown>
-    const extraFields = agentRbacEnabled(features)
-      ? await buildAgentFieldDefs(req.projectId!)
-      : []
+    const [agentFields, predictionFields] = await Promise.all([
+      agentRbacEnabled(features) ? buildAgentFieldDefs(req.projectId!) : Promise.resolve([]),
+      buildPredictionGoalFields(req.projectId!),
+    ])
+    const extraFields = [...agentFields, ...predictionFields]
 
     const fields = [...baseFields, ...extraFields]
     const extraCategories = extraFields

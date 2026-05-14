@@ -460,6 +460,36 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`COALESCE(metrics->>'reorder_timing', '')`
 
     default:
+      // Per-prediction-goal filters: 'prediction:<uuid>:bucket' or
+      // 'prediction:<uuid>:score'. Translates to a correlated subquery
+      // against prediction_scores so a customer's bucket for a SPECIFIC
+      // goal is filterable in segments. Validates the goal id is a UUID
+      // before injecting (we still parameterize, but the regex narrows the
+      // attack surface to bind-variable-level injection only).
+      const predMatch = /^prediction:([0-9a-f-]{36}):(bucket|score)$/i.exec(field)
+      if (predMatch) {
+        const goalId = predMatch[1]
+        const attr = predMatch[2]
+        // Latest score per (customer, goal) — prediction_scores can have multiple
+        // rows over time as the model re-runs; take the most recent computed_at.
+        if (attr === 'bucket') {
+          return sql`(
+            SELECT bucket FROM prediction_scores
+            WHERE prediction_scores.customer_id = customers.id
+              AND prediction_scores.goal_id = ${goalId}
+            ORDER BY prediction_scores.computed_at DESC
+            LIMIT 1
+          )`
+        }
+        return sql`COALESCE((
+          SELECT score::numeric FROM prediction_scores
+          WHERE prediction_scores.customer_id = customers.id
+            AND prediction_scores.goal_id = ${goalId}
+          ORDER BY prediction_scores.computed_at DESC
+          LIMIT 1
+        ), 0)`
+      }
+
       // Fallback: try metrics JSONB, then custom_attributes JSONB
       // Validate field name to prevent unexpected values (defense-in-depth;
       // Drizzle's sql`` already parameterizes ${field} as a bind variable)
