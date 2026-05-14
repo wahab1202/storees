@@ -492,8 +492,11 @@ function CreateCampaignContent() {
   const [scheduledDate, setScheduledDate] = useState('')
   const [scheduledTime, setScheduledTime] = useState('')
   const [scheduleTimezone, setScheduleTimezone] = useState('Asia/Kolkata')
-  const [conversionGoals, setConversionGoals] = useState<ConversionGoal[]>([{ name: 'Goal 1', eventName: '' }])
+  const [conversionGoals, setConversionGoals] = useState<ConversionGoal[]>([
+    { name: 'Goal 1', eventName: '', revenueEnabled: true, revenueAttribute: 'total', isPrimary: true },
+  ])
   const [goalTrackingHours, setGoalTrackingHours] = useState(36)
+  const [currency, setCurrency] = useState('INR')
   const [deliveryLimit, setDeliveryLimit] = useState<string>('')
   const [ignoreFreqCapping, setIgnoreFreqCapping] = useState(false)
   const [countForFreqCapping, setCountForFreqCapping] = useState(true)
@@ -600,6 +603,7 @@ function CreateCampaignContent() {
         // Goals
         conversionGoals: goals.length > 0 ? goals : undefined,
         goalTrackingHours,
+        currency: currency || 'INR',
         deliveryLimit: deliveryLimit ? parseInt(deliveryLimit) : undefined,
         ignoreFrequencyCap: ignoreFreqCapping,
         countForFrequencyCap: countForFreqCapping,
@@ -914,6 +918,7 @@ function CreateCampaignContent() {
             periodicEndsAt={periodicEndsAt} setPeriodicEndsAt={setPeriodicEndsAt}
             conversionGoals={conversionGoals} setConversionGoals={setConversionGoals}
             goalTrackingHours={goalTrackingHours} setGoalTrackingHours={setGoalTrackingHours}
+            currency={currency} setCurrency={setCurrency}
             deliveryLimit={deliveryLimit} setDeliveryLimit={setDeliveryLimit}
             ignoreFreqCapping={ignoreFreqCapping} setIgnoreFreqCapping={setIgnoreFreqCapping}
             countForFreqCapping={countForFreqCapping} setCountForFreqCapping={setCountForFreqCapping}
@@ -3108,6 +3113,7 @@ function Step3ScheduleGoals({
   periodicEndsAt, setPeriodicEndsAt,
   conversionGoals, setConversionGoals,
   goalTrackingHours, setGoalTrackingHours,
+  currency, setCurrency,
   deliveryLimit, setDeliveryLimit,
   ignoreFreqCapping, setIgnoreFreqCapping,
   countForFreqCapping, setCountForFreqCapping,
@@ -3126,6 +3132,7 @@ function Step3ScheduleGoals({
   periodicEndsAt: string; setPeriodicEndsAt: (v: string) => void
   conversionGoals: ConversionGoal[]; setConversionGoals: (v: ConversionGoal[]) => void
   goalTrackingHours: number; setGoalTrackingHours: (v: number) => void
+  currency: string; setCurrency: (v: string) => void
   deliveryLimit: string; setDeliveryLimit: (v: string) => void
   ignoreFreqCapping: boolean; setIgnoreFreqCapping: (v: boolean) => void
   countForFreqCapping: boolean; setCountForFreqCapping: (v: boolean) => void
@@ -3133,7 +3140,10 @@ function Step3ScheduleGoals({
 }) {
   const eventOptions = ['order_completed', 'product_viewed', 'added_to_cart', 'checkout_started', 'page_viewed', 'app_opened', 'signed_up']
 
-  const addGoal = () => setConversionGoals([...conversionGoals, { name: `Goal ${conversionGoals.length + 1}`, eventName: '' }])
+  const addGoal = () => setConversionGoals([
+    ...conversionGoals,
+    { name: `Goal ${conversionGoals.length + 1}`, eventName: '', revenueEnabled: true, revenueAttribute: 'total', isPrimary: false },
+  ])
   const removeGoal = (idx: number) => setConversionGoals(conversionGoals.filter((_, i) => i !== idx))
   const updateGoal = (idx: number, field: keyof ConversionGoal, value: string) => {
     setConversionGoals(conversionGoals.map((g, i) => i === idx ? { ...g, [field]: value } : g))
@@ -3311,17 +3321,41 @@ function Step3ScheduleGoals({
 
       {/* Conversion Goals */}
       <div className="bg-white border border-border rounded-xl p-6">
-        <div className="flex items-center gap-2 mb-1">
-          <Target className="h-4 w-4 text-text-muted" />
-          <h3 className="text-sm font-semibold text-heading">Conversion Goals</h3>
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <div className="flex items-center gap-2">
+            <Target className="h-4 w-4 text-text-muted" />
+            <h3 className="text-sm font-semibold text-heading">Conversion Goals</h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium text-text-secondary">Currency</label>
+            <select
+              value={currency}
+              onChange={e => setCurrency(e.target.value)}
+              className="h-8 px-2 text-xs border border-border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-accent/30"
+            >
+              {['INR', 'USD', 'EUR', 'GBP', 'AED', 'SGD', 'AUD', 'CAD', 'JPY'].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
         </div>
-        <p className="text-xs text-text-muted mb-4">Track which events users perform after receiving this campaign.</p>
+        <p className="text-xs text-text-muted mb-4">Track which events users perform after receiving this campaign. Revenue numbers will be shown in {currency}.</p>
 
         <div className="space-y-4">
           {conversionGoals.map((goal, idx) => (
             <div key={idx} className="relative p-4 bg-surface rounded-lg border border-border">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">Goal {idx + 1}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">Goal {idx + 1}</span>
+                  <label className="inline-flex items-center gap-1 text-xs text-text-secondary cursor-pointer">
+                    <input
+                      type="radio"
+                      name="primary-goal"
+                      checked={goal.isPrimary === true}
+                      onChange={() => setConversionGoals(conversionGoals.map((g, i) => ({ ...g, isPrimary: i === idx })))}
+                      className="h-3 w-3 accent-accent"
+                    />
+                    Primary
+                  </label>
+                </div>
                 {conversionGoals.length > 1 && (
                   <button onClick={() => removeGoal(idx)} className="text-text-muted hover:text-red-500 transition-colors"><X className="h-4 w-4" /></button>
                 )}
@@ -3339,6 +3373,42 @@ function Step3ScheduleGoals({
                   </select>
                 </div>
               </div>
+
+              {/* Revenue attribution */}
+              <div className="mt-3 rounded-lg border border-border bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={goal.revenueEnabled !== false}
+                      onChange={e => setConversionGoals(
+                        conversionGoals.map((g, i) => i === idx ? { ...g, revenueEnabled: e.target.checked } : g),
+                      )}
+                      className="h-3.5 w-3.5 accent-accent"
+                    />
+                    <span className="text-xs font-medium text-text-secondary">Track revenue from this goal</span>
+                  </label>
+                  {goal.revenueEnabled !== false && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-text-muted">from event property</span>
+                      <input
+                        value={goal.revenueAttribute ?? 'total'}
+                        onChange={e => setConversionGoals(
+                          conversionGoals.map((g, i) => i === idx ? { ...g, revenueAttribute: e.target.value } : g),
+                        )}
+                        placeholder="total"
+                        className="w-32 h-8 px-2 text-xs font-mono border border-border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-accent/30"
+                      />
+                    </div>
+                  )}
+                </div>
+                {goal.revenueEnabled !== false && (
+                  <p className="text-[11px] text-text-muted mt-1.5">
+                    Storees will sum <code className="font-mono">properties.{goal.revenueAttribute || 'total'}</code> across matching events and report total revenue attributed to this campaign in {currency}.
+                  </p>
+                )}
+              </div>
+
               <div className="mt-3 rounded-lg border border-border bg-white p-3">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-xs font-medium text-text-secondary">Event attributes</span>

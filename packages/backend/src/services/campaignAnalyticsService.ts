@@ -21,6 +21,13 @@ type ConversionGoal = {
   name: string
   eventName: string
   attributes?: Record<string, string>
+  // Revenue attribution — Gap 10 extension. When revenueEnabled=true, the
+  // analytics engine sums properties[revenueAttribute] across matching
+  // events. revenueAttribute defaults to 'total' for back-compat with
+  // existing goals that didn't set the field.
+  revenueEnabled?: boolean
+  revenueAttribute?: string
+  isPrimary?: boolean
 }
 
 type ConversionResult = {
@@ -30,6 +37,8 @@ type ConversionResult = {
   conversionRate: number
   totalRecipients: number
   revenue: number
+  currency: string | null
+  isPrimary: boolean
 }
 
 type ControlGroupLift = {
@@ -121,19 +130,31 @@ export async function evaluateConversions(campaignId: string): Promise<Conversio
   const results: ConversionResult[] = []
 
   for (const goal of goals) {
-    // Find matching events from recipients within the tracking window
+    // Revenue extraction: per-goal `revenueAttribute` (e.g. 'total' or
+    // 'order_total') tells the engine which event property carries the
+    // amount. The fallback chain (order_total → total → amount → revenue)
+    // is kept ONLY for goals that haven't set revenueAttribute, so
+    // existing campaigns don't lose their numbers when this code lands.
+    const revenueEnabled = goal.revenueEnabled !== false   // default true for back-compat
+    const revAttr = goal.revenueAttribute?.trim()
+    const revenueSql = !revenueEnabled
+      ? sql<number>`0`
+      : revAttr
+        ? sql<number>`coalesce(sum((${events.properties}->>${revAttr})::numeric), 0)`
+        : sql<number>`coalesce(sum(
+            coalesce(
+              (${events.properties}->>'order_total')::numeric,
+              (${events.properties}->>'total')::numeric,
+              (${events.properties}->>'amount')::numeric,
+              (${events.properties}->>'revenue')::numeric,
+              0
+            )
+          ), 0)`
+
     const matchQuery = db
       .select({
         count: sql<number>`count(DISTINCT ${events.customerId})`,
-        revenue: sql<number>`coalesce(sum(
-          coalesce(
-            (${events.properties}->>'order_total')::numeric,
-            (${events.properties}->>'total')::numeric,
-            (${events.properties}->>'amount')::numeric,
-            (${events.properties}->>'revenue')::numeric,
-            0
-          )
-        ), 0)`,
+        revenue: revenueSql,
       })
       .from(events)
       .where(
@@ -160,6 +181,8 @@ export async function evaluateConversions(campaignId: string): Promise<Conversio
         : 0,
       totalRecipients: campaign.totalRecipients,
       revenue,
+      currency: campaign.currency ?? null,
+      isPrimary: goal.isPrimary === true,
     })
   }
 

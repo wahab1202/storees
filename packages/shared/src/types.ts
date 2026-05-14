@@ -145,6 +145,16 @@ export type ConversionGoal = {
   name: string
   eventName: string
   attributes?: Record<string, string>
+  // Revenue attribution — Gap 10 (Storees → MoEngage roadmap)
+  // When revenueEnabled=true, the campaign analytics engine reads
+  // `properties[revenueAttribute]` off matching events and sums it as
+  // the campaign's attributed revenue. When false, only completions count.
+  revenueEnabled?: boolean
+  revenueAttribute?: string  // e.g. 'total', 'order_total', 'amount'
+  // One goal per campaign should be marked primary — used as the headline
+  // "conversion rate" number on the campaign analytics card. Others are
+  // surfaced as secondary metrics.
+  isPrimary?: boolean
 }
 
 export type PeriodicSchedule = {
@@ -201,6 +211,8 @@ export type Campaign = {
   templateId: string | null
   conversionGoals: ConversionGoal[]
   goalTrackingHours: number
+  currency: string | null   // ISO-4217 (e.g. 'INR', 'USD', 'AED'). NULL = project default
+
   deliveryLimit: number | null
   ignoreFrequencyCap: boolean
   countForFrequencyCap: boolean

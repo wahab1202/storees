@@ -57,6 +57,21 @@ const SEND_STATUS_COLORS: Record<string, string> = {
   bounced: 'text-orange-500',
 }
 
+// Format an attributed-revenue amount in the campaign's currency. Falls back
+// to ₹ when no currency is configured, since that's the platform default.
+function formatRevenue(amount: number, currency: string | null | undefined): string {
+  const code = (currency ?? 'INR').toUpperCase()
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: code,
+      maximumFractionDigits: 0,
+    }).format(amount)
+  } catch {
+    return `${code} ${amount.toLocaleString()}`
+  }
+}
+
 export default function CampaignDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -491,7 +506,7 @@ export default function CampaignDetailPage() {
                       <span className="text-xs text-text-muted">{goal.conversionRate.toFixed(1)}% rate</span>
                       {goal.revenue > 0 && (
                         <span className="text-xs font-medium text-emerald-600">
-                          ${goal.revenue.toLocaleString()}
+                          {formatRevenue(goal.revenue, goal.currency)}
                         </span>
                       )}
                     </div>
@@ -621,7 +636,7 @@ export default function CampaignDetailPage() {
                           {r.converted ? <CheckCircle className="h-3.5 w-3.5 text-emerald-500 mx-auto" /> : <span className="text-text-muted">—</span>}
                         </td>
                         <td className="px-5 py-2.5 text-right text-sm tabular-nums text-text-primary">
-                          {r.revenue > 0 ? `$${r.revenue.toLocaleString()}` : '—'}
+                          {r.revenue > 0 ? formatRevenue(r.revenue, campaign.currency) : '—'}
                         </td>
                       </tr>
                     ))}

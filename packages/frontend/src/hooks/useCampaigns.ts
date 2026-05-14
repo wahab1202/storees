@@ -66,6 +66,7 @@ export function useCreateCampaign() {
       templateId?: string
       conversionGoals?: ConversionGoal[]
       goalTrackingHours?: number
+      currency?: string | null
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -121,6 +122,7 @@ export function useUpdateCampaign() {
       templateId?: string | null
       conversionGoals?: ConversionGoal[]
       goalTrackingHours?: number
+      currency?: string | null
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -352,6 +354,8 @@ export type CampaignAnalytics = {
     conversionRate: number
     totalRecipients: number
     revenue: number
+    currency: string | null
+    isPrimary: boolean
   }>
   controlGroupLift: Array<{
     goalName: string

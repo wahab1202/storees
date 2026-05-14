@@ -381,6 +381,7 @@ export const campaigns = pgTable('campaigns', {
   templateId: uuid('template_id'),
   conversionGoals: jsonb('conversion_goals').notNull().default([]),
   goalTrackingHours: integer('goal_tracking_hours').notNull().default(36),
+  currency: varchar('currency', { length: 3 }),
   deliveryLimit: integer('delivery_limit'),
   ignoreFrequencyCap: boolean('ignore_frequency_cap').notNull().default(false),
   countForFrequencyCap: boolean('count_for_frequency_cap').notNull().default(true),

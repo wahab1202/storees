@@ -104,7 +104,7 @@ router.post('/', requireProjectId, async (req, res) => {
       segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt, contentType, previewText,
       gmailAnnotation,
       utmParameters,
-      templateId, conversionGoals, goalTrackingHours, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
+      templateId, conversionGoals, goalTrackingHours, currency, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
       sendTimeMode, scheduleTimezone,
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject,
       abVariantBHtmlBody, abVariantBBodyText, abWinnerMetric,
@@ -136,6 +136,7 @@ router.post('/', requireProjectId, async (req, res) => {
       templateId?: string
       conversionGoals?: unknown[]
       goalTrackingHours?: number
+      currency?: string | null
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -222,6 +223,7 @@ router.post('/', requireProjectId, async (req, res) => {
       templateId: templateId ?? null,
       conversionGoals: conversionGoals ?? [],
       goalTrackingHours: goalTrackingHours ?? 36,
+      currency: currency?.trim() || null,
       deliveryLimit: deliveryLimit ?? null,
       ignoreFrequencyCap: ignoreFrequencyCap ?? false,
       countForFrequencyCap: countForFrequencyCap ?? true,
@@ -341,7 +343,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     const {
       name, subject, htmlBody, emailBuilderTemplate, bodyText, segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt,
       gmailAnnotation, utmParameters, templateId,
-      contentType, previewText, conversionGoals, goalTrackingHours, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
+      contentType, previewText, conversionGoals, goalTrackingHours, currency, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
       sendTimeMode, scheduleTimezone,
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject, abVariantBHtmlBody,
       abVariantBBodyText, abWinnerMetric, abAutoSendWinner, abTestDurationHours,
@@ -371,6 +373,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       previewText?: string | null
       conversionGoals?: unknown[]
       goalTrackingHours?: number
+      currency?: string | null
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -477,6 +480,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     if (previewText !== undefined) updates.previewText = previewText
     if (conversionGoals !== undefined) updates.conversionGoals = conversionGoals
     if (goalTrackingHours !== undefined) updates.goalTrackingHours = goalTrackingHours
+    if (currency !== undefined) updates.currency = currency?.trim() || null
     if (deliveryLimit !== undefined) updates.deliveryLimit = deliveryLimit
     if (ignoreFrequencyCap !== undefined) updates.ignoreFrequencyCap = ignoreFrequencyCap
     if (countForFrequencyCap !== undefined) updates.countForFrequencyCap = countForFrequencyCap
