@@ -53,12 +53,34 @@ export const FINTECH_EVENTS = {
   BILL_PAYMENT_COMPLETED: 'bill_payment_completed',
   KYC_VERIFIED: 'kyc_verified',
   KYC_EXPIRED: 'kyc_expired',
+
+  // Loan lifecycle — see CLIENT_ONBOARDING.md §7.5 for the pattern.
+  // Only loan_disbursed + emi_paid count as revenue events in the
+  // aggregator (matching "money in" for the lender). The rest are
+  // lifecycle markers used to drive segments and flows
+  // (e.g. "loan approved but not disbursed in 7 days" drop-off flow).
+  LOAN_APPLIED: 'loan_applied',
+  LOAN_APPROVED: 'loan_approved',
+  LOAN_REJECTED: 'loan_rejected',
   LOAN_DISBURSED: 'loan_disbursed',
+  LOAN_CLOSED: 'loan_closed',
   EMI_PAID: 'emi_paid',
   EMI_OVERDUE: 'emi_overdue',
+
+  // Insurance lifecycle. premium_paid is the recurring revenue event;
+  // claim_settled is treated as a refund-style revenue decrement when
+  // the payout is a property of the event.
+  POLICY_QUOTED: 'policy_quoted',
+  POLICY_BOUND: 'policy_bound',
+  PREMIUM_PAID: 'premium_paid',
+  CLAIM_FILED: 'claim_filed',
+  CLAIM_SETTLED: 'claim_settled',
+
+  // Investments
   SIP_STARTED: 'sip_started',
   SIP_EXECUTED: 'sip_executed',
   CARD_ACTIVATED: 'card_activated',
+
   ENTERS_SEGMENT: 'enters_segment',
   EXITS_SEGMENT: 'exits_segment',
 } as const

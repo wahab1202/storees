@@ -46,24 +46,41 @@ type ResolvedAggregateInput = {
   properties: Record<string, unknown>
 }
 
-// Events that net-add revenue to a customer's total_spent. order_placed
-// covers one-shot purchases; subscription_started + subscription_renewed
-// cover recurring revenue (each billing cycle is a separate event with
-// its own idempotency key and the cycle amount in properties.total).
+// Events that net-add revenue to a customer's total_spent.
+//
+//   ecommerce:
+//     order_placed           — one-shot purchase
+//     subscription_started   — first billing cycle (recurring revenue)
+//     subscription_renewed   — each subsequent cycle
+//
+//   BFSI (see CLIENT_ONBOARDING.md §7.5 for the per-vertical mental model):
+//     loan_disbursed         — loan amount counts as customer "LTV"
+//                              (total business done with this customer)
+//     emi_paid               — each EMI is recurring revenue
+//     premium_paid           — each insurance premium payment
+//
+// Every event in this set must carry properties.total — the aggregator
+// reads that field and adds it to customer.total_spent.
 const REVENUE_INCREMENT_EVENTS = new Set([
   'order_placed',
   'subscription_started',
   'subscription_renewed',
+  'loan_disbursed',
+  'emi_paid',
+  'premium_paid',
 ])
 
 // Events that net-subtract revenue. order_returned mirrors order_refunded
 // for physical-goods returns (return + restock vs refund + no restock).
 // order_cancelled stays in this set because legacy historical-import flows
 // emit it on canceled orders that previously counted as order_placed.
+// claim_settled subtracts the payout amount from the insurance customer's
+// lifetime "premium paid" balance.
 const REVENUE_DECREMENT_EVENTS = new Set([
   'order_refunded',
   'order_returned',
   'order_cancelled',
+  'claim_settled',
 ])
 
 export function startCustomerAggregateWorker(): Worker {
