@@ -8,7 +8,7 @@ import { SlidePanel } from '@/components/shared/SlidePanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles } from 'lucide-react'
+import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles, Layers } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import type { EmailTemplate, TemplateChannel } from '@storees/shared'
 
@@ -18,6 +18,7 @@ const CHANNEL_TABS: { value: TemplateChannel | 'all'; label: string; icon: typeo
   { value: 'sms',      label: 'SMS',       icon: MessageSquare },
   { value: 'push',     label: 'Push',      icon: Bell },
   { value: 'whatsapp', label: 'WhatsApp',  icon: Phone },
+  { value: 'in_app',   label: 'In-App',    icon: Layers },
 ]
 
 const CHANNEL_CONFIG = {
@@ -25,6 +26,7 @@ const CHANNEL_CONFIG = {
   sms:       { label: 'SMS',      icon: MessageSquare, color: 'text-teal-600 bg-teal-50 border-teal-200' },
   push:      { label: 'Push',     icon: Bell,          color: 'text-violet-600 bg-violet-50 border-violet-200' },
   whatsapp:  { label: 'WhatsApp', icon: Phone,         color: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
+  in_app:    { label: 'In-App',   icon: Layers,        color: 'text-fuchsia-600 bg-fuchsia-50 border-fuchsia-200' },
 } as const
 
 export default function TemplatesPage() {

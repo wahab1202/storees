@@ -7,7 +7,7 @@ import { VariablePanel } from '@/components/templates/VariablePanel'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
-import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Loader2, Columns2, Columns3, Columns4, LayoutTemplate } from 'lucide-react'
+import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Loader2, Columns2, Columns3, Columns4, LayoutTemplate, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateChannel, TemplateVariable } from '@storees/shared'
@@ -17,6 +17,7 @@ const CHANNELS: { value: TemplateChannel; label: string; icon: typeof Mail; desc
   { value: 'sms',      label: 'SMS',      icon: MessageSquare, description: 'Plain text, up to 160 chars' },
   { value: 'push',     label: 'Push',     icon: Bell,          description: 'Title + body notification' },
   { value: 'whatsapp', label: 'WhatsApp', icon: Phone,         description: 'Text message with variables' },
+  { value: 'in_app',   label: 'In-App',   icon: Layers,        description: 'Modal, banner, toast, or inbox card rendered inside the storefront' },
 ]
 
 const CHANNEL_LABELS: Record<TemplateChannel, string> = {
@@ -24,6 +25,7 @@ const CHANNEL_LABELS: Record<TemplateChannel, string> = {
   sms: 'SMS',
   push: 'Push',
   whatsapp: 'WhatsApp',
+  in_app: 'In-App',
 }
 
 const LAYOUT_STARTERS = [
@@ -178,19 +180,42 @@ export default function CreateTemplatePage() {
   const [tab, setTab] = useState<'visual' | 'html' | 'preview'>('visual')
   const [selectedLayout, setSelectedLayout] = useState('blank')
 
+  // In-app channel extras
+  const [imageUrl, setImageUrl] = useState('')
+  const [ctaLabel, setCtaLabel] = useState('')
+  const [ctaUrl, setCtaUrl] = useState('')
+  const [inAppPosition, setInAppPosition] = useState<'modal' | 'banner' | 'toast' | 'inbox'>('modal')
+  const [inAppFrequency, setInAppFrequency] = useState<'always' | 'once' | 'daily'>('once')
+  const [inAppTargetPagesText, setInAppTargetPagesText] = useState('')
+
   const isEmail = channel === 'email'
-  const canSave = name.trim() && (isEmail ? subject.trim() && htmlBody.trim() : bodyText.trim())
+  const isInApp = channel === 'in_app'
+  // For in_app: subject is reused as the title. Title + body required.
+  const canSave = name.trim() && (
+    isEmail ? subject.trim() && htmlBody.trim()
+      : isInApp ? subject.trim() && bodyText.trim()
+      : bodyText.trim()
+  )
 
   const handleSave = () => {
     createTemplate.mutate(
       {
         name,
         channel,
-        subject: isEmail ? subject : undefined,
+        subject: isEmail || isInApp ? subject : undefined,
         htmlBody: isEmail ? htmlBody : undefined,
         emailBuilderTemplate: isEmail ? { ...emailTemplate, subject, previewText: '' } : undefined,
         bodyText: !isEmail ? bodyText : undefined,
         variables,
+        // In-app extras only sent when relevant
+        ...(isInApp ? {
+          imageUrl: imageUrl.trim() || null,
+          ctaLabel: ctaLabel.trim() || null,
+          ctaUrl: ctaUrl.trim() || null,
+          inAppPosition,
+          inAppFrequency,
+          inAppTargetPages: inAppTargetPagesText.split('\n').map(s => s.trim()).filter(Boolean),
+        } : {}),
       },
       { onSuccess: () => router.push('/templates') },
     )
@@ -285,6 +310,17 @@ export default function CreateTemplatePage() {
                 />
                 <p className="mt-1 text-xs text-text-muted">Supports {'{{customer_name}}'} and {'{{customer_email}}'}.</p>
               </div>
+            ) : isInApp ? (
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Title</label>
+                <input
+                  value={subject}
+                  onChange={e => setSubject(e.target.value)}
+                  placeholder="e.g. Welcome back, {{customer_name}}"
+                  className={inputClass}
+                />
+                <p className="mt-1 text-xs text-text-muted">Shown as the heading of the in-app message.</p>
+              </div>
             ) : (
               <div className="rounded-lg border border-border bg-surface px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">Selected Channel</p>
@@ -333,11 +369,130 @@ export default function CreateTemplatePage() {
         </section>
       )}
 
+      {isInApp && (
+        <section className="rounded-xl border border-border bg-white">
+          <div className="border-b border-border px-5 py-4">
+            <h2 className="text-sm font-semibold text-text-primary">Display & Behaviour</h2>
+            <p className="text-xs text-text-muted">How and where the message renders inside the storefront.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-5 p-5 lg:grid-cols-2">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Image URL (optional)</label>
+                <input
+                  value={imageUrl}
+                  onChange={e => setImageUrl(e.target.value)}
+                  placeholder="https://cdn.example.com/banner.png"
+                  className={inputClass}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1.5">CTA Label</label>
+                  <input
+                    value={ctaLabel}
+                    onChange={e => setCtaLabel(e.target.value)}
+                    placeholder="e.g. Shop now"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1.5">CTA URL</label>
+                  <input
+                    value={ctaUrl}
+                    onChange={e => setCtaUrl(e.target.value)}
+                    placeholder="https://shop.example.com/sale"
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Position</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['modal', 'banner', 'toast', 'inbox'] as const).map(p => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setInAppPosition(p)}
+                      className={cn(
+                        'h-10 rounded-lg border text-xs font-medium capitalize transition-colors',
+                        inAppPosition === p
+                          ? 'border-accent bg-accent/5 text-accent'
+                          : 'border-border bg-white text-text-secondary hover:border-text-muted',
+                      )}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Frequency</label>
+                <select
+                  value={inAppFrequency}
+                  onChange={e => setInAppFrequency(e.target.value as 'always' | 'once' | 'daily')}
+                  className={inputClass}
+                >
+                  <option value="always">Always (every page load)</option>
+                  <option value="once">Once per customer</option>
+                  <option value="daily">Once per day</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1.5">Target Pages (optional)</label>
+                <textarea
+                  value={inAppTargetPagesText}
+                  onChange={e => setInAppTargetPagesText(e.target.value)}
+                  rows={3}
+                  placeholder={'/cart\n/checkout\n/products/*'}
+                  className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
+                />
+                <p className="mt-1 text-xs text-text-muted">One path pattern per line. Leave empty to show on every page.</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">Preview</p>
+              <div className="rounded-lg border border-border bg-surface p-4">
+                <div className={cn(
+                  'mx-auto overflow-hidden rounded-lg border border-border bg-white shadow-sm',
+                  inAppPosition === 'banner' ? 'w-full' :
+                    inAppPosition === 'toast' ? 'w-72' :
+                      inAppPosition === 'inbox' ? 'w-full' :
+                        'w-full max-w-sm',
+                )}>
+                  {imageUrl && inAppPosition !== 'toast' && (
+                    <img src={imageUrl} alt="" className="h-32 w-full object-cover" />
+                  )}
+                  <div className="p-4">
+                    <p className="text-sm font-semibold text-text-primary">{subject || 'Title appears here'}</p>
+                    <p className="mt-1 text-xs text-text-secondary whitespace-pre-wrap">
+                      {bodyText || 'Body text appears here.'}
+                    </p>
+                    {(ctaLabel || ctaUrl) && (
+                      <button
+                        type="button"
+                        className="mt-3 inline-flex h-9 items-center justify-center rounded-md bg-accent px-4 text-xs font-medium text-white"
+                      >
+                        {ctaLabel || 'Action'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-3 text-center text-[11px] text-text-muted capitalize">
+                  {inAppPosition} · {inAppFrequency}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
         <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-white">
           <div className="flex flex-col gap-3 border-b border-border bg-surface px-5 py-3 md:flex-row md:items-center md:justify-between">
             <h2 className="text-sm font-semibold text-text-primary">
-              {isEmail ? 'Email Content' : 'Message Content'}
+              {isEmail ? 'Email Content' : isInApp ? 'Body' : 'Message Content'}
             </h2>
             {isEmail && (
               <div className="flex w-full flex-wrap items-center gap-1 rounded-lg border border-border bg-white p-0.5 md:w-auto">
@@ -416,7 +571,9 @@ export default function CreateTemplatePage() {
                     ? 'Hi {{customer_name}}, your transaction of {{amount}} is complete.'
                     : channel === 'push'
                       ? 'Your order update is ready, {{customer_name}}.'
-                      : 'Hi {{customer_name}}, we have an update for your account.'
+                      : channel === 'in_app'
+                        ? 'Hey {{customer_name}}, just for you — {{offer}}.'
+                        : 'Hi {{customer_name}}, we have an update for your account.'
                 }
                 className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
               />

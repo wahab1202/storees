@@ -292,13 +292,17 @@ router.get('/:id', requireProjectId, async (req, res) => {
 router.post('/', requireProjectId, async (req, res) => {
   try {
     const projectId = req.query.projectId as string
-    const { name, channel = 'email', subject, htmlBody, emailBuilderTemplate, bodyText, variables } = req.body
+    const {
+      name, channel = 'email', subject, htmlBody, emailBuilderTemplate, bodyText, variables,
+      // In-app-specific (channel = 'in_app')
+      imageUrl, ctaLabel, ctaUrl, inAppPosition, inAppFrequency, inAppTargetPages,
+    } = req.body
 
     if (!name?.trim()) {
       return res.status(400).json({ success: false, error: 'Template name is required' })
     }
 
-    const validChannels = ['email', 'sms', 'push', 'whatsapp']
+    const validChannels = ['email', 'sms', 'push', 'whatsapp', 'in_app']
     if (!validChannels.includes(channel)) {
       return res.status(400).json({ success: false, error: 'Invalid channel' })
     }
@@ -320,6 +324,13 @@ router.post('/', requireProjectId, async (req, res) => {
         emailBuilderTemplate: channel === 'email' ? emailBuilderTemplate ?? null : null,
         bodyText: bodyText?.trim() || null,
         variables: variables ?? [],
+        // In-app channel extras — null on every other channel
+        imageUrl: channel === 'in_app' ? (imageUrl?.trim() || null) : null,
+        ctaLabel: channel === 'in_app' ? (ctaLabel?.trim() || null) : null,
+        ctaUrl: channel === 'in_app' ? (ctaUrl?.trim() || null) : null,
+        inAppPosition: channel === 'in_app' ? (inAppPosition || 'modal') : null,
+        inAppFrequency: channel === 'in_app' ? (inAppFrequency || 'once') : null,
+        inAppTargetPages: channel === 'in_app' ? (Array.isArray(inAppTargetPages) ? inAppTargetPages : []) : null,
       })
       .returning()
 
@@ -334,7 +345,10 @@ router.post('/', requireProjectId, async (req, res) => {
 router.patch('/:id', requireProjectId, async (req, res) => {
   try {
     const projectId = req.query.projectId as string
-    const { name, subject, htmlBody, emailBuilderTemplate, bodyText, variables } = req.body
+    const {
+      name, subject, htmlBody, emailBuilderTemplate, bodyText, variables,
+      imageUrl, ctaLabel, ctaUrl, inAppPosition, inAppFrequency, inAppTargetPages,
+    } = req.body
 
     const [existing] = await db
       .select()
@@ -363,6 +377,12 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     if (emailBuilderTemplate !== undefined) updates.emailBuilderTemplate = emailBuilderTemplate
     if (bodyText !== undefined) updates.bodyText = bodyText?.trim() || null
     if (variables !== undefined) updates.variables = variables
+    if (imageUrl !== undefined) updates.imageUrl = imageUrl?.trim() || null
+    if (ctaLabel !== undefined) updates.ctaLabel = ctaLabel?.trim() || null
+    if (ctaUrl !== undefined) updates.ctaUrl = ctaUrl?.trim() || null
+    if (inAppPosition !== undefined) updates.inAppPosition = inAppPosition || null
+    if (inAppFrequency !== undefined) updates.inAppFrequency = inAppFrequency || null
+    if (inAppTargetPages !== undefined) updates.inAppTargetPages = Array.isArray(inAppTargetPages) ? inAppTargetPages : null
 
     const [updated] = await db
       .update(emailTemplates)

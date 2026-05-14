@@ -1,25 +1,44 @@
 import { Router, Response } from 'express'
-import { eq, and, sql, isNull, or, gte, lte } from 'drizzle-orm'
+import { eq, and, sql, isNull, or, gte, lte, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { inAppMessages, inAppMessageViews, customers } from '../db/schema.js'
+import { campaigns, emailTemplates, customers, campaignSends } from '../db/schema.js'
 import { filterToSql } from '@storees/segments'
 import type { FilterConfig } from '@storees/shared'
 import { requirePublicKeyAuth, type ApiKeyAuthRequest } from '../middleware/apiKeyAuth.js'
 
-// Gap 1: public SDK endpoints for in-app messages.
+// Gap 1: public SDK endpoints for in-app messages. After the 0049
+// refactor, in-app messages are just campaigns with channel='in_app'
+// linked to a template (channel='in_app') — same shape as every other
+// channel. This endpoint joins those two tables and returns what the
+// SDK should render right now.
 //
 // GET  /api/v1/in-app-messages?customer_id=<external_id>
-//   → list of active messages this customer should see right now,
-//     filtered by audience filter + frequency + dismissal history
+//   → list of active in-app campaigns this customer should see, after
+//     audience filter + frequency + dismissal history is applied.
 //
-// POST /api/v1/in-app-messages/:id/event
+// POST /api/v1/in-app-messages/:campaign_id/event
 //   body: { event: 'shown' | 'dismissed' | 'cta_clicked', customer_id }
-//   → records the event so the SDK can dedup + the admin sees counters
-//
-// Same API-key auth as the rest of the public SDK endpoints.
+//   → records the event in campaign_sends so the SDK can dedup + admin
+//     analytics see real numbers.
 
 const router = Router()
 router.use(requirePublicKeyAuth())
+
+type CampaignWithTemplate = {
+  campaignId: string
+  campaignStatus: string
+  audienceFilter: unknown
+  scheduledAt: Date | null
+  endsAt: Date | null
+  templateTitle: string | null
+  templateBody: string | null
+  templateImageUrl: string | null
+  templateCtaLabel: string | null
+  templateCtaUrl: string | null
+  position: string | null
+  frequency: string | null
+  targetPages: unknown
+}
 
 router.get('/in-app-messages', async (req: ApiKeyAuthRequest, res: Response) => {
   try {
@@ -27,31 +46,38 @@ router.get('/in-app-messages', async (req: ApiKeyAuthRequest, res: Response) => 
     if (!projectId) return res.status(401).json({ success: false, error: 'Unauthorized' })
 
     const externalId = (req.query.customer_id as string | undefined)?.trim()
+
+    // Base query: active in-app campaigns + their linked template
+    const baseConditions = and(
+      eq(campaigns.projectId, projectId),
+      eq(campaigns.channel, 'in_app'),
+      // Active = either 'scheduled' with no end, or 'sent' (still live), or
+      // explicit 'active' — match by NOT in the dead states.
+      sql`${campaigns.status} NOT IN ('draft', 'paused', 'cancelled', 'failed', 'archived')`,
+      or(isNull(campaigns.scheduledAt), lte(campaigns.scheduledAt, sql`NOW()`)),
+    )
+
+    // No customer id → only globally-targetable campaigns (no audience filter)
     if (!externalId) {
-      // SDK can also call without a customer id to fetch globally-active
-      // messages — useful for "hero banner on home page" pre-login.
-      // Return everything that has no audience filter.
       const rows = await db
         .select({
-          id: inAppMessages.id,
-          title: inAppMessages.title,
-          body: inAppMessages.body,
-          imageUrl: inAppMessages.imageUrl,
-          ctaLabel: inAppMessages.ctaLabel,
-          ctaUrl: inAppMessages.ctaUrl,
-          position: inAppMessages.position,
-          frequency: inAppMessages.frequency,
-          targetPages: inAppMessages.targetPages,
+          campaignId: campaigns.id,
+          templateTitle: emailTemplates.subject,
+          templateBody: emailTemplates.bodyText,
+          templateImageUrl: emailTemplates.imageUrl,
+          templateCtaLabel: emailTemplates.ctaLabel,
+          templateCtaUrl: emailTemplates.ctaUrl,
+          position: emailTemplates.inAppPosition,
+          frequency: emailTemplates.inAppFrequency,
+          targetPages: emailTemplates.inAppTargetPages,
         })
-        .from(inAppMessages)
+        .from(campaigns)
+        .innerJoin(emailTemplates, eq(emailTemplates.id, campaigns.templateId))
         .where(and(
-          eq(inAppMessages.projectId, projectId),
-          eq(inAppMessages.status, 'active'),
-          isNull(inAppMessages.audienceFilter),
-          or(isNull(inAppMessages.startsAt), lte(inAppMessages.startsAt, sql`NOW()`)),
-          or(isNull(inAppMessages.endsAt), gte(inAppMessages.endsAt, sql`NOW()`)),
+          baseConditions,
+          isNull(campaigns.audienceFilter),
         ))
-      return res.json({ success: true, data: rows })
+      return res.json({ success: true, data: rows.map((r) => ({ id: r.campaignId, ...r, campaignId: undefined })) })
     }
 
     // Resolve external_id → internal customer.id
@@ -62,64 +88,69 @@ router.get('/in-app-messages', async (req: ApiKeyAuthRequest, res: Response) => 
       .limit(1)
     if (!customer) return res.json({ success: true, data: [] })
 
-    // Pull all candidate active messages — apply audience filter +
-    // frequency check in app code rather than building 1 monster SQL.
-    // Active-set is typically small (< 50 messages per project) so this
-    // is fast and easier to reason about than a join + jsonb filter.
-    const candidates = await db
-      .select()
-      .from(inAppMessages)
-      .where(and(
-        eq(inAppMessages.projectId, projectId),
-        eq(inAppMessages.status, 'active'),
-        or(isNull(inAppMessages.startsAt), lte(inAppMessages.startsAt, sql`NOW()`)),
-        or(isNull(inAppMessages.endsAt), gte(inAppMessages.endsAt, sql`NOW()`)),
-      ))
+    const candidates: CampaignWithTemplate[] = await db
+      .select({
+        campaignId: campaigns.id,
+        campaignStatus: campaigns.status,
+        audienceFilter: campaigns.audienceFilter,
+        scheduledAt: campaigns.scheduledAt,
+        endsAt: sql<Date | null>`NULL`,  // campaigns don't carry endsAt yet; defer
+        templateTitle: emailTemplates.subject,
+        templateBody: emailTemplates.bodyText,
+        templateImageUrl: emailTemplates.imageUrl,
+        templateCtaLabel: emailTemplates.ctaLabel,
+        templateCtaUrl: emailTemplates.ctaUrl,
+        position: emailTemplates.inAppPosition,
+        frequency: emailTemplates.inAppFrequency,
+        targetPages: emailTemplates.inAppTargetPages,
+      })
+      .from(campaigns)
+      .innerJoin(emailTemplates, eq(emailTemplates.id, campaigns.templateId))
+      .where(baseConditions)
 
     if (candidates.length === 0) return res.json({ success: true, data: [] })
 
-    // Pull this customer's view history for these messages
-    const messageIds = candidates.map((c) => c.id)
+    // Per-customer view history. campaign_sends.openedAt = "shown" for in-app;
+    // clickedAt = "cta_clicked"; bouncedAt repurposed as "dismissed" since
+    // in-app messages don't bounce.
+    const campaignIds = candidates.map((c) => c.campaignId)
     const views = await db
       .select({
-        messageId: inAppMessageViews.messageId,
-        shownAt: inAppMessageViews.shownAt,
-        dismissedAt: inAppMessageViews.dismissedAt,
+        campaignId: campaignSends.campaignId,
+        openedAt: campaignSends.openedAt,
+        bouncedAt: campaignSends.bouncedAt,
       })
-      .from(inAppMessageViews)
+      .from(campaignSends)
       .where(and(
-        eq(inAppMessageViews.customerId, customer.id),
-        sql`${inAppMessageViews.messageId} = ANY(${messageIds})`,
+        eq(campaignSends.customerId, customer.id),
+        inArray(campaignSends.campaignId, campaignIds),
       ))
 
-    const viewMap = new Map<string, { shownAt: Date; dismissedAt: Date | null }[]>()
+    const viewMap = new Map<string, { shownAt: Date | null; dismissedAt: Date | null }[]>()
     for (const v of views) {
-      const list = viewMap.get(v.messageId) ?? []
-      list.push({ shownAt: v.shownAt, dismissedAt: v.dismissedAt })
-      viewMap.set(v.messageId, list)
+      const list = viewMap.get(v.campaignId) ?? []
+      list.push({ shownAt: v.openedAt, dismissedAt: v.bouncedAt })
+      viewMap.set(v.campaignId, list)
     }
 
     const now = new Date()
-    const todayStart = new Date(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 
-    const eligible: Array<typeof candidates[number]> = []
-    for (const msg of candidates) {
-      const history = viewMap.get(msg.id) ?? []
-
-      // Frequency rules. 'always' = show every fetch unless dismissed.
-      if (msg.frequency === 'once') {
-        if (history.length > 0) continue
-      } else if (msg.frequency === 'daily') {
-        if (history.some((v) => v.shownAt >= todayStart)) continue
+    const eligible: CampaignWithTemplate[] = []
+    for (const c of candidates) {
+      const history = viewMap.get(c.campaignId) ?? []
+      const freq = c.frequency ?? 'once'
+      if (freq === 'once') {
+        if (history.some((v) => v.shownAt !== null)) continue
+      } else if (freq === 'daily') {
+        if (history.some((v) => v.shownAt !== null && v.shownAt >= todayStart)) continue
       } else {
-        // 'always' — but stop if user explicitly dismissed
+        // 'always' — stop if explicitly dismissed
         if (history.some((v) => v.dismissedAt !== null)) continue
       }
 
-      // Audience match — if no filter, everyone's in. Otherwise run a
-      // 1-customer EXISTS query against the filter SQL.
-      if (msg.audienceFilter) {
-        const filterSql = filterToSql(msg.audienceFilter as FilterConfig)
+      if (c.audienceFilter) {
+        const filterSql = filterToSql(c.audienceFilter as FilterConfig)
         const [match] = await db
           .select({ id: customers.id })
           .from(customers)
@@ -128,21 +159,21 @@ router.get('/in-app-messages', async (req: ApiKeyAuthRequest, res: Response) => 
         if (!match) continue
       }
 
-      eligible.push(msg)
+      eligible.push(c)
     }
 
     res.json({
       success: true,
-      data: eligible.map((msg) => ({
-        id: msg.id,
-        title: msg.title,
-        body: msg.body,
-        imageUrl: msg.imageUrl,
-        ctaLabel: msg.ctaLabel,
-        ctaUrl: msg.ctaUrl,
-        position: msg.position,
-        frequency: msg.frequency,
-        targetPages: msg.targetPages,
+      data: eligible.map((c) => ({
+        id: c.campaignId,
+        title: c.templateTitle,
+        body: c.templateBody,
+        imageUrl: c.templateImageUrl,
+        ctaLabel: c.templateCtaLabel,
+        ctaUrl: c.templateCtaUrl,
+        position: c.position,
+        frequency: c.frequency,
+        targetPages: c.targetPages,
       })),
     })
   } catch (err) {
@@ -151,76 +182,58 @@ router.get('/in-app-messages', async (req: ApiKeyAuthRequest, res: Response) => 
   }
 })
 
-// Event tracking: SDK fires these when it actually shows/dismisses/clicks a message.
-router.post('/in-app-messages/:id/event', async (req: ApiKeyAuthRequest, res: Response) => {
+// Event tracking: stored on campaign_sends. shown→insert+openedAt;
+// dismissed→bouncedAt (repurposed); cta_clicked→clickedAt.
+router.post('/in-app-messages/:campaign_id/event', async (req: ApiKeyAuthRequest, res: Response) => {
   try {
     const projectId = req.projectId
     if (!projectId) return res.status(401).json({ success: false, error: 'Unauthorized' })
 
-    const messageId = req.params.id as string
+    const campaignId = req.params.campaign_id as string
     const { event, customer_id: externalId } = req.body as { event?: string; customer_id?: string }
     if (!event || !['shown', 'dismissed', 'cta_clicked'].includes(event)) {
       return res.status(400).json({ success: false, error: 'event must be shown | dismissed | cta_clicked' })
     }
     if (!externalId) return res.status(400).json({ success: false, error: 'customer_id required' })
 
-    const [msg] = await db
-      .select({ id: inAppMessages.id })
-      .from(inAppMessages)
-      .where(and(eq(inAppMessages.id, messageId), eq(inAppMessages.projectId, projectId)))
+    const [campaign] = await db
+      .select({ id: campaigns.id })
+      .from(campaigns)
+      .where(and(eq(campaigns.id, campaignId), eq(campaigns.projectId, projectId), eq(campaigns.channel, 'in_app')))
       .limit(1)
-    if (!msg) return res.status(404).json({ success: false, error: 'Message not found' })
+    if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' })
 
     const [customer] = await db
-      .select({ id: customers.id })
+      .select({ id: customers.id, email: customers.email })
       .from(customers)
       .where(and(eq(customers.projectId, projectId), eq(customers.externalId, externalId)))
       .limit(1)
     if (!customer) return res.status(404).json({ success: false, error: 'Customer not found' })
 
     if (event === 'shown') {
-      await db.insert(inAppMessageViews).values({ messageId, customerId: customer.id })
-      await db
-        .update(inAppMessages)
-        .set({ impressions: sql`${inAppMessages.impressions} + 1` })
-        .where(eq(inAppMessages.id, messageId))
+      // First time shown → insert. Subsequent shows for 'always' frequency
+      // update openedAt to the latest time.
+      await db.execute(sql`
+        INSERT INTO campaign_sends (campaign_id, customer_id, email, status, opened_at, created_at)
+        VALUES (${campaignId}, ${customer.id}, ${customer.email ?? ''}, 'delivered', NOW(), NOW())
+        ON CONFLICT (campaign_id, customer_id) DO UPDATE
+          SET opened_at = NOW()
+      `)
     } else if (event === 'dismissed') {
-      // Mark the most recent view for this customer + message as dismissed
       await db.execute(sql`
-        UPDATE in_app_message_views
-        SET dismissed_at = NOW()
-        WHERE id = (
-          SELECT id FROM in_app_message_views
-          WHERE message_id = ${messageId} AND customer_id = ${customer.id} AND dismissed_at IS NULL
-          ORDER BY shown_at DESC
-          LIMIT 1
-        )
+        UPDATE campaign_sends SET bounced_at = NOW()
+        WHERE campaign_id = ${campaignId} AND customer_id = ${customer.id}
       `)
-      await db
-        .update(inAppMessages)
-        .set({ dismissals: sql`${inAppMessages.dismissals} + 1` })
-        .where(eq(inAppMessages.id, messageId))
     } else {
-      // cta_clicked
       await db.execute(sql`
-        UPDATE in_app_message_views
-        SET cta_clicked_at = NOW()
-        WHERE id = (
-          SELECT id FROM in_app_message_views
-          WHERE message_id = ${messageId} AND customer_id = ${customer.id} AND cta_clicked_at IS NULL
-          ORDER BY shown_at DESC
-          LIMIT 1
-        )
+        UPDATE campaign_sends SET clicked_at = NOW()
+        WHERE campaign_id = ${campaignId} AND customer_id = ${customer.id}
       `)
-      await db
-        .update(inAppMessages)
-        .set({ ctaClicks: sql`${inAppMessages.ctaClicks} + 1` })
-        .where(eq(inAppMessages.id, messageId))
     }
 
     res.json({ success: true })
   } catch (err) {
-    console.error('POST /v1/in-app-messages/:id/event error:', err)
+    console.error('POST /v1/in-app-messages/:campaign_id/event error:', err)
     res.status(500).json({ success: false, error: 'Failed to record event' })
   }
 })

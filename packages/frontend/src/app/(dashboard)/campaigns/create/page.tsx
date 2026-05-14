@@ -95,11 +95,11 @@ const STEPS = [
 ]
 
 const CHANNEL_LABELS: Record<string, string> = {
-  email: 'Email', sms: 'SMS', push: 'Push', whatsapp: 'WhatsApp',
+  email: 'Email', sms: 'SMS', push: 'Push', whatsapp: 'WhatsApp', in_app: 'In-App',
 }
 
 const CHANNEL_ICONS: Record<string, typeof Mail> = {
-  email: Mail, sms: MessageSquare, push: Bell, whatsapp: Phone,
+  email: Mail, sms: MessageSquare, push: Bell, whatsapp: Phone, in_app: Layers,
 }
 
 function seedWhatsappTemplateVariables(template: WhatsappTemplate): TemplateVariable[] {
@@ -423,8 +423,9 @@ function CreateCampaignContent() {
   const deliveryType = (searchParams.get('type') ?? 'one-time') as CampaignDeliveryType
   const isEmail = channel === 'email'
   const isWhatsapp = channel === 'whatsapp'
+  const isInApp = channel === 'in_app'
   const isPeriodic = deliveryType === 'periodic'
-  const supportsLinkTracking = channel !== 'whatsapp'
+  const supportsLinkTracking = channel !== 'whatsapp' && channel !== 'in_app'
   const ChannelIcon = CHANNEL_ICONS[channel] ?? Mail
 
   const [step, setStep] = useState<Step>(1)
@@ -578,7 +579,7 @@ function CreateCampaignContent() {
         deliveryType,
         contentType,
         // Email fields
-        subject: isEmail ? subject : (channel === 'push' ? pushTitle : undefined),
+        subject: isEmail || isInApp ? subject : (channel === 'push' ? pushTitle : undefined),
         htmlBody: isEmail ? htmlBody : undefined,
         emailBuilderTemplate: isEmail ? { ...emailTemplate, subject, previewText } : undefined,
         previewText: isEmail ? (previewText || undefined) : (channel === 'push' ? (pushImageUrl || undefined) : undefined),
@@ -595,7 +596,7 @@ function CreateCampaignContent() {
           sizeBytes: attachment.sizeBytes,
           contentBase64: attachment.contentBase64,
         })) : undefined,
-        templateId: (isEmail || isWhatsapp) ? (selectedTemplateId || undefined) : undefined,
+        templateId: (isEmail || isWhatsapp || isInApp) ? (selectedTemplateId || undefined) : undefined,
         // SMS/Push fields
         bodyText: !isEmail ? bodyText : undefined,
         // Audience-v2
@@ -845,11 +846,14 @@ function CreateCampaignContent() {
               <Step2TextContent
                 channel={channel}
                 bodyText={bodyText} setBodyText={setBodyText}
+                subject={subject} setSubject={setSubject}
                 pushTitle={pushTitle} setPushTitle={setPushTitle}
                 pushImageUrl={pushImageUrl} setPushImageUrl={setPushImageUrl}
                 pushPlatforms={pushPlatforms} setPushPlatforms={setPushPlatforms}
                 pushContent={pushContent} setPushContent={setPushContent}
                 templates={templates}
+                selectedTemplateId={selectedTemplateId}
+                setSelectedTemplateId={setSelectedTemplateId}
                 variables={variables}
                 setVariables={setVariables}
                 utmEnabled={utmEnabled} setUtmEnabled={setUtmEnabled}
@@ -2699,20 +2703,23 @@ function WhatsappBubblePreview({
 /* ─── Step 2: SMS / Push Content ─── */
 
 function Step2TextContent({
-  channel, bodyText, setBodyText, pushTitle, setPushTitle, pushImageUrl, setPushImageUrl,
+  channel, bodyText, setBodyText, subject, setSubject,
+  pushTitle, setPushTitle, pushImageUrl, setPushImageUrl,
   pushPlatforms, setPushPlatforms, pushContent, setPushContent,
-  templates, variables, setVariables,
+  templates, selectedTemplateId, setSelectedTemplateId, variables, setVariables,
   utmEnabled, setUtmEnabled, utmSource, setUtmSource, utmMedium, setUtmMedium, utmCampaign, setUtmCampaign,
   utmCustomParams, setUtmCustomParams, inputClass,
 }: {
   channel: CampaignChannel
   bodyText: string; setBodyText: (v: string) => void
+  subject: string; setSubject: (v: string) => void
   pushTitle: string; setPushTitle: (v: string) => void
   pushImageUrl: string; setPushImageUrl: (v: string) => void
   pushPlatforms: ('android' | 'ios' | 'web')[]; setPushPlatforms: (v: ('android' | 'ios' | 'web')[]) => void
   pushContent: Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string; subtitle?: string; badge?: number }>
   setPushContent: (v: Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string; subtitle?: string; badge?: number }>) => void
   templates: TemplateItem[]
+  selectedTemplateId: string | null; setSelectedTemplateId: (v: string | null) => void
   variables: TemplateVariable[]
   setVariables: (v: TemplateVariable[]) => void
   utmEnabled: boolean; setUtmEnabled: (v: boolean) => void
@@ -2724,6 +2731,7 @@ function Step2TextContent({
 }) {
   const isSms = channel === 'sms'
   const isPush = channel === 'push'
+  const isInApp = channel === 'in_app'
   const isWhatsapp = channel === 'whatsapp'
   const ChannelIcon = CHANNEL_ICONS[channel] ?? MessageSquare
   const [aiOpen, setAiOpen] = useState(false)
@@ -2762,34 +2770,53 @@ function Step2TextContent({
       <AiCopywriterPanel
         open={aiOpen}
         onClose={() => setAiOpen(false)}
-        channel={channel as 'email' | 'sms' | 'push' | 'whatsapp'}
+        channel={(isInApp ? 'push' : channel) as 'email' | 'sms' | 'push' | 'whatsapp'}
         initialUseCase={bodyText}
         onApply={(v) => {
           if (v.body) setBodyText(v.body)
           if (isPush && v.subject) setPushTitle(v.subject)
+          if (isInApp && v.subject) setSubject(v.subject)
         }}
       />
 
       {/* Saved templates for this channel */}
       {templates.length > 0 && (
         <div className="bg-white border border-border rounded-xl p-5">
-          <h3 className="text-sm font-medium text-text-primary mb-3">Use a saved {channelLabel} template</h3>
+          <h3 className="text-sm font-medium text-text-primary mb-3">
+            {isInApp ? `Pick an In-App template` : `Use a saved ${channelLabel} template`}
+            {isInApp && <span className="ml-1 text-red-400">*</span>}
+          </h3>
           <div className="space-y-2">
-            {templates.map(t => (
-              <button
-                key={t.id}
-                onClick={() => {
-                  if (t.bodyText) setBodyText(t.bodyText)
-                  if (isPush && t.subject) setPushTitle(t.subject)
-                  setVariables(t.variables ?? [])
-                }}
-                className="w-full text-left p-3 rounded-lg border border-border hover:border-accent hover:bg-accent/5 transition-colors"
-              >
-                <p className="text-sm font-medium text-text-primary">{t.name}</p>
-                {t.bodyText && <p className="text-xs text-text-muted truncate mt-0.5">{t.bodyText}</p>}
-              </button>
-            ))}
+            {templates.map(t => {
+              const active = selectedTemplateId === t.id
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => {
+                    setSelectedTemplateId(t.id)
+                    if (t.bodyText) setBodyText(t.bodyText)
+                    if (isPush && t.subject) setPushTitle(t.subject)
+                    if (isInApp && t.subject) setSubject(t.subject)
+                    setVariables(t.variables ?? [])
+                  }}
+                  className={cn(
+                    'w-full text-left p-3 rounded-lg border transition-colors',
+                    active
+                      ? 'border-accent bg-accent/5'
+                      : 'border-border hover:border-accent hover:bg-accent/5',
+                  )}
+                >
+                  <p className="text-sm font-medium text-text-primary">{t.name}</p>
+                  {t.bodyText && <p className="text-xs text-text-muted truncate mt-0.5">{t.bodyText}</p>}
+                </button>
+              )
+            })}
           </div>
+        </div>
+      )}
+      {isInApp && templates.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+          You don't have any In-App templates yet. Create one under <a href="/templates/create" className="underline font-medium">Templates → New Template</a> (choose the In-App channel), then return here.
         </div>
       )}
 

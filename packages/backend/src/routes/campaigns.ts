@@ -181,6 +181,9 @@ router.post('/', requireProjectId, async (req, res) => {
         return res.status(400).json({ success: false, error: err instanceof Error ? err.message : 'Invalid WhatsApp template' })
       }
     }
+    if (ch === 'in_app' && !templateId) {
+      return res.status(400).json({ success: false, error: 'In-App campaigns require an in-app template' })
+    }
 
     // Audience-v2 validation. controlGroupPct must be in [0,50]; cap > 0 if set.
     const ctrlPct = Math.max(0, Math.min(50, Math.floor(controlGroupPct ?? 0)))

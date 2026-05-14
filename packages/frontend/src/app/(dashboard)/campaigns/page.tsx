@@ -25,6 +25,7 @@ import {
   MessageSquare,
   Bell,
   Phone,
+  Layers,
   CalendarClock,
   Zap,
   Smartphone,
@@ -57,6 +58,7 @@ const CHANNELS = [
   { key: 'email', label: 'Email', icon: Mail, enabled: true },
   { key: 'sms', label: 'SMS', icon: MessageSquare, enabled: true },
   { key: 'whatsapp', label: 'WhatsApp', icon: Phone, enabled: true },
+  { key: 'in_app', label: 'In-App', icon: Layers, enabled: true },
 ] as const
 
 const DELIVERY_TYPES = [
@@ -71,6 +73,7 @@ const CHANNEL_ICONS: Record<string, React.ComponentType<{ className?: string }>>
   sms: MessageSquare,
   push: Bell,
   whatsapp: Phone,
+  in_app: Layers,
 }
 
 const CHANNEL_LABELS: Record<string, string> = {
@@ -78,6 +81,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   sms: 'SMS',
   push: 'Push',
   whatsapp: 'WhatsApp',
+  in_app: 'In-App',
 }
 
 const DELIVERY_LABELS: Record<string, string> = {

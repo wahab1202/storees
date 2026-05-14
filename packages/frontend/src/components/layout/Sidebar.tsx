@@ -28,7 +28,6 @@ import {
   LogOut,
   ShieldCheck,
   UserCircle,
-  Layers,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -52,7 +51,6 @@ const navItems: NavItem[] = [
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
-  { href: '/in-app-messages', label: 'In-App Messages', icon: Layers, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
 ]

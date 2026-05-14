@@ -19,6 +19,13 @@ type CreateTemplateInput = {
   emailBuilderTemplate?: BuilderEmailTemplate | null
   bodyText?: string
   variables?: TemplateVariable[]
+  // In-app channel extras
+  imageUrl?: string | null
+  ctaLabel?: string | null
+  ctaUrl?: string | null
+  inAppPosition?: 'modal' | 'banner' | 'toast' | 'inbox' | null
+  inAppFrequency?: 'always' | 'once' | 'daily' | null
+  inAppTargetPages?: string[] | null
 }
 
 type UpdateTemplateInput = Partial<Omit<CreateTemplateInput, 'channel'>>

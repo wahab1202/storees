@@ -127,7 +127,7 @@ export type Collection = {
 }
 
 export type CampaignContentType = 'promotional' | 'transactional'
-export type CampaignChannel = 'email' | 'sms' | 'push' | 'whatsapp'
+export type CampaignChannel = 'email' | 'sms' | 'push' | 'whatsapp' | 'in_app'
 export type CampaignDeliveryType = 'one-time' | 'periodic'
 export type CampaignSendTimeMode = 'asap' | 'fixed' | 'user_timezone' | 'best_time'
 
@@ -394,18 +394,30 @@ export type ScheduledJob = {
   createdAt: Date
 }
 
-export type TemplateChannel = 'email' | 'sms' | 'push' | 'whatsapp'
+export type TemplateChannel = 'email' | 'sms' | 'push' | 'whatsapp' | 'in_app'
+
+// In-app messages live as templates with channel='in_app'. These fields
+// are only meaningful on that channel — every other channel leaves them null.
+export type InAppPosition = 'modal' | 'banner' | 'toast' | 'inbox'
+export type InAppFrequency = 'always' | 'once' | 'daily'
 
 export type EmailTemplate = {
   id: string
   projectId: string
   name: string
   channel: TemplateChannel
-  subject: string | null    // email only
+  subject: string | null    // email only (reused as the title for in_app)
   htmlBody: string | null   // email only
   emailBuilderTemplate: Record<string, unknown> | null
-  bodyText: string | null   // sms / push / whatsapp
+  bodyText: string | null   // sms / push / whatsapp / in_app body
   variables: TemplateVariable[]
+  // In-app-specific (channel = 'in_app'). NULL on every other channel.
+  imageUrl: string | null
+  ctaLabel: string | null
+  ctaUrl: string | null
+  inAppPosition: InAppPosition | null
+  inAppFrequency: InAppFrequency | null
+  inAppTargetPages: string[] | null
   createdAt: Date
   updatedAt: Date
 }

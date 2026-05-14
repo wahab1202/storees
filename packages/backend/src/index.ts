@@ -38,7 +38,6 @@ import channelWebhookRoutes from './routes/channelWebhooks.js'
 import whatsappAdminRoutes from './routes/whatsappAdmin.js'
 import dataConnectorRoutes from './routes/dataConnectors.js'
 import adConversionRoutes from './routes/adConversions.js'
-import inAppMessageAdminRoutes from './routes/inAppMessages.js'
 import v1InAppMessageRoutes from './routes/v1InAppMessages.js'
 import urlTrackerRoutes from './routes/urlTracker.js'
 import authRoutes from './routes/auth.js'
@@ -155,7 +154,6 @@ app.use('/api/subscription-categories', requireAuth, subscriptionCategoryRoutes)
 app.use('/api/whatsapp', requireAuth, whatsappAdminRoutes)
 app.use('/api/data-sources', requireAuth, dataConnectorRoutes)
 app.use('/api/ad-conversions', requireAuth, adConversionRoutes)
-app.use('/api/in-app-messages', requireAuth, inAppMessageAdminRoutes)
 app.use('/api/v1', v1InAppMessageRoutes)
 app.use('/api/api-keys', requireAuth, v1ApiKeyRoutes)
 app.use('/api/schema', requireAuth, v1SchemaRoutes)
