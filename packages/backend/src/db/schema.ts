@@ -271,6 +271,10 @@ export const segments = pgTable('segments', {
   description: text('description'),
   filters: jsonb('filters').notNull(),
   memberCount: integer('member_count').notNull().default(0),
+  // Gap 13: reachable count = members AND reachable on at least one channel
+  // (email_subscribed + email, sms_subscribed + phone, or any phone for
+  // WhatsApp). Recomputed by evaluateSegment alongside memberCount.
+  reachableCount: integer('reachable_count').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

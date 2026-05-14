@@ -60,13 +60,30 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
   const filters = segment.filters as FilterConfig
   const filterSql = filterToSql(filters)
 
-  // Find all matching customers for this project
+  // Find all matching customers for this project. Pull reachability flags
+  // alongside so we can compute reachableCount in the same scan — match +
+  // (subscribed AND identifier present) on at least one channel.
   const matchingCustomers = await db
-    .select({ id: customers.id })
+    .select({
+      id: customers.id,
+      email: customers.email,
+      phone: customers.phone,
+      emailSubscribed: customers.emailSubscribed,
+      smsSubscribed: customers.smsSubscribed,
+    })
     .from(customers)
     .where(and(eq(customers.projectId, segment.projectId), filterSql))
 
   const matchingIds = new Set(matchingCustomers.map(c => c.id))
+
+  // Gap 13: reachable count = matched AND reachable on ≥1 channel
+  let reachableCount = 0
+  for (const c of matchingCustomers) {
+    const okEmail = c.emailSubscribed === true && !!c.email
+    const okSms = c.smsSubscribed === true && !!c.phone
+    const okWa = !!c.phone
+    if (okEmail || okSms || okWa) reachableCount++
+  }
 
   // Get current members
   const currentMembers = await db
@@ -122,13 +139,14 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
     })
   }
 
-  // Update member count
+  // Update member + reachable counts
   await db.update(segments).set({
     memberCount: matchingIds.size,
+    reachableCount,
     updatedAt: new Date(),
   }).where(eq(segments.id, segmentId))
 
-  console.log(`Segment "${segment.name}": ${matchingIds.size} members (+${toAdd.length} -${toRemove.length})`)
+  console.log(`Segment "${segment.name}": ${matchingIds.size} members (${reachableCount} reachable, +${toAdd.length} -${toRemove.length})`)
 
   return matchingIds.size
 }

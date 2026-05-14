@@ -132,11 +132,25 @@ const predictionFields: DomainFieldDef[] = [
   { field: 'prediction_bucket', label: 'Risk Bucket', type: 'select', category: 'AI & Predictions', operators: ['is', 'is_not'] as FilterOperator[], options: ['high', 'medium', 'low'], metricKey: 'prediction_bucket' },
 ]
 
-// Append prediction fields to all domains
-ecommerceDomain.fields = [...ecommerceFields, ...predictionFields]
-fintechDomain.fields = [...fintechFields, ...predictionFields]
-saasDomain.fields = [...saasFields, ...predictionFields]
-customDomain.fields = [...customFields, ...predictionFields]
+// ============ REACHABILITY (Gap 13 — shared across all domains) ============
+// Critical for accurate campaign sizing. "Send to all customers" without
+// these filters routinely overestimates by 30-60% — counting unsubscribed
+// users, customers with no email/phone, suppressed addresses, etc.
+//
+// reachable_email   = email_subscribed AND email IS NOT NULL
+// reachable_sms     = sms_subscribed AND phone IS NOT NULL
+// reachable_whatsapp = phone IS NOT NULL (no separate subscribe flag yet)
+const reachabilityFields: DomainFieldDef[] = [
+  { field: 'reachable_email', label: 'Reachable on Email', type: 'boolean', category: 'Reachability', operators: ['is_true', 'is_false'] as FilterOperator[] },
+  { field: 'reachable_sms', label: 'Reachable on SMS', type: 'boolean', category: 'Reachability', operators: ['is_true', 'is_false'] as FilterOperator[] },
+  { field: 'reachable_whatsapp', label: 'Reachable on WhatsApp', type: 'boolean', category: 'Reachability', operators: ['is_true', 'is_false'] as FilterOperator[] },
+]
+
+// Append shared fields to all domains
+ecommerceDomain.fields = [...ecommerceFields, ...predictionFields, ...reachabilityFields]
+fintechDomain.fields = [...fintechFields, ...predictionFields, ...reachabilityFields]
+saasDomain.fields = [...saasFields, ...predictionFields, ...reachabilityFields]
+customDomain.fields = [...customFields, ...predictionFields, ...reachabilityFields]
 
 // ============ REGISTRY ============
 

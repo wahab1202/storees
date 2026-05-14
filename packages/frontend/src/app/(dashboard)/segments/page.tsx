@@ -106,12 +106,24 @@ export default function SegmentsPage() {
 
               {/* Footer */}
               <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-text-muted" />
-                  <span className="text-sm font-semibold text-text-primary tabular-nums">
-                    {segment.memberCount.toLocaleString()}
-                  </span>
-                  <span className="text-sm text-text-muted">members</span>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <Users className="h-4 w-4 text-text-muted" />
+                    <span className="text-sm font-semibold text-text-primary tabular-nums">
+                      {segment.memberCount.toLocaleString()}
+                    </span>
+                    <span className="text-sm text-text-muted">members</span>
+                  </div>
+                  {segment.memberCount > 0 && (
+                    <div className="flex items-center gap-1.5 text-xs text-text-muted" title="Customers in this segment who are reachable on at least one channel (subscribed + identifier present)">
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      <span className="font-medium text-emerald-700 tabular-nums">{segment.reachableCount.toLocaleString()}</span>
+                      <span>reachable</span>
+                      <span className="text-text-muted">
+                        ({Math.round((segment.reachableCount / segment.memberCount) * 100)}%)
+                      </span>
+                    </div>
+                  )}
                   {!segment.isActive && (
                     <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-full bg-red-50 text-red-600">
                       Inactive

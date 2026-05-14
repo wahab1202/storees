@@ -437,6 +437,16 @@ function fieldToSqlExpression(field: string): SQL {
     case 'portfolio_value':
       return sql`COALESCE((metrics->>'portfolio_value')::numeric, 0)`
 
+    // Reachability (Gap 13) — exposed as boolean fields backed by computed
+    // SQL. Filters like "reachable_email is_true" let marketers size
+    // campaigns accurately without counting unsubscribed / no-email rows.
+    case 'reachable_email':
+      return sql`(email_subscribed IS TRUE AND email IS NOT NULL AND email <> '')`
+    case 'reachable_sms':
+      return sql`(sms_subscribed IS TRUE AND phone IS NOT NULL AND phone <> '')`
+    case 'reachable_whatsapp':
+      return sql`(phone IS NOT NULL AND phone <> '')`
+
     // AI & Prediction scores (0-100, stored in customers.metrics JSONB)
     case 'engagement_score':
       return sql`COALESCE((metrics->>'engagement_score')::numeric, 0)`
@@ -624,6 +634,14 @@ function getFieldValue(field: string, customer: Customer): unknown {
       return customer.emailSubscribed
     case 'sms_subscribed':
       return customer.smsSubscribed
+
+    // Reachability — composite booleans for the JS evaluation path
+    case 'reachable_email':
+      return customer.emailSubscribed === true && !!customer.email
+    case 'reachable_sms':
+      return customer.smsSubscribed === true && !!customer.phone
+    case 'reachable_whatsapp':
+      return !!customer.phone
     case 'first_seen':
       return customer.firstSeen
     case 'last_seen':

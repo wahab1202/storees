@@ -353,6 +353,9 @@ export type Segment = {
   description: string
   filters: FilterConfig
   memberCount: number
+  // Gap 13: members reachable on ≥1 channel (email_subscribed + email,
+  // sms_subscribed + phone, or any phone for WhatsApp). Always ≤ memberCount.
+  reachableCount: number
   isActive: boolean
   createdAt: Date
   updatedAt: Date
