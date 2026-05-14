@@ -3,6 +3,7 @@
 import { Clock, GitBranch, Mail, MessageSquare, Bell, Phone, CircleStop, LogOut } from 'lucide-react'
 import type { DragEvent } from 'react'
 import { useDashboardStats } from '@/hooks/useDashboard'
+import { EVENTS_BY_DOMAIN } from '@storees/shared'
 
 type PaletteItem = {
   type: string
@@ -22,22 +23,6 @@ const paletteItems: PaletteItem[] = [
   { type: 'end', label: 'End', icon: CircleStop, color: 'text-gray-600 bg-gray-50 border-gray-200' },
 ]
 
-const EVENTS_BY_DOMAIN: Record<string, string[]> = {
-  ecommerce: [
-    'cart_created', 'checkout_started', 'order_placed', 'order_fulfilled',
-    'order_cancelled', 'customer_updated', 'enters_segment', 'exits_segment',
-  ],
-  fintech: [
-    'transaction_completed', 'app_login', 'bill_payment_completed', 'kyc_verified',
-    'kyc_expired', 'loan_disbursed', 'emi_paid', 'emi_overdue',
-    'sip_started', 'card_activated', 'enters_segment', 'exits_segment',
-  ],
-  saas: [
-    'user_signup', 'feature_used', 'trial_expiring', 'subscription_started',
-    'subscription_cancelled', 'user_invited', 'enters_segment', 'exits_segment',
-  ],
-}
-
 type NodePaletteProps = {
   exitEvent?: string
   onExitEventChange?: (event: string) => void
@@ -45,7 +30,7 @@ type NodePaletteProps = {
 
 export function NodePalette({ exitEvent, onExitEventChange }: NodePaletteProps) {
   const { data: statsData } = useDashboardStats()
-  const domain = statsData?.data.domainType ?? 'ecommerce'
+  const domain = (statsData?.data.domainType ?? 'ecommerce') as keyof typeof EVENTS_BY_DOMAIN
   const eventOptions = EVENTS_BY_DOMAIN[domain] ?? EVENTS_BY_DOMAIN.ecommerce
   const onDragStart = (e: DragEvent, item: PaletteItem) => {
     const payload = item.subtype ? `${item.type}:${item.subtype}` : item.type

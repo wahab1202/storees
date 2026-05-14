@@ -1,9 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { X } from 'lucide-react'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
 import type { Node } from '@xyflow/react'
+import { useTemplates } from '@/hooks/useTemplates'
+import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
 
 type NodeConfigPanelProps = {
   node: Node | null
@@ -195,6 +197,9 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
   )
 }
 
+const SELECT_CLASS =
+  "w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
+
 function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void }) {
   const d = node.data as Record<string, unknown>
   const [actionType, setActionType] = useState((d.actionType as string) ?? 'send_email')
@@ -206,6 +211,34 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
     setTemplateId((nd.templateId as string) ?? '')
   }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
+  // WhatsApp templates live in their own provider-approved table; everything
+  // else (email/sms/push) comes from the unified templates table.
+  const isWhatsapp = actionType === 'send_whatsapp'
+  const channel =
+    actionType === 'send_email' ? 'email' :
+    actionType === 'send_sms' ? 'sms' :
+    actionType === 'send_push' ? 'push' :
+    'whatsapp'
+
+  const generalTemplates = useTemplates()
+  const whatsappTemplates = useWhatsappTemplates()
+
+  const templateOptions = useMemo(() => {
+    if (isWhatsapp) {
+      const list = whatsappTemplates.data?.data ?? []
+      return list
+        .filter((t) => t.status === 'approved' || t.status === 'APPROVED')
+        .map((t) => ({ id: t.id, label: `${t.name}${t.language ? ` · ${t.language}` : ''}` }))
+    }
+    const list = generalTemplates.data?.data ?? []
+    return list
+      .filter((t) => t.channel === channel)
+      .map((t) => ({ id: t.id, label: t.name }))
+  }, [isWhatsapp, channel, generalTemplates.data, whatsappTemplates.data])
+
+  const isLoading = isWhatsapp ? whatsappTemplates.isLoading : generalTemplates.isLoading
+  const selectedExists = templateOptions.some((t) => t.id === templateId)
+
   return (
     <div className="space-y-3">
       <FieldLabel label="Channel">
@@ -213,9 +246,11 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
           value={actionType}
           onChange={e => {
             setActionType(e.target.value)
-            onUpdate(node.id, { ...d, actionType: e.target.value })
+            // Reset templateId when switching channels — old id won't match
+            setTemplateId('')
+            onUpdate(node.id, { ...d, actionType: e.target.value, templateId: '' })
           }}
-          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
+          className={SELECT_CLASS}
         >
           <option value="send_email">Email</option>
           <option value="send_sms">SMS</option>
@@ -223,17 +258,33 @@ function ActionForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, dat
           <option value="send_whatsapp">WhatsApp</option>
         </select>
       </FieldLabel>
-      <FieldLabel label="Template ID">
-        <input
-          type="text"
-          value={templateId}
-          placeholder="e.g. abandoned_cart_default"
-          onChange={e => {
-            setTemplateId(e.target.value)
-            onUpdate(node.id, { ...d, actionType, templateId: e.target.value })
-          }}
-          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
-        />
+      <FieldLabel label="Template">
+        {isLoading ? (
+          <div className="text-xs text-text-muted px-2 py-1.5">Loading templates…</div>
+        ) : templateOptions.length === 0 ? (
+          <div className="text-xs text-text-muted px-2 py-1.5 border border-dashed border-border rounded-lg">
+            No {channel} templates yet — create one in the Templates page first.
+          </div>
+        ) : (
+          <select
+            value={selectedExists ? templateId : ''}
+            onChange={e => {
+              setTemplateId(e.target.value)
+              onUpdate(node.id, { ...d, actionType, templateId: e.target.value })
+            }}
+            className={SELECT_CLASS}
+          >
+            <option value="">Select a template…</option>
+            {templateOptions.map((t) => (
+              <option key={t.id} value={t.id}>{t.label}</option>
+            ))}
+          </select>
+        )}
+        {templateId && !selectedExists && !isLoading && (
+          <p className="mt-1 text-[11px] text-amber-700">
+            ⚠ Saved template ID <code className="font-mono">{templateId.slice(0, 8)}…</code> not found in the current list — it may have been deleted or belongs to a different channel.
+          </p>
+        )}
       </FieldLabel>
     </div>
   )
