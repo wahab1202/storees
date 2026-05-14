@@ -251,8 +251,14 @@ function TestResultPanel({ result, onDismiss }: { result: unknown; onDismiss: ()
                 <div className="text-[11px] text-emerald-700 mb-1">✓ Fetched 1 record</div>
                 <details className="text-[11px]">
                   <summary className="cursor-pointer text-text-muted">Mapped preview</summary>
-                  <pre className="mt-1 text-[10px] overflow-auto max-h-32 bg-white border border-border rounded p-1.5">
+                  <pre className="mt-1 text-[10px] overflow-auto max-h-40 bg-white border border-border rounded p-1.5">
                     {JSON.stringify(r.mapped, null, 2)}
+                  </pre>
+                </details>
+                <details className="text-[11px] mt-1">
+                  <summary className="cursor-pointer text-text-muted">Raw sample (source response)</summary>
+                  <pre className="mt-1 text-[10px] overflow-auto max-h-64 bg-white border border-border rounded p-1.5">
+                    {JSON.stringify(r.sample, null, 2)}
                   </pre>
                 </details>
               </>
