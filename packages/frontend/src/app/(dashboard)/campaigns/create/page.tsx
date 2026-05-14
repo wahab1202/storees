@@ -29,6 +29,7 @@ import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 import { VariablePanel } from '@/components/templates/VariablePanel'
 import { MultiPlatformPushBlock } from '@/components/campaigns/MultiPlatformPushBlock'
+import { AiCopywriterPanel } from '@/components/campaigns/AiCopywriterPanel'
 import { ApiError } from '@/lib/api'
 import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, CampaignSendTimeMode, CampaignUtmParameter, CampaignUtmParameters, ConversionGoal, GmailAnnotation, PeriodicSchedule, FilterConfig, ProjectEmailSender, TemplateVariable } from '@storees/shared'
 import {
@@ -76,6 +77,7 @@ import {
   Filter,
   ShoppingBag,
   Copy,
+  Sparkles,
 } from 'lucide-react'
 
 type Step = 1 | 2 | 3
@@ -2722,7 +2724,9 @@ function Step2TextContent({
 }) {
   const isSms = channel === 'sms'
   const isPush = channel === 'push'
+  const isWhatsapp = channel === 'whatsapp'
   const ChannelIcon = CHANNEL_ICONS[channel] ?? MessageSquare
+  const [aiOpen, setAiOpen] = useState(false)
   const channelLabel = CHANNEL_LABELS[channel] ?? channel
   const customers = useCustomers({ page: 1, pageSize: 20, sortBy: 'lastSeen', sortOrder: 'desc' })
   const renderedPreview = usePreviewTemplate()
@@ -2734,6 +2738,38 @@ function Step2TextContent({
 
   return (
     <div className="max-w-2xl space-y-6">
+      {/* AI Copywriter quick-action */}
+      <div className="flex items-center justify-between bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-200 rounded-xl px-4 py-3">
+        <div className="flex items-center gap-2.5">
+          <div className="h-8 w-8 rounded-lg bg-violet-600 text-white flex items-center justify-center">
+            <Sparkles className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-violet-900">Stuck on copy? Let AI draft variants.</p>
+            <p className="text-xs text-violet-700">Channel-aware, multilingual, structured tone control.</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setAiOpen(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-violet-600 hover:bg-violet-700 text-white rounded-lg"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Generate with AI
+        </button>
+      </div>
+
+      <AiCopywriterPanel
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        channel={channel as 'email' | 'sms' | 'push' | 'whatsapp'}
+        initialUseCase={bodyText}
+        onApply={(v) => {
+          if (v.body) setBodyText(v.body)
+          if (isPush && v.subject) setPushTitle(v.subject)
+        }}
+      />
+
       {/* Saved templates for this channel */}
       {templates.length > 0 && (
         <div className="bg-white border border-border rounded-xl p-5">

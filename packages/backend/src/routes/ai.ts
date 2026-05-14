@@ -6,6 +6,7 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { generateSegmentFilter, isAiEnabled } from '../services/aiSegmentService.js'
 import { computeNextBestAction } from '../services/nextBestActionService.js'
 import { chatCompletion, getLlmConfig, testConnection } from '../services/llmService.js'
+import { generateCopy, type CopywriterChannel, type VoiceTone, type CopywriterLanguage } from '../services/copywriterService.js'
 import { clearProjectChannelProviderCache } from '../services/channelProviderRegistry.js'
 
 const router = Router()
@@ -36,6 +37,56 @@ router.post('/segment', requireProjectId, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'AI generation failed'
     console.error('[AI] Segment generation error:', message)
+    res.status(500).json({ success: false, error: message })
+  }
+})
+
+// POST /api/ai/copywriter — Gap 3: channel-aware marketing copy generator.
+// Mirrors MoEngage's Merlin Copywriter: structured prompt fields (channel,
+// voice/tone, language, audience, keywords) → N variants of usable copy
+// that fit the channel's character limits.
+const VALID_CHANNELS: CopywriterChannel[] = ['email', 'sms', 'push', 'whatsapp']
+const VALID_TONES: VoiceTone[] = ['persuasive', 'informative', 'excitement', 'fomo', 'exclusivity']
+const VALID_LANGS: CopywriterLanguage[] = ['en', 'hi', 'ta', 'fr', 'es', 'zh']
+
+router.post('/copywriter', requireProjectId, async (req, res) => {
+  try {
+    const {
+      channel, useCase, voiceTone, language,
+      audiencePersona, includeKeywords, excludeKeywords, variantCount,
+    } = req.body as Record<string, unknown>
+
+    if (typeof useCase !== 'string' || useCase.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'useCase is required' })
+    }
+    if (useCase.length > 800) {
+      return res.status(400).json({ success: false, error: 'useCase too long (max 800 chars)' })
+    }
+    if (!VALID_CHANNELS.includes(channel as CopywriterChannel)) {
+      return res.status(400).json({ success: false, error: `channel must be one of ${VALID_CHANNELS.join(', ')}` })
+    }
+    if (!VALID_TONES.includes(voiceTone as VoiceTone)) {
+      return res.status(400).json({ success: false, error: `voiceTone must be one of ${VALID_TONES.join(', ')}` })
+    }
+    if (!VALID_LANGS.includes(language as CopywriterLanguage)) {
+      return res.status(400).json({ success: false, error: `language must be one of ${VALID_LANGS.join(', ')}` })
+    }
+
+    const result = await generateCopy(req.projectId!, {
+      channel: channel as CopywriterChannel,
+      useCase: useCase.trim(),
+      voiceTone: voiceTone as VoiceTone,
+      language: language as CopywriterLanguage,
+      audiencePersona: typeof audiencePersona === 'string' ? audiencePersona.trim() : undefined,
+      includeKeywords: Array.isArray(includeKeywords) ? includeKeywords.filter((x): x is string => typeof x === 'string') : undefined,
+      excludeKeywords: Array.isArray(excludeKeywords) ? excludeKeywords.filter((x): x is string => typeof x === 'string') : undefined,
+      variantCount: typeof variantCount === 'number' ? variantCount : 3,
+    })
+
+    res.json({ success: true, data: result })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Copywriter failed'
+    console.error('[AI] Copywriter error:', message)
     res.status(500).json({ success: false, error: message })
   }
 })
