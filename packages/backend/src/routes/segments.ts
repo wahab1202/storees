@@ -8,6 +8,7 @@ import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { evaluateSegment, evaluateAllSegments, instantiateDefaultSegments } from '../services/segmentService.js'
 import { getLifecycleChart, filterToSql, scopedFilterToSql } from '@storees/segments'
 import type { FilterConfig } from '@storees/shared'
+import { exportSegmentAudience, SUPPORTED_PLATFORMS, platformLabel, type AdPlatform } from '../services/adAudienceExport.js'
 
 const router = Router()
 
@@ -115,6 +116,47 @@ router.get('/:id', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Segment detail error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch segment' })
+  }
+})
+
+// Gap 8: list available ad-platform destinations
+// GET /api/segments/ad-platforms
+router.get('/ad-platforms/list', requireProjectId, (_req, res) => {
+  res.json({
+    success: true,
+    data: SUPPORTED_PLATFORMS.map((p) => ({ id: p, label: platformLabel(p) })),
+  })
+})
+
+// Gap 8: export a segment as a hashed-PII CSV for upload to an ad platform's
+// Custom Audience tool. Hash format matches each platform's spec
+// (SHA-256 on normalized email/phone/name). Phase 1 covers Meta + Google;
+// TikTok/Snap/Pinterest use a generic email_sha256 + phone_sha256 format.
+//
+// GET /api/segments/:id/export-audience?projectId=...&platform=meta
+router.get('/:id/export-audience', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+    const platform = req.query.platform as AdPlatform | undefined
+
+    if (!platform || !SUPPORTED_PLATFORMS.includes(platform)) {
+      return res.status(400).json({
+        success: false,
+        error: `platform query param required, one of: ${SUPPORTED_PLATFORMS.join(', ')}`,
+      })
+    }
+
+    const result = await exportSegmentAudience(projectId, id, platform)
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`)
+    res.setHeader('X-Audience-Row-Count', String(result.rowCount))
+    res.setHeader('X-Audience-Platform', result.platform)
+    res.send(result.csv)
+  } catch (err) {
+    console.error('Audience export error:', err)
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Export failed' })
   }
 })
 

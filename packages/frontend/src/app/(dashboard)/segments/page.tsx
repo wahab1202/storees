@@ -4,6 +4,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { useSegments, useEvaluateSegments } from '@/hooks/useSegments'
 import { filterSummary } from '@/components/segments/SegmentFilterBuilder'
 import { LifecycleChart } from '@/components/segments/LifecycleChart'
+import { ExportAudienceButton } from '@/components/segments/ExportAudienceButton'
 import Link from 'next/link'
 import { RefreshCw, Users, ArrowRight, Plus, PieChart, Filter, Pencil } from 'lucide-react'
 import { CardSkeleton } from '@/components/ui/Skeleton'
@@ -125,6 +126,7 @@ export default function SegmentsPage() {
                     <Pencil className="h-3 w-3" />
                     Edit
                   </Link>
+                  <ExportAudienceButton segmentId={segment.id} memberCount={segment.memberCount} />
                   {segment.memberCount > 0 && (
                     <Link
                       href={`/customers?segmentId=${segment.id}`}
