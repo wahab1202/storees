@@ -1,10 +1,19 @@
 import type { ConnectorTemplate } from '../genericHttpConnector.js'
 
+// VirpanAI (GWM-backed stores). The VirpanAI Admin API exposes customer,
+// product, and order endpoints in Storees-canonical shape — flat field
+// names matching the bulk-import handoff doc (docs/runbooks/
+// GWM_BULK_IMPORT_HANDOFF.md). Totals and prices are already in major
+// currency units (₹, not paise), so no divideBy transform needed.
+//
+// If a future client is on raw Medusa Admin API (nested shape, prices in
+// cents), use the Custom template and supply field mappings explicitly.
+
 export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
   id: 'virpanai',
   label: 'VirpanAI',
   description:
-    'Default mapping for VirpanAI-backed stores (GWM and similar). Pulls customers, products, and orders via the VirpanAI Admin API.',
+    'For VirpanAI-backed stores (GWM and similar). Expects endpoints that return canonical flat-shape customers, products, and orders — see the bulk-import handoff doc for the exact contract.',
 
   auth: {
     type: 'bearer',
@@ -28,7 +37,6 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     orders: {
       path: '/admin/orders',
       method: 'GET',
-      queryParams: { fields: '+items.*,+items.product.*,+customer.*' },
       responseDataPath: 'orders',
       responseCountPath: 'count',
     },
@@ -47,53 +55,59 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
   interBatchDelayMs: 100,
   maxFetchRetries: 3,
 
-  incremental: {
-    customers: { param: 'updated_at[gte]', format: 'iso8601' },
-    products: { param: 'updated_at[gte]', format: 'iso8601' },
-    orders: { param: 'updated_at[gte]', format: 'iso8601' },
-  },
-
   fieldMap: {
+    // Customer endpoint returns Storees-canonical flat shape:
+    //   { customer_id, email, phone, name, region, city, email_subscribed }
     customers: {
-      external_id: 'id',
+      external_id: 'customer_id',
       email: 'email',
       phone: 'phone',
-      name: { concat: ['first_name', 'last_name'], separator: ' ' },
-      email_subscribed: 'has_account',
+      name: 'name',
+      region: 'region',
+      city: 'city',
+      email_subscribed: 'email_subscribed',
+      sms_subscribed: 'sms_subscribed',
       custom_attributes: {
-        billing_city: 'billing_address.city',
-        billing_region: 'billing_address.province',
-        metadata: 'metadata',
+        // Anything else in the payload that's worth keeping for segments
+        // can be folded in here later via configOverride per-connector.
       },
     },
 
+    // Product endpoint:
+    //   { product_id, title, product_type, vendor, base_price, currency,
+    //     image_url, status, collections: [...] }
     products: {
-      product_id: 'id',
+      product_id: 'product_id',
       title: 'title',
-      product_type: 'type.value',
-      vendor: 'collection.title',
-      base_price: { from: 'variants[0].prices[0].amount', divideBy: 100 },
-      currency: 'variants[0].prices[0].currency_code',
-      image_url: 'thumbnail',
+      product_type: 'product_type',
+      vendor: 'vendor',
+      base_price: 'base_price',
+      currency: 'currency',
+      image_url: 'image_url',
       status: 'status',
-      collections: { fromArray: 'collections', field: 'title' },
+      collections: 'collections',
     },
 
+    // Order endpoint:
+    //   { customer_id, order_id, timestamp, total, currency,
+    //     line_items: [{ product_id, product_name, product_type,
+    //                    product_collection, quantity, price }] }
+    // Totals are in major currency units (₹). No divideBy.
     orders: {
-      customer_id: 'customer.id',
-      order_id: 'id',
-      timestamp: 'created_at',
-      total: { from: 'total', divideBy: 100 },
-      currency: 'currency_code',
+      customer_id: 'customer_id',
+      order_id: 'order_id',
+      timestamp: 'timestamp',
+      total: 'total',
+      currency: 'currency',
       line_items: {
-        sourcePath: 'items',
+        sourcePath: 'line_items',
         fields: {
           product_id: 'product_id',
-          product_name: 'title',
-          product_type: 'product.type.value',
-          product_collection: 'product.collection.title',
+          product_name: 'product_name',
+          product_type: 'product_type',
+          product_collection: 'product_collection',
           quantity: 'quantity',
-          price: { from: 'unit_price', divideBy: 100 },
+          price: 'price',
         },
       },
     },
