@@ -6,11 +6,12 @@ import { useFlowDetail, useUpdateFlow, useUpdateFlowStatus, useCloneFlow } from 
 import { useDashboardStats } from '@/hooks/useDashboard'
 import { StructuredFlowBuilder } from '@/components/flows/StructuredFlowBuilder'
 import { FlowAnalyticsPanel } from '@/components/flows/FlowAnalyticsPanel'
-import { Loader2, ArrowLeft, Play, Pause, GitBranch, BarChart3, Copy } from 'lucide-react'
+import { FlowDebugPanel } from '@/components/flows/FlowDebugPanel'
+import { Loader2, ArrowLeft, Play, Pause, GitBranch, BarChart3, Copy, Bug } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { FlowNode, ExitConfig } from '@storees/shared'
 
-type FlowTab = 'builder' | 'analytics'
+type FlowTab = 'builder' | 'analytics' | 'debug'
 
 export default function FlowDetailPage() {
   const params = useParams()
@@ -81,6 +82,17 @@ export default function FlowDetailPage() {
               <BarChart3 className="h-3.5 w-3.5" />
               Analytics
             </button>
+            <button
+              onClick={() => setActiveTab('debug')}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+                activeTab === 'debug' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              )}
+              title="Trace a specific customer through this flow"
+            >
+              <Bug className="h-3.5 w-3.5" />
+              Debug
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -124,8 +136,8 @@ export default function FlowDetailPage() {
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 min-h-0">
-        {activeTab === 'builder' ? (
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {activeTab === 'builder' && (
           <StructuredFlowBuilder
             flowNodes={flow.nodes as FlowNode[]}
             exitConfig={flow.exitConfig as ExitConfig | null}
@@ -133,8 +145,12 @@ export default function FlowDetailPage() {
             saving={updateFlow.isPending}
             domainType={statsData?.data.domainType}
           />
-        ) : (
-          <FlowAnalyticsPanel flowId={id} />
+        )}
+        {activeTab === 'analytics' && <FlowAnalyticsPanel flowId={id} />}
+        {activeTab === 'debug' && (
+          <div className="p-5 max-w-5xl mx-auto">
+            <FlowDebugPanel flowId={id} />
+          </div>
         )}
       </div>
     </div>

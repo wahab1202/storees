@@ -1,7 +1,7 @@
 import { Router } from 'express'
-import { eq, and, sql, count, inArray } from 'drizzle-orm'
+import { eq, and, sql, count, inArray, desc, or } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { flows, flowTrips } from '../db/schema.js'
+import { flows, flowTrips, customers, messages, scheduledJobs } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
@@ -255,6 +255,157 @@ router.delete('/:id', requireProjectId, async (req, res) => {
 })
 
 // GET /api/flows/:id/analytics?projectId=...
+// GET /api/flows/:id/debug?projectId=...&customer=<id|email|phone>
+//
+// Per-user flow debugger. Looks up the customer (by Storees UUID, email,
+// or phone) and returns every flow_trip they've had through THIS flow,
+// each annotated with:
+//   - currentNodeId  → where they are/were in the graph
+//   - scheduledJobs[] → pending and completed action jobs for that trip
+//   - messages[]      → actual sent messages (channel, status, engagement
+//                       timestamps, block reasons)
+//
+// Used by the "Debug" tab on the flow detail page. Big support unlock —
+// instead of trawling logs to answer "why didn't this user get message
+// 3?", ops can search and see the full timeline.
+router.get('/:id/debug', requireProjectId, async (req, res) => {
+  try {
+    const flowId = req.params.id as string
+    const projectId = req.projectId!
+    const query = ((req.query.customer as string | undefined) ?? '').trim()
+
+    if (!query) {
+      return res.status(400).json({ success: false, error: 'customer query required' })
+    }
+
+    const [flow] = await db
+      .select({ projectId: flows.projectId, name: flows.name })
+      .from(flows)
+      .where(eq(flows.id, flowId))
+      .limit(1)
+
+    if (!flow || flow.projectId !== projectId) {
+      return res.status(404).json({ success: false, error: 'Flow not found' })
+    }
+
+    // Identity resolution — accept UUID, email, or phone. We match
+    // exactly on any of them so onboarding can paste a customer id from
+    // a support ticket OR a marketer can paste an email.
+    const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query)
+    const [customer] = await db
+      .select({
+        id: customers.id,
+        externalId: customers.externalId,
+        email: customers.email,
+        phone: customers.phone,
+        name: customers.name,
+      })
+      .from(customers)
+      .where(
+        and(
+          eq(customers.projectId, projectId),
+          looksLikeUuid
+            ? eq(customers.id, query)
+            : or(
+                eq(customers.email, query),
+                eq(customers.phone, query),
+                eq(customers.externalId, query),
+              ),
+        ),
+      )
+      .limit(1)
+
+    if (!customer) {
+      return res.json({ success: true, data: { customer: null, trips: [] } })
+    }
+
+    const trips = await db
+      .select({
+        id: flowTrips.id,
+        status: flowTrips.status,
+        currentNodeId: flowTrips.currentNodeId,
+        context: flowTrips.context,
+        triggerEventId: flowTrips.triggerEventId,
+        enteredAt: flowTrips.enteredAt,
+        exitedAt: flowTrips.exitedAt,
+      })
+      .from(flowTrips)
+      .where(and(eq(flowTrips.flowId, flowId), eq(flowTrips.customerId, customer.id)))
+      .orderBy(desc(flowTrips.enteredAt))
+      .limit(20)
+
+    if (trips.length === 0) {
+      return res.json({ success: true, data: { customer, trips: [] } })
+    }
+
+    const tripIds = trips.map((t) => t.id)
+
+    // Fetch all messages + scheduled jobs in two queries (vs N+1 per trip)
+    const [msgs, jobs] = await Promise.all([
+      db
+        .select({
+          id: messages.id,
+          flowTripId: messages.flowTripId,
+          channel: messages.channel,
+          messageType: messages.messageType,
+          templateId: messages.templateId,
+          status: messages.status,
+          blockReason: messages.blockReason,
+          scheduledAt: messages.scheduledAt,
+          sentAt: messages.sentAt,
+          deliveredAt: messages.deliveredAt,
+          readAt: messages.readAt,
+          clickedAt: messages.clickedAt,
+          failedAt: messages.failedAt,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .where(inArray(messages.flowTripId, tripIds))
+        .orderBy(messages.createdAt),
+      db
+        .select({
+          id: scheduledJobs.id,
+          flowTripId: scheduledJobs.flowTripId,
+          action: scheduledJobs.action,
+          status: scheduledJobs.status,
+          executeAt: scheduledJobs.executeAt,
+          createdAt: scheduledJobs.createdAt,
+        })
+        .from(scheduledJobs)
+        .where(inArray(scheduledJobs.flowTripId, tripIds))
+        .orderBy(scheduledJobs.executeAt),
+    ])
+
+    const msgsByTrip = new Map<string, typeof msgs>()
+    for (const m of msgs) {
+      if (!m.flowTripId) continue
+      const list = msgsByTrip.get(m.flowTripId) ?? []
+      list.push(m)
+      msgsByTrip.set(m.flowTripId, list)
+    }
+    const jobsByTrip = new Map<string, typeof jobs>()
+    for (const j of jobs) {
+      const list = jobsByTrip.get(j.flowTripId) ?? []
+      list.push(j)
+      jobsByTrip.set(j.flowTripId, list)
+    }
+
+    const enrichedTrips = trips.map((t) => ({
+      ...t,
+      messages: msgsByTrip.get(t.id) ?? [],
+      scheduledJobs: jobsByTrip.get(t.id) ?? [],
+    }))
+
+    res.json({
+      success: true,
+      data: { customer, trips: enrichedTrips },
+    })
+  } catch (err) {
+    console.error('Flow debug error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch flow debug info' })
+  }
+})
+
 router.get('/:id/analytics', requireProjectId, async (req, res) => {
   try {
     const id = req.params.id as string

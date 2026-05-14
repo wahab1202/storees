@@ -127,6 +127,72 @@ export function useFlowAnalytics(id: string) {
   })
 }
 
+// ── Per-user flow debugger (Gap 7) ────────────────────────────────────────────
+// Returns every flow trip a customer has had through this specific flow,
+// each enriched with the messages that were sent and the scheduled jobs
+// queued at each stage. Powers the Debug tab on the flow detail page.
+
+export type FlowDebugMessage = {
+  id: string
+  flowTripId: string | null
+  channel: string
+  messageType: string
+  templateId: string | null
+  status: string
+  blockReason: string | null
+  scheduledAt: string | null
+  sentAt: string | null
+  deliveredAt: string | null
+  readAt: string | null
+  clickedAt: string | null
+  failedAt: string | null
+  createdAt: string
+}
+
+export type FlowDebugJob = {
+  id: string
+  flowTripId: string
+  action: Record<string, unknown>
+  status: string
+  executeAt: string
+  createdAt: string
+}
+
+export type FlowDebugTrip = {
+  id: string
+  status: string
+  currentNodeId: string
+  context: Record<string, unknown> | null
+  triggerEventId: string | null
+  enteredAt: string
+  exitedAt: string | null
+  messages: FlowDebugMessage[]
+  scheduledJobs: FlowDebugJob[]
+}
+
+export type FlowDebugResult = {
+  customer: {
+    id: string
+    externalId: string | null
+    email: string | null
+    phone: string | null
+    name: string | null
+  } | null
+  trips: FlowDebugTrip[]
+}
+
+export function useFlowDebug(flowId: string, query: string) {
+  const trimmed = query.trim()
+  return useQuery({
+    queryKey: ['flows', flowId, 'debug', trimmed],
+    queryFn: () =>
+      api.get<FlowDebugResult>(
+        withProject(`/api/flows/${flowId}/debug`, { customer: trimmed }),
+      ),
+    enabled: !!flowId && trimmed.length >= 3,
+  })
+}
+
 export function useCloneFlow() {
   const queryClient = useQueryClient()
   return useMutation({
