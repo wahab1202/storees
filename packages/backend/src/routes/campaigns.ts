@@ -104,7 +104,7 @@ router.post('/', requireProjectId, async (req, res) => {
       segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt, contentType, previewText,
       gmailAnnotation,
       utmParameters,
-      templateId, conversionGoals, goalTrackingHours, currency, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
+      templateId, conversionGoals, goalTrackingHours, currency, pushPlatforms, pushContent, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
       sendTimeMode, scheduleTimezone,
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject,
       abVariantBHtmlBody, abVariantBBodyText, abWinnerMetric,
@@ -137,6 +137,8 @@ router.post('/', requireProjectId, async (req, res) => {
       conversionGoals?: unknown[]
       goalTrackingHours?: number
       currency?: string | null
+      pushPlatforms?: unknown
+      pushContent?: unknown
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -224,6 +226,8 @@ router.post('/', requireProjectId, async (req, res) => {
       conversionGoals: conversionGoals ?? [],
       goalTrackingHours: goalTrackingHours ?? 36,
       currency: currency?.trim() || null,
+      pushPlatforms: Array.isArray(pushPlatforms) ? pushPlatforms : [],
+      pushContent: pushContent && typeof pushContent === 'object' ? pushContent : {},
       deliveryLimit: deliveryLimit ?? null,
       ignoreFrequencyCap: ignoreFrequencyCap ?? false,
       countForFrequencyCap: countForFrequencyCap ?? true,
@@ -343,7 +347,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     const {
       name, subject, htmlBody, emailBuilderTemplate, bodyText, segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt,
       gmailAnnotation, utmParameters, templateId,
-      contentType, previewText, conversionGoals, goalTrackingHours, currency, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
+      contentType, previewText, conversionGoals, goalTrackingHours, currency, pushPlatforms, pushContent, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
       sendTimeMode, scheduleTimezone,
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject, abVariantBHtmlBody,
       abVariantBBodyText, abWinnerMetric, abAutoSendWinner, abTestDurationHours,
@@ -374,6 +378,8 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       conversionGoals?: unknown[]
       goalTrackingHours?: number
       currency?: string | null
+      pushPlatforms?: unknown
+      pushContent?: unknown
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -481,6 +487,8 @@ router.patch('/:id', requireProjectId, async (req, res) => {
     if (conversionGoals !== undefined) updates.conversionGoals = conversionGoals
     if (goalTrackingHours !== undefined) updates.goalTrackingHours = goalTrackingHours
     if (currency !== undefined) updates.currency = currency?.trim() || null
+    if (pushPlatforms !== undefined) updates.pushPlatforms = Array.isArray(pushPlatforms) ? pushPlatforms : []
+    if (pushContent !== undefined) updates.pushContent = pushContent && typeof pushContent === 'object' ? pushContent : {}
     if (deliveryLimit !== undefined) updates.deliveryLimit = deliveryLimit
     if (ignoreFrequencyCap !== undefined) updates.ignoreFrequencyCap = ignoreFrequencyCap
     if (countForFrequencyCap !== undefined) updates.countForFrequencyCap = countForFrequencyCap

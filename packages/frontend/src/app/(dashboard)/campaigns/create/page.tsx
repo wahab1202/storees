@@ -28,6 +28,7 @@ import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 import { VariablePanel } from '@/components/templates/VariablePanel'
+import { MultiPlatformPushBlock } from '@/components/campaigns/MultiPlatformPushBlock'
 import { ApiError } from '@/lib/api'
 import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, CampaignSendTimeMode, CampaignUtmParameter, CampaignUtmParameters, ConversionGoal, GmailAnnotation, PeriodicSchedule, FilterConfig, ProjectEmailSender, TemplateVariable } from '@storees/shared'
 import {
@@ -476,6 +477,9 @@ function CreateCampaignContent() {
   const [bodyText, setBodyText] = useState('')
   const [pushTitle, setPushTitle] = useState('')
   const [pushImageUrl, setPushImageUrl] = useState('')
+  // Gap 2: multi-platform push. Empty array = legacy single-content path.
+  const [pushPlatforms, setPushPlatforms] = useState<('android' | 'ios' | 'web')[]>([])
+  const [pushContent, setPushContent] = useState<Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string; subtitle?: string; badge?: number }>>({})
 
   // A/B Testing
   const [abTestEnabled, setAbTestEnabled] = useState(false)
@@ -604,6 +608,8 @@ function CreateCampaignContent() {
         conversionGoals: goals.length > 0 ? goals : undefined,
         goalTrackingHours,
         currency: currency || 'INR',
+        pushPlatforms: channel === 'push' && pushPlatforms.length > 0 ? pushPlatforms : undefined,
+        pushContent: channel === 'push' && pushPlatforms.length > 0 ? pushContent : undefined,
         deliveryLimit: deliveryLimit ? parseInt(deliveryLimit) : undefined,
         ignoreFrequencyCap: ignoreFreqCapping,
         countForFrequencyCap: countForFreqCapping,
@@ -839,6 +845,8 @@ function CreateCampaignContent() {
                 bodyText={bodyText} setBodyText={setBodyText}
                 pushTitle={pushTitle} setPushTitle={setPushTitle}
                 pushImageUrl={pushImageUrl} setPushImageUrl={setPushImageUrl}
+                pushPlatforms={pushPlatforms} setPushPlatforms={setPushPlatforms}
+                pushContent={pushContent} setPushContent={setPushContent}
                 templates={templates}
                 variables={variables}
                 setVariables={setVariables}
@@ -2689,7 +2697,9 @@ function WhatsappBubblePreview({
 /* ─── Step 2: SMS / Push Content ─── */
 
 function Step2TextContent({
-  channel, bodyText, setBodyText, pushTitle, setPushTitle, pushImageUrl, setPushImageUrl, templates, variables, setVariables,
+  channel, bodyText, setBodyText, pushTitle, setPushTitle, pushImageUrl, setPushImageUrl,
+  pushPlatforms, setPushPlatforms, pushContent, setPushContent,
+  templates, variables, setVariables,
   utmEnabled, setUtmEnabled, utmSource, setUtmSource, utmMedium, setUtmMedium, utmCampaign, setUtmCampaign,
   utmCustomParams, setUtmCustomParams, inputClass,
 }: {
@@ -2697,6 +2707,9 @@ function Step2TextContent({
   bodyText: string; setBodyText: (v: string) => void
   pushTitle: string; setPushTitle: (v: string) => void
   pushImageUrl: string; setPushImageUrl: (v: string) => void
+  pushPlatforms: ('android' | 'ios' | 'web')[]; setPushPlatforms: (v: ('android' | 'ios' | 'web')[]) => void
+  pushContent: Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string; subtitle?: string; badge?: number }>
+  setPushContent: (v: Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string; subtitle?: string; badge?: number }>) => void
   templates: TemplateItem[]
   variables: TemplateVariable[]
   setVariables: (v: TemplateVariable[]) => void
@@ -2744,8 +2757,19 @@ function Step2TextContent({
         </div>
       )}
 
-      {/* Push: Title + Image */}
+      {/* Push: Multi-platform authoring (Gap 2) */}
       {isPush && (
+        <MultiPlatformPushBlock
+          pushPlatforms={pushPlatforms}
+          setPushPlatforms={setPushPlatforms}
+          pushContent={pushContent}
+          setPushContent={setPushContent}
+          inputClass={inputClass}
+        />
+      )}
+
+      {/* Push: legacy single-content fallback (used when no platforms selected) */}
+      {isPush && pushPlatforms.length === 0 && (
         <div className="bg-white border border-border rounded-xl p-6 space-y-4">
           <div>
             <label className="block text-sm font-medium text-text-primary mb-1.5">

@@ -141,6 +141,27 @@ export type CampaignUtmParameters = {
   params: CampaignUtmParameter[]
 }
 
+// Gap 2: multi-platform push. A single push campaign can target multiple
+// platforms with per-platform content tabs in the campaign builder.
+//
+// Empty pushPlatforms + empty pushContent = legacy single-content push
+// (the old subject/bodyText/previewText fields still drive the send).
+export type PushPlatform = 'android' | 'ios' | 'web'
+
+export type PushPlatformContent = {
+  title: string
+  body: string
+  imageUrl?: string
+  clickUrl?: string
+  // iOS-specific
+  subtitle?: string
+  badge?: number
+  // Web-specific
+  actions?: Array<{ action: string; title: string; icon?: string }>
+}
+
+export type PushContent = Partial<Record<PushPlatform, PushPlatformContent>>
+
 export type ConversionGoal = {
   name: string
   eventName: string
@@ -212,6 +233,8 @@ export type Campaign = {
   conversionGoals: ConversionGoal[]
   goalTrackingHours: number
   currency: string | null   // ISO-4217 (e.g. 'INR', 'USD', 'AED'). NULL = project default
+  pushPlatforms: PushPlatform[]
+  pushContent: PushContent
 
   deliveryLimit: number | null
   ignoreFrequencyCap: boolean

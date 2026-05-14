@@ -382,6 +382,10 @@ export const campaigns = pgTable('campaigns', {
   conversionGoals: jsonb('conversion_goals').notNull().default([]),
   goalTrackingHours: integer('goal_tracking_hours').notNull().default(36),
   currency: varchar('currency', { length: 3 }),
+  // Gap 2: multi-platform push. Array of enabled platforms + per-platform
+  // content map. See migration 0045 for the shape.
+  pushPlatforms: jsonb('push_platforms').notNull().default([]),
+  pushContent: jsonb('push_content').notNull().default({}),
   deliveryLimit: integer('delivery_limit'),
   ignoreFrequencyCap: boolean('ignore_frequency_cap').notNull().default(false),
   countForFrequencyCap: boolean('count_for_frequency_cap').notNull().default(true),

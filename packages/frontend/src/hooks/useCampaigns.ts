@@ -67,6 +67,8 @@ export function useCreateCampaign() {
       conversionGoals?: ConversionGoal[]
       goalTrackingHours?: number
       currency?: string | null
+      pushPlatforms?: ('android' | 'ios' | 'web')[]
+      pushContent?: Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string }>
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
@@ -123,6 +125,8 @@ export function useUpdateCampaign() {
       conversionGoals?: ConversionGoal[]
       goalTrackingHours?: number
       currency?: string | null
+      pushPlatforms?: ('android' | 'ios' | 'web')[]
+      pushContent?: Record<string, { title: string; body: string; imageUrl?: string; clickUrl?: string }>
       deliveryLimit?: number | null
       ignoreFrequencyCap?: boolean
       countForFrequencyCap?: boolean
