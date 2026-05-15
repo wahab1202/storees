@@ -177,7 +177,6 @@ export default function CreateTemplatePage() {
   const [emailTemplate, setEmailTemplate] = useState<EmailTemplate>(() => starterTemplateForLayout('blank', ''))
   const [bodyText, setBodyText] = useState('')
   const [variables, setVariables] = useState<TemplateVariable[]>([])
-  const [tab, setTab] = useState<'visual' | 'html' | 'preview'>('visual')
   const [selectedLayout, setSelectedLayout] = useState('blank')
 
   // In-app channel extras
@@ -349,7 +348,6 @@ export default function CreateTemplatePage() {
                     setEmailTemplate(nextTemplate)
                     setHtmlBody(compileToHtml(nextTemplate))
                     setSelectedLayout(layout.key)
-                    setTab('visual')
                   }}
                   className={cn(
                     'flex h-24 items-center gap-3 rounded-lg border p-4 text-left transition-colors',
@@ -488,108 +486,64 @@ export default function CreateTemplatePage() {
         </section>
       )}
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className={cn(
+        'grid grid-cols-1 gap-5',
+        !isEmail && 'xl:grid-cols-[minmax(0,1fr)_300px]',
+      )}>
         <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-white">
-          <div className="flex flex-col gap-3 border-b border-border bg-surface px-5 py-3 md:flex-row md:items-center md:justify-between">
-            <h2 className="text-sm font-semibold text-text-primary">
-              {isEmail ? 'Email Content' : isInApp ? 'Body' : 'Message Content'}
-            </h2>
-            {isEmail && (
-              <div className="flex w-full flex-wrap items-center gap-1 rounded-lg border border-border bg-white p-0.5 md:w-auto">
-                {([
-                  ['visual', 'Visual Builder'],
-                  ['html', 'HTML'],
-                  ['preview', 'Preview'],
-                ] as const).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setTab(value)}
-                    className={cn(
-                      'h-8 flex-1 rounded-md px-3 text-xs font-medium transition-colors md:flex-none',
-                      tab === value ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary',
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
           {isEmail ? (
-            tab === 'visual' ? (
-              <div className="min-h-[640px]">
-                <EmailBuilder
-                  value={{ ...emailTemplate, subject, previewText: '' }}
-                  aiContext={{
-                    subject,
-                    fullHtml: htmlBody,
-                    campaignGoal: `Reusable ${name || 'email'} template`,
-                  }}
-                  onChange={nextTemplate => {
-                    const synced = { ...nextTemplate, subject, previewText: '' }
-                    setEmailTemplate(synced)
-                    setHtmlBody(compileToHtml(synced))
-                  }}
-                />
+            <EmailBuilder
+              value={{ ...emailTemplate, subject, previewText: '' }}
+              aiContext={{
+                subject,
+                fullHtml: htmlBody,
+                campaignGoal: `Reusable ${name || 'email'} template`,
+              }}
+              onChange={nextTemplate => {
+                const synced = { ...nextTemplate, subject, previewText: '' }
+                setEmailTemplate(synced)
+                setHtmlBody(compileToHtml(synced))
+              }}
+            />
+          ) : (
+            <>
+              <div className="border-b border-border px-5 py-3">
+                <h2 className="text-sm font-semibold text-text-primary">
+                  {isInApp ? 'Body' : 'Message Content'}
+                </h2>
               </div>
-            ) : tab === 'html' ? (
               <div className="p-5">
                 <textarea
-                  value={htmlBody}
-                  onChange={e => {
-                    setHtmlBody(e.target.value)
-                    setEmailTemplate(emailTemplateFromHtml(subject, e.target.value))
-                  }}
-                  rows={22}
-                  className="w-full rounded-lg border border-border bg-white px-3 py-2 font-mono text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20"
-                  spellCheck={false}
+                  value={bodyText}
+                  onChange={e => setBodyText(e.target.value)}
+                  rows={8}
+                  placeholder={
+                    channel === 'sms'
+                      ? 'Hi {{customer_name}}, your transaction of {{amount}} is complete.'
+                      : channel === 'push'
+                        ? 'Your order update is ready, {{customer_name}}.'
+                        : channel === 'in_app'
+                          ? 'Hey {{customer_name}}, just for you — {{offer}}.'
+                          : 'Hi {{customer_name}}, we have an update for your account.'
+                  }
+                  className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
                 />
-                <p className="mt-2 text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{customer_email}}'}, {'{{store_name}}'}</p>
-              </div>
-            ) : (
-              <div className="bg-surface p-5">
-                <div className="overflow-hidden rounded-lg border border-border bg-white">
-                  <iframe
-                    srcDoc={htmlBody}
-                    title="Preview"
-                    className="h-[620px] w-full"
-                    sandbox="allow-same-origin"
-                  />
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>
+                  {channel === 'sms' && (
+                    <p className={cn('text-xs font-medium', bodyText.length > 160 ? 'text-red-500' : 'text-text-muted')}>
+                      {bodyText.length}/160
+                    </p>
+                  )}
                 </div>
               </div>
-            )
-          ) : (
-            <div className="p-5">
-              <textarea
-                value={bodyText}
-                onChange={e => setBodyText(e.target.value)}
-                rows={8}
-                placeholder={
-                  channel === 'sms'
-                    ? 'Hi {{customer_name}}, your transaction of {{amount}} is complete.'
-                    : channel === 'push'
-                      ? 'Your order update is ready, {{customer_name}}.'
-                      : channel === 'in_app'
-                        ? 'Hey {{customer_name}}, just for you — {{offer}}.'
-                        : 'Hi {{customer_name}}, we have an update for your account.'
-                }
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
-              />
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <p className="text-xs text-text-muted">Variables: {'{{customer_name}}'}, {'{{amount}}'}</p>
-                {channel === 'sms' && (
-                  <p className={cn('text-xs font-medium', bodyText.length > 160 ? 'text-red-500' : 'text-text-muted')}>
-                    {bodyText.length}/160
-                  </p>
-                )}
-              </div>
-            </div>
+            </>
           )}
         </section>
 
-        <aside className="xl:sticky xl:top-4 xl:self-start">
+        <aside className={cn(
+          isEmail ? 'mx-auto w-full max-w-2xl' : 'xl:sticky xl:top-4 xl:self-start',
+        )}>
           <VariablePanel
             variables={variables}
             onChange={setVariables}

@@ -7,7 +7,7 @@ import { VariablePanel } from '@/components/templates/VariablePanel'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
-import { ArrowLeft, Eye, Loader2 } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateVariable } from '@storees/shared'
@@ -61,7 +61,6 @@ export default function EditTemplatePage() {
   const [emailTemplate, setEmailTemplate] = useState<EmailTemplate>(() => emailTemplateFromHtml('', ''))
   const [bodyText, setBodyText] = useState('')
   const [variables, setVariables] = useState<TemplateVariable[]>([])
-  const [tab, setTab] = useState<'visual' | 'html' | 'preview'>('visual')
 
   useEffect(() => {
     if (data?.data) {
@@ -74,7 +73,6 @@ export default function EditTemplatePage() {
       if (t.channel === 'email') {
         const storedTemplate = isEmailBuilderTemplate(t.emailBuilderTemplate) ? t.emailBuilderTemplate : null
         setEmailTemplate(storedTemplate ?? emailTemplateFromHtml(t.subject ?? '', t.htmlBody ?? ''))
-        setTab(storedTemplate ? 'visual' : 'html')
       }
     }
   }, [data])
@@ -173,71 +171,26 @@ export default function EditTemplatePage() {
       )}
 
       {/* Body + Variable panel */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
+      <div className={cn(
+        'grid grid-cols-1 gap-5',
+        !isEmail && 'lg:grid-cols-[1fr_320px]',
+      )}>
         <div className="min-w-0">
           {isEmail ? (
             <div className="bg-white border border-border rounded-xl overflow-hidden">
-              <div className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border">
-                <h2 className="text-sm font-semibold text-text-primary">Email Body</h2>
-                <div className="flex items-center gap-1 bg-white border border-border rounded-lg p-0.5">
-                  <button
-                    onClick={() => setTab('visual')}
-                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'visual' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
-                  >
-                    Visual Builder
-                  </button>
-                  <button
-                    onClick={() => setTab('html')}
-                    className={cn('px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'html' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
-                  >
-                    Edit HTML
-                  </button>
-                  <button
-                    onClick={() => setTab('preview')}
-                    className={cn('inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors', tab === 'preview' ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary')}
-                  >
-                    <Eye className="h-3 w-3" />
-                    Preview
-                  </button>
-                </div>
-              </div>
-              <div className="p-5">
-                {tab === 'visual' ? (
-                  <EmailBuilder
-                    value={{ ...emailTemplate, subject, previewText: '' }}
-                    aiContext={{
-                      subject,
-                      fullHtml: htmlBody,
-                      campaignGoal: `Reusable ${name || 'email'} template`,
-                    }}
-                    onChange={nextTemplate => {
-                      const synced = { ...nextTemplate, subject, previewText: '' }
-                      setEmailTemplate(synced)
-                      setHtmlBody(compileToHtml(synced))
-                    }}
-                  />
-                ) : tab === 'html' ? (
-                  <textarea
-                    value={htmlBody}
-                    onChange={e => {
-                      setHtmlBody(e.target.value)
-                      setEmailTemplate(emailTemplateFromHtml(subject, e.target.value))
-                    }}
-                    rows={24}
-                    className="w-full px-3 py-2 text-xs font-mono border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none"
-                    spellCheck={false}
-                  />
-                ) : (
-                  <div className="border border-border rounded-lg overflow-hidden bg-white">
-                    <iframe
-                      srcDoc={htmlBody}
-                      title="Preview"
-                      className="w-full h-[520px]"
-                      sandbox="allow-same-origin"
-                    />
-                  </div>
-                )}
-              </div>
+              <EmailBuilder
+                value={{ ...emailTemplate, subject, previewText: '' }}
+                aiContext={{
+                  subject,
+                  fullHtml: htmlBody,
+                  campaignGoal: `Reusable ${name || 'email'} template`,
+                }}
+                onChange={nextTemplate => {
+                  const synced = { ...nextTemplate, subject, previewText: '' }
+                  setEmailTemplate(synced)
+                  setHtmlBody(compileToHtml(synced))
+                }}
+              />
             </div>
           ) : (
             <div className="bg-white border border-border rounded-xl overflow-hidden">
@@ -263,16 +216,18 @@ export default function EditTemplatePage() {
           )}
         </div>
 
-        <VariablePanel
-          variables={variables}
-          onChange={setVariables}
-          contentSources={[subject, htmlBody, bodyText]}
-          preview={{
-            subject: isEmail ? subject : null,
-            htmlBody: isEmail ? htmlBody : null,
-            bodyText: !isEmail ? bodyText : null,
-          }}
-        />
+        <div className={cn(isEmail && 'mx-auto w-full max-w-2xl')}>
+          <VariablePanel
+            variables={variables}
+            onChange={setVariables}
+            contentSources={[subject, htmlBody, bodyText]}
+            preview={{
+              subject: isEmail ? subject : null,
+              htmlBody: isEmail ? htmlBody : null,
+              bodyText: !isEmail ? bodyText : null,
+            }}
+          />
+        </div>
       </div>
     </div>
   )
