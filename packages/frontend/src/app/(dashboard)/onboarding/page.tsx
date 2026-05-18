@@ -128,11 +128,26 @@ export default function OnboardingPage() {
   const integrationGuide = useIntegrationGuide(projectData?.project.id ?? null)
   const sendTestEvent = useSendTestEvent()
 
+  const [packsLoadError, setPacksLoadError] = useState<string | null>(null)
+
   // Load packs on mount
   useEffect(() => {
-    api.get<PackSummary[]>('/api/packs').then(res => {
-      if (res.success) setPacks(res.data)
-    }).catch(() => {})
+    api.get<PackSummary[]>('/api/packs')
+      .then(res => {
+        if (!res.success) {
+          setPacksLoadError('Could not load industries. Check backend logs.')
+          return
+        }
+        if (res.data.length === 0) {
+          setPacksLoadError('No industries available. The backend is reachable but its pack catalogue is empty — usually means dist/packs/*.json is missing on the server.')
+          return
+        }
+        setPacks(res.data)
+      })
+      .catch(err => {
+        console.error('[onboarding] /api/packs failed:', err)
+        setPacksLoadError('Could not reach /api/packs. Check the backend is running and CORS is configured.')
+      })
   }, [])
 
   // Load wizard questions when pack is selected
@@ -280,6 +295,11 @@ export default function OnboardingPage() {
 
           <div>
             <label className="block text-sm font-medium text-heading mb-3">What industry are you in?</label>
+            {packsLoadError && (
+              <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                {packsLoadError}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               {packs.map((pack) => {
                 const Icon = PACK_ICONS[pack.id] ?? Puzzle

@@ -80,13 +80,17 @@ export function loadPack(packId: string): VerticalPack | null {
 export function listPacks(): Pick<VerticalPack, 'id' | 'name' | 'icon' | 'description'>[] {
   try {
     const files = readdirSync(PACKS_DIR).filter(f => f.endsWith('.json'))
+    if (files.length === 0) {
+      console.error(`[verticalPackService] PACKS_DIR exists but is empty: ${PACKS_DIR}. Check that the build step copied src/packs/*.json into dist/packs/.`)
+    }
     return files.map(f => {
       const packId = f.replace('.json', '')
       const pack = loadPack(packId)
       if (!pack) return null
       return { id: pack.id, name: pack.name, icon: pack.icon, description: pack.description }
     }).filter(Boolean) as Pick<VerticalPack, 'id' | 'name' | 'icon' | 'description'>[]
-  } catch {
+  } catch (err) {
+    console.error(`[verticalPackService] Could not read PACKS_DIR (${PACKS_DIR}):`, err)
     return []
   }
 }
