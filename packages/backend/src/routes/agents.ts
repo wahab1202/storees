@@ -122,6 +122,29 @@ router.post('/backfill', async (req, res) => {
         ON CONFLICT (project_id, external_dealer_id) DO NOTHING
       `)
 
+      // Repair names from order events — the customer-attribute path above
+      // stamps each agent with the retail shop's name, not the wholesale
+      // dealer's. Canonical name is in events.properties.dealer.name. Latest
+      // event wins; skip rows already matching.
+      const rename = await tx.execute(sql`
+        UPDATE agents a
+        SET name = ed.evt_name, updated_at = NOW()
+        FROM (
+          SELECT DISTINCT ON (e.properties->'dealer'->>'id')
+            e.properties->'dealer'->>'id'   AS ext_id,
+            e.properties->'dealer'->>'name' AS evt_name
+          FROM events e
+          WHERE e.project_id = ${projectId}
+            AND e.event_name = 'order_completed'
+            AND NULLIF(e.properties->'dealer'->>'id', '')   IS NOT NULL
+            AND NULLIF(e.properties->'dealer'->>'name', '') IS NOT NULL
+          ORDER BY e.properties->'dealer'->>'id', e.timestamp DESC
+        ) ed
+        WHERE a.project_id = ${projectId}
+          AND a.external_dealer_id = ed.ext_id
+          AND a.name IS DISTINCT FROM ed.evt_name
+      `)
+
       const upd = await tx.execute(sql`
         UPDATE customers c
         SET
@@ -139,6 +162,7 @@ router.post('/backfill', async (req, res) => {
 
       return {
         agentsInserted: ins.rowCount ?? 0,
+        agentsRenamed:  rename.rowCount ?? 0,
         customersLinked: upd.rowCount ?? 0,
       }
     })

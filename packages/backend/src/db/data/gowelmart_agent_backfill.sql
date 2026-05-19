@@ -24,6 +24,28 @@ WHERE c.custom_attributes->>'_source' = 'gowelmart_import'
   AND COALESCE(c.custom_attributes->>'dealer_id', '') <> ''
 ON CONFLICT (project_id, external_dealer_id) DO NOTHING;
 
+-- 1b. Repair agent names from order events. The customer-attribute path
+-- above stamps each agent with the CUSTOMER's shop name (the retail outlet
+-- placing the order), not the wholesale dealer. The canonical dealer name
+-- lives in events.properties.dealer.name (e.g. "MADURAI GWM"). Latest event
+-- wins per dealer; idempotent (skip rows where name is already correct).
+UPDATE agents a
+SET
+  name       = ed.evt_name,
+  updated_at = NOW()
+FROM (
+  SELECT DISTINCT ON (e.properties->'dealer'->>'id')
+    e.properties->'dealer'->>'id'   AS ext_id,
+    e.properties->'dealer'->>'name' AS evt_name
+  FROM events e
+  WHERE e.event_name = 'order_completed'
+    AND NULLIF(e.properties->'dealer'->>'id', '')   IS NOT NULL
+    AND NULLIF(e.properties->'dealer'->>'name', '') IS NOT NULL
+  ORDER BY e.properties->'dealer'->>'id', e.timestamp DESC
+) ed
+WHERE a.external_dealer_id = ed.ext_id
+  AND a.name IS DISTINCT FROM ed.evt_name;
+
 -- 2. Link customers to agents + hoist region/city from custom_attributes
 UPDATE customers c
 SET
