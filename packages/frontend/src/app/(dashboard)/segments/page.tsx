@@ -1,12 +1,12 @@
 'use client'
 
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useSegments, useEvaluateSegments } from '@/hooks/useSegments'
+import { useSegments, useEvaluateSegments, useDeleteSegment, useUpdateSegment } from '@/hooks/useSegments'
 import { filterSummary } from '@/components/segments/SegmentFilterBuilder'
 import { LifecycleChart } from '@/components/segments/LifecycleChart'
 import { ExportAudienceButton } from '@/components/segments/ExportAudienceButton'
 import Link from 'next/link'
-import { RefreshCw, Users, ArrowRight, Plus, PieChart, Filter, Pencil } from 'lucide-react'
+import { RefreshCw, Users, ArrowRight, Plus, PieChart, Filter, Pencil, Trash2, Archive, ArchiveRestore } from 'lucide-react'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import type { FilterConfig } from '@storees/shared'
@@ -14,6 +14,8 @@ import type { FilterConfig } from '@storees/shared'
 export default function SegmentsPage() {
   const { data, isLoading, isError } = useSegments()
   const evaluate = useEvaluateSegments()
+  const deleteSegment = useDeleteSegment()
+  const updateSegment = useUpdateSegment()
 
   return (
     <div>
@@ -138,6 +140,36 @@ export default function SegmentsPage() {
                     <Pencil className="h-3 w-3" />
                     Edit
                   </Link>
+                  {/* Default segments can't be deleted (backend rejects). They
+                      can be archived (set isActive=false) and restored. */}
+                  {segment.type === 'default' ? (
+                    <button
+                      onClick={() => updateSegment.mutate({ id: segment.id, isActive: !segment.isActive })}
+                      disabled={updateSegment.isPending}
+                      className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-primary font-medium transition-colors disabled:opacity-50"
+                      title={segment.isActive ? 'Archive — segment stops appearing in dropdowns until restored' : 'Restore — bring this archived segment back into use'}
+                    >
+                      {segment.isActive ? (
+                        <><Archive className="h-3 w-3" /> Archive</>
+                      ) : (
+                        <><ArchiveRestore className="h-3 w-3" /> Restore</>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (confirm(`Delete the segment "${segment.name}"? This cannot be undone.`)) {
+                          deleteSegment.mutate(segment.id)
+                        }
+                      }}
+                      disabled={deleteSegment.isPending}
+                      className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-red-600 font-medium transition-colors disabled:opacity-50"
+                      title="Delete this segment permanently"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      Delete
+                    </button>
+                  )}
                   <ExportAudienceButton segmentId={segment.id} memberCount={segment.memberCount} />
                   {segment.memberCount > 0 && (
                     <Link
