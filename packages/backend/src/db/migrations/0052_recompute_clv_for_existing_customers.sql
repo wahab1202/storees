@@ -41,26 +41,32 @@ clv_with_freq AS (
   SELECT
     *,
     total_orders / GREATEST(1.0, tenure_days / 30.44)                          AS monthly_freq,
-    -- avg gap between orders (in days)
-    CASE
-      WHEN total_orders > 1
-      THEN (EXTRACT(EPOCH FROM (last_order_date - first_order_date)) / 86400.0) / (total_orders - 1)
-      ELSE tenure_days
-    END                                                                        AS avg_gap_days
+    -- Avg gap between orders, defended against the same-day-multiple-orders
+    -- case where (last - first) = 0 and we'd otherwise hit division by zero
+    -- in the overdue ratio. Treat zero-gap as 1 day, which gives a sane
+    -- "ordered today" overdue ratio rather than infinity.
+    GREATEST(
+      1.0,
+      CASE
+        WHEN total_orders > 1
+        THEN (EXTRACT(EPOCH FROM (last_order_date - first_order_date)) / 86400.0) / (total_orders - 1)
+        ELSE tenure_days
+      END
+    )                                                                          AS avg_gap_days
   FROM clv_calc
 ),
 clv_with_churn AS (
   SELECT
     *,
-    -- overdue ratio: days_since_last / avg_gap
-    CASE WHEN avg_gap_days > 0 THEN days_since_last / avg_gap_days ELSE 999 END AS overdue_ratio,
+    -- overdue ratio: days_since_last / avg_gap. avg_gap >= 1 above.
+    days_since_last / avg_gap_days                                             AS overdue_ratio,
     -- churn probability (matches the JS heuristic in computeClv)
     CASE
-      WHEN total_orders = 1                                                   THEN 0.6
-      WHEN days_since_last / NULLIF(avg_gap_days, 0) <= 1                     THEN 0.05
-      WHEN days_since_last / NULLIF(avg_gap_days, 0) <= 2                     THEN 0.15 + (days_since_last / avg_gap_days - 1) * 0.2
-      WHEN days_since_last / NULLIF(avg_gap_days, 0) <= 3                     THEN 0.35 + (days_since_last / avg_gap_days - 2) * 0.3
-      ELSE LEAST(0.95, 0.65 + (days_since_last / NULLIF(avg_gap_days, 1) - 3) * 0.1)
+      WHEN total_orders = 1                              THEN 0.6
+      WHEN days_since_last / avg_gap_days <= 1           THEN 0.05
+      WHEN days_since_last / avg_gap_days <= 2           THEN 0.15 + (days_since_last / avg_gap_days - 1) * 0.2
+      WHEN days_since_last / avg_gap_days <= 3           THEN 0.35 + (days_since_last / avg_gap_days - 2) * 0.3
+      ELSE LEAST(0.95, 0.65 + (days_since_last / avg_gap_days - 3) * 0.1)
     END                                                                        AS churn_prob
   FROM clv_with_freq
 ),
