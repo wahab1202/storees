@@ -8,8 +8,9 @@ import { useDashboardStats } from '@/hooks/useDashboard'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CustomerTable } from '@/components/customers/CustomerTable'
 import { Pagination } from '@/components/customers/Pagination'
-import { Search, X, Users, UserCheck, UserPlus, DollarSign, Grid3X3 } from 'lucide-react'
+import { Search, X, Users, UserCheck, UserPlus, DollarSign, Grid3X3, PieChart } from 'lucide-react'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { formatCurrency } from '@storees/shared'
 import type { CustomerListParams } from '@storees/shared'
 
 export default function CustomersPage() {
@@ -80,10 +81,14 @@ function CustomersContent() {
     setParams(p => ({ ...p, page }))
   }
 
+  const activeSegment = params.segmentId
+    ? segmentsData?.data.find(s => s.id === params.segmentId) ?? null
+    : null
+
   return (
     <div>
       <PageHeader
-        title="Customers"
+        title={activeSegment ? `Customers — ${activeSegment.name}` : 'Customers'}
         actions={
           <span className="text-sm text-text-secondary">
             {data?.pagination.total !== undefined && `${data.pagination.total} total`}
@@ -91,8 +96,35 @@ function CustomersContent() {
         }
       />
 
-      {/* Metric strip */}
-      {statsData?.data && (
+      {/* Project-wide metric strip — only shown when no segment filter is
+          active. When a segment is selected, swap to a single banner showing
+          the segment's name + count, since the strip's project-wide totals
+          would contradict the filtered list. */}
+      {activeSegment ? (
+        <div className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/5 px-4 py-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="rounded-lg bg-accent/10 p-1.5 text-accent">
+              <PieChart className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-medium uppercase tracking-wider text-accent">Viewing segment</p>
+              <p className="text-sm font-semibold text-text-primary truncate">{activeSegment.name}</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-xl font-bold text-heading tabular-nums">
+              {data?.pagination.total?.toLocaleString() ?? '—'}
+            </p>
+            <p className="text-[11px] text-text-muted">members</p>
+          </div>
+          <button
+            onClick={() => setParams(p => ({ ...p, page: 1, segmentId: undefined }))}
+            className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface transition-colors"
+          >
+            Show all customers
+          </button>
+        </div>
+      ) : statsData?.data && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
           {[
             { label: 'Total Customers', value: statsData.data.totalCustomers, icon: Users, color: 'text-blue-600 bg-blue-50' },
@@ -112,7 +144,7 @@ function CustomersContent() {
                 <div className="flex items-end gap-2">
                   <p className="text-xl font-bold text-heading tabular-nums">
                     {metric.isCurrency
-                      ? `$${(metric.value / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                      ? formatCurrency(metric.value)
                       : metric.value.toLocaleString()}
                   </p>
                   {metric.change !== undefined && metric.change !== 0 && (
