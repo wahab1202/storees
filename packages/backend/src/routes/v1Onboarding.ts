@@ -231,22 +231,23 @@ router.post('/projects', async (req: Request, res: Response) => {
       })
     }
 
-    // For non-ecommerce: auto-generate API key pair
+    // Every project gets an API key — Shopify (or any vertical integration)
+    // and the SDK are independent ingestion channels, and the SDK is required
+    // for behavioural events even on Shopify stores.
+    const { keyPublic, keySecret, keySecretHash } = generateApiKeyPair()
+    await db.insert(apiKeys).values({
+      projectId: project.id,
+      name: 'Default',
+      keyPublic,
+      keySecretHash,
+      permissions: ['read', 'write'],
+      rateLimit: 1000,
+    })
+
+    const baseUrl = process.env.APP_URL ?? 'http://localhost:3001'
+    const guide = getIntegrationGuide(domain_type, keyPublic, keySecret, baseUrl)
+
     if (integrationType === 'api_key') {
-      const { keyPublic, keySecret, keySecretHash } = generateApiKeyPair()
-
-      await db.insert(apiKeys).values({
-        projectId: project.id,
-        name: 'Default',
-        keyPublic,
-        keySecretHash,
-        permissions: ['read', 'write'],
-        rateLimit: 1000,
-      })
-
-      const baseUrl = process.env.APP_URL ?? 'http://localhost:3001'
-      const guide = getIntegrationGuide(domain_type, keyPublic, keySecret, baseUrl)
-
       return res.status(201).json({
         success: true,
         data: {
@@ -267,7 +268,7 @@ router.post('/projects', async (req: Request, res: Response) => {
       })
     }
 
-    // For ecommerce: return Shopify install URL
+    // Ecommerce: return Shopify install URL + the API key (for SDK events)
     const shopifyApiKey = process.env.SHOPIFY_API_KEY
     const appUrl = process.env.APP_URL ?? 'http://localhost:3001'
 
@@ -280,6 +281,12 @@ router.post('/projects', async (req: Request, res: Response) => {
           domain_type: project.domainType,
           integration_type: integrationType,
         },
+        api_keys: {
+          key_public: keyPublic,
+          key_secret: keySecret,
+          warning: 'Save the key_secret now. It cannot be retrieved again.',
+        },
+        integration_guide: guide,
         shopify: {
           install_url: shopifyApiKey
             ? `https://{shop}.myshopify.com/admin/oauth/authorize?client_id=${shopifyApiKey}&scope=read_customers,read_orders,read_checkouts,read_products&redirect_uri=${appUrl}/api/integrations/shopify/callback&state=${project.id}`

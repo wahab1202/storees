@@ -154,25 +154,12 @@ Storees.identify('user-123', {
         </div>
 
         {/* API Key */}
-        {config?.apiKey && (
-          <div className="bg-surface-elevated border border-border rounded-lg p-6">
-            <h3 className="font-semibold text-text-primary mb-3">API Key</h3>
-            <div className="flex items-center gap-3">
-              <code className="flex-1 bg-surface px-3 py-2 rounded text-sm font-mono text-text-primary truncate">
-                {config.apiKey}
-              </code>
-              <button
-                onClick={() => copyToClipboard(config.apiKey!, 'apikey')}
-                className="px-3 py-2 bg-accent-primary text-white text-sm rounded hover:bg-accent-primary/90 transition-colors whitespace-nowrap"
-              >
-                {copied === 'apikey' ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
-            <p className="text-xs text-text-muted mt-2">
-              This is your public key (safe to embed in client-side code). No secret needed for SDK.
-            </p>
-          </div>
-        )}
+        <ApiKeyBlock
+          apiKey={config?.apiKey ?? null}
+          isLoading={isLoading}
+          onCopy={(text) => copyToClipboard(text, 'apikey')}
+          copied={copied === 'apikey'}
+        />
 
         {/* SDK Integration */}
         <div className="bg-surface-elevated border border-border rounded-lg p-6">
@@ -843,6 +830,105 @@ function CodeBlock({
       >
         {copied === id ? 'Copied!' : 'Copy'}
       </button>
+    </div>
+  )
+}
+
+function ApiKeyBlock({
+  apiKey, isLoading, onCopy, copied,
+}: {
+  apiKey: string | null
+  isLoading: boolean
+  onCopy: (text: string) => void
+  copied: boolean
+}) {
+  const qc = useQueryClient()
+  const [generatedSecret, setGeneratedSecret] = useState<string | null>(null)
+
+  const generate = useMutation({
+    mutationFn: () =>
+      api.post<{ key_public: string; key_secret: string }>(
+        withProject('/api/api-keys'),
+        { name: 'Default' },
+      ),
+    onSuccess: (res) => {
+      if (res.success && res.data) {
+        setGeneratedSecret(res.data.key_secret)
+        qc.invalidateQueries({ queryKey: ['sdk-config'] })
+      }
+    },
+  })
+
+  if (isLoading) {
+    return (
+      <div className="bg-surface-elevated border border-border rounded-lg p-6">
+        <h3 className="font-semibold text-text-primary mb-3">API Key</h3>
+        <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+      </div>
+    )
+  }
+
+  if (!apiKey) {
+    return (
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+        <h3 className="font-semibold text-yellow-900 mb-1">API Key Missing</h3>
+        <p className="text-sm text-yellow-800 mb-4">
+          This project doesn't have an API key yet — the SDK can't connect to your store without one.
+          Older projects created before the fix may need to generate one manually.
+        </p>
+        <button
+          onClick={() => generate.mutate()}
+          disabled={generate.isPending}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-accent-primary text-white text-sm font-medium rounded hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
+        >
+          {generate.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Generate API Key
+        </button>
+        {generate.isError && (
+          <p className="mt-2 text-xs text-red-700">
+            {generate.error instanceof Error ? generate.error.message : 'Failed to generate API key'}
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-surface-elevated border border-border rounded-lg p-6">
+      <h3 className="font-semibold text-text-primary mb-3">API Key</h3>
+      <div className="flex items-center gap-3">
+        <code className="flex-1 bg-surface px-3 py-2 rounded text-sm font-mono text-text-primary truncate">
+          {apiKey}
+        </code>
+        <button
+          onClick={() => onCopy(apiKey)}
+          className="px-3 py-2 bg-accent-primary text-white text-sm rounded hover:bg-accent-primary/90 transition-colors whitespace-nowrap"
+        >
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+      <p className="text-xs text-text-muted mt-2">
+        This is your public key (safe to embed in client-side code). No secret needed for SDK.
+      </p>
+      {generatedSecret && (
+        <div className="mt-4 rounded border border-green-200 bg-green-50 p-3">
+          <p className="text-xs font-semibold text-green-900 uppercase tracking-wide mb-1">API Secret — shown once</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-white px-2 py-1.5 rounded text-xs font-mono text-text-primary truncate">
+              {generatedSecret}
+            </code>
+            <button
+              onClick={() => onCopy(generatedSecret)}
+              className="px-2.5 py-1.5 bg-green-600 text-white text-xs rounded hover:bg-green-700"
+            >
+              Copy
+            </button>
+          </div>
+          <p className="text-[11px] text-green-800 mt-1.5">
+            Save this now — it cannot be retrieved again. Needed only for server-to-server calls; the SDK uses the public key.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
