@@ -68,6 +68,7 @@ import { registerProvider } from './services/deliveryService.js'
 import { resendProvider } from './services/resendProvider.js'
 import { pinnacleProvider } from './services/pinnacleProvider.js'
 import { registerAllProviders } from './services/providers/index.js'
+import { runMigrations } from './db/migrate.js'
 
 const app = express()
 const port = process.env.PORT ?? 3001
@@ -185,33 +186,47 @@ if (process.env.PINNACLE_API_URL) {
 // Register all channel providers (SMS, WhatsApp, Push)
 registerAllProviders()
 
-// Start workers
-startSyncWorker()
-startTriggerWorker()
-startFlowWorker()
-startCampaignWorker()
-startMetricsWorker()
-startDeliveryWorker()
-startInteractionWorker()
-startScoringWorker()
-startScoringScheduler()
-startTrainingWorker()
-startCampaignScheduler()
-startFlowFixedTimeScheduler()
-startTemplateStatusWorker()
-startIdentityMergeWorker()
-startCustomerAggregateWorker()
-startDataSyncWorker()
+async function bootstrap() {
+  // Apply any unapplied SQL migrations before the API starts serving traffic
+  // or workers attach to queues. A failed migration aborts boot — better to
+  // refuse to start than serve against a half-applied schema.
+  try {
+    await runMigrations()
+  } catch (err) {
+    console.error('[bootstrap] Migration step failed; refusing to start.', err)
+    process.exit(1)
+  }
 
-// One-shot catch-up: process any events ingested before the aggregate worker
-// was running. Idempotent (events.processed_at guard). Backgrounded so boot
-// isn't blocked on large historical scans.
-runStartupCatchUp().catch(err => {
-  console.error('[customer-aggregate] startup catch-up failed:', err)
-})
+  // Start workers
+  startSyncWorker()
+  startTriggerWorker()
+  startFlowWorker()
+  startCampaignWorker()
+  startMetricsWorker()
+  startDeliveryWorker()
+  startInteractionWorker()
+  startScoringWorker()
+  startScoringScheduler()
+  startTrainingWorker()
+  startCampaignScheduler()
+  startFlowFixedTimeScheduler()
+  startTemplateStatusWorker()
+  startIdentityMergeWorker()
+  startCustomerAggregateWorker()
+  startDataSyncWorker()
 
-app.listen(port, () => {
-  console.log(`Storees backend running on port ${port}`)
-})
+  // One-shot catch-up: process any events ingested before the aggregate worker
+  // was running. Idempotent (events.processed_at guard). Backgrounded so boot
+  // isn't blocked on large historical scans.
+  runStartupCatchUp().catch(err => {
+    console.error('[customer-aggregate] startup catch-up failed:', err)
+  })
+
+  app.listen(port, () => {
+    console.log(`Storees backend running on port ${port}`)
+  })
+}
+
+bootstrap()
 
 export default app
