@@ -165,19 +165,31 @@ async function computeEcommerceMetrics(
   const eRow = eventAgg.rows[0] as Record<string, unknown> | undefined
   const oRow = orderAgg.rows[0] as Record<string, unknown> | undefined
 
-  const lastOrderAt = oRow?.last_order_at ? new Date(oRow.last_order_at as string) : null
-  const firstOrderAt = oRow?.first_order_at ? new Date(oRow.first_order_at as string) : null
-  const daysSinceLastOrder = lastOrderAt
-    ? Math.floor((Date.now() - lastOrderAt.getTime()) / (1000 * 60 * 60 * 24))
-    : null
+  // Dates from the `orders` table (the legacy bulk-sync source). For projects
+  // that import orders as events (e.g. via dataSyncService → events with
+  // event_name='order_placed') this query returns NULL, NULL.
+  const ordersTableFirstAt = oRow?.first_order_at ? new Date(oRow.first_order_at as string) : null
+  const ordersTableLastAt  = oRow?.last_order_at  ? new Date(oRow.last_order_at as string)  : null
 
-  // Fetch current customer data for CLV calculation
+  // Fetch current customer data — and the dates already on the row. The
+  // aggregate worker maintains those on every order event, and migration
+  // 0054 backfilled them for legacy rows, so they're the authoritative
+  // source. Fall back to the orders-table dates only when the column is
+  // null (older projects that genuinely use the orders table).
   const [custRow] = await db.select({
     totalSpent: customers.totalSpent,
     totalOrders: customers.totalOrders,
+    firstOrderDate: customers.firstOrderDate,
+    lastOrderDate: customers.lastOrderDate,
     lastSeen: customers.lastSeen,
     metrics: customers.metrics,
   }).from(customers).where(eq(customers.id, customerId)).limit(1)
+
+  const firstOrderAt = custRow?.firstOrderDate ?? ordersTableFirstAt
+  const lastOrderAt  = custRow?.lastOrderDate  ?? ordersTableLastAt
+  const daysSinceLastOrder = lastOrderAt
+    ? Math.floor((Date.now() - lastOrderAt.getTime()) / (1000 * 60 * 60 * 24))
+    : null
 
   const totalSpent = Number(custRow?.totalSpent ?? 0)
   const totalOrders = custRow?.totalOrders ?? 0
@@ -193,13 +205,21 @@ async function computeEcommerceMetrics(
     churnRiskScore: existingMetrics.churn_risk ? Number(existingMetrics.churn_risk) : undefined,
   })
 
-  // Update first_order_date, last_order_date, and CLV column
-  await db.update(customers)
-    .set({
-      ...(firstOrderAt || lastOrderAt ? { firstOrderDate: firstOrderAt, lastOrderDate: lastOrderAt } : {}),
-      clv: String(clvResult.clv_total),
-    })
-    .where(eq(customers.id, customerId))
+  // Only patch the date columns / clv when we actually have something to
+  // write. Previously this UPDATE always fired with clv=String(clvResult.clv_total)
+  // even when computeClv() had no dates and returned 0 — which silently
+  // wiped the real CLV the aggregate worker / migration had set.
+  const sets: Record<string, unknown> = {}
+  if (firstOrderAt && !custRow?.firstOrderDate) sets.firstOrderDate = firstOrderAt
+  if (lastOrderAt  && !custRow?.lastOrderDate)  sets.lastOrderDate  = lastOrderAt
+  // Don't write clv=0 over a non-zero existing value when we lack the dates
+  // to compute properly. The aggregate worker is the canonical writer.
+  if (clvResult.clv_total > 0 || totalOrders === 0) {
+    sets.clv = String(clvResult.clv_total)
+  }
+  if (Object.keys(sets).length > 0) {
+    await db.update(customers).set(sets).where(eq(customers.id, customerId))
+  }
 
   return {
     total_events: Number(eRow?.total_events ?? 0),
