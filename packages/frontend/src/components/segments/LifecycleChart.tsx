@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Treemap, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts'
 import { useLifecycleChart } from '@/hooks/useSegments'
 import { useSnapshotDates, useTransitions } from '@/hooks/useAnalytics'
 import { useDashboardStats } from '@/hooks/useDashboard'
@@ -146,128 +146,235 @@ export function LifecycleChart() {
   )
 }
 
-// ============ RFM Grid Tab ============
+// ============ RFM Treemap Tab ============
 
 const RECENCY_KEYS = ['recent', 'medium', 'lapsed'] as const
 const VALUE_KEYS = ['low', 'medium', 'high'] as const
 
-function RFMTooltip({ cellName, row, tactics }: { cellName: string; row: number; tactics: string[] }) {
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
-
-  useEffect(() => {
-    const el = document.querySelector(`[data-rfm-cell="${cellName}"]`)
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    if (row === 2) {
-      setPos({ top: rect.top - 4, left: rect.left })
-    } else {
-      setPos({ top: rect.bottom + 4, left: rect.left })
-    }
-  }, [cellName, row])
-
-  if (!pos) return null
-
-  return createPortal(
-    <div
-      className="fixed z-[9999] w-56 bg-heading text-white rounded-lg shadow-xl p-3 pointer-events-none"
-      style={{
-        left: pos.left,
-        ...(row === 2 ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
-      }}
-    >
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-white/70 mb-1.5">
-        Retention Tactics
-      </p>
-      <ul className="space-y-1">
-        {tactics.map((tactic, i) => (
-          <li key={i} className="text-xs text-white/90 flex items-start gap-1.5">
-            <span className="text-white/40 mt-0.5">•</span>
-            {tactic}
-          </li>
-        ))}
-      </ul>
-    </div>,
-    document.body,
-  )
+type SegmentCell = {
+  name: string
+  label: string
+  percentage: number
+  contactCount: number
+  position: { row: number; col: number }
+  color: string
+  retentionTactics: string[]
 }
 
-function RFMGrid({ segments, domain }: { segments: { name: string; label: string; percentage: number; contactCount: number; position: { row: number; col: number }; color: string; retentionTactics: string[] }[]; domain: string }) {
+function RFMGrid({ segments, domain }: { segments: SegmentCell[]; domain: string }) {
   const router = useRouter()
-  const ROW_LABELS = ROW_LABELS_BY_DOMAIN[domain] ?? ROW_LABELS_BY_DOMAIN.ecommerce
-  const COL_LABELS = COL_LABELS_BY_DOMAIN[domain] ?? COL_LABELS_BY_DOMAIN.ecommerce
-  const [hoveredCell, setHoveredCell] = useState<string | null>(null)
 
-  const gridMap = new Map(segments.map(s => [`${s.position.row}_${s.position.col}`, s]))
+  const populated = segments.filter(s => s.contactCount > 0)
+  const totalCount = populated.reduce((sum, s) => sum + s.contactCount, 0)
+
+  if (populated.length === 0) {
+    return (
+      <div className="p-12 text-center">
+        <p className="text-sm text-text-secondary mb-1">No customers in any RFM segment yet</p>
+        <p className="text-xs text-text-muted">Once orders come in, segments will populate automatically.</p>
+      </div>
+    )
+  }
+
+  const data = populated.map(s => ({
+    name: s.label,
+    size: s.contactCount,
+    fill: s.color,
+    full: s,
+  }))
+
+  function handleClick(cell: SegmentCell) {
+    router.push(`/customers?rfm=${RECENCY_KEYS[cell.position.row]}_${VALUE_KEYS[cell.position.col]}`)
+  }
 
   return (
     <div className="p-5">
-      {/* Column headers */}
-      <div className="grid grid-cols-[80px_1fr_1fr_1fr] gap-2 mb-2">
-        <div />
-        {COL_LABELS.map(label => (
-          <div key={label} className="text-center text-[11px] font-medium text-text-muted uppercase tracking-wide">
-            {label}
-          </div>
-        ))}
+      <div className="h-[420px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <Treemap
+            data={data}
+            dataKey="size"
+            stroke="#fff"
+            isAnimationActive={false}
+            content={<TreemapCell onCellClick={handleClick} />}
+          >
+            <RechartsTooltip
+              content={<TreemapTooltip totalCount={totalCount} domain={domain} />}
+              wrapperStyle={{ outline: 'none', zIndex: 50 }}
+              cursor={false}
+            />
+          </Treemap>
+        </ResponsiveContainer>
       </div>
-
-      {/* Grid rows */}
-      {[0, 1, 2].map(row => (
-        <div key={row} className="grid grid-cols-[80px_1fr_1fr_1fr] gap-2 mb-2">
-          <div className="flex items-center justify-end pr-2">
-            <span className="text-[11px] font-medium text-text-muted text-right leading-tight">
-              {ROW_LABELS[row]}
-            </span>
-          </div>
-
-          {[0, 1, 2].map(col => {
-            const cell = gridMap.get(`${row}_${col}`)
-            if (!cell) return <div key={col} className="h-24 rounded-lg bg-surface" />
-
-            const isHovered = hoveredCell === cell.name
-
-            return (
-              <div
-                key={col}
-                data-rfm-cell={cell.name}
-                onMouseEnter={() => setHoveredCell(cell.name)}
-                onMouseLeave={() => setHoveredCell(null)}
-                onClick={() => {
-                  if (cell.contactCount > 0) {
-                    router.push(`/customers?rfm=${RECENCY_KEYS[row]}_${VALUE_KEYS[col]}`)
-                  }
-                }}
-                className={cn(
-                  'relative h-24 rounded-lg border transition-all p-3 flex flex-col justify-between bg-white',
-                  cell.contactCount > 0 ? 'cursor-pointer' : 'cursor-default',
-                  isHovered ? 'border-heading shadow-sm' : 'border-border hover:border-text-muted/40',
-                )}
-                style={isHovered ? undefined : { backgroundColor: `${cell.color}0F` }}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className="inline-block h-2 w-2 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: cell.color }}
-                  />
-                  <p className="text-xs font-semibold text-text-primary leading-tight truncate">{cell.label}</p>
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <p className="text-lg font-bold text-text-primary tabular-nums">
-                    {cell.contactCount}
-                  </p>
-                  <p className="text-[11px] text-text-muted tabular-nums">· {cell.percentage}%</p>
-                </div>
-
-                {isHovered && cell.retentionTactics.length > 0 && (
-                  <RFMTooltip cellName={cell.name} row={row} tactics={cell.retentionTactics} />
-                )}
-              </div>
-            )
-          })}
-        </div>
-      ))}
     </div>
   )
+}
+
+type TreemapCellProps = {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  full?: SegmentCell
+  fill?: string
+  depth?: number
+  onCellClick?: (cell: SegmentCell) => void
+}
+
+function TreemapCell(props: TreemapCellProps) {
+  const { x = 0, y = 0, width = 0, height = 0, full, fill, depth, onCellClick } = props
+  if (!full || depth !== 1) return null
+
+  const showLabel = width > 64 && height > 28
+  const showCount = width > 72 && height > 60
+  const showPercent = width > 90 && height > 80
+  const labelClamped = width < 110 ? truncate(full.label, Math.max(6, Math.floor(width / 8))) : full.label
+
+  return (
+    <g
+      onClick={() => onCellClick?.(full)}
+      style={{ cursor: 'pointer' }}
+      className="rfm-treemap-cell"
+    >
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={fill}
+        stroke="#ffffff"
+        strokeWidth={2}
+        rx={2}
+      />
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill="#ffffff"
+        fillOpacity={0}
+        className="hover:fill-white/10 transition-colors"
+      />
+      {showLabel && (
+        <text
+          x={x + 12}
+          y={y + 22}
+          fill="#ffffff"
+          fontSize={12}
+          fontWeight={600}
+          style={{ pointerEvents: 'none', letterSpacing: '0.01em' }}
+        >
+          {labelClamped}
+        </text>
+      )}
+      {showCount && (
+        <text
+          x={x + 12}
+          y={y + 46}
+          fill="#ffffff"
+          fontSize={20}
+          fontWeight={700}
+          fillOpacity={0.96}
+          style={{ pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' }}
+        >
+          {formatCompact(full.contactCount)}
+        </text>
+      )}
+      {showPercent && (
+        <text
+          x={x + 12}
+          y={y + 64}
+          fill="#ffffff"
+          fontSize={11}
+          fillOpacity={0.82}
+          style={{ pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' }}
+        >
+          {full.percentage}% of customers
+        </text>
+      )}
+    </g>
+  )
+}
+
+type TreemapTooltipProps = {
+  active?: boolean
+  payload?: Array<{ payload?: { full?: SegmentCell } }>
+  totalCount: number
+  domain: string
+}
+
+function TreemapTooltip({ active, payload, totalCount, domain }: TreemapTooltipProps) {
+  if (!active || !payload?.length) return null
+  const cell = payload[0]?.payload?.full
+  if (!cell) return null
+
+  const ROW_LABELS = ROW_LABELS_BY_DOMAIN[domain] ?? ROW_LABELS_BY_DOMAIN.ecommerce
+  const COL_LABELS = COL_LABELS_BY_DOMAIN[domain] ?? COL_LABELS_BY_DOMAIN.ecommerce
+
+  return (
+    <div className="bg-white border border-border rounded-lg shadow-xl p-3.5 w-64 text-xs">
+      <div className="flex items-center gap-2 mb-2.5">
+        <span
+          className="inline-block h-2.5 w-2.5 rounded-sm flex-shrink-0"
+          style={{ backgroundColor: cell.color }}
+        />
+        <span className="font-semibold text-text-primary text-[13px]">{cell.label}</span>
+      </div>
+
+      <div className="flex items-baseline gap-1.5 mb-3">
+        <span className="text-xl font-bold text-text-primary tabular-nums leading-none">
+          {cell.contactCount.toLocaleString()}
+        </span>
+        <span className="text-text-muted tabular-nums">/ {totalCount.toLocaleString()}</span>
+        <span className="ml-auto text-sm font-semibold text-text-primary tabular-nums">
+          {cell.percentage}%
+        </span>
+      </div>
+
+      <div className="space-y-1 mb-3">
+        <TooltipRow label="Recency" value={ROW_LABELS[cell.position.row]} />
+        <TooltipRow label="Value tier" value={COL_LABELS[cell.position.col]} />
+      </div>
+
+      {cell.retentionTactics.length > 0 && (
+        <div className="border-t border-border pt-2.5 mb-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted mb-1.5">
+            Retention tactics
+          </p>
+          <ul className="space-y-1">
+            {cell.retentionTactics.slice(0, 3).map((t, i) => (
+              <li key={i} className="text-[11px] text-text-secondary flex items-start gap-1.5 leading-snug">
+                <span className="text-text-muted mt-0.5">•</span>
+                <span>{t}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="text-accent text-[11px] font-medium">Click to view customers →</p>
+    </div>
+  )
+}
+
+function TooltipRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-text-muted">{label}</span>
+      <span className="text-text-primary font-medium">{value}</span>
+    </div>
+  )
+}
+
+function truncate(s: string, max: number) {
+  return s.length <= max ? s : `${s.slice(0, Math.max(1, max - 1))}…`
+}
+
+function formatCompact(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}k`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return n.toLocaleString()
 }
 
 // ============ User Transitions Tab ============
