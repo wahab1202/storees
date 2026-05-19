@@ -204,6 +204,7 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
       UPDATE customers
       SET total_orders     = total_orders + 1,
           total_spent      = total_spent + ${total}::numeric,
+          clv              = clv + ${total}::numeric,
           first_order_date = COALESCE(first_order_date, ${ts}),
           last_order_date  = GREATEST(last_order_date, ${ts}),
           avg_order_value  = CASE
@@ -227,6 +228,7 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
     await db.execute(sql`
       UPDATE customers
       SET total_spent      = GREATEST(total_spent - ${safeTotal}::numeric, 0),
+          clv              = GREATEST(clv - ${safeTotal}::numeric, 0),
           avg_order_value  = CASE
             WHEN total_orders > 0
             THEN GREATEST(total_spent - ${safeTotal}::numeric, 0) / total_orders
