@@ -85,6 +85,12 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
       phone: 'phone',
       name: { concat: ['first_name', 'last_name'], separator: ' ' },
       email_subscribed: 'has_account',
+      // GWM B2B: dealer_id is stamped on Medusa customer.metadata. Surface it
+      // at top level so dataSyncService's customer importer can wire it into
+      // resolveCustomer's agentExternalDealerId param (which stamps
+      // customers.agent_id when the agent row exists, and stores the dealer
+      // id in custom_attributes for deferred backlinking when it doesn't).
+      dealer_id: 'metadata.dealer_id',
       custom_attributes: {
         billing_city: 'billing_address.city',
         billing_region: 'billing_address.province',

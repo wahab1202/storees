@@ -121,6 +121,9 @@ async function importCustomerBatch(
             smsSubscribed: (mapped.sms_subscribed as boolean | undefined) ?? false,
             region: (mapped.region as string | undefined) ?? null,
             city: (mapped.city as string | undefined) ?? null,
+            // B2B: stamp customers.agent_id when the dealer exists and store
+            // dealer_id in custom_attributes for deferred backlinking.
+            agentExternalDealerId: (mapped.dealer_id as string | undefined) ?? null,
           })
           stats.imported += 1
         } catch (err) {
