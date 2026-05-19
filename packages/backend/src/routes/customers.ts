@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, and, desc, asc, ilike, or, sql, count } from 'drizzle-orm'
+import { eq, and, desc, asc, ilike, or, sql, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events, customerSegments, segments, flowTrips, flows, messages, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -252,7 +252,9 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       return
     }
 
-    // Fallback: derive orders from order_completed events (GoWelmart data)
+    // Fallback: derive orders from order events. Both event names are
+    // accepted — the data-sync pipeline emits `order_placed`, older bulk
+    // imports / Shopify webhooks emit `order_completed`.
     const eventRows = await db
       .select({
         id: events.id,
@@ -264,7 +266,7 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         and(
           eq(events.customerId, customerId),
           eq(events.projectId, projectId),
-          eq(events.eventName, 'order_completed'),
+          inArray(events.eventName, ['order_placed', 'order_completed']),
         ),
       )
       .orderBy(desc(events.timestamp))

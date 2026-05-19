@@ -52,7 +52,7 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
     let domainChanges: Record<string, number> = {}
 
     if (domainType === 'ecommerce') {
-      // Try orders table first, fall back to order_completed events
+      // Try orders table first, fall back to order_placed / order_completed events
       const orderResult = await db.execute(sql`
         SELECT
           COUNT(*) AS total_orders,
@@ -71,7 +71,7 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
       let revenue7d = Number(o.revenue_7d)
       let revenuePrev7d = Number(o.revenue_prev_7d)
 
-      // Fallback: if orders table is empty, compute from order_completed events
+      // Fallback: if orders table is empty, compute from order events
       if (totalOrders === 0) {
         const evtResult = await db.execute(sql`
           SELECT
@@ -90,7 +90,7 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
               (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
                FROM jsonb_array_elements(properties->'line_items') item)
             ) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
-          FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed' AND ${customerIdScope}
+          FROM events WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed') AND ${customerIdScope}
         `)
         const ev = evtResult.rows[0] as Record<string, string>
         totalOrders = Number(ev.total_orders)
@@ -302,7 +302,7 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
                   (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
                    FROM jsonb_array_elements(properties->'line_items') item)
                 ), 0) AS revenue
-              FROM events WHERE project_id = ${projectId} AND event_name = 'order_completed' AND timestamp >= ${startDate} AND ${customerIdScope}
+              FROM events WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed') AND timestamp >= ${startDate} AND ${customerIdScope}
               GROUP BY timestamp::date
             ) o ON o.day = d.day::date
             ORDER BY d.day

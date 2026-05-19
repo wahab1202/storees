@@ -410,7 +410,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
         ), 0)::numeric(12,2) AS total_revenue
       FROM events e
       WHERE e.project_id = ${projectId}
-        AND e.event_name = 'order_completed'
+        AND e.event_name IN ('order_placed', 'order_completed')
       GROUP BY e.customer_id
       HAVING COALESCE(SUM(
         (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
@@ -482,7 +482,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
     WHERE project_id = ${projectId}
       AND id NOT IN (
         SELECT DISTINCT customer_id FROM events
-        WHERE project_id = ${projectId} AND event_name = 'order_completed'
+        WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed')
         UNION
         SELECT DISTINCT customer_id FROM orders
         WHERE project_id = ${projectId} AND status != 'cancelled'
