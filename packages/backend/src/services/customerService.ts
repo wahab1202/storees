@@ -181,6 +181,10 @@ type ResolveParams = {
   smsSubscribed?: boolean
   region?: string | null
   city?: string | null
+  /** External dealer ID (matches agents.external_dealer_id). Stamps
+   *  customers.agent_id when the agent row already exists AND the customer
+   *  has no agent assigned yet. Silently skipped if dealer not found. */
+  agentExternalDealerId?: string | null
 }
 
 /**
@@ -196,6 +200,34 @@ type ResolveParams = {
  * Always updates last_seen.
  */
 export async function resolveCustomer(params: ResolveParams): Promise<string> {
+  const customerId = await resolveCustomerCore(params)
+
+  // Dealer linking. Always store the dealer_id in custom_attributes so a
+  // later dealer-sync can backlink if the agent row doesn't exist yet. Also
+  // stamp customers.agent_id IF NULL when the agent already exists. Don't
+  // clobber an existing assignment — reassignment is a separate concern.
+  if (params.agentExternalDealerId) {
+    await db.execute(sql`
+      WITH agent_match AS (
+        SELECT id FROM agents
+        WHERE project_id = ${params.projectId}
+          AND external_dealer_id = ${params.agentExternalDealerId}
+        LIMIT 1
+      )
+      UPDATE customers c
+      SET
+        custom_attributes = COALESCE(c.custom_attributes, '{}'::jsonb)
+                          || jsonb_build_object('dealer_id', ${params.agentExternalDealerId}::text),
+        agent_id   = COALESCE(c.agent_id, (SELECT id FROM agent_match)),
+        updated_at = NOW()
+      WHERE c.id = ${customerId}
+    `)
+  }
+
+  return customerId
+}
+
+async function resolveCustomerCore(params: ResolveParams): Promise<string> {
   const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed, region, city } = params
 
   // 1. Try external_id (has unique index: idx_customers_external)
