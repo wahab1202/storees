@@ -5,6 +5,7 @@ import { db } from '../db/connection.js'
 import { customers, events } from '../db/schema.js'
 import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
 import { relayConversionEvent } from '../services/conversionApiService.js'
+import { computeClv } from '../services/customerService.js'
 
 /**
  * Customer-aggregate worker — the heart of the event-driven CDP.
@@ -200,16 +201,14 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
       return
     }
 
+    // Two-step: atomic SQL increment, then recompute CLV (historical +
+    // predicted + health) in JS via the same model the bulk-sync path uses.
+    // The atomic step prevents lost-update under concurrent order events;
+    // the recompute step keeps clv + metrics.clv_* in sync with total_spent.
     await db.execute(sql`
       UPDATE customers
       SET total_orders     = total_orders + 1,
           total_spent      = total_spent + ${total}::numeric,
-          clv              = clv + ${total}::numeric,
-          metrics          = jsonb_set(
-            COALESCE(metrics, '{}'::jsonb),
-            '{clv_historical}',
-            to_jsonb((COALESCE((metrics->>'clv_historical')::numeric, 0) + ${total}::numeric))
-          ),
           first_order_date = COALESCE(first_order_date, ${ts}),
           last_order_date  = GREATEST(last_order_date, ${ts}),
           avg_order_value  = CASE
@@ -221,6 +220,7 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
           updated_at       = NOW()
       WHERE id = ${customerId}
     `)
+    await refreshClv(customerId)
     return
   }
 
@@ -233,12 +233,6 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
     await db.execute(sql`
       UPDATE customers
       SET total_spent      = GREATEST(total_spent - ${safeTotal}::numeric, 0),
-          clv              = GREATEST(clv - ${safeTotal}::numeric, 0),
-          metrics          = jsonb_set(
-            COALESCE(metrics, '{}'::jsonb),
-            '{clv_historical}',
-            to_jsonb(GREATEST(COALESCE((metrics->>'clv_historical')::numeric, 0) - ${safeTotal}::numeric, 0))
-          ),
           avg_order_value  = CASE
             WHEN total_orders > 0
             THEN GREATEST(total_spent - ${safeTotal}::numeric, 0) / total_orders
@@ -248,6 +242,7 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
           updated_at       = NOW()
       WHERE id = ${customerId}
     `)
+    await refreshClv(customerId)
     return
   }
 
@@ -262,6 +257,51 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
 
 async function markProcessed(eventId: string): Promise<void> {
   await db.update(events).set({ processedAt: new Date() }).where(eq(events.id, eventId))
+}
+
+/**
+ * Re-derive customers.clv (the column) and customers.metrics.clv_* (the JSONB
+ * structure) from the customer's current total_spent / total_orders /
+ * first_order_date / last_order_date. Called after every revenue event the
+ * aggregate worker handles, so all three CLV storage points stay consistent
+ * with the underlying counters.
+ *
+ * customers.clv (column) now means total CLV (historical + predicted),
+ * matching the field's label everywhere in the UI. metrics.clv_historical is
+ * lifetime spend; metrics.clv_predicted is the model's forward-looking
+ * estimate; metrics.clv_health is the categorical signal.
+ */
+async function refreshClv(customerId: string): Promise<void> {
+  const [row] = await db
+    .select({
+      totalSpent: customers.totalSpent,
+      totalOrders: customers.totalOrders,
+      firstOrderDate: customers.firstOrderDate,
+      lastOrderDate: customers.lastOrderDate,
+      metrics: customers.metrics,
+    })
+    .from(customers)
+    .where(eq(customers.id, customerId))
+    .limit(1)
+  if (!row) return
+
+  const metrics = (row.metrics ?? {}) as Record<string, unknown>
+  const clv = computeClv({
+    totalSpent: Number(row.totalSpent),
+    totalOrders: row.totalOrders,
+    firstOrderDate: row.firstOrderDate,
+    lastOrderDate: row.lastOrderDate,
+    churnRiskScore: metrics.churn_risk != null ? Number(metrics.churn_risk) : undefined,
+  })
+
+  await db
+    .update(customers)
+    .set({
+      clv: String(clv.clv_total),
+      metrics: { ...metrics, ...clv },
+      updatedAt: new Date(),
+    })
+    .where(eq(customers.id, customerId))
 }
 
 /**
