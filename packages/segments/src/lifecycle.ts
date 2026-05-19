@@ -4,64 +4,109 @@ import type { LifecycleChartData, LifecycleSegment, LifecycleDistributionBucket 
 
 /**
  * RFM-based lifecycle chart.
- * Buckets customers into a 3x3 grid based on Recency and Value.
- * Returns segment distribution + aggregate metrics.
+ *
+ * Proper RFM:
+ *   - R (Recency) = days since last ORDER (not last engagement event).
+ *     Falls back to last_seen only when last_order_date is null.
+ *   - F (Frequency) = total order count, bucketed by absolute thresholds
+ *     (1 order = low, 2–5 = medium, 6+ = high).
+ *   - M (Monetary) = total_spent, bucketed by the project's own P50/P90
+ *     percentiles so "high value" reflects this project's actual top decile
+ *     rather than an enforced 33% split.
+ *
+ * The 3×3 display grid is Recency × FM-combined value: F and M scores are
+ * averaged and bucketed so the cells the chart shows ("Champions",
+ * "Loyal", etc.) reflect both how often AND how much, not just spend.
+ *
+ * Returns segment distribution + aggregate metrics + F / M / R distributions.
  */
 export async function getLifecycleChart(
   db: { execute: (query: SQL) => Promise<{ rows: Record<string, unknown>[] }> },
   projectId: string,
 ): Promise<LifecycleChartData> {
-  // RFM analysis on BUYERS ONLY (customers with at least 1 order).
-  // Contacts with zero purchases don't belong in Recency-Frequency-Monetary analysis.
-  // Value tiers use NTILE(3) to split buyers into equal-sized low/medium/high groups.
-  // A separate "no_purchase" count is returned for context.
   const result = await db.execute(sql`
     WITH buyers AS (
       SELECT
         id,
         total_orders,
-        total_spent::numeric,
-        avg_order_value::numeric,
-        clv::numeric,
-        EXTRACT(DAY FROM NOW() - last_seen)::integer AS days_since_last,
-        CASE
-          WHEN EXTRACT(DAY FROM NOW() - last_seen) <= 30 THEN 'recent'
-          WHEN EXTRACT(DAY FROM NOW() - last_seen) <= 90 THEN 'medium'
-          ELSE 'lapsed'
-        END AS recency_bucket,
-        NTILE(3) OVER (ORDER BY total_spent::numeric) AS spend_tile
+        total_spent::numeric        AS total_spent,
+        avg_order_value::numeric    AS aov,
+        clv::numeric                AS clv,
+        last_order_date,
+        last_seen,
+        -- R uses last_order_date (RFM definition: last purchase). Falls back
+        -- to last_seen ONLY when last_order_date is null (legacy rows the
+        -- aggregate worker hasn't populated yet).
+        EXTRACT(EPOCH FROM (NOW() - COALESCE(last_order_date, last_seen))) / 86400.0 AS days_since_last_order
       FROM customers
       WHERE project_id = ${projectId} AND total_orders > 0
     ),
+    -- Per-project monetary thresholds. P50 and P90 of total_spent give a
+    -- distribution-shaped split — top 10% is "high", bottom half is "low" —
+    -- instead of NTILE(3)'s forced equal-size buckets.
+    thresholds AS (
+      SELECT
+        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_spent), 0) AS p50_spent,
+        COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY total_spent), 0) AS p90_spent
+      FROM buyers
+    ),
     customer_rfm AS (
-      SELECT *,
+      SELECT
+        b.*,
+        t.p50_spent,
+        t.p90_spent,
         CASE
-          WHEN spend_tile = 3 THEN 'high'
-          WHEN spend_tile = 2 THEN 'medium'
+          WHEN b.days_since_last_order <= 30 THEN 'recent'
+          WHEN b.days_since_last_order <= 90 THEN 'medium'
+          ELSE 'lapsed'
+        END AS recency_bucket,
+        CASE
+          WHEN b.total_orders >= 6 THEN 'high'
+          WHEN b.total_orders >= 2 THEN 'medium'
+          ELSE 'low'
+        END AS frequency_bucket,
+        CASE
+          WHEN t.p90_spent > 0 AND b.total_spent >= t.p90_spent THEN 'high'
+          WHEN t.p50_spent > 0 AND b.total_spent >= t.p50_spent THEN 'medium'
+          ELSE 'low'
+        END AS monetary_bucket
+      FROM buyers b CROSS JOIN thresholds t
+    ),
+    customer_rfm_scored AS (
+      SELECT *,
+        -- Combine F + M into the value axis for the 3×3 grid. Both signals
+        -- get equal weight; an F=high M=low customer (frequent small orders)
+        -- and an F=low M=high customer (rare large orders) both land in
+        -- "medium value" — distinct from a true high-value champion.
+        CASE
+          WHEN ((CASE frequency_bucket WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)
+              + (CASE monetary_bucket  WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)) / 2.0 >= 2.5 THEN 'high'
+          WHEN ((CASE frequency_bucket WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)
+              + (CASE monetary_bucket  WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)) / 2.0 >= 1.5 THEN 'medium'
           ELSE 'low'
         END AS value_bucket
-      FROM buyers
+      FROM customer_rfm
     ),
     bucketed AS (
       SELECT
         recency_bucket,
         value_bucket,
         COUNT(*) AS contact_count
-      FROM customer_rfm
+      FROM customer_rfm_scored
       GROUP BY recency_bucket, value_bucket
     ),
     total AS (
       SELECT
-        (SELECT COUNT(*) FROM customer_rfm) AS buyer_count,
+        (SELECT COUNT(*) FROM customer_rfm_scored) AS buyer_count,
         (SELECT COUNT(*) FROM customers WHERE project_id = ${projectId} AND total_orders = 0) AS no_purchase_count
     ),
     metrics AS (
       SELECT
         COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE total_orders > 1) / NULLIF(COUNT(*), 0), 1), 0) AS returning_pct,
         COALESCE(ROUND(AVG(total_orders)::numeric, 1), 0) AS avg_frequency,
-        COALESCE(ROUND(AVG(avg_order_value), 2), 0) AS avg_purchase_value,
+        COALESCE(ROUND(AVG(aov), 2), 0) AS avg_purchase_value,
         COALESCE(ROUND(AVG(clv), 2), 0) AS avg_clv
-      FROM customer_rfm
+      FROM customer_rfm_scored
     )
     SELECT
       b.recency_bucket,
@@ -126,15 +171,23 @@ export async function getLifecycleChart(
     buyerCount,
   }
 
-  // Compute actual distributions from buyer data
+  // Compute actual distributions from buyer data. R uses last_order_date
+  // (not last_seen) and M uses P50/P90 thresholds (not NTILE) — same rules
+  // as the grid above, kept in sync.
   const distResult = await db.execute(sql`
     WITH buyers AS (
       SELECT
         total_orders,
         total_spent::numeric AS spent,
-        EXTRACT(DAY FROM NOW() - last_seen)::integer AS days_since_last
+        EXTRACT(EPOCH FROM (NOW() - COALESCE(last_order_date, last_seen))) / 86400.0 AS days_since_last_order
       FROM customers
       WHERE project_id = ${projectId} AND total_orders > 0
+    ),
+    thresholds AS (
+      SELECT
+        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY spent), 0) AS p50_spent,
+        COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY spent), 0) AS p90_spent
+      FROM buyers
     ),
     freq_buckets AS (
       SELECT
@@ -159,27 +212,29 @@ export async function getLifecycleChart(
     monetary_buckets AS (
       SELECT
         CASE
-          WHEN tile = 1 THEN 'Low Value'
-          WHEN tile = 2 THEN 'Medium Value'
-          ELSE 'High Value'
+          WHEN t.p90_spent > 0 AND b.spent >= t.p90_spent THEN 'High Value (top 10%)'
+          WHEN t.p50_spent > 0 AND b.spent >= t.p50_spent THEN 'Medium Value'
+          ELSE 'Low Value'
         END AS bucket,
-        tile AS sort_order,
+        CASE
+          WHEN t.p90_spent > 0 AND b.spent >= t.p90_spent THEN 2
+          WHEN t.p50_spent > 0 AND b.spent >= t.p50_spent THEN 1
+          ELSE 0
+        END AS sort_order,
         COUNT(*) AS cnt
-      FROM (
-        SELECT NTILE(3) OVER (ORDER BY spent) AS tile FROM buyers
-      ) t
+      FROM buyers b CROSS JOIN thresholds t
       GROUP BY bucket, sort_order
     ),
     recency_buckets AS (
       SELECT
         CASE
-          WHEN days_since_last <= 30 THEN 'Recent (0–30d)'
-          WHEN days_since_last <= 90 THEN 'Medium (31–90d)'
+          WHEN days_since_last_order <= 30 THEN 'Recent (0–30d)'
+          WHEN days_since_last_order <= 90 THEN 'Medium (31–90d)'
           ELSE 'Lapsed (90d+)'
         END AS bucket,
         CASE
-          WHEN days_since_last <= 30 THEN 0
-          WHEN days_since_last <= 90 THEN 1
+          WHEN days_since_last_order <= 30 THEN 0
+          WHEN days_since_last_order <= 90 THEN 1
           ELSE 2
         END AS sort_order,
         COUNT(*) AS cnt
