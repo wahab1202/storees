@@ -226,10 +226,25 @@ async function importOrderBatch(
       continue
     }
 
+    // Strict timestamp gate. Without a source-provided date the row would land
+    // with NOW(), bucketing every historical order into "today" and breaking
+    // every time-series analysis. Better to skip with a clear log than to
+    // silently substitute the wrong value. Fix path is the connector's
+    // `mappings.orders.timestamp` config.
+    if (mapped.timestamp == null || mapped.timestamp === '') {
+      stats.failed += 1
+      await log(syncId, 'error', `Order ${orderId} skipped — no timestamp in source row. Set mappings.orders.timestamp on the connector to the source's order-date field (e.g. "created_at").`, {
+        entityType: 'order',
+        entityId: orderId,
+        payload: { mapped },
+      })
+      continue
+    }
+
     const row = buildOrderRow(projectId, mapped)
     if (!row) {
       stats.failed += 1
-      await log(syncId, 'error', `Could not build order row for ${orderId}`, {
+      await log(syncId, 'error', `Order ${orderId} skipped — invalid timestamp value: ${String(mapped.timestamp)}`, {
         entityType: 'order',
         entityId: orderId,
         payload: { mapped },
@@ -286,10 +301,12 @@ async function importOrderBatch(
 
 function buildOrderRow(projectId: string, mapped: Record<string, unknown>) {
   const orderId = mapped.order_id as string
+  // Caller already gates on mapped.timestamp presence; treat invalid date as
+  // an unbuildable row (returns null) and let the caller log + count.
   const tsRaw = mapped.timestamp
   let timestamp: Date
   try {
-    timestamp = tsRaw ? new Date(tsRaw as string) : new Date()
+    timestamp = new Date(tsRaw as string)
     if (Number.isNaN(timestamp.getTime())) return null
   } catch {
     return null

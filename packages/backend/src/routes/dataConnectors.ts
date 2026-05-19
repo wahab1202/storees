@@ -18,6 +18,32 @@ import { dataSyncQueue } from '../services/queue.js'
 
 const router = Router()
 
+/**
+ * Refuse to save an effective config that would silently destroy historical
+ * analytics.
+ *
+ * If the orders mapping is present, `fieldMap.orders.timestamp` MUST be a
+ * non-empty string. Without it the sync falls back to NOW() and every
+ * imported order lands on import day, making campaign attribution / cohort
+ * retention / revenue charts meaningless. The runtime importer now skips
+ * such rows (rather than substituting NOW()) but the save-time validator
+ * catches the misconfig before any sync runs.
+ *
+ * Returns the error message to send back, or null when validation passes.
+ */
+function validateConnectorConfig(effectiveConfig: unknown): string | null {
+  if (typeof effectiveConfig !== 'object' || effectiveConfig === null) return null
+  const cfg = effectiveConfig as { fieldMap?: { orders?: { timestamp?: unknown } } }
+  const orders = cfg.fieldMap?.orders
+  if (!orders) return null
+  if (!('timestamp' in orders)) return null
+  const ts = orders.timestamp
+  if (typeof ts !== 'string' || ts.trim() === '') {
+    return 'fieldMap.orders.timestamp is required. Set it to the source field that holds the order date (e.g. "created_at"). Without it, imported orders would all be stamped with the current time, destroying historical analytics.'
+  }
+  return null
+}
+
 // ── Templates catalogue ──────────────────────────────────────────────────────
 // Listed in the "Add Connector" dialog so the user can pick (VirpanAI for a
 // VirpanAI-backed client, Custom HTTP for everyone else).
@@ -84,6 +110,17 @@ router.post('/connectors', requireProjectId, async (req, res) => {
     const tpl = getTemplate(template)
     if (!tpl) return res.status(400).json({ success: false, error: `Unknown template: ${template}` })
 
+    // Validate the effective fieldMap (template defaults + override) the way
+    // the sync path will read it. The override may omit fieldMap entirely
+    // (taking template defaults), or partially override it.
+    const overrideFieldMap = (configOverride as { fieldMap?: Record<string, unknown> })?.fieldMap ?? {}
+    const effectiveConfig = {
+      ...(configOverride ?? {}),
+      fieldMap: { ...tpl.fieldMap, ...overrideFieldMap },
+    }
+    const configError = validateConnectorConfig(effectiveConfig)
+    if (configError) return res.status(400).json({ success: false, error: configError })
+
     const [inserted] = await db
       .insert(dataSourceConnectors)
       .values({
@@ -110,6 +147,28 @@ router.patch('/connectors/:id', requireProjectId, async (req, res) => {
     authValue?: string
     configOverride?: Record<string, unknown>
     status?: string
+  }
+
+  // Same validation as POST — patching the timestamp mapping to empty is the
+  // same kind of bug as creating with empty.
+  if (configOverride != null) {
+    const [existing] = await db
+      .select({ template: dataSourceConnectors.template })
+      .from(dataSourceConnectors)
+      .where(and(eq(dataSourceConnectors.id, (req.params.id as string)), eq(dataSourceConnectors.projectId, req.projectId!)))
+      .limit(1)
+    if (existing) {
+      const tpl = getTemplate(existing.template)
+      if (tpl) {
+        const overrideFieldMap = (configOverride as { fieldMap?: Record<string, unknown> })?.fieldMap ?? {}
+        const effectiveConfig = {
+          ...configOverride,
+          fieldMap: { ...tpl.fieldMap, ...overrideFieldMap },
+        }
+        const configError = validateConnectorConfig(effectiveConfig)
+        if (configError) return res.status(400).json({ success: false, error: configError })
+      }
+    }
   }
 
   const updates: Record<string, unknown> = { updatedAt: new Date() }
