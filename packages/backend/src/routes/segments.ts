@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq, and, count } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { segments, customers } from '../db/schema.js'
+import { segments, customers, customerSegments } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole, resolveScopedAgentIds } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
@@ -263,7 +263,16 @@ router.delete('/:id', requireRole('admin'), requireProjectId, async (req, res) =
       return res.status(400).json({ success: false, error: 'Default segments cannot be deleted' })
     }
 
-    await db.delete(segments).where(eq(segments.id, id))
+    // customer_segments holds the materialized membership rows (one per
+    // customer that matched this segment when it was last evaluated). The
+    // FK to segments.id blocks the parent DELETE unless we clear the
+    // children first. Wrap both in a transaction so we never leave orphan
+    // membership rows if the segment delete fails.
+    await db.transaction(async (tx) => {
+      await tx.delete(customerSegments).where(eq(customerSegments.segmentId, id))
+      await tx.delete(segments).where(eq(segments.id, id))
+    })
+
     res.json({ success: true, data: { message: 'Segment deleted' } })
   } catch (err) {
     console.error('Segment delete error:', err)
