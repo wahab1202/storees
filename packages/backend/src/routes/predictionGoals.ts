@@ -55,6 +55,15 @@ router.post('/', requireProjectId, async (req, res) => {
 
     res.status(201).json({ success: true, data: goal })
   } catch (err) {
+    // 23505 = unique_violation; idx_prediction_goals_name enforces unique
+    // (project_id, name). The wizard seeds default goals on pack activation,
+    // so this fires when the user re-creates one with an existing name.
+    if (err && typeof err === 'object' && (err as { code?: string }).code === '23505') {
+      return res.status(409).json({
+        success: false,
+        error: 'A prediction goal with this name already exists for this project. Pick a different name or edit the existing goal.',
+      })
+    }
     console.error('Prediction goal create error:', err)
     res.status(500).json({ success: false, error: 'Failed to create prediction goal' })
   }

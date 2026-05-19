@@ -459,6 +459,7 @@ export type FilterOperator =
   | 'contains' | 'begins_with' | 'ends_with'
   | 'is_true' | 'is_false'
   | 'in_month' | 'in_year' | 'before_date' | 'after_date'
+  | 'within_last'   // value = N, unit = 'days'|'hours'|'weeks'|'months' — used for relative date windows
   | 'has_purchased' | 'has_not_purchased'
   | 'has_viewed' | 'has_not_viewed'
   | 'has_wishlisted' | 'has_not_wishlisted'

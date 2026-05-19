@@ -209,6 +209,20 @@ function ruleToSql(rule: FilterRule): SQL {
       const column = fieldToSqlExpression(rule.field)
       return sql`${column} > ${new Date(String(value))}::timestamptz`
     }
+    case 'within_last': {
+      // value = N, optional unit on the rule. Default unit is 'days'. Translates
+      // to `field >= NOW() - N * interval`. Used by pack-seeded segments like
+      // "Recent visitors (within last 7 days)".
+      const column = fieldToSqlExpression(rule.field)
+      const num = Number(value)
+      const unit = ((rule as unknown as { unit?: string }).unit ?? 'days').toLowerCase()
+      const baseInterval =
+        unit === 'hours'  ? sql`INTERVAL '1 hour'` :
+        unit === 'weeks'  ? sql`INTERVAL '1 week'` :
+        unit === 'months' ? sql`INTERVAL '1 month'` :
+                            sql`INTERVAL '1 day'`
+      return sql`${column} >= NOW() - (${num}::int * ${baseInterval})`
+    }
     default:
       break
   }
