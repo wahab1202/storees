@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useCustomers } from '@/hooks/useCustomers'
 import { useSegments } from '@/hooks/useSegments'
@@ -23,17 +23,28 @@ export default function CustomersPage() {
 
 function CustomersContent() {
   const searchParams = useSearchParams()
-  const initialSegmentId = searchParams.get('segmentId') ?? undefined
-  const initialRfm = searchParams.get('rfm') ?? undefined
+  const urlSegmentId = searchParams.get('segmentId') ?? undefined
+  const urlRfm = searchParams.get('rfm') ?? undefined
 
   const [params, setParams] = useState<CustomerListParams>({
     page: 1,
     pageSize: 25,
     sortBy: 'lastSeen',
     sortOrder: 'desc',
-    segmentId: initialSegmentId,
-    rfm: initialRfm,
+    segmentId: urlSegmentId,
+    rfm: urlRfm,
   })
+
+  // Sync URL → state when the search params change (e.g. user clicks
+  // "View members" on the /segments page, which soft-navigates to
+  // /customers?segmentId=X without remounting this component).
+  useEffect(() => {
+    setParams(p => {
+      if (p.segmentId === urlSegmentId && p.rfm === urlRfm) return p
+      return { ...p, page: 1, segmentId: urlSegmentId, rfm: urlRfm }
+    })
+  }, [urlSegmentId, urlRfm])
+
   const [searchInput, setSearchInput] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const { data: segmentsData } = useSegments()
@@ -81,14 +92,23 @@ function CustomersContent() {
     setParams(p => ({ ...p, page }))
   }
 
-  const activeSegment = params.segmentId
+  // Gate the segment-aware view on params.segmentId — NOT on the resolved
+  // activeSegment — so the banner renders the moment the URL says we're
+  // filtered, even before useSegments() has loaded the catalogue. The
+  // segment name is filled in async once the catalogue arrives.
+  const filteredBySegment = !!params.segmentId
+  const activeSegment = filteredBySegment
     ? segmentsData?.data.find(s => s.id === params.segmentId) ?? null
     : null
 
   return (
     <div>
       <PageHeader
-        title={activeSegment ? `Customers — ${activeSegment.name}` : 'Customers'}
+        title={
+          filteredBySegment
+            ? `Customers — ${activeSegment?.name ?? 'Loading segment…'}`
+            : 'Customers'
+        }
         actions={
           <span className="text-sm text-text-secondary">
             {data?.pagination.total !== undefined && `${data.pagination.total} total`}
@@ -100,7 +120,7 @@ function CustomersContent() {
           active. When a segment is selected, swap to a single banner showing
           the segment's name + count, since the strip's project-wide totals
           would contradict the filtered list. */}
-      {activeSegment ? (
+      {filteredBySegment ? (
         <div className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/5 px-4 py-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="rounded-lg bg-accent/10 p-1.5 text-accent">
@@ -108,7 +128,9 @@ function CustomersContent() {
             </div>
             <div className="min-w-0">
               <p className="text-xs font-medium uppercase tracking-wider text-accent">Viewing segment</p>
-              <p className="text-sm font-semibold text-text-primary truncate">{activeSegment.name}</p>
+              <p className="text-sm font-semibold text-text-primary truncate">
+                {activeSegment?.name ?? 'Loading segment…'}
+              </p>
             </div>
           </div>
           <div className="text-right">
