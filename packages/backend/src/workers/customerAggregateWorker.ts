@@ -278,6 +278,7 @@ async function refreshClv(customerId: string): Promise<void> {
       totalOrders: customers.totalOrders,
       firstOrderDate: customers.firstOrderDate,
       lastOrderDate: customers.lastOrderDate,
+      lastSeen: customers.lastSeen,
       metrics: customers.metrics,
     })
     .from(customers)
@@ -291,6 +292,7 @@ async function refreshClv(customerId: string): Promise<void> {
     totalOrders: row.totalOrders,
     firstOrderDate: row.firstOrderDate,
     lastOrderDate: row.lastOrderDate,
+    lastSeenDate: row.lastSeen,
     churnRiskScore: metrics.churn_risk != null ? Number(metrics.churn_risk) : undefined,
   })
 

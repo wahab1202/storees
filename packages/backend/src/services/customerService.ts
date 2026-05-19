@@ -9,8 +9,21 @@ type ClvInput = {
   totalOrders: number
   firstOrderDate: Date | null
   lastOrderDate: Date | null
+  // Last engagement of any kind (page view, product view, login). Lets us
+  // distinguish "lapsed but engaging" (re-engagement opportunity) from
+  // "truly gone" (write-off). Falls back to lastOrderDate when null.
+  lastSeenDate: Date | null
   churnRiskScore?: number // 0-100 from ML, if available
 }
+
+export type ClvHealth =
+  | 'new'              // signed up recently, no orders yet but engaging
+  | 'growing'          // active, ordering at or ahead of schedule
+  | 'stable'           // active, ordering on schedule
+  | 'declining'        // overdue 1.5–3× their normal gap
+  | 'at_risk'          // overdue 3+× their normal gap AND still engaging
+  | 'lapsed_engaged'   // no order in 180+ days BUT engaging recently — re-engagement target
+  | 'churned'          // gone — no orders 180+ days AND no engagement 60+ days
 
 type ClvResult = {
   clv_historical: number
@@ -19,23 +32,38 @@ type ClvResult = {
   clv_monthly_frequency: number
   clv_retention_months: number
   clv_churn_probability: number
-  clv_health: 'growing' | 'stable' | 'declining' | 'at_risk' | 'churned'
+  clv_health: ClvHealth
+  // Diagnostic fields the Lifecycle card on the customer detail reads
+  days_since_last_order: number | null
+  days_since_last_seen: number | null
 }
 
+const MS_PER_DAY = 1000 * 60 * 60 * 24
+
 /**
- * Compute CLV using a retention-adjusted DCF model.
+ * Compute CLV using a retention-adjusted DCF model with engagement signal.
  *
- * CLV = historical (actual spend) + predicted (forward-looking 12-month value)
+ *   CLV = historical (actual spend)
+ *       + predicted (AOV × monthly_freq × retention_months × engagement_mult)
  *
- * Predicted CLV = AOV × monthly_frequency × retention_months
- *   retention_months = 1 / monthly_churn_rate (capped at 36)
- *   churn = ML score if available, else heuristic based on overdue ratio
+ * The engagement multiplier rewards customers who are still active on the
+ * site even if they haven't purchased recently, and dampens predicted value
+ * for customers who've gone quiet across all channels.
+ *
+ * Health is bucketed by combining ORDER recency and SITE recency. The model
+ * deliberately separates "purchase lapsed" (still browsing, worth a nudge)
+ * from "truly churned" (nothing happening on either axis) — these warrant
+ * very different marketing actions.
  */
 export function computeClv(input: ClvInput): ClvResult {
-  const { totalSpent, totalOrders, firstOrderDate, lastOrderDate, churnRiskScore } = input
+  const { totalSpent, totalOrders, firstOrderDate, lastOrderDate, lastSeenDate, churnRiskScore } = input
   const now = new Date()
 
-  // No orders → zero CLV
+  const daysSinceLastSeen = lastSeenDate
+    ? Math.max(0, (now.getTime() - lastSeenDate.getTime()) / MS_PER_DAY)
+    : null
+
+  // No orders yet — they may still be brand-new and engaging.
   if (totalOrders === 0 || !firstOrderDate) {
     return {
       clv_historical: 0,
@@ -44,7 +72,9 @@ export function computeClv(input: ClvInput): ClvResult {
       clv_monthly_frequency: 0,
       clv_retention_months: 0,
       clv_churn_probability: 1,
-      clv_health: 'churned',
+      clv_health: daysSinceLastSeen != null && daysSinceLastSeen <= 30 ? 'new' : 'churned',
+      days_since_last_order: null,
+      days_since_last_seen: daysSinceLastSeen != null ? Math.round(daysSinceLastSeen) : null,
     }
   }
 
@@ -52,36 +82,37 @@ export function computeClv(input: ClvInput): ClvResult {
   const aov = totalSpent / totalOrders
 
   // Tenure in months (min 1 to avoid division by zero)
-  const tenureDays = Math.max(1, (now.getTime() - firstOrderDate.getTime()) / (1000 * 60 * 60 * 24))
+  const tenureDays = Math.max(1, (now.getTime() - firstOrderDate.getTime()) / MS_PER_DAY)
   const tenureMonths = Math.max(1, tenureDays / 30.44)
 
-  // Monthly purchase frequency
   const monthlyFrequency = totalOrders / tenureMonths
 
-  // Days since last order
+  // Days since last order. If lastOrderDate is missing (the worker hasn't
+  // populated it yet), fall back to last_seen — that's a tighter bound than
+  // using tenureDays, which would mark a fresh import "churned" by default.
   const daysSinceLastOrder = lastOrderDate
-    ? (now.getTime() - lastOrderDate.getTime()) / (1000 * 60 * 60 * 24)
-    : tenureDays
+    ? Math.max(0, (now.getTime() - lastOrderDate.getTime()) / MS_PER_DAY)
+    : daysSinceLastSeen ?? tenureDays
 
-  // Average gap between orders (for repeat buyers)
-  const avgGapDays = totalOrders > 1
-    ? (((lastOrderDate ?? now).getTime() - firstOrderDate.getTime()) / (1000 * 60 * 60 * 24)) / (totalOrders - 1)
-    : tenureDays // single buyers: assume gap = entire tenure
+  // Average gap between orders. Floor-clamped to 1 so same-day-multi-order
+  // customers don't blow up downstream divisions.
+  const avgGapDays = Math.max(
+    1,
+    totalOrders > 1
+      ? ((lastOrderDate ?? now).getTime() - firstOrderDate.getTime()) / MS_PER_DAY / (totalOrders - 1)
+      : tenureDays,
+  )
 
-  // Overdue ratio: how far past their expected next order
-  const overdueRatio = avgGapDays > 0 ? daysSinceLastOrder / avgGapDays : 999
+  const overdueRatio = daysSinceLastOrder / avgGapDays
 
-  // Churn probability
   let churnProb: number
   if (churnRiskScore !== undefined && churnRiskScore > 0) {
-    // Use ML score (0-100 → 0-1), but floor at 0.02 for active customers
     churnProb = Math.max(0.02, churnRiskScore / 100)
   } else {
-    // Heuristic based on overdue ratio
     if (totalOrders === 1) {
-      churnProb = 0.6 // single buyers have high churn
+      churnProb = 0.6
     } else if (overdueRatio <= 1) {
-      churnProb = 0.05 // on schedule
+      churnProb = 0.05
     } else if (overdueRatio <= 2) {
       churnProb = 0.15 + (overdueRatio - 1) * 0.2
     } else if (overdueRatio <= 3) {
@@ -91,19 +122,32 @@ export function computeClv(input: ClvInput): ClvResult {
     }
   }
 
-  // Monthly churn rate → retention months (capped at 36)
+  // Engagement multiplier — recently-active customers earn a CLV bump,
+  // disengaged ones get dampened. Floor at 0.5 so we don't zero out value
+  // entirely; that's what 'churned' classification is for.
+  let engagementMultiplier = 1.0
+  if (daysSinceLastSeen != null) {
+    if (daysSinceLastSeen <= 7)        engagementMultiplier = 1.15
+    else if (daysSinceLastSeen <= 30)  engagementMultiplier = 1.0
+    else if (daysSinceLastSeen <= 90)  engagementMultiplier = 0.75
+    else                                engagementMultiplier = 0.5
+  }
+
   const monthlyChurnRate = Math.max(0.01, 1 - Math.pow(1 - churnProb, 1 / 12))
   const retentionMonths = Math.min(36, 1 / monthlyChurnRate)
 
-  // Predicted CLV = AOV × monthly_frequency × retention_months
-  const predicted = Math.round(aov * monthlyFrequency * retentionMonths * 100) / 100
+  const predicted = Math.round(aov * monthlyFrequency * retentionMonths * engagementMultiplier * 100) / 100
 
-  // CLV Health
-  let health: ClvResult['clv_health']
+  // Health categorization — combines order recency with site engagement.
+  // The key insight is that a customer who hasn't ordered in 6 months but
+  // who's still viewing products this week is a re-engagement opportunity,
+  // not a lost cause. The old model collapsed both into "churned".
+  const hasRecentEngagement = daysSinceLastSeen != null && daysSinceLastSeen <= 60
+  let health: ClvHealth
   if (daysSinceLastOrder > 180) {
-    health = 'churned'
+    health = hasRecentEngagement ? 'lapsed_engaged' : 'churned'
   } else if (overdueRatio > 3) {
-    health = 'at_risk'
+    health = hasRecentEngagement ? 'at_risk' : 'churned'
   } else if (overdueRatio > 1.5) {
     health = 'declining'
   } else if (overdueRatio > 0.8) {
@@ -120,6 +164,8 @@ export function computeClv(input: ClvInput): ClvResult {
     clv_retention_months: Math.round(retentionMonths * 10) / 10,
     clv_churn_probability: Math.round(churnProb * 1000) / 1000,
     clv_health: health,
+    days_since_last_order: Math.round(daysSinceLastOrder),
+    days_since_last_seen: daysSinceLastSeen != null ? Math.round(daysSinceLastSeen) : null,
   }
 }
 
@@ -316,6 +362,7 @@ export async function updateCustomerAggregates(
     totalOrders: customers.totalOrders,
     firstOrderDate: customers.firstOrderDate,
     lastOrderDate: customers.lastOrderDate,
+    lastSeen: customers.lastSeen,
     metrics: customers.metrics,
   }).from(customers).where(eq(customers.id, customerId)).limit(1)
 
@@ -326,6 +373,7 @@ export async function updateCustomerAggregates(
       totalOrders: row.totalOrders,
       firstOrderDate: row.firstOrderDate,
       lastOrderDate: row.lastOrderDate,
+      lastSeenDate: row.lastSeen,
       churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
     })
     await db.update(customers).set({
@@ -363,6 +411,7 @@ export async function recalculateAggregates(
     totalOrders: customers.totalOrders,
     firstOrderDate: customers.firstOrderDate,
     lastOrderDate: customers.lastOrderDate,
+    lastSeen: customers.lastSeen,
     metrics: customers.metrics,
   }).from(customers).where(eq(customers.id, customerId)).limit(1)
 
@@ -373,6 +422,7 @@ export async function recalculateAggregates(
       totalOrders: row.totalOrders,
       firstOrderDate: row.firstOrderDate,
       lastOrderDate: row.lastOrderDate,
+      lastSeenDate: row.lastSeen,
       churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
     })
     await db.update(customers).set({
@@ -497,6 +547,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
     totalOrders: customers.totalOrders,
     firstOrderDate: customers.firstOrderDate,
     lastOrderDate: customers.lastOrderDate,
+    lastSeen: customers.lastSeen,
     metrics: customers.metrics,
   }).from(customers).where(
     and(eq(customers.projectId, projectId), sql`total_orders > 0`),
@@ -509,6 +560,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       totalOrders: row.totalOrders,
       firstOrderDate: row.firstOrderDate,
       lastOrderDate: row.lastOrderDate,
+      lastSeenDate: row.lastSeen,
       churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
     })
     await db.update(customers).set({

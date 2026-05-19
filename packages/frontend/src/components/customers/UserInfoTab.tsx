@@ -255,11 +255,13 @@ export function UserInfoTab({ customer, domain }: Props) {
   const hasCLV = customer.totalOrders > 0 && domain === 'ecommerce'
 
   const healthConfig: Record<string, { label: string; color: string; bg: string }> = {
-    growing: { label: 'Growing', color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200' },
-    stable: { label: 'Stable', color: 'text-blue-700', bg: 'bg-blue-50 border-blue-200' },
-    declining: { label: 'Declining', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' },
-    at_risk: { label: 'At Risk', color: 'text-orange-700', bg: 'bg-orange-50 border-orange-200' },
-    churned: { label: 'Churned', color: 'text-red-700', bg: 'bg-red-50 border-red-200' },
+    new:             { label: 'New',             color: 'text-indigo-700', bg: 'bg-indigo-50 border-indigo-200' },
+    growing:         { label: 'Growing',         color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200' },
+    stable:          { label: 'Stable',          color: 'text-blue-700',    bg: 'bg-blue-50 border-blue-200' },
+    declining:       { label: 'Declining',       color: 'text-amber-700',   bg: 'bg-amber-50 border-amber-200' },
+    at_risk:         { label: 'At Risk',         color: 'text-orange-700',  bg: 'bg-orange-50 border-orange-200' },
+    lapsed_engaged:  { label: 'Re-engage',       color: 'text-fuchsia-700', bg: 'bg-fuchsia-50 border-fuchsia-200' },
+    churned:         { label: 'Churned',         color: 'text-red-700',     bg: 'bg-red-50 border-red-200' },
   }
 
   return (

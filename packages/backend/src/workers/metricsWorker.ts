@@ -175,6 +175,7 @@ async function computeEcommerceMetrics(
   const [custRow] = await db.select({
     totalSpent: customers.totalSpent,
     totalOrders: customers.totalOrders,
+    lastSeen: customers.lastSeen,
     metrics: customers.metrics,
   }).from(customers).where(eq(customers.id, customerId)).limit(1)
 
@@ -188,6 +189,7 @@ async function computeEcommerceMetrics(
     totalOrders,
     firstOrderDate: firstOrderAt,
     lastOrderDate: lastOrderAt,
+    lastSeenDate: custRow?.lastSeen ?? null,
     churnRiskScore: existingMetrics.churn_risk ? Number(existingMetrics.churn_risk) : undefined,
   })
 
@@ -203,7 +205,6 @@ async function computeEcommerceMetrics(
     total_events: Number(eRow?.total_events ?? 0),
     order_count: Number(oRow?.order_count ?? 0),
     cart_count: Number(eRow?.cart_count ?? 0),
-    days_since_last_order: daysSinceLastOrder,
     first_order_date: firstOrderAt?.toISOString() ?? null,
     last_order_date: lastOrderAt?.toISOString() ?? null,
     last_event_at: eRow?.last_event_at ?? null,
