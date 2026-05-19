@@ -5,12 +5,14 @@ import {
   dataSourceConnectors,
   dataSourceSyncs,
   dataSourceSyncLogs,
+  projects,
 } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { encrypt, decrypt } from '../services/encryption.js'
 import { listTemplates, getTemplate, cloneTemplate } from '../services/connectorRegistry.js'
 import { testConnection, type RuntimeConfig } from '../services/connectors/genericHttpConnector.js'
 import { dataSyncQueue } from '../services/queue.js'
+import { agentRbacEnabled } from '../config/features.js'
 
 // Admin endpoints for managing data-source connectors. Onboarding team uses
 // these from the project page in the Storees admin UI. No client-side
@@ -216,6 +218,18 @@ router.post('/connectors/:id/test', requireProjectId, async (req, res) => {
       ...override,
       fieldMap: { ...tpl.fieldMap, ...((override as { fieldMap?: object }).fieldMap ?? {}) },
     } as typeof tpl
+
+    // Strip the dealers endpoint from the test config when the project
+     // doesn't have agentScopedAccess — avoids showing a Dealers card on
+     // non-B2B projects even if they pick a template that declares it.
+    const [project] = await db
+      .select({ features: projects.features })
+      .from(projects)
+      .where(eq(projects.id, req.projectId!))
+      .limit(1)
+    if (!agentRbacEnabled((project?.features ?? {}) as Record<string, unknown>)) {
+      delete merged.endpoints.dealers
+    }
 
     const cfg: RuntimeConfig = {
       baseUrl: conn.baseUrl,

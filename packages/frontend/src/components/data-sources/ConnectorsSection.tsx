@@ -239,7 +239,7 @@ function TestResultPanel({ result, onDismiss }: { result: unknown; onDismiss: ()
         </h5>
         <button onClick={onDismiss} className="text-[11px] text-text-muted hover:text-text-primary">Dismiss</button>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
         {entries.map(([entity, r]) => (
           <div
             key={entity}

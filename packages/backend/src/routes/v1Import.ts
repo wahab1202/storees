@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express'
-import { sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { events } from '../db/schema.js'
 import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
 import { bulkUpsertProducts, type ProductImport } from '../services/productCatalogService.js'
+import { upsertDealer, type DealerInput } from '../services/dealerImport.js'
 import { customerAggregateQueue } from '../services/queue.js'
 
 /**
@@ -305,43 +305,14 @@ router.post('/import/products', async (req: Request, res: Response) => {
 
 // ── /api/v1/import/dealers ───────────────────────────────────────────────────
 // Upsert B2B dealers into the agents table. Matches the GWM
-// /admin/storees-cdp/export/dealers payload shape (see
-// docs.gowelmart.com / STOREES_DEALERS_EXPORT.md). Keyed by
-// (project_id, external_dealer_id) — re-running the same payload is a no-op.
-//
-// Side-effect: after each upsert we backlink any customers already in this
-// project whose custom_attributes.dealer_id matches the synced dealer AND
-// whose agent_id is still NULL. Lets clients send dealers and customers in
-// either order — eventually-consistent.
-//
-// Only dealers with status='Approved' are flagged is_active=true; others are
-// imported but inactive (segment builder dropdown filters by is_active).
-
-type DealerImport = {
-  dealer_id: string
-  name: string
-  email?: string | null
-  phone?: string | null
-  status?: 'Pending' | 'Approved' | 'Rejected' | 'Blocked' | string
-  region?: string | null
-  state?: string | null      // alias of region
-  city?: string | null
-  address_1?: string | null
-  address_2?: string | null
-  postal_code?: string | null
-  country?: string | null
-  gst_number?: string | null
-  pan_number?: string | null
-  assigned_districts?: string[] | null
-  created_at?: string | null
-  updated_at?: string | null
-  custom_attributes?: Record<string, unknown> | null
-}
+// /admin/storees-cdp/export/dealers payload (STOREES_DEALERS_EXPORT.md).
+// Per-row upsert logic lives in services/dealerImport.ts so the pull-based
+// connector sync (dataSyncService) uses the exact same code path.
 
 router.post('/import/dealers', async (req: Request, res: Response) => {
   try {
     const projectId = req.projectId!
-    const body = req.body as { dealers?: DealerImport[] }
+    const body = req.body as { dealers?: DealerInput[] }
     const inputs = body.dealers ?? []
 
     if (!Array.isArray(inputs) || inputs.length === 0) {
@@ -362,71 +333,7 @@ router.post('/import/dealers', async (req: Request, res: Response) => {
       await Promise.allSettled(
         batch.map(async (input, batchIdx) => {
           try {
-            const dealerId = input.dealer_id?.trim()
-            const name = input.name?.trim()
-            if (!dealerId || !name) {
-              throw new Error('dealer_id and name are required')
-            }
-
-            const isActive = input.status === undefined || input.status === 'Approved'
-            const region = input.region?.trim() || input.state?.trim() || null
-            const city = input.city?.trim() || null
-
-            // Bucket everything that doesn't map to a dedicated column into
-            // metadata so segment-builder enrichment can still reach it.
-            const metadata: Record<string, unknown> = {}
-            if (input.status)             metadata.status = input.status
-            if (input.address_1)          metadata.address_1 = input.address_1
-            if (input.address_2)          metadata.address_2 = input.address_2
-            if (input.state)              metadata.state = input.state
-            if (input.postal_code)        metadata.postal_code = input.postal_code
-            if (input.country)            metadata.country = input.country
-            if (input.gst_number)         metadata.gst_number = input.gst_number
-            if (input.pan_number)         metadata.pan_number = input.pan_number
-            if (input.assigned_districts) metadata.assigned_districts = input.assigned_districts
-            if (input.custom_attributes)  metadata.custom_attributes = input.custom_attributes
-            if (input.created_at)         metadata.external_created_at = input.created_at
-            if (input.updated_at)         metadata.external_updated_at = input.updated_at
-
-            const linked = await db.transaction(async (tx) => {
-              await tx.execute(sql`
-                INSERT INTO agents (project_id, external_dealer_id, name, email, phone, region, city, is_active, metadata)
-                VALUES (
-                  ${projectId},
-                  ${dealerId},
-                  ${name},
-                  ${input.email?.trim() || null},
-                  ${input.phone?.trim() || null},
-                  ${region},
-                  ${city},
-                  ${isActive},
-                  ${JSON.stringify(metadata)}::jsonb
-                )
-                ON CONFLICT (project_id, external_dealer_id) DO UPDATE SET
-                  name       = EXCLUDED.name,
-                  email      = EXCLUDED.email,
-                  phone      = EXCLUDED.phone,
-                  region     = EXCLUDED.region,
-                  city       = EXCLUDED.city,
-                  is_active  = EXCLUDED.is_active,
-                  metadata   = EXCLUDED.metadata,
-                  updated_at = NOW()
-              `)
-
-              // Backlink customers carrying this dealer_id but no agent yet.
-              const link = await tx.execute(sql`
-                UPDATE customers c
-                SET agent_id = a.id, updated_at = NOW()
-                FROM agents a
-                WHERE a.project_id = ${projectId}
-                  AND a.external_dealer_id = ${dealerId}
-                  AND c.project_id = ${projectId}
-                  AND c.agent_id IS NULL
-                  AND c.custom_attributes->>'dealer_id' = ${dealerId}
-              `)
-              return link.rowCount ?? 0
-            })
-
+            const { customersLinked: linked } = await upsertDealer(projectId, input)
             resolved++
             customersLinked += linked
           } catch (err) {

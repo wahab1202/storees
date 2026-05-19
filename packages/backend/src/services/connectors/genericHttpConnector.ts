@@ -2,7 +2,7 @@ import { decrypt } from '../encryption.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type EntityType = 'customers' | 'products' | 'orders'
+export type EntityType = 'customers' | 'products' | 'orders' | 'dealers'
 
 export type AuthSpec = {
   type: 'bearer' | 'api_key' | 'basic'
@@ -50,13 +50,14 @@ export type ConnectorTemplate = {
   label: string
   description: string
   auth: AuthSpec
-  endpoints: Record<EntityType, EndpointSpec>
+  endpoints: Partial<Record<EntityType, EndpointSpec>>
   pagination: PaginationSpec
   incremental?: Partial<Record<EntityType, IncrementalSpec>>
   fieldMap: {
     customers: Record<string, FieldMapValue>
     products: Record<string, FieldMapValue>
     orders: Record<string, FieldMapValue | LineItemMap>
+    dealers?: Record<string, FieldMapValue>
   }
   // Throughput controls — keep the source-side API happy. Defaults are gentle
   // but every template can override per its API's tolerance.
@@ -200,6 +201,9 @@ export async function fetchPage(
   const pagination = cfg.template.pagination
   const incremental = cfg.template.incremental?.[entity]
 
+  if (!endpoint) {
+    throw new Error(`Template does not declare a "${entity}" endpoint — nothing to fetch.`)
+  }
   if (!endpoint.path) {
     throw new Error(`Endpoint path for "${entity}" is empty — configure the connector before syncing.`)
   }
@@ -308,20 +312,30 @@ export async function testConnection(cfg: RuntimeConfig): Promise<{
     customers: { ok: false },
     products: { ok: false },
     orders: { ok: false },
+    dealers: { ok: false },
   }
 
-  for (const entity of ['customers', 'products', 'orders'] as EntityType[]) {
+  // A template may legitimately omit an entity (e.g. a connector that doesn't
+  // expose dealers). Skip those instead of failing the test.
+  const declared = Object.keys(cfg.template.endpoints) as EntityType[]
+  for (const entity of declared) {
     try {
       const page = await fetchPage({ ...cfg, template: { ...cfg.template, pagination: { ...cfg.template.pagination, pageSize: 1 } } }, { entity })
       const first = page.records[0]
+      const fm = cfg.template.fieldMap[entity]
       results[entity] = {
         ok: true,
         sample: first ?? null,
-        mapped: first ? mapRecord(first, cfg.template.fieldMap[entity]) : null,
+        mapped: first && fm ? mapRecord(first, fm) : null,
       }
     } catch (err) {
       results[entity] = { ok: false, error: (err as Error).message }
     }
+  }
+
+  // Drop entities the template never declared — UI shouldn't show a blank card.
+  for (const entity of Object.keys(results) as EntityType[]) {
+    if (!declared.includes(entity)) delete results[entity]
   }
 
   return { ok: Object.values(results).every((r) => r.ok), results }

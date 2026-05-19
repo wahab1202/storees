@@ -5,6 +5,7 @@ import {
   dataSourceSyncs,
   dataSourceSyncLogs,
   events as eventsTable,
+  projects,
 } from '../db/schema.js'
 import {
   fetchPageWithRetry,
@@ -16,6 +17,8 @@ import {
 import { getTemplate } from './connectorRegistry.js'
 import { resolveCustomer } from './customerService.js'
 import { bulkUpsertProducts, type ProductImport } from './productCatalogService.js'
+import { upsertDealer, type DealerInput } from './dealerImport.js'
+import { agentRbacEnabled } from '../config/features.js'
 import { customerAggregateQueue } from './queue.js'
 
 // Sync orchestrator. The BullMQ worker calls runSync(syncId) — everything
@@ -47,7 +50,8 @@ function emptyStats(): SyncStats {
   return {
     customers: { fetched: 0, imported: 0, failed: 0 },
     products: { fetched: 0, imported: 0, failed: 0 },
-    orders: { fetched: 0, imported: 0, failed: 0 },
+    orders:    { fetched: 0, imported: 0, failed: 0 },
+    dealers:   { fetched: 0, imported: 0, failed: 0 },
   }
 }
 
@@ -331,6 +335,43 @@ function buildOrderRow(projectId: string, mapped: Record<string, unknown>) {
   }
 }
 
+async function importDealerBatch(
+  projectId: string,
+  syncId: string,
+  records: unknown[],
+  template: ConnectorTemplate,
+  stats: EntityStats,
+): Promise<void> {
+  const dealerMap = template.fieldMap.dealers
+  // No-op if the template doesn't declare a dealer field map — guard against
+  // misconfigured connectors rather than hard-failing the whole sync.
+  if (!dealerMap) return
+
+  for (const raw of records) {
+    stats.fetched += 1
+    const mapped = mapRecord(raw, dealerMap) as DealerInput
+    if (!mapped.dealer_id || !mapped.name) {
+      stats.failed += 1
+      await log(syncId, 'error', 'Dealer record missing dealer_id or name after mapping', {
+        entityType: 'dealer',
+        payload: { mapped, raw },
+      })
+      continue
+    }
+    try {
+      await upsertDealer(projectId, mapped)
+      stats.imported += 1
+    } catch (err) {
+      stats.failed += 1
+      await log(syncId, 'error', `Dealer upsert failed: ${(err as Error).message}`, {
+        entityType: 'dealer',
+        entityId: mapped.dealer_id,
+        payload: { mapped },
+      })
+    }
+  }
+}
+
 // ── Per-entity loop ──────────────────────────────────────────────────────────
 
 async function syncEntity(
@@ -345,6 +386,7 @@ async function syncEntity(
   const handler =
     entity === 'customers' ? importCustomerBatch :
     entity === 'products' ? importProductBatch :
+    entity === 'dealers' ? importDealerBatch :
     importOrderBatch
 
   let offset = 0
@@ -456,8 +498,25 @@ export async function runSync(syncId: string): Promise<void> {
   let anyOk = false
   let anyFailed = false
 
-  // Customers → products → orders. Order matters: orders need customers to exist.
-  for (const entity of ['customers', 'products', 'orders'] as EntityType[]) {
+  // Dealers only sync when (a) the template declares the endpoint AND (b) the
+  // project has the B2B agentScopedAccess feature flag enabled. Keeps the
+  // dealer pull strictly opt-in: today only the GWM project qualifies.
+  const [project] = await db
+    .select({ features: projects.features })
+    .from(projects)
+    .where(eq(projects.id, connector.projectId))
+    .limit(1)
+  const dealersEnabled =
+    !!effectiveTemplate.endpoints.dealers &&
+    agentRbacEnabled((project?.features ?? {}) as Record<string, unknown>)
+
+  // Dealers FIRST (so per-customer agent_id resolves immediately during the
+  // customer sync), then customers → products → orders.
+  const entityOrder: EntityType[] = dealersEnabled
+    ? ['dealers', 'customers', 'products', 'orders']
+    : ['customers', 'products', 'orders']
+
+  for (const entity of entityOrder) {
     const since = sync.kind === 'incremental' ? lastSyncedAt[entity] ?? null : null
     const { ok, latestTimestamp } = await syncEntity(syncId, connector.projectId, cfg, entity, since, stats, stats)
     if (ok) {

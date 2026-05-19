@@ -45,6 +45,18 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
       responseDataPath: 'orders',
       responseCountPath: 'count',
     },
+    // Storees-CDP namespace (NOT Medusa core admin). GWM exposes dealers as
+    // a first-class resource here; response is already in canonical shape
+    // (see STOREES_DEALERS_EXPORT.md), so the field map is mostly 1:1.
+    // Sync of this endpoint is gated server-side on
+    // projects.features.agentScopedAccess — only the GWM project qualifies
+    // today even if another tenant later picks the VirpanAI template.
+    dealers: {
+      path: '/admin/storees-cdp/export/dealers',
+      method: 'GET',
+      responseDataPath: 'dealers',
+      responseCountPath: 'count',
+    },
   },
 
   pagination: {
@@ -61,6 +73,9 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     customers: { param: 'updated_at[gte]', format: 'iso8601' },
     products: { param: 'updated_at[gte]', format: 'iso8601' },
     orders: { param: 'updated_at[gte]', format: 'iso8601' },
+    // GWM's dealer export uses `updated_after` (different param name vs the
+    // Medusa admin endpoints which use updated_at[gte]).
+    dealers: { param: 'updated_after', format: 'iso8601' },
   },
 
   fieldMap: {
@@ -125,6 +140,29 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
           price: 'unit_price',
         },
       },
+    },
+
+    // GWM /admin/storees-cdp/export/dealers already emits canonical shape —
+    // dealerImport.ts consumes this object directly (see DealerInput type).
+    dealers: {
+      dealer_id: 'dealer_id',
+      name: 'name',
+      email: 'email',
+      phone: 'phone',
+      status: 'status',
+      region: 'region',
+      state: 'state',
+      city: 'city',
+      address_1: 'address_1',
+      address_2: 'address_2',
+      postal_code: 'postal_code',
+      country: 'country',
+      gst_number: 'gst_number',
+      pan_number: 'pan_number',
+      assigned_districts: 'assigned_districts',
+      created_at: 'created_at',
+      updated_at: 'updated_at',
+      custom_attributes: 'custom_attributes',
     },
   },
 }
