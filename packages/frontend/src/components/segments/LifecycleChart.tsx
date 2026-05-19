@@ -238,23 +238,25 @@ function RFMGrid({ segments, domain }: { segments: { name: string; label: string
                   }
                 }}
                 className={cn(
-                  'relative h-24 rounded-lg border transition-all p-3 flex flex-col justify-between',
+                  'relative h-24 rounded-lg border transition-all p-3 flex flex-col justify-between bg-white',
                   cell.contactCount > 0 ? 'cursor-pointer' : 'cursor-default',
-                  isHovered ? 'border-heading shadow-md scale-[1.02]' : 'border-border',
+                  isHovered ? 'border-heading shadow-sm' : 'border-border hover:border-text-muted/40',
                 )}
-                style={{ backgroundColor: `${cell.color}15` }}
+                style={isHovered ? undefined : { backgroundColor: `${cell.color}0F` }}
               >
-                <div
-                  className="absolute top-0 left-0 right-0 h-1 rounded-t-lg"
-                  style={{ backgroundColor: cell.color }}
-                />
-                <div>
-                  <p className="text-xs font-semibold text-text-primary leading-tight">{cell.label}</p>
-                  <p className="text-lg font-bold text-text-primary tabular-nums mt-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: cell.color }}
+                  />
+                  <p className="text-xs font-semibold text-text-primary leading-tight truncate">{cell.label}</p>
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <p className="text-lg font-bold text-text-primary tabular-nums">
                     {cell.contactCount}
                   </p>
+                  <p className="text-[11px] text-text-muted tabular-nums">· {cell.percentage}%</p>
                 </div>
-                <p className="text-[11px] text-text-muted tabular-nums">{cell.percentage}%</p>
 
                 {isHovered && cell.retentionTactics.length > 0 && (
                   <RFMTooltip cellName={cell.name} row={row} tactics={cell.retentionTactics} />
@@ -404,7 +406,7 @@ function DistributionTab({ buckets: rawBuckets, dimension }: {
   const dimensionLabels = {
     recency: { title: 'Recency Distribution', desc: 'How recently customers have been active', icon: Clock },
     frequency: { title: 'Purchase Frequency', desc: 'Order count distribution across buyers', icon: BarChart3 },
-    monetary: { title: 'Monetary Distribution', desc: 'Spending tiers (NTILE-3 equal split)', icon: DollarSign },
+    monetary: { title: 'Monetary Distribution', desc: 'Spending tiers — bottom 50% / middle / top 10% by total spend', icon: DollarSign },
   }
 
   const { title, desc, icon: Icon } = dimensionLabels[dimension]
