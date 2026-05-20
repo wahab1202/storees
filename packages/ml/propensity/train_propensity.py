@@ -28,7 +28,8 @@ import numpy as np
 import pandas as pd
 import shap
 import xgboost as xgb
-from sklearn.metrics import roc_auc_score
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import brier_score_loss, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 import sys
@@ -177,15 +178,49 @@ def train(project_id: str, goal_id: str, target_event: str,
     }
     # ---- END AUTORESEARCH EDITABLE SECTION ----
 
-    model = xgb.XGBClassifier(**params)
-    model.fit(
-        X_train_scaled, y_train,
-        eval_set=[(X_val_scaled, y_val)],
-        verbose=False,
-    )
+    # Hold out the temporally-most-recent 20% of train as a calibration set.
+    # Isotonic calibration on top of XGBoost maps raw probabilities → empirically
+    # accurate ones, so a "78%" score actually corresponds to ~78% conversion
+    # in reality (Brier-tight). Falls back to uncalibrated when the cal slice
+    # is too small or has too few positives — isotonic needs both.
+    cal_size = max(int(len(X_train_scaled) * 0.2), 50)
+    n_cal_positive = int(y_train.iloc[-cal_size:].sum()) if cal_size < len(X_train_scaled) else 0
+    can_calibrate = cal_size < len(X_train_scaled) and n_cal_positive >= 10
+
+    raw_model = xgb.XGBClassifier(**params)
+    calibrated_model = None
+    brier_before: float | None = None
+    brier_after: float | None = None
+
+    if can_calibrate:
+        X_fit = X_train_scaled[:-cal_size]
+        X_cal = X_train_scaled[-cal_size:]
+        y_fit = y_train.iloc[:-cal_size]
+        y_cal = y_train.iloc[-cal_size:]
+
+        raw_model.fit(X_fit, y_fit, eval_set=[(X_cal, y_cal)], verbose=False)
+        brier_before = float(brier_score_loss(y_val.values, raw_model.predict_proba(X_val_scaled)[:, 1]))
+
+        # cv='prefit' tells the calibrator NOT to refit the estimator —
+        # the held-out cal slice supplies the calibration mapping.
+        calibrated_model = CalibratedClassifierCV(raw_model, method='isotonic', cv='prefit')
+        calibrated_model.fit(X_cal, y_cal)
+
+        y_prob = calibrated_model.predict_proba(X_val_scaled)[:, 1]
+        brier_after = float(brier_score_loss(y_val.values, y_prob))
+        print(f"[train] Calibration: Brier {brier_before:.4f} → {brier_after:.4f} "
+              f"({'improved' if brier_after < brier_before else 'kept'}, cal_n={cal_size}, cal_pos={n_cal_positive})")
+    else:
+        print(f"[train] Skipping calibration (cal_size={cal_size}, cal_pos={n_cal_positive} < 10) — using raw probabilities")
+        raw_model.fit(X_train_scaled, y_train, eval_set=[(X_val_scaled, y_val)], verbose=False)
+        y_prob = raw_model.predict_proba(X_val_scaled)[:, 1]
+
+    # model used for serving (calibrated when possible, raw otherwise);
+    # SHAP always uses the raw XGBoost — the tree explainer can't traverse
+    # CalibratedClassifierCV.
+    model = calibrated_model if calibrated_model is not None else raw_model
 
     # Evaluate with baseline comparison
-    y_prob = model.predict_proba(X_val_scaled)[:, 1]
     eval_result = evaluate(
         y_val.values, y_prob,
         baseline_prob=baseline_prob,
@@ -211,9 +246,10 @@ def train(project_id: str, goal_id: str, target_event: str,
             "validation_method": validation_method,
         }
 
-    # Compute SHAP values for global feature importance
+    # Compute SHAP values for global feature importance. TreeExplainer needs
+    # the raw XGBoost; the calibration wrapper isn't a tree model.
     feature_names = list(X_train.columns)
-    explainer = shap.TreeExplainer(model)
+    explainer = shap.TreeExplainer(raw_model)
     shap_values = explainer.shap_values(X_val_scaled[:min(500, len(X_val_scaled))])
 
     global_importance = np.abs(shap_values).mean(axis=0)
@@ -270,6 +306,9 @@ def train(project_id: str, goal_id: str, target_event: str,
         "baseline_auc": eval_result.baseline_auc,
         "model_lift_over_baseline": eval_result.model_lift_over_baseline,
         "brier": eval_result.brier,
+        "brier_before_calibration": brier_before,
+        "brier_after_calibration": brier_after,
+        "calibrated": calibrated_model is not None,
         "validation_method": validation_method,
         "feature_ranking": feature_ranking[:10],
     }
