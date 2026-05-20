@@ -201,17 +201,34 @@ class TrainResponse(BaseModel):
 
 @app.post("/train", response_model=TrainResponse)
 def train_model(req: TrainRequest):
-    """Train a propensity model for a prediction goal."""
-    from propensity.train_propensity import train
+    """Train a propensity model for a prediction goal.
 
-    result = train(
-        project_id=req.project_id,
-        goal_id=req.goal_id,
-        target_event=req.target_event,
-        observation_days=req.observation_days,
-        prediction_days=req.prediction_days,
-        domain=req.domain,
-    )
+    Catches exceptions explicitly so a Python-side crash becomes a
+    structured TrainResponse with status='error' and the real exception
+    message, instead of bubbling up as FastAPI's generic 500. The Node
+    training worker logs the `reason` field, so this is the only place
+    operators can see what actually went wrong.
+    """
+    from propensity.train_propensity import train
+    import traceback
+
+    try:
+        result = train(
+            project_id=req.project_id,
+            goal_id=req.goal_id,
+            target_event=req.target_event,
+            observation_days=req.observation_days,
+            prediction_days=req.prediction_days,
+            domain=req.domain,
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[serve.train] Exception during train for goal {req.goal_id}:\n{tb}")
+        # Surface the first line of the exception in the `reason` field —
+        # full traceback stays in the ML service logs. Avoids leaking
+        # internal paths into the Node-side DB row.
+        message = f"{type(e).__name__}: {str(e)[:300]}"
+        return TrainResponse(status="error", reason=message)
 
     # Clear model cache so next score request loads the new model
     _model_cache.pop(req.goal_id, None)

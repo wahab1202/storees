@@ -290,24 +290,40 @@ def train(project_id: str, goal_id: str, target_event: str,
     brier_before: float | None = None
     brier_after: float | None = None
 
+    # Calibration is best-effort: if anything in the held-out / isotonic
+    # flow throws (rare class imbalance in the cal slice, sklearn version
+    # mismatch, etc.), fall back to the raw model rather than failing
+    # the whole train.
     if can_calibrate:
-        X_fit = X_train_scaled[:-cal_size]
-        X_cal = X_train_scaled[-cal_size:]
-        y_fit = y_train.iloc[:-cal_size]
-        y_cal = y_train.iloc[-cal_size:]
+        try:
+            X_fit = X_train_scaled[:-cal_size]
+            X_cal = X_train_scaled[-cal_size:]
+            y_fit = y_train.iloc[:-cal_size]
+            y_cal = y_train.iloc[-cal_size:]
 
-        raw_model.fit(X_fit, y_fit, eval_set=[(X_cal, y_cal)], verbose=False)
-        brier_before = float(brier_score_loss(y_val.values, raw_model.predict_proba(X_val_scaled)[:, 1]))
+            raw_model.fit(X_fit, y_fit, eval_set=[(X_cal, y_cal)], verbose=False)
+            brier_before = float(brier_score_loss(y_val.values, raw_model.predict_proba(X_val_scaled)[:, 1]))
 
-        # cv='prefit' tells the calibrator NOT to refit the estimator —
-        # the held-out cal slice supplies the calibration mapping.
-        calibrated_model = CalibratedClassifierCV(raw_model, method='isotonic', cv='prefit')
-        calibrated_model.fit(X_cal, y_cal)
+            # cv='prefit' tells the calibrator NOT to refit the estimator —
+            # the held-out cal slice supplies the calibration mapping.
+            calibrated_model = CalibratedClassifierCV(raw_model, method='isotonic', cv='prefit')
+            calibrated_model.fit(X_cal, y_cal)
 
-        y_prob = calibrated_model.predict_proba(X_val_scaled)[:, 1]
-        brier_after = float(brier_score_loss(y_val.values, y_prob))
-        print(f"[train] Calibration: Brier {brier_before:.4f} → {brier_after:.4f} "
-              f"({'improved' if brier_after < brier_before else 'kept'}, cal_n={cal_size}, cal_pos={n_cal_positive})")
+            y_prob = calibrated_model.predict_proba(X_val_scaled)[:, 1]
+            brier_after = float(brier_score_loss(y_val.values, y_prob))
+            print(f"[train] Calibration: Brier {brier_before:.4f} → {brier_after:.4f} "
+                  f"({'improved' if brier_after < brier_before else 'kept'}, cal_n={cal_size}, cal_pos={n_cal_positive})")
+        except Exception as e:
+            print(f"[train] Calibration failed ({type(e).__name__}: {e}); falling back to raw model")
+            calibrated_model = None
+            brier_before = None
+            brier_after = None
+            # If the calibration path got partway, raw_model may already be
+            # fitted on the 80% slice. Re-fit on the full train so the raw
+            # path doesn't have stale state.
+            raw_model = xgb.XGBClassifier(**params)
+            raw_model.fit(X_train_scaled, y_train, eval_set=[(X_val_scaled, y_val)], verbose=False)
+            y_prob = raw_model.predict_proba(X_val_scaled)[:, 1]
     else:
         print(f"[train] Skipping calibration (cal_size={cal_size}, cal_pos={n_cal_positive} < 10) — using raw probabilities")
         raw_model.fit(X_train_scaled, y_train, eval_set=[(X_val_scaled, y_val)], verbose=False)
