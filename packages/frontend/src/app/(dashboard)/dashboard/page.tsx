@@ -7,6 +7,7 @@ import { formatCurrency } from '@storees/shared'
 import { Info, Activity, ChevronUp, ChevronDown, Brain, ArrowRight, Users, PieChart, Megaphone, Workflow } from 'lucide-react'
 import Link from 'next/link'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { getAucQuality, isBehaviorBasedGoal } from '@/lib/predictionQuality'
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar, Legend,
@@ -182,22 +183,9 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border">
             {activeGoals.slice(0, 3).map(goal => {
               const quality = goal.currentMetric
-              const targetLower = (goal.targetEvent ?? '').toLowerCase()
-              const nameLower = (goal.name ?? '').toLowerCase()
-              const isBehavior = ['dormancy','dormant','churn','cancel','default','missed','expired','abandon'].some(
-                k => targetLower.includes(k) || nameLower.includes(k)
-              )
-              const qualityLabel = quality === null ? 'Not trained'
-                : isBehavior ? (quality >= 0.90 ? 'Strong' : quality >= 0.78 ? 'Good' : 'Needs Data')
-                : quality >= 0.95 ? 'Cycle-Based'
-                : quality >= 0.90 ? 'Strong'
-                : quality >= 0.78 ? 'Good'
-                : 'Needs Data'
-              const qualityColor = quality === null ? 'text-text-muted'
-                : qualityLabel === 'Cycle-Based' ? 'text-violet-600'
-                : quality >= 0.90 ? 'text-emerald-600'
-                : quality >= 0.78 ? 'text-blue-600'
-                : 'text-amber-600'
+              const isBehavior = isBehaviorBasedGoal(goal.targetEvent, goal.name)
+              const { label: qualityLabel, colorClass: qualityColor } =
+                getAucQuality(quality, isBehavior)
 
               return (
                 <Link

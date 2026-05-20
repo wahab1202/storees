@@ -17,6 +17,7 @@ import {
 import { useEventNames } from '@/hooks/useAnalytics'
 import { useProjects } from '@/hooks/useProjects'
 import { useProjectContext } from '@/lib/projectContext'
+import { getAucQuality, isBehaviorBasedGoal } from '@/lib/predictionQuality'
 import type { PredictionGoal } from '@storees/shared'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -186,54 +187,23 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
 
   const metric = goal.currentMetric ? Number(goal.currentMetric) : null
 
-  // Determine model type: cycle-based (conversion/repeat) vs behavior-based (dormancy/churn)
-  const targetLower = goal.targetEvent.toLowerCase()
-  const nameLower = goal.name.toLowerCase()
-  const isBehaviorBased = ['dormancy', 'dormant', 'churn', 'cancel', 'default', 'missed', 'expired', 'abandon'].some(
-    k => targetLower.includes(k) || nameLower.includes(k)
-  )
+  // Quality bucket — single source of truth in lib/predictionQuality.
+  const isBehaviorBased = isBehaviorBasedGoal(goal.targetEvent, goal.name)
+  const { label: qualityLabel, colorClass: qualityColor } = getAucQuality(metric, isBehaviorBased)
 
-  // Quality labels differ by model type
-  let qualityLabel: string | null = null
-  let qualityColor = 'text-text-muted'
+  // Modelling hint copy (page-specific, doesn't belong in the shared util)
   let qualityHint: string | null = null
   let modelTypeLabel: string | null = null
-
   if (metric !== null) {
-    // AUC < 0.5 is worse than random — the only case that genuinely deserves
-    // 'Needs Data'. 0.5–0.78 = honest predictive lift; label it 'Fair' so
-    // working models don't look broken to operators.
-    const isFair = metric >= 0.5 && metric < 0.78
-    const isBroken = metric < 0.5
     if (isBehaviorBased) {
-      // Behavior-based models: engagement quality, behavioral shifts
-      qualityLabel = metric >= 0.90 ? 'Strong' : metric >= 0.78 ? 'Good' : isFair ? 'Fair' : 'Needs Data'
-      qualityColor = metric >= 0.90 ? 'text-green-600' : metric >= 0.78 ? 'text-blue-600' : isFair ? 'text-amber-600' : 'text-red-600'
       modelTypeLabel = 'Behavior-Based'
       qualityHint = 'Engagement patterns drive predictions'
-    } else {
-      // Cycle-based models: recency, purchase cadence
-      if (metric >= 0.95) {
-        qualityLabel = 'Cycle-Based'
-        qualityColor = 'text-violet-600'
-        qualityHint = 'Recurring purchase patterns detected'
-      } else if (metric >= 0.90) {
-        qualityLabel = 'Strong'
-        qualityColor = 'text-green-600'
-      } else if (metric >= 0.78) {
-        qualityLabel = 'Good'
-        qualityColor = 'text-blue-600'
-      } else if (isFair) {
-        qualityLabel = 'Fair'
-        qualityColor = 'text-amber-600'
-      } else {
-        qualityLabel = 'Needs Data'
-        qualityColor = 'text-red-600'
-      }
-      modelTypeLabel = metric >= 0.95 ? 'Cycle-Based' : null
-      if (!qualityHint && metric >= 0.90) qualityHint = 'Purchase cadence drives predictions'
+    } else if (metric >= 0.95) {
+      modelTypeLabel = 'Cycle-Based'
+      qualityHint = 'Recurring purchase patterns detected'
+    } else if (metric >= 0.90) {
+      qualityHint = 'Purchase cadence drives predictions'
     }
-    void isBroken  // referenced via condition above; silences linter
   }
 
   return (
