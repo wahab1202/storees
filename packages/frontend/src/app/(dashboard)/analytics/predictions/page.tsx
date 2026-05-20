@@ -200,10 +200,15 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
   let modelTypeLabel: string | null = null
 
   if (metric !== null) {
+    // AUC < 0.5 is worse than random — the only case that genuinely deserves
+    // 'Needs Data'. 0.5–0.78 = honest predictive lift; label it 'Fair' so
+    // working models don't look broken to operators.
+    const isFair = metric >= 0.5 && metric < 0.78
+    const isBroken = metric < 0.5
     if (isBehaviorBased) {
       // Behavior-based models: engagement quality, behavioral shifts
-      qualityLabel = metric >= 0.90 ? 'Strong' : metric >= 0.78 ? 'Good' : 'Needs Data'
-      qualityColor = metric >= 0.90 ? 'text-green-600' : metric >= 0.78 ? 'text-blue-600' : 'text-amber-600'
+      qualityLabel = metric >= 0.90 ? 'Strong' : metric >= 0.78 ? 'Good' : isFair ? 'Fair' : 'Needs Data'
+      qualityColor = metric >= 0.90 ? 'text-green-600' : metric >= 0.78 ? 'text-blue-600' : isFair ? 'text-amber-600' : 'text-red-600'
       modelTypeLabel = 'Behavior-Based'
       qualityHint = 'Engagement patterns drive predictions'
     } else {
@@ -218,13 +223,17 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
       } else if (metric >= 0.78) {
         qualityLabel = 'Good'
         qualityColor = 'text-blue-600'
+      } else if (isFair) {
+        qualityLabel = 'Fair'
+        qualityColor = 'text-amber-600'
       } else {
         qualityLabel = 'Needs Data'
-        qualityColor = 'text-amber-600'
+        qualityColor = 'text-red-600'
       }
       modelTypeLabel = metric >= 0.95 ? 'Cycle-Based' : null
       if (!qualityHint && metric >= 0.90) qualityHint = 'Purchase cadence drives predictions'
     }
+    void isBroken  // referenced via condition above; silences linter
   }
 
   return (

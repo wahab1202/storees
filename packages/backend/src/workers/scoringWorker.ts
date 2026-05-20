@@ -68,19 +68,35 @@ async function processScoring(job: { data: ScoringJob }) {
         goal.observationWindowDays ?? 90,
       )
 
-      // Upsert scores
+      // Upsert scores — one row per (project, goal, customer). Migration 0058
+      // adds the unique index this ON CONFLICT keys on; before that index
+      // existed, every run inserted a duplicate row and "Total Scored" drifted
+      // past the actual customer count.
       for (const s of result.scores) {
-        await db.insert(predictionScores).values({
-          projectId,
-          customerId: s.customerId,
-          goalId,
-          score: String(s.score),
-          confidence: String(s.confidence),
-          bucket: s.bucket,
-          factors: [],  // batch scoring doesn't compute SHAP (too expensive)
-          modelVersion: result.modelVersion,
-          computedAt: new Date(result.computedAt),
-        })
+        await db
+          .insert(predictionScores)
+          .values({
+            projectId,
+            customerId: s.customerId,
+            goalId,
+            score: String(s.score),
+            confidence: String(s.confidence),
+            bucket: s.bucket,
+            factors: [],
+            modelVersion: result.modelVersion,
+            computedAt: new Date(result.computedAt),
+          })
+          .onConflictDoUpdate({
+            target: [predictionScores.projectId, predictionScores.goalId, predictionScores.customerId],
+            set: {
+              score: String(s.score),
+              confidence: String(s.confidence),
+              bucket: s.bucket,
+              factors: [],
+              modelVersion: result.modelVersion,
+              computedAt: new Date(result.computedAt),
+            },
+          })
         scored++
       }
     } catch (err) {
