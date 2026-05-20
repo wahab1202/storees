@@ -201,10 +201,20 @@ def train(project_id: str, goal_id: str, target_event: str,
     )
 
     if train_features.empty or train_labels.sum() < config.min_positive_labels:
+        n_pos = int(train_labels.sum()) if not train_labels.empty else 0
         return {
             "status": "insufficient_data",
-            "n_positive": int(train_labels.sum()) if not train_labels.empty else 0,
+            "n_positive": n_pos,
             "min_required": config.min_positive_labels,
+            # Fill the reason so the operator sees the actual gap, not a
+            # null. Falls through to the serve.py response payload.
+            "reason": (
+                f"INSUFFICIENT_DATA: {n_pos} positive labels in train window "
+                f"({(cutoff_train - timedelta(days=prediction_days)).date()} → "
+                f"{cutoff_train.date()}) < {config.min_positive_labels} required. "
+                f"Widen prediction_days, pick a more common target event, or "
+                f"lower MIN_POSITIVE_LABELS in the ML service env."
+            ),
         }
 
     # Extract validation data (shifted forward — non-overlapping prediction window)
