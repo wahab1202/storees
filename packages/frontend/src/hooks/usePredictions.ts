@@ -85,6 +85,16 @@ export function useRetrainAllPredictionGoals() {
   })
 }
 
+export type SegmentMetric = {
+  segment_type: 'behaviour' | 'region' | 'dealer' | string
+  segment_value: string | null
+  segment_label: string
+  n: number
+  n_positive: number
+  auc: number
+  delta_vs_overall: number
+}
+
 export type TrainingRun = {
   id: string
   trainedAt: string
@@ -95,6 +105,7 @@ export type TrainingRun = {
   nPositive: number | null
   reason: string | null
   durationMs: number | null
+  segmentMetrics: SegmentMetric[] | null
 }
 
 export function useGoalTrainingHistory(goalId: string, limit = 30) {

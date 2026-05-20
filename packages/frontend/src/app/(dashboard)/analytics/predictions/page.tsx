@@ -487,13 +487,20 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
 
 // Mini-trend: shows the last ~14 successful AUC values as a sparkline + the
 // delta vs the prior run. Renders nothing until at least two successful runs
-// have been recorded — a single AUC isn't a trend.
+// have been recorded — a single AUC isn't a trend. Also renders a per-segment
+// AUC table from the latest run when segment_metrics are available.
 function TrainingTrend({ goalId }: { goalId: string }) {
+  const [showSegments, setShowSegments] = useState(false)
   const { data } = useGoalTrainingHistory(goalId, 30)
   const runs = data?.data ?? []
   const successes = runs.filter(r => r.status === 'success' && r.auc != null) as Array<typeof runs[number] & { auc: number }>
+  const latestSegments = successes[0]?.segmentMetrics ?? null
 
-  if (successes.length < 2) return null
+  if (successes.length < 2 && !latestSegments) return null
+  if (successes.length < 2) {
+    // Only have segments to show, no trend
+    return <SegmentBreakdown segments={latestSegments} show={showSegments} onToggle={() => setShowSegments(!showSegments)} />
+  }
 
   // chronological order for the sparkline
   const series = [...successes].reverse().slice(-14)
@@ -520,14 +527,95 @@ function TrainingTrend({ goalId }: { goalId: string }) {
   const arrow = delta > 0.005 ? '↑' : delta < -0.005 ? '↓' : '→'
 
   return (
-    <div className="flex items-center gap-2 mt-1.5" title={`Last ${series.length} successful runs`}>
-      <svg width={W} height={H} className="text-text-muted">
-        <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" />
-      </svg>
-      <span className={cn('text-[10px] tabular-nums', deltaColor)}>
-        {arrow} {(delta >= 0 ? '+' : '')}{(delta * 100).toFixed(2)}pp
-      </span>
-      <span className="text-[10px] text-text-muted">vs last</span>
+    <>
+      <div className="flex items-center gap-2 mt-1.5" title={`Last ${series.length} successful runs`}>
+        <svg width={W} height={H} className="text-text-muted">
+          <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" />
+        </svg>
+        <span className={cn('text-[10px] tabular-nums', deltaColor)}>
+          {arrow} {(delta >= 0 ? '+' : '')}{(delta * 100).toFixed(2)}pp
+        </span>
+        <span className="text-[10px] text-text-muted">vs last</span>
+      </div>
+      <SegmentBreakdown segments={latestSegments} show={showSegments} onToggle={() => setShowSegments(!showSegments)} />
+    </>
+  )
+}
+
+// Per-segment AUC table — expandable. Highlights cohorts where the model
+// performs notably worse than overall (delta < -0.05) so you can spot
+// "good overall, useless on new customers" patterns at a glance.
+function SegmentBreakdown({
+  segments,
+  show,
+  onToggle,
+}: {
+  segments: { segment_type: string; segment_label: string; n: number; n_positive: number; auc: number; delta_vs_overall: number }[] | null
+  show: boolean
+  onToggle: () => void
+}) {
+  if (!segments || segments.length === 0) return null
+
+  // Group by type for readability
+  const grouped = segments.reduce<Record<string, typeof segments>>((acc, s) => {
+    (acc[s.segment_type] = acc[s.segment_type] ?? []).push(s)
+    return acc
+  }, {})
+
+  const TYPE_LABEL: Record<string, string> = {
+    behaviour: 'Behaviour',
+    region: 'Region',
+    dealer: 'Dealer',
+  }
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="text-[10px] text-text-muted hover:text-accent flex items-center gap-1"
+      >
+        {show ? '▾' : '▸'} Segments ({segments.length})
+      </button>
+      {show && (
+        <div className="mt-1 border border-border rounded-md p-2 bg-surface space-y-2">
+          {Object.entries(grouped).map(([type, items]) => (
+            <div key={type}>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted mb-1">
+                {TYPE_LABEL[type] ?? type}
+              </p>
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-text-muted">
+                    <th className="text-left font-medium pb-0.5">Segment</th>
+                    <th className="text-right font-medium pb-0.5">n</th>
+                    <th className="text-right font-medium pb-0.5">AUC</th>
+                    <th className="text-right font-medium pb-0.5">Δ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((s, i) => {
+                    const dColor =
+                      s.delta_vs_overall <= -0.05 ? 'text-red-600' :
+                      s.delta_vs_overall >= 0.05 ? 'text-emerald-600' :
+                      'text-text-muted'
+                    return (
+                      <tr key={i} className="border-t border-border/60">
+                        <td className="py-0.5 text-text-primary truncate max-w-[140px]" title={s.segment_label}>{s.segment_label}</td>
+                        <td className="py-0.5 text-right tabular-nums text-text-secondary">{s.n.toLocaleString()}</td>
+                        <td className="py-0.5 text-right tabular-nums">{s.auc.toFixed(3)}</td>
+                        <td className={cn('py-0.5 text-right tabular-nums', dColor)}>
+                          {s.delta_vs_overall >= 0 ? '+' : ''}{(s.delta_vs_overall * 100).toFixed(1)}pp
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -880,6 +880,8 @@ export const predictionTrainingRuns = pgTable('prediction_training_runs', {
   nPositive: integer('n_positive'),
   reason: text('reason'),
   durationMs: integer('duration_ms'),
+  // JSONB array of segment performance breakdowns — see migration 0056.
+  segmentMetrics: jsonb('segment_metrics'),
 }, (table) => [
   index('idx_training_runs_goal').on(table.goalId, table.trainedAt),
   index('idx_training_runs_project').on(table.projectId, table.trainedAt),

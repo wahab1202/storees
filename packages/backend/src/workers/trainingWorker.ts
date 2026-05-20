@@ -25,6 +25,7 @@ async function recordTrainingRun(opts: {
   nPositive?: number | null
   reason?: string | null
   durationMs?: number | null
+  segmentMetrics?: unknown
 }): Promise<void> {
   try {
     await db.insert(predictionTrainingRuns).values({
@@ -37,6 +38,7 @@ async function recordTrainingRun(opts: {
       nPositive: opts.nPositive ?? null,
       reason: opts.reason ?? null,
       durationMs: opts.durationMs ?? null,
+      segmentMetrics: (opts.segmentMetrics ?? null) as object | null,
     })
   } catch (err) {
     // Logging shouldn't break the training flow — drift history is a nice-to-have
@@ -116,6 +118,7 @@ async function processTraining(job: { data: TrainingJob }) {
         lift: result.modelLiftOverBaseline,
         reason: result.warning ?? null,
         durationMs,
+        segmentMetrics: result.segmentMetrics ?? null,
       })
 
       // Enqueue scoring job

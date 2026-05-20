@@ -136,6 +136,16 @@ export async function listModels(): Promise<{ models: { goalId: string; modelVer
   return result as { models: { goalId: string; modelVersion: string; auc: number; trainedAt: string }[] }
 }
 
+export type MlSegmentMetric = {
+  segmentType: 'behaviour' | 'region' | 'dealer' | string
+  segmentValue: string | null
+  segmentLabel: string
+  n: number
+  nPositive: number
+  auc: number
+  deltaVsOverall: number
+}
+
 type MlTrainResult = {
   status: string
   auc: number
@@ -144,6 +154,7 @@ type MlTrainResult = {
   modelVersion: string
   warning: string | null
   reason: string | null
+  segmentMetrics?: MlSegmentMetric[]
 }
 
 export async function trainModel(

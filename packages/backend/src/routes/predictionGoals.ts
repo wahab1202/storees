@@ -153,6 +153,7 @@ router.get('/:id/training-history', requireProjectId, async (req, res) => {
         nPositive: predictionTrainingRuns.nPositive,
         reason: predictionTrainingRuns.reason,
         durationMs: predictionTrainingRuns.durationMs,
+        segmentMetrics: predictionTrainingRuns.segmentMetrics,
       })
       .from(predictionTrainingRuns)
       .where(

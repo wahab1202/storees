@@ -38,6 +38,104 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from shared.config import load_config
 from shared.prepare import extract_training_data, temporal_split
 from shared.eval import evaluate
+from sqlalchemy import create_engine, text
+
+
+def _compute_segment_metrics(
+    database_url: str,
+    project_id: str,
+    val_customer_ids: list[str],
+    y_val: np.ndarray,
+    y_prob: np.ndarray,
+    overall_auc: float,
+) -> list[dict]:
+    """Slice the val set by customer attributes (returning/new, region, dealer)
+    and compute AUC per segment so the UI can surface 'this model is great
+    overall but useless on new customers' situations.
+
+    Each segment needs ≥30 rows AND ≥5 positive labels to report — AUC on
+    smaller slices is too noisy to be meaningful.
+    """
+    if len(val_customer_ids) == 0:
+        return []
+
+    engine = create_engine(database_url)
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT
+              c.id::text          AS customer_id,
+              c.total_orders      AS total_orders,
+              c.region            AS region,
+              c.agent_id::text    AS agent_id,
+              COALESCE(a.name, '') AS agent_name
+            FROM customers c
+            LEFT JOIN agents a ON a.id = c.agent_id
+            WHERE c.project_id = :project_id
+              AND c.id = ANY(CAST(:ids AS uuid[]))
+        """), {"project_id": project_id, "ids": val_customer_ids}).fetchall()
+
+    if not rows:
+        return []
+
+    attrs = pd.DataFrame(rows, columns=["customer_id", "total_orders", "region", "agent_id", "agent_name"])
+    attrs = attrs.set_index("customer_id")
+    # Align with val DataFrame ordering
+    aligned = attrs.reindex([str(cid) for cid in val_customer_ids])
+
+    def _seg_auc(mask: np.ndarray, label: str, segment_type: str, segment_value: str | None) -> dict | None:
+        n = int(mask.sum())
+        if n < 30:
+            return None
+        y_t = y_val[mask]
+        y_p = y_prob[mask]
+        n_pos = int(y_t.sum())
+        if n_pos < 5 or n_pos == n:
+            return None  # AUC undefined when all labels are one class
+        try:
+            seg_auc = float(roc_auc_score(y_t, y_p))
+        except ValueError:
+            return None
+        return {
+            "segment_type": segment_type,
+            "segment_value": segment_value,
+            "segment_label": label,
+            "n": n,
+            "n_positive": n_pos,
+            "auc": seg_auc,
+            "delta_vs_overall": seg_auc - overall_auc,
+        }
+
+    segments: list[dict] = []
+
+    # Returning vs new — most universal cut
+    is_returning = (aligned["total_orders"].fillna(0).astype(float) >= 2).values
+    for seg in [
+        _seg_auc(is_returning, "Returning customers", "behaviour", "returning"),
+        _seg_auc(~is_returning, "New customers", "behaviour", "new"),
+    ]:
+        if seg: segments.append(seg)
+
+    # Top 5 regions by population in val
+    region_counts = aligned["region"].value_counts().dropna().head(5)
+    for region, _count in region_counts.items():
+        if not region:
+            continue
+        mask = (aligned["region"] == region).values
+        seg = _seg_auc(mask, str(region), "region", str(region))
+        if seg: segments.append(seg)
+
+    # Top 5 dealers by population in val (B2B projects only)
+    dealer_counts = aligned[aligned["agent_id"].notna() & (aligned["agent_id"] != "None")]["agent_id"].value_counts().head(5)
+    for agent_id, _count in dealer_counts.items():
+        if not agent_id:
+            continue
+        mask = (aligned["agent_id"] == agent_id).values
+        # Pull the human name once
+        label = aligned[mask]["agent_name"].iloc[0] if mask.any() else str(agent_id)
+        seg = _seg_auc(mask, str(label) or str(agent_id), "dealer", str(agent_id))
+        if seg: segments.append(seg)
+
+    return segments
 
 
 def _compute_naive_baseline(val_features: pd.DataFrame, target_event: str) -> np.ndarray | None:
@@ -246,6 +344,25 @@ def train(project_id: str, goal_id: str, target_event: str,
             "validation_method": validation_method,
         }
 
+    # Per-segment AUC breakdown — surfaces cohorts where the model performs
+    # noticeably better or worse than overall. Treated as best-effort: if the
+    # DB lookup or any segment metric blows up, we log + ship without it.
+    segment_metrics: list[dict] = []
+    try:
+        val_ids = list(X_val.index)
+        segment_metrics = _compute_segment_metrics(
+            config.database_url,
+            project_id,
+            val_ids,
+            y_val.values,
+            y_prob,
+            eval_result.auc,
+        )
+        if segment_metrics:
+            print(f"[train] Computed {len(segment_metrics)} segment metrics")
+    except Exception as e:
+        print(f"[train] Segment metrics failed (non-fatal): {e}")
+
     # Compute SHAP values for global feature importance. TreeExplainer needs
     # the raw XGBoost; the calibration wrapper isn't a tree model.
     feature_names = list(X_train.columns)
@@ -311,6 +428,7 @@ def train(project_id: str, goal_id: str, target_event: str,
         "calibrated": calibrated_model is not None,
         "validation_method": validation_method,
         "feature_ranking": feature_ranking[:10],
+        "segment_metrics": segment_metrics,
     }
 
 
