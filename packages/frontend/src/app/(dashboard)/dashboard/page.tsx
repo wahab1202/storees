@@ -85,7 +85,7 @@ export default function DashboardPage() {
       <div className="bg-white border border-border rounded-lg">
         <div className="flex items-stretch divide-x divide-border overflow-x-auto">
           {metrics.map((m, i) => (
-            <div key={i} className="flex-1 min-w-[140px] px-4 py-3">
+            <div key={i} className="flex-1 min-w-[160px] px-4 py-3">
               {statsLoading ? (
                 <div className="space-y-1.5">
                   <Skeleton className="h-3 w-16" />
@@ -93,22 +93,25 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <>
-                  <p className="text-[11px] text-text-muted font-medium">{m.label}</p>
-                  <div className="flex items-baseline gap-1.5 mt-0.5">
-                    <span className="text-xl font-bold text-heading tabular-nums">{m.value}</span>
-                    {m.change !== undefined && (
-                      <span className={`inline-flex items-center gap-0.5 text-[11px] font-medium ${
-                        m.change > 0 ? 'text-emerald-600' : m.change < 0 ? 'text-red-500' : 'text-text-muted'
-                      }`}>
-                        {m.change !== 0 && (
-                          m.change > 0
-                            ? <ChevronUp className="h-3 w-3" />
-                            : <ChevronDown className="h-3 w-3" />
-                        )}
-                        {Math.abs(m.change)}%
-                      </span>
-                    )}
-                  </div>
+                  <p className="text-[11px] text-text-muted font-medium truncate">{m.label}</p>
+                  {/* Value + change stacked vertically — Indian-format currency
+                      values (₹78,82,72,885.9) are too wide to share a row with
+                      the change badge on the 6-card strip. */}
+                  <p className="text-lg font-bold text-heading tabular-nums mt-0.5 whitespace-nowrap">
+                    {m.value}
+                  </p>
+                  {m.change !== undefined && (
+                    <span className={`inline-flex items-center gap-0.5 text-[11px] font-medium mt-0.5 ${
+                      m.change > 0 ? 'text-emerald-600' : m.change < 0 ? 'text-red-500' : 'text-text-muted'
+                    }`}>
+                      {m.change !== 0 && (
+                        m.change > 0
+                          ? <ChevronUp className="h-3 w-3" />
+                          : <ChevronDown className="h-3 w-3" />
+                      )}
+                      {Math.abs(m.change)}%
+                    </span>
+                  )}
                 </>
               )}
             </div>
