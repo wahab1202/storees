@@ -7,8 +7,42 @@ import {
   updatePredictionGoalStatus,
   deletePredictionGoal,
 } from '../services/predictionGoalService.js'
+import { enqueueTrainingJob } from '../workers/trainingWorker.js'
+import { checkMlHealth } from '../services/mlProxyService.js'
 
 const router = Router()
+
+// GET /api/prediction-goals/_ml-health?projectId=...
+// Cheap probe for the Predictions UI — shows a banner if the ML service is
+// down, so users understand why a Re-train click won't change anything.
+// Note: ordered BEFORE /:id so 'm_ml-health' isn't treated as a goal id.
+router.get('/_ml-health', requireProjectId, async (_req, res) => {
+  const ok = await checkMlHealth()
+  res.json({ success: true, data: { mlServiceUp: ok } })
+})
+
+// POST /api/prediction-goals/_retrain-all?projectId=...
+// Re-enqueue training for every goal on this project. Used by the
+// "Re-train all" button or after a major data backfill, so goals stuck on
+// insufficient_data get a fresh shot once data lands.
+router.post('/_retrain-all', requireProjectId, async (req, res) => {
+  try {
+    const goals = await listPredictionGoals(req.projectId!)
+    let enqueued = 0
+    for (const g of goals) {
+      try {
+        await enqueueTrainingJob(req.projectId!, g.id)
+        enqueued++
+      } catch (err) {
+        console.error(`[retrain-all] enqueue failed for ${g.id}:`, err)
+      }
+    }
+    res.json({ success: true, data: { enqueued, total: goals.length } })
+  } catch (err) {
+    console.error('Prediction retrain-all error:', err)
+    res.status(500).json({ success: false, error: 'Failed to enqueue retraining' })
+  }
+})
 
 // GET /api/prediction-goals?projectId=...
 router.get('/', requireProjectId, async (req, res) => {
@@ -92,6 +126,24 @@ router.patch('/:id/status', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Prediction goal status update error:', err)
     res.status(500).json({ success: false, error: 'Failed to update prediction goal status' })
+  }
+})
+
+// POST /api/prediction-goals/:id/retrain?projectId=...
+// Re-enqueue training for a single goal. Status flips back to 'active' on
+// success; stays insufficient_data if the model still can't find enough
+// positive labels in the current data window.
+router.post('/:id/retrain', requireProjectId, async (req, res) => {
+  try {
+    const goal = await getPredictionGoal(req.projectId!, req.params.id as string)
+    if (!goal) {
+      return res.status(404).json({ success: false, error: 'Prediction goal not found' })
+    }
+    await enqueueTrainingJob(req.projectId!, goal.id)
+    res.json({ success: true, data: { enqueued: true, goalId: goal.id } })
+  } catch (err) {
+    console.error('Prediction goal retrain error:', err)
+    res.status(500).json({ success: false, error: 'Failed to enqueue retraining' })
   }
 })
 

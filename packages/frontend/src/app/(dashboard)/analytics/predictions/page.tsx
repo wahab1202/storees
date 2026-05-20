@@ -7,6 +7,9 @@ import {
   useCreatePredictionGoal,
   useUpdatePredictionGoalStatus,
   useDeletePredictionGoal,
+  useRetrainPredictionGoal,
+  useRetrainAllPredictionGoals,
+  useMlServiceHealth,
 } from '@/hooks/usePredictions'
 import { useEventNames } from '@/hooks/useAnalytics'
 import { useProjects } from '@/hooks/useProjects'
@@ -30,6 +33,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Users,
+  RefreshCw,
 } from 'lucide-react'
 
 // Domain-aware prediction presets
@@ -67,6 +71,10 @@ export default function PredictionsPage() {
   const { data, isLoading } = usePredictionGoals()
   const goals = data?.data ?? []
   const [showWizard, setShowWizard] = useState(false)
+  const retrainAll = useRetrainAllPredictionGoals()
+  const mlHealth = useMlServiceHealth()
+  const mlDown = mlHealth.data?.data?.mlServiceUp === false
+  const hasInsufficient = goals.some(g => g.status === 'insufficient_data')
 
   return (
     <div>
@@ -75,13 +83,46 @@ export default function PredictionsPage() {
           <h1 className="text-xl font-semibold text-heading">Predictions</h1>
           <p className="text-sm text-text-secondary mt-1">AI-powered propensity scoring with model management</p>
         </div>
-        <button
-          onClick={() => setShowWizard(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent-hover"
-        >
-          <Plus className="w-4 h-4" /> Create Prediction
-        </button>
+        <div className="flex items-center gap-2">
+          {hasInsufficient && (
+            <button
+              onClick={() => {
+                retrainAll.mutate(undefined, {
+                  onSuccess: (res) => {
+                    const d = res?.data
+                    toast.success(`Retraining queued for ${d?.enqueued ?? 0} of ${d?.total ?? 0} goals`)
+                  },
+                  onError: () => toast.error('Failed to enqueue retraining'),
+                })
+              }}
+              disabled={retrainAll.isPending}
+              className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg text-sm font-medium text-text-secondary hover:text-accent hover:border-accent disabled:opacity-50"
+            >
+              <RefreshCw className={cn('w-4 h-4', retrainAll.isPending && 'animate-spin')} /> Re-train all
+            </button>
+          )}
+          <button
+            onClick={() => setShowWizard(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent-hover"
+          >
+            <Plus className="w-4 h-4" /> Create Prediction
+          </button>
+        </div>
       </div>
+
+      {/* ML service unavailable — explain why retrains will be no-ops */}
+      {mlDown && (
+        <div className="flex items-start gap-3 mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg">
+          <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+          <div className="text-xs text-red-700">
+            <p className="font-medium">ML service is unreachable</p>
+            <p className="mt-0.5 text-red-600/90">
+              Goals can't be (re)trained until the Python ML service comes back up. Status will stay
+              on whatever the last successful training produced.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Wizard */}
       {showWizard && <CreateWizard onClose={() => setShowWizard(false)} />}
@@ -122,6 +163,7 @@ export default function PredictionsPage() {
 function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
   const updateStatus = useUpdatePredictionGoalStatus()
   const deleteGoal = useDeletePredictionGoal()
+  const retrain = useRetrainPredictionGoal()
 
   const statusStyles: Record<string, { bg: string; text: string; icon: typeof CheckCircle2 }> = {
     active: { bg: 'bg-green-50', text: 'text-green-700', icon: CheckCircle2 },
@@ -254,6 +296,19 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
             <Play className="w-3 h-3" /> Activate
           </button>
         )}
+        <button
+          onClick={() => {
+            retrain.mutate(goal.id, {
+              onSuccess: () => toast.success('Retraining queued — refresh in a minute'),
+              onError: () => toast.error('Failed to queue retraining'),
+            })
+          }}
+          disabled={retrain.isPending}
+          className="text-xs text-text-secondary hover:text-accent flex items-center gap-1"
+          title="Re-run training against the current data"
+        >
+          <RefreshCw className={cn('w-3 h-3', retrain.isPending && 'animate-spin')} /> Re-train
+        </button>
         {goal.origin !== 'pack' && (
           <button
             onClick={() => {

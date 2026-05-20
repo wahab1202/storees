@@ -57,6 +57,44 @@ export function useDeletePredictionGoal() {
   })
 }
 
+export function useRetrainPredictionGoal() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ enqueued: boolean; goalId: string }>(
+        withProject(`/api/prediction-goals/${id}/retrain`),
+        {},
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['prediction-goals'] })
+    },
+  })
+}
+
+export function useRetrainAllPredictionGoals() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ enqueued: number; total: number }>(
+        withProject('/api/prediction-goals/_retrain-all'),
+        {},
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['prediction-goals'] })
+    },
+  })
+}
+
+export function useMlServiceHealth() {
+  return useQuery({
+    queryKey: ['ml-service-health'],
+    queryFn: () =>
+      api.get<{ mlServiceUp: boolean }>(withProject('/api/prediction-goals/_ml-health')),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
 // ============ PREDICTION SCORES (for Customer 360) ============
 
 type PredictionFactor = {
