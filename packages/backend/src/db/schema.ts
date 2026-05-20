@@ -864,6 +864,27 @@ export const segmentSnapshots = pgTable('segment_snapshots', {
   index('idx_segment_snapshots_segment').on(table.segmentId, table.snapshotDate),
 ])
 
+// ============ PREDICTION TRAINING RUNS ============
+// One row per training attempt per goal. Powers drift detection + retrain
+// transparency in the Predictions UI.
+
+export const predictionTrainingRuns = pgTable('prediction_training_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  goalId: uuid('goal_id').notNull().references(() => predictionGoals.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  trainedAt: timestamp('trained_at', { withTimezone: true }).notNull().defaultNow(),
+  status: varchar('status', { length: 30 }).notNull(), // success | insufficient_data | failed | error
+  auc: decimal('auc', { precision: 6, scale: 4 }),
+  baselineAuc: decimal('baseline_auc', { precision: 6, scale: 4 }),
+  lift: decimal('lift', { precision: 6, scale: 4 }),
+  nPositive: integer('n_positive'),
+  reason: text('reason'),
+  durationMs: integer('duration_ms'),
+}, (table) => [
+  index('idx_training_runs_goal').on(table.goalId, table.trainedAt),
+  index('idx_training_runs_project').on(table.projectId, table.trainedAt),
+])
+
 // ============ PREDICTION SCORES ============
 
 export const predictionScores = pgTable('prediction_scores', {

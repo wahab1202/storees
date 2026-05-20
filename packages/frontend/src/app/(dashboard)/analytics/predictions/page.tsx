@@ -10,6 +10,7 @@ import {
   useRetrainPredictionGoal,
   useRetrainAllPredictionGoals,
   useMlServiceHealth,
+  useGoalTrainingHistory,
 } from '@/hooks/usePredictions'
 import { useEventNames } from '@/hooks/useAnalytics'
 import { useProjects } from '@/hooks/useProjects'
@@ -268,6 +269,8 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
             Last trained: {new Date(goal.lastTrainedAt).toLocaleDateString()}
           </div>
         )}
+
+        <TrainingTrend goalId={goal.id} />
       </div>
 
       <div className="flex items-center gap-2 pt-3 border-t border-border">
@@ -478,6 +481,53 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Mini-trend: shows the last ~14 successful AUC values as a sparkline + the
+// delta vs the prior run. Renders nothing until at least two successful runs
+// have been recorded — a single AUC isn't a trend.
+function TrainingTrend({ goalId }: { goalId: string }) {
+  const { data } = useGoalTrainingHistory(goalId, 30)
+  const runs = data?.data ?? []
+  const successes = runs.filter(r => r.status === 'success' && r.auc != null) as Array<typeof runs[number] & { auc: number }>
+
+  if (successes.length < 2) return null
+
+  // chronological order for the sparkline
+  const series = [...successes].reverse().slice(-14)
+  const values = series.map(s => s.auc)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = Math.max(max - min, 0.001)
+
+  const W = 80
+  const H = 18
+  const points = values.map((v, i) => {
+    const x = (i / Math.max(values.length - 1, 1)) * W
+    const y = H - ((v - min) / span) * H
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+
+  const latest = successes[0].auc
+  const prior  = successes[1].auc
+  const delta  = latest - prior
+  const deltaColor =
+    delta > 0.005 ? 'text-emerald-600' :
+    delta < -0.005 ? 'text-red-600' :
+    'text-text-muted'
+  const arrow = delta > 0.005 ? '↑' : delta < -0.005 ? '↓' : '→'
+
+  return (
+    <div className="flex items-center gap-2 mt-1.5" title={`Last ${series.length} successful runs`}>
+      <svg width={W} height={H} className="text-text-muted">
+        <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" />
+      </svg>
+      <span className={cn('text-[10px] tabular-nums', deltaColor)}>
+        {arrow} {(delta >= 0 ? '+' : '')}{(delta * 100).toFixed(2)}pp
+      </span>
+      <span className="text-[10px] text-text-muted">vs last</span>
     </div>
   )
 }

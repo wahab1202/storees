@@ -11,9 +11,38 @@
 import { Queue, Worker } from 'bullmq'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { predictionGoals, projects } from '../db/schema.js'
+import { predictionGoals, predictionTrainingRuns, projects } from '../db/schema.js'
 import { eq, and } from 'drizzle-orm'
 import { trainModel, checkMlHealth } from '../services/mlProxyService.js'
+
+async function recordTrainingRun(opts: {
+  projectId: string
+  goalId: string
+  status: string
+  auc?: number | null
+  baselineAuc?: number | null
+  lift?: number | null
+  nPositive?: number | null
+  reason?: string | null
+  durationMs?: number | null
+}): Promise<void> {
+  try {
+    await db.insert(predictionTrainingRuns).values({
+      projectId: opts.projectId,
+      goalId: opts.goalId,
+      status: opts.status,
+      auc: opts.auc != null ? String(opts.auc) : null,
+      baselineAuc: opts.baselineAuc != null ? String(opts.baselineAuc) : null,
+      lift: opts.lift != null ? String(opts.lift) : null,
+      nPositive: opts.nPositive ?? null,
+      reason: opts.reason ?? null,
+      durationMs: opts.durationMs ?? null,
+    })
+  } catch (err) {
+    // Logging shouldn't break the training flow — drift history is a nice-to-have
+    console.error('[training] Failed to record training run:', err)
+  }
+}
 
 type TrainingJob = {
   projectId: string
@@ -55,6 +84,7 @@ async function processTraining(job: { data: TrainingJob }) {
 
   console.log(`[training] Training model for goal "${goal.name}" (${goalId}), domain=${domain}`)
 
+  const trainStart = Date.now()
   try {
     const result = await trainModel(
       projectId,
@@ -64,6 +94,7 @@ async function processTraining(job: { data: TrainingJob }) {
       goal.predictionWindowDays ?? 14,
       domain,
     )
+    const durationMs = Date.now() - trainStart
 
     console.log(`[training] Result: status=${result.status}, auc=${result.auc}, baseline=${result.baselineAuc}`)
 
@@ -78,6 +109,14 @@ async function processTraining(job: { data: TrainingJob }) {
           updatedAt: new Date(),
         })
         .where(eq(predictionGoals.id, goalId))
+
+      await recordTrainingRun({
+        projectId, goalId, status: 'success',
+        auc: result.auc, baselineAuc: result.baselineAuc,
+        lift: result.modelLiftOverBaseline,
+        reason: result.warning ?? null,
+        durationMs,
+      })
 
       // Enqueue scoring job
       const scoreQueue = new Queue(SCORE_QUEUE, { connection: redisConnection })
@@ -100,15 +139,34 @@ async function processTraining(job: { data: TrainingJob }) {
         .set({ status: 'insufficient_data', updatedAt: new Date() })
         .where(eq(predictionGoals.id, goalId))
 
+      await recordTrainingRun({
+        projectId, goalId, status: 'insufficient_data',
+        reason: result.reason ?? null,
+        durationMs,
+      })
+
       console.log(`[training] Insufficient data for goal "${goal.name}"`)
       return { status: 'insufficient_data', reason: result.reason }
 
     } else {
       // Training failed (leakage, no lift, etc.)
+      await recordTrainingRun({
+        projectId, goalId, status: 'failed',
+        auc: result.auc, baselineAuc: result.baselineAuc,
+        lift: result.modelLiftOverBaseline,
+        reason: result.reason ?? null,
+        durationMs,
+      })
       console.warn(`[training] Training failed for "${goal.name}": ${result.reason}`)
       return { status: 'failed', reason: result.reason }
     }
   } catch (err) {
+    const durationMs = Date.now() - trainStart
+    await recordTrainingRun({
+      projectId, goalId, status: 'error',
+      reason: err instanceof Error ? err.message : String(err),
+      durationMs,
+    })
     console.error(`[training] Error training goal ${goalId}:`, err)
     return { status: 'error', reason: String(err) }
   }

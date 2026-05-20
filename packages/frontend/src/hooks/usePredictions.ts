@@ -85,6 +85,28 @@ export function useRetrainAllPredictionGoals() {
   })
 }
 
+export type TrainingRun = {
+  id: string
+  trainedAt: string
+  status: 'success' | 'insufficient_data' | 'failed' | 'error'
+  auc: number | null
+  baselineAuc: number | null
+  lift: number | null
+  nPositive: number | null
+  reason: string | null
+  durationMs: number | null
+}
+
+export function useGoalTrainingHistory(goalId: string, limit = 30) {
+  return useQuery({
+    queryKey: ['goal-training-history', goalId, limit],
+    queryFn: () =>
+      api.get<TrainingRun[]>(withProject(`/api/prediction-goals/${goalId}/training-history`, { limit })),
+    enabled: !!goalId,
+    staleTime: 60_000,
+  })
+}
+
 export function useMlServiceHealth() {
   return useQuery({
     queryKey: ['ml-service-health'],

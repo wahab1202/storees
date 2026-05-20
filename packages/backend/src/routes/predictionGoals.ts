@@ -1,4 +1,7 @@
 import { Router } from 'express'
+import { eq, and, desc } from 'drizzle-orm'
+import { db } from '../db/connection.js'
+import { predictionTrainingRuns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import {
   createPredictionGoal,
@@ -126,6 +129,53 @@ router.patch('/:id/status', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Prediction goal status update error:', err)
     res.status(500).json({ success: false, error: 'Failed to update prediction goal status' })
+  }
+})
+
+// GET /api/prediction-goals/:id/training-history?projectId=...
+// Recent training attempts (most recent first). Drives the drift mini-chart
+// on the Predictions page. Default limit 30 ≈ a month of daily runs.
+router.get('/:id/training-history', requireProjectId, async (req, res) => {
+  try {
+    const goal = await getPredictionGoal(req.projectId!, req.params.id as string)
+    if (!goal) {
+      return res.status(404).json({ success: false, error: 'Prediction goal not found' })
+    }
+    const limit = Math.min(Number(req.query.limit) || 30, 200)
+    const rows = await db
+      .select({
+        id: predictionTrainingRuns.id,
+        trainedAt: predictionTrainingRuns.trainedAt,
+        status: predictionTrainingRuns.status,
+        auc: predictionTrainingRuns.auc,
+        baselineAuc: predictionTrainingRuns.baselineAuc,
+        lift: predictionTrainingRuns.lift,
+        nPositive: predictionTrainingRuns.nPositive,
+        reason: predictionTrainingRuns.reason,
+        durationMs: predictionTrainingRuns.durationMs,
+      })
+      .from(predictionTrainingRuns)
+      .where(
+        and(
+          eq(predictionTrainingRuns.goalId, goal.id),
+          eq(predictionTrainingRuns.projectId, req.projectId!),
+        ),
+      )
+      .orderBy(desc(predictionTrainingRuns.trainedAt))
+      .limit(limit)
+
+    res.json({
+      success: true,
+      data: rows.map(r => ({
+        ...r,
+        auc: r.auc != null ? Number(r.auc) : null,
+        baselineAuc: r.baselineAuc != null ? Number(r.baselineAuc) : null,
+        lift: r.lift != null ? Number(r.lift) : null,
+      })),
+    })
+  } catch (err) {
+    console.error('Prediction goal training-history error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch training history' })
   }
 })
 

@@ -207,6 +207,8 @@ async function bootstrap() {
   startInteractionWorker()
   startScoringWorker()
   startScoringScheduler()
+  const { startPredictionTrainingScheduler } = await import('./workers/predictionTrainingScheduler.js')
+  startPredictionTrainingScheduler()
   startTrainingWorker()
   startCampaignScheduler()
   startFlowFixedTimeScheduler()
