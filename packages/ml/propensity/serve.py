@@ -142,6 +142,44 @@ def list_models():
     return {"models": models}
 
 
+class PromoteRequest(BaseModel):
+    goal_id: str
+    model_version: str
+
+
+@app.post("/promote")
+def promote_version(req: PromoteRequest):
+    """Make the named versioned snapshot the live model for this goal.
+    Copies versions/model_<v>.joblib (+ scaler + explainer + metadata) to
+    the goal directory's live files. Cache is invalidated so the next score
+    request loads the promoted model.
+    """
+    import shutil
+    config = load_config()
+    model_dir = Path(config.model_dir) / f"propensity_{req.goal_id}"
+    versions_dir = model_dir / "versions"
+
+    src_model = versions_dir / f"model_{req.model_version}.joblib"
+    src_scaler = versions_dir / f"scaler_{req.model_version}.joblib"
+    src_explainer = versions_dir / f"explainer_{req.model_version}.joblib"
+    src_meta = versions_dir / f"metadata_{req.model_version}.json"
+
+    if not src_model.exists() or not src_scaler.exists() or not src_explainer.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {req.model_version} not found for goal {req.goal_id}",
+        )
+
+    shutil.copyfile(src_model, model_dir / "model.joblib")
+    shutil.copyfile(src_scaler, model_dir / "scaler.joblib")
+    shutil.copyfile(src_explainer, model_dir / "explainer.joblib")
+    if src_meta.exists():
+        shutil.copyfile(src_meta, model_dir / "metadata.json")
+
+    _model_cache.pop(req.goal_id, None)
+    return {"status": "promoted", "goal_id": req.goal_id, "model_version": req.model_version}
+
+
 class TrainRequest(BaseModel):
     project_id: str
     goal_id: str

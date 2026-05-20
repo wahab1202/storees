@@ -887,6 +887,24 @@ export const predictionTrainingRuns = pgTable('prediction_training_runs', {
   index('idx_training_runs_project').on(table.projectId, table.trainedAt),
 ])
 
+// ============ PREDICTION MODEL VERSIONS ============
+// One row per successful model trained for a goal. is_active flags the
+// version that the Python ML service is currently serving — promote/
+// rollback flips this. Backbone for champion/challenger.
+
+export const predictionModelVersions = pgTable('prediction_model_versions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  goalId: uuid('goal_id').notNull().references(() => predictionGoals.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  modelVersion: varchar('model_version', { length: 64 }).notNull(),
+  trainAuc: decimal('train_auc', { precision: 6, scale: 4 }),
+  baselineAuc: decimal('baseline_auc', { precision: 6, scale: 4 }),
+  trainedAt: timestamp('trained_at', { withTimezone: true }).notNull().defaultNow(),
+  isActive: boolean('is_active').notNull().default(false),
+  activatedAt: timestamp('activated_at', { withTimezone: true }),
+  notes: text('notes'),
+})
+
 // ============ PREDICTION SCORES ============
 
 export const predictionScores = pgTable('prediction_scores', {

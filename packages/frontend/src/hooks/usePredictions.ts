@@ -118,6 +118,42 @@ export function useGoalTrainingHistory(goalId: string, limit = 30) {
   })
 }
 
+export type ModelVersion = {
+  id: string
+  modelVersion: string
+  trainAuc: number | null
+  baselineAuc: number | null
+  trainedAt: string
+  isActive: boolean
+  activatedAt: string | null
+  notes: string | null
+}
+
+export function useGoalModelVersions(goalId: string) {
+  return useQuery({
+    queryKey: ['goal-model-versions', goalId],
+    queryFn: () =>
+      api.get<ModelVersion[]>(withProject(`/api/prediction-goals/${goalId}/versions`)),
+    enabled: !!goalId,
+    staleTime: 30_000,
+  })
+}
+
+export function usePromoteModelVersion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ goalId, versionId }: { goalId: string; versionId: string }) =>
+      api.post<{ promoted: boolean; modelVersion: string }>(
+        withProject(`/api/prediction-goals/${goalId}/versions/${versionId}/promote`),
+        {},
+      ),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['goal-model-versions', vars.goalId] })
+      queryClient.invalidateQueries({ queryKey: ['prediction-goals'] })
+    },
+  })
+}
+
 export function useMlServiceHealth() {
   return useQuery({
     queryKey: ['ml-service-health'],

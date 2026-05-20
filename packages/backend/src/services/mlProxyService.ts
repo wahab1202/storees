@@ -136,6 +136,15 @@ export async function listModels(): Promise<{ models: { goalId: string; modelVer
   return result as { models: { goalId: string; modelVersion: string; auc: number; trainedAt: string }[] }
 }
 
+export async function promoteModelVersion(goalId: string, modelVersion: string): Promise<{ status: string }> {
+  const result = await mlFetch('/propensity/promote', {
+    method: 'POST',
+    body: { goalId, modelVersion },
+    timeout: 30_000,
+  })
+  return result as { status: string }
+}
+
 export type MlSegmentMetric = {
   segmentType: 'behaviour' | 'region' | 'dealer' | string
   segmentValue: string | null

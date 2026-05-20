@@ -11,7 +11,7 @@
 import { Queue, Worker } from 'bullmq'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { predictionGoals, predictionTrainingRuns, projects } from '../db/schema.js'
+import { predictionGoals, predictionTrainingRuns, predictionModelVersions, projects } from '../db/schema.js'
 import { eq, and } from 'drizzle-orm'
 import { trainModel, checkMlHealth } from '../services/mlProxyService.js'
 
@@ -120,6 +120,32 @@ async function processTraining(job: { data: TrainingJob }) {
         durationMs,
         segmentMetrics: result.segmentMetrics ?? null,
       })
+
+      // Version registry: deactivate any prior active version then record
+      // the new one as active. The Python ML service treats the latest train
+      // as the live model, so DB and disk agree.
+      if (result.modelVersion) {
+        try {
+          await db.transaction(async (tx) => {
+            await tx
+              .update(predictionModelVersions)
+              .set({ isActive: false })
+              .where(eq(predictionModelVersions.goalId, goalId))
+            await tx.insert(predictionModelVersions).values({
+              goalId,
+              projectId,
+              modelVersion: result.modelVersion,
+              trainAuc: result.auc != null ? String(result.auc) : null,
+              baselineAuc: result.baselineAuc != null ? String(result.baselineAuc) : null,
+              isActive: true,
+              activatedAt: new Date(),
+              notes: result.warning ?? null,
+            })
+          })
+        } catch (err) {
+          console.error('[training] Failed to record model version:', err)
+        }
+      }
 
       // Enqueue scoring job
       const scoreQueue = new Queue(SCORE_QUEUE, { connection: redisConnection })

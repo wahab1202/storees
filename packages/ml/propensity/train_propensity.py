@@ -376,11 +376,21 @@ def train(project_id: str, goal_id: str, target_event: str,
         reverse=True,
     )
 
-    # Save model artifacts
+    # Save model artifacts. We keep a per-version snapshot under versions/
+    # so promote/rollback can swap by copying — the live model.joblib is
+    # always whatever was last trained or last promoted to.
     model_version = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     model_dir = Path(config.model_dir) / f"propensity_{goal_id}"
-    model_dir.mkdir(parents=True, exist_ok=True)
+    versions_dir = model_dir / "versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
 
+    # Versioned snapshot (immutable record of every successful train)
+    joblib.dump(model, versions_dir / f"model_{model_version}.joblib")
+    joblib.dump(scaler, versions_dir / f"scaler_{model_version}.joblib")
+    joblib.dump(explainer, versions_dir / f"explainer_{model_version}.joblib")
+
+    # Live pointer — what serve.py loads. Overwritten on every train so the
+    # latest model is the default-active one until someone Promotes another.
     joblib.dump(model, model_dir / "model.joblib")
     joblib.dump(scaler, model_dir / "scaler.joblib")
     joblib.dump(explainer, model_dir / "explainer.joblib")
@@ -412,6 +422,9 @@ def train(project_id: str, goal_id: str, target_event: str,
     }
 
     with open(model_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+    # Per-version metadata snapshot for the promote/rollback flow.
+    with open(versions_dir / f"metadata_{model_version}.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
     print(f"[train] Model saved to {model_dir}, version={model_version}")

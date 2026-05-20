@@ -11,6 +11,8 @@ import {
   useRetrainAllPredictionGoals,
   useMlServiceHealth,
   useGoalTrainingHistory,
+  useGoalModelVersions,
+  usePromoteModelVersion,
 } from '@/hooks/usePredictions'
 import { useEventNames } from '@/hooks/useAnalytics'
 import { useProjects } from '@/hooks/useProjects'
@@ -271,6 +273,7 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
         )}
 
         <TrainingTrend goalId={goal.id} />
+        <VersionHistory goalId={goal.id} />
       </div>
 
       <div className="flex items-center gap-2 pt-3 border-t border-border">
@@ -539,6 +542,62 @@ function TrainingTrend({ goalId }: { goalId: string }) {
       </div>
       <SegmentBreakdown segments={latestSegments} show={showSegments} onToggle={() => setShowSegments(!showSegments)} />
     </>
+  )
+}
+
+// Version history: expandable list of every successful model trained for
+// this goal, latest first. Active version is highlighted; non-active ones
+// have a Promote button so you can roll back when a fresh train regressed.
+function VersionHistory({ goalId }: { goalId: string }) {
+  const [show, setShow] = useState(false)
+  const { data } = useGoalModelVersions(goalId)
+  const promote = usePromoteModelVersion()
+  const versions = data?.data ?? []
+
+  if (versions.length < 2) return null  // Only one version — nothing to roll back to
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setShow(!show)}
+        className="text-[10px] text-text-muted hover:text-accent flex items-center gap-1"
+      >
+        {show ? '▾' : '▸'} Versions ({versions.length})
+      </button>
+      {show && (
+        <div className="mt-1 border border-border rounded-md p-2 bg-surface space-y-1">
+          {versions.map(v => (
+            <div key={v.id} className="flex items-center gap-2 text-[11px]">
+              <span className={cn('flex-1 truncate', v.isActive && 'font-semibold text-accent')} title={v.modelVersion}>
+                {v.isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent mr-1.5" />}
+                {v.modelVersion}
+              </span>
+              <span className="text-text-muted tabular-nums">
+                AUC {v.trainAuc != null ? v.trainAuc.toFixed(3) : '—'}
+              </span>
+              <span className="text-text-muted text-[10px]">{new Date(v.trainedAt).toLocaleDateString()}</span>
+              {!v.isActive && (
+                <button
+                  onClick={() => {
+                    if (confirm(`Promote ${v.modelVersion} as the active model?`)) {
+                      promote.mutate({ goalId, versionId: v.id }, {
+                        onSuccess: () => toast.success('Promoted — new model is live'),
+                        onError: (err) => toast.error(`Promote failed: ${(err as Error).message}`),
+                      })
+                    }
+                  }}
+                  disabled={promote.isPending}
+                  className="text-accent hover:text-accent-hover disabled:opacity-50"
+                >
+                  Promote
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

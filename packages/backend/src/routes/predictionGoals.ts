@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq, and, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { predictionTrainingRuns } from '../db/schema.js'
+import { predictionTrainingRuns, predictionModelVersions, predictionGoals } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import {
   createPredictionGoal,
@@ -11,7 +11,7 @@ import {
   deletePredictionGoal,
 } from '../services/predictionGoalService.js'
 import { enqueueTrainingJob } from '../workers/trainingWorker.js'
-import { checkMlHealth } from '../services/mlProxyService.js'
+import { checkMlHealth, promoteModelVersion } from '../services/mlProxyService.js'
 
 const router = Router()
 
@@ -177,6 +177,99 @@ router.get('/:id/training-history', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Prediction goal training-history error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch training history' })
+  }
+})
+
+// GET /api/prediction-goals/:id/versions?projectId=...
+// Lists all model versions trained for this goal, latest first, with the
+// active one flagged. Powers the version-history UI.
+router.get('/:id/versions', requireProjectId, async (req, res) => {
+  try {
+    const goal = await getPredictionGoal(req.projectId!, req.params.id as string)
+    if (!goal) {
+      return res.status(404).json({ success: false, error: 'Prediction goal not found' })
+    }
+    const rows = await db
+      .select()
+      .from(predictionModelVersions)
+      .where(eq(predictionModelVersions.goalId, goal.id))
+      .orderBy(desc(predictionModelVersions.trainedAt))
+      .limit(50)
+
+    res.json({
+      success: true,
+      data: rows.map(r => ({
+        ...r,
+        trainAuc: r.trainAuc != null ? Number(r.trainAuc) : null,
+        baselineAuc: r.baselineAuc != null ? Number(r.baselineAuc) : null,
+      })),
+    })
+  } catch (err) {
+    console.error('Prediction goal versions error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch model versions' })
+  }
+})
+
+// POST /api/prediction-goals/:id/versions/:versionId/promote?projectId=...
+// Make a specific historical version the live model. Hits the ML service
+// to swap the joblib files, then flips is_active in our DB. Useful for
+// rollback when a newly-trained model regressed.
+router.post('/:id/versions/:versionId/promote', requireProjectId, async (req, res) => {
+  try {
+    const goal = await getPredictionGoal(req.projectId!, req.params.id as string)
+    if (!goal) {
+      return res.status(404).json({ success: false, error: 'Prediction goal not found' })
+    }
+    const [version] = await db
+      .select()
+      .from(predictionModelVersions)
+      .where(
+        and(
+          eq(predictionModelVersions.id, req.params.versionId as string),
+          eq(predictionModelVersions.goalId, goal.id),
+        ),
+      )
+      .limit(1)
+    if (!version) {
+      return res.status(404).json({ success: false, error: 'Model version not found' })
+    }
+    if (version.isActive) {
+      return res.json({ success: true, data: { alreadyActive: true } })
+    }
+
+    // 1. Tell the ML service to swap files
+    try {
+      await promoteModelVersion(goal.id, version.modelVersion)
+    } catch (err) {
+      return res.status(502).json({
+        success: false,
+        error: `ML service refused promote: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
+
+    // 2. Flip the active flag in our DB
+    await db.transaction(async (tx) => {
+      await tx
+        .update(predictionModelVersions)
+        .set({ isActive: false })
+        .where(eq(predictionModelVersions.goalId, goal.id))
+      await tx
+        .update(predictionModelVersions)
+        .set({ isActive: true, activatedAt: new Date() })
+        .where(eq(predictionModelVersions.id, version.id))
+      // Mirror the AUC into the goal so the card shows the right value.
+      if (version.trainAuc != null) {
+        await tx
+          .update(predictionGoals)
+          .set({ currentMetric: version.trainAuc, updatedAt: new Date() })
+          .where(eq(predictionGoals.id, goal.id))
+      }
+    })
+
+    res.json({ success: true, data: { promoted: true, modelVersion: version.modelVersion } })
+  } catch (err) {
+    console.error('Prediction goal promote error:', err)
+    res.status(500).json({ success: false, error: 'Failed to promote model version' })
   }
 })
 
