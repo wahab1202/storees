@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { eq, and, desc, asc, ilike, or, sql, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { customers, orders, events, customerSegments, segments, flowTrips, flows, messages, campaigns } from '../db/schema.js'
+import { customers, orders, events, customerSegments, segments, flowTrips, flows, messages, campaigns, products } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { customerScopeFilter, requireRole } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
@@ -275,14 +275,23 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       const props = (row.properties ?? {}) as Record<string, unknown>
       const lineItems = Array.isArray(props.line_items) ? props.line_items : []
 
+      // Prefer authoritative top-level props.total (the connector stores
+      // summary.current_order_total there for Medusa orders; bulk imports
+      // store the canonical order total). Fall back to line-item math when
+      // missing — older imports relied on that path.
+      const lineItemTotal = lineItems.reduce((sum: number, item: Record<string, unknown>) =>
+        sum + (Number(item.unit_price) || 0) * (Number(item.quantity) || 1), 0)
+      const total = props.total !== undefined && props.total !== null
+        ? Number(props.total)
+        : lineItemTotal
+
       return {
         id: row.id,
         projectId,
         customerId,
         externalOrderId: (props.order_id as string) ?? (props.display_id ? `#${props.display_id}` : null),
         status: (props.fulfillment_status as string) ?? (props.status as string) ?? 'pending',
-        total: lineItems.reduce((sum: number, item: Record<string, unknown>) =>
-          sum + (Number(item.unit_price) || 0) * (Number(item.quantity) || 1), 0),
+        total,
         discount: Number(props.discount_total) || 0,
         currency: (props.currency as string) ?? 'INR',
         lineItems: lineItems.map((item: Record<string, unknown>) => ({
@@ -325,7 +334,44 @@ router.get('/:id/events', requireProjectId, async (req: AuthenticatedRequest, re
       .orderBy(desc(events.timestamp))
       .limit(limit)
 
-    res.json({ success: true, data: rows })
+    // Enrich events that only carry product_id with the product's title from
+    // the products table — so "product_viewed" etc. show "iPhone 15" instead
+    // of a raw external id in the activity timeline. Single batch lookup
+    // keyed on products.shopify_product_id (the external id column).
+    const productIds = new Set<string>()
+    for (const row of rows) {
+      const props = (row.properties ?? {}) as Record<string, unknown>
+      const pid = props.product_id
+      if (typeof pid === 'string' && pid && !props.product_name) productIds.add(pid)
+    }
+
+    let productNameById = new Map<string, string>()
+    if (productIds.size > 0) {
+      const productRows = await db
+        .select({ extId: products.shopifyProductId, title: products.title })
+        .from(products)
+        .where(
+          and(
+            eq(products.projectId, projectId),
+            inArray(products.shopifyProductId, Array.from(productIds)),
+          ),
+        )
+      productNameById = new Map(productRows.map(p => [p.extId, p.title]))
+    }
+
+    const enriched = rows.map(row => {
+      const props = (row.properties ?? {}) as Record<string, unknown>
+      const pid = props.product_id
+      if (typeof pid === 'string' && pid && !props.product_name) {
+        const title = productNameById.get(pid)
+        if (title) {
+          return { ...row, properties: { ...props, product_name: title } }
+        }
+      }
+      return row
+    })
+
+    res.json({ success: true, data: enriched })
   } catch (err) {
     console.error('Customer events error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch events' })
