@@ -275,12 +275,19 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       const props = (row.properties ?? {}) as Record<string, unknown>
       const lineItems = Array.isArray(props.line_items) ? props.line_items : []
 
+      // Per-item price field is `price` after the connector's field map
+      // (line_items.fields maps source `unit_price` → `price`). Bulk-import
+      // payloads tend to keep the source `unit_price`. Read both so either
+      // shape renders correctly.
+      const itemPrice = (item: Record<string, unknown>): number =>
+        Number(item.price ?? item.unit_price) || 0
+
       // Prefer authoritative top-level props.total (the connector stores
       // summary.current_order_total there for Medusa orders; bulk imports
       // store the canonical order total). Fall back to line-item math when
       // missing — older imports relied on that path.
       const lineItemTotal = lineItems.reduce((sum: number, item: Record<string, unknown>) =>
-        sum + (Number(item.unit_price) || 0) * (Number(item.quantity) || 1), 0)
+        sum + itemPrice(item) * (Number(item.quantity) || 1), 0)
       const total = props.total !== undefined && props.total !== null
         ? Number(props.total)
         : lineItemTotal
@@ -298,7 +305,7 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
           productId: (item.product_id as string) ?? '',
           productName: (item.product_name as string) ?? 'Unknown Product',
           quantity: Number(item.quantity) || 1,
-          price: Number(item.unit_price) || 0,
+          price: itemPrice(item),
           imageUrl: (item.image_url as string) ?? undefined,
         })),
         createdAt: row.timestamp,
