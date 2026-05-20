@@ -77,7 +77,14 @@ export default function PredictionsPage() {
   const retrainAll = useRetrainAllPredictionGoals()
   const mlHealth = useMlServiceHealth()
   const mlDown = mlHealth.data?.data?.mlServiceUp === false
-  const hasInsufficient = goals.some(g => g.status === 'insufficient_data')
+  // Show the bulk retrain whenever ≥1 goal needs help: either flagged as
+  // insufficient_data, OR has no usable AUC (training failed silently in
+  // an earlier run, so goal.status stayed 'active' but currentMetric is 0).
+  const hasGoalsNeedingRetrain = goals.some(g =>
+    g.status === 'insufficient_data' ||
+    !g.currentMetric ||
+    Number(g.currentMetric) === 0,
+  )
 
   return (
     <div>
@@ -87,7 +94,7 @@ export default function PredictionsPage() {
           <p className="text-sm text-text-secondary mt-1">AI-powered propensity scoring with model management</p>
         </div>
         <div className="flex items-center gap-2">
-          {hasInsufficient && (
+          {hasGoalsNeedingRetrain && (
             <button
               onClick={() => {
                 retrainAll.mutate(undefined, {
