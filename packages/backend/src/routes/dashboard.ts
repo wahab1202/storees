@@ -71,26 +71,39 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
       let revenue7d = Number(o.revenue_7d)
       let revenuePrev7d = Number(o.revenue_prev_7d)
 
-      // Fallback: if orders table is empty, compute from order events
+      // Fallback: if orders table is empty, compute from order events.
+      // Per-order revenue prefers the canonical properties.total set by the
+      // connector (Medusa summary.current_order_total / bulk imports), falling
+      // back to summing line-item prices. The connector's order field map
+      // renames source `unit_price` → `price` on line_items, but older bulk
+      // imports keep `unit_price` — accept either.
       if (totalOrders === 0) {
         const evtResult = await db.execute(sql`
+          WITH order_events AS (
+            SELECT
+              timestamp,
+              COALESCE(
+                (properties->>'total')::numeric,
+                (SELECT COALESCE(SUM(COALESCE(
+                                       (item->>'price')::numeric,
+                                       (item->>'unit_price')::numeric,
+                                       0)), 0)
+                 FROM jsonb_array_elements(properties->'line_items') item),
+                0
+              ) AS revenue
+            FROM events
+            WHERE project_id = ${projectId}
+              AND event_name IN ('order_placed', 'order_completed')
+              AND ${customerIdScope}
+          )
           SELECT
             COUNT(*) AS total_orders,
-            COALESCE(SUM(
-              (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
-               FROM jsonb_array_elements(properties->'line_items') item)
-            ), 0) AS total_revenue,
+            COALESCE(SUM(revenue), 0) AS total_revenue,
             COUNT(*) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS orders_7d,
             COUNT(*) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS orders_prev_7d,
-            COALESCE(SUM(
-              (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
-               FROM jsonb_array_elements(properties->'line_items') item)
-            ) FILTER (WHERE timestamp >= ${sevenDaysAgo}), 0) AS revenue_7d,
-            COALESCE(SUM(
-              (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
-               FROM jsonb_array_elements(properties->'line_items') item)
-            ) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
-          FROM events WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed') AND ${customerIdScope}
+            COALESCE(SUM(revenue) FILTER (WHERE timestamp >= ${sevenDaysAgo}), 0) AS revenue_7d,
+            COALESCE(SUM(revenue) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
+          FROM order_events
         `)
         const ev = evtResult.rows[0] as Record<string, string>
         totalOrders = Number(ev.total_orders)
