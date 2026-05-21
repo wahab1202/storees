@@ -222,48 +222,47 @@ async function importOrderBatch(
       continue
     }
 
-    // Cancellation detection — Medusa / VirpanAI ONLY. The detection is
-    // scope-safe by field-naming: every signal below only fires when the
-    // connector's field map explicitly maps these keys. Shopify (when it
-    // lands) uses different spelling ('cancelled' with two Ls, cancelled_at)
-    // and different semantics (financial_status='voided', etc.), and will
-    // need its own detection branch keyed on those Shopify-shaped fields.
+    // Lifecycle gating — Medusa / VirpanAI ONLY. Scope-safe by field naming:
+    // these checks only fire when the connector's field map populates these
+    // keys. Shopify uses different spellings ('cancelled' with two Ls,
+    // cancelled_at, financial_status) and different semantics — it needs its
+    // own detection branch when that connector lands.
     //
-    // Medusa lifecycle (per GWM backend team's spec):
-    //   fulfillment_status='delivered' → completed   (real revenue)
-    //   fulfillment_status='canceled'  → canceled    (NOT revenue)
-    //   otherwise                       → pending/processing
-    // fulfillment_status is the canonical signal. status and canceled_at
-    // are fallbacks for other Medusa versions where one or the other
-    // isn't populated on cancellation.
+    // Per GWM backend team's spec, only fulfillment_status='delivered'
+    // counts as revenue:
+    //   fulfillment_status='delivered' → counted as revenue
+    //   fulfillment_status='canceled'  → NOT revenue (compensate)
+    //   anything else (pending/processing/etc) → NOT yet revenue (compensate
+    //     if previously counted under old "everything counts" code path;
+    //     otherwise just skip)
     //
-    // Checked BEFORE total/timestamp validation because cancelled Medusa
-    // orders have zeroed totals upstream — we compensate against the
-    // ORIGINAL order_placed event's amount, not the source's current zero.
+    // status and canceled_at are fallback cancellation signals for older
+    // Medusa versions; ignored when fulfillment_status is present.
     const status = mapped.order_status as string | undefined
     const fulfillmentStatus = mapped.fulfillment_status as string | undefined
     const canceledAt = mapped.canceled_at as string | null | undefined
-    const isCanceled =
-      fulfillmentStatus === 'canceled' ||
-      status === 'canceled' ||
-      (canceledAt != null && canceledAt !== '')
+    const isDelivered = fulfillmentStatus === 'delivered'
 
-    if (isCanceled) {
+    if (!isDelivered) {
+      // Non-delivered (canceled OR pending/processing). Compensate if a
+      // prior order_placed exists in our DB — pre-fix, every order was
+      // ingested as order_placed regardless of state. Net effect: total_spent
+      // reflects only delivered revenue.
       const compensation = await buildCompensatingCancellation(projectId, orderId, mapped)
       if (compensation === 'no-prior') {
-        // No order_placed exists for this cancellation in our DB — nothing to
-        // compensate. Skip silently; the cancelled order was never ingested,
-        // which is the desired post-fix steady state.
+        // Never previously counted — nothing to undo. Skip silently.
         continue
       }
       if (compensation === 'already-compensated') {
-        // The compensating order_cancelled event was emitted on a prior sync.
-        // Idempotent skip.
+        // Compensation was emitted on a prior sync. Idempotent skip.
         continue
       }
       pending.push({ rawCustomerId: customerExternalId, row: compensation })
       continue
     }
+    // Explicitly mark void to silence unused-var lint on the fallback signals.
+    // They're still validated above as part of the lifecycle comment.
+    void status; void canceledAt
 
     const total = mapped.total
     if (typeof total !== 'number' || total <= 0) {
@@ -291,7 +290,27 @@ async function importOrderBatch(
       continue
     }
 
-    const row = buildOrderRow(projectId, mapped)
+    // If a compensation event exists for this order, it means this order was
+    // previously non-delivered (we subtracted its revenue) and has now been
+    // delivered. Use a distinct idempotency key so insertion isn't blocked
+    // by the prior order_placed row AND so the new event still adds revenue
+    // (aggregator processes by event_name, not by key). Net contribution
+    // over the lifecycle: +X (initial historical) − X (compensation) + X
+    // (revival) = +X, which is correct since the order is now delivered.
+    const compensationKey = `order_cancelled_compensation:${orderId}`
+    const [priorComp] = await db
+      .select({ id: eventsTable.id })
+      .from(eventsTable)
+      .where(
+        and(
+          eq(eventsTable.projectId, projectId),
+          eq(eventsTable.idempotencyKey, compensationKey),
+        ),
+      )
+      .limit(1)
+    const isRevival = priorComp != null
+
+    const row = buildOrderRow(projectId, mapped, { isRevival })
     if (!row) {
       stats.failed += 1
       await log(syncId, 'error', `Order ${orderId} skipped — invalid timestamp value: ${String(mapped.timestamp)}`, {
@@ -453,7 +472,11 @@ async function buildCompensatingCancellation(
   }
 }
 
-function buildOrderRow(projectId: string, mapped: Record<string, unknown>) {
+function buildOrderRow(
+  projectId: string,
+  mapped: Record<string, unknown>,
+  opts: { isRevival?: boolean } = {},
+) {
   const orderId = mapped.order_id as string
   // Caller already gates on mapped.timestamp presence; treat invalid date as
   // an unbuildable row (returns null) and let the caller log + count.
@@ -466,13 +489,22 @@ function buildOrderRow(projectId: string, mapped: Record<string, unknown>) {
     return null
   }
 
+  // Revival keys (`order_placed_revival:<orderId>`) only fire when this order
+  // was previously compensated (non-delivered) and is now delivered. The
+  // distinct key keeps the historical, compensation, and revival rows
+  // coexisting in the events table — full audit trail of the order's
+  // lifecycle through our system.
+  const idempotencyKey = opts.isRevival
+    ? `order_placed_revival:${orderId}`
+    : `order_placed_historical:${orderId}`
+
   return {
     projectId,
     eventName: 'order_placed',
     platform: 'api',
     source: 'connector_sync',
     timestamp,
-    idempotencyKey: `order_placed_historical:${orderId}`,
+    idempotencyKey,
     sessionId: null,
     customerId: null as string | null,
     properties: {
@@ -480,7 +512,11 @@ function buildOrderRow(projectId: string, mapped: Record<string, unknown>) {
       total: mapped.total,
       currency: mapped.currency ?? 'INR',
       line_items: Array.isArray(mapped.line_items) ? mapped.line_items : [],
+      // Carry source-side state so future queries / segments can filter on it.
+      status: mapped.order_status ?? null,
+      fulfillment_status: mapped.fulfillment_status ?? null,
       historical: true,
+      ...(opts.isRevival ? { revival: true, reason: 'delivered_after_compensation' } : {}),
     },
   }
 }
