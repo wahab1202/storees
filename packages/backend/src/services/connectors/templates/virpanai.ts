@@ -132,6 +132,12 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     orders: {
       customer_id: 'customer_id',
       order_id: 'id',
+      // Medusa lifecycle fields. Surface both so the importer can detect
+      // cancellations regardless of which one the source populates (some
+      // Medusa versions only set canceled_at on cancellation; older ones
+      // also flip status='canceled').
+      order_status: 'status',
+      canceled_at: 'canceled_at',
       timestamp: 'created_at',
       total: 'summary.current_order_total',
       currency: 'currency_code',

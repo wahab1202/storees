@@ -222,6 +222,32 @@ async function importOrderBatch(
       continue
     }
 
+    // Cancellation detection. Source systems may set either status='canceled'
+    // or canceled_at, depending on version — accept both. We check this BEFORE
+    // total/timestamp validation because a cancelled order's source-side total
+    // is typically zeroed, and we want to compensate against the original
+    // order_placed event regardless of what the source currently reports.
+    const status = mapped.order_status as string | undefined
+    const canceledAt = mapped.canceled_at as string | null | undefined
+    const isCanceled = status === 'canceled' || (canceledAt != null && canceledAt !== '')
+
+    if (isCanceled) {
+      const compensation = await buildCompensatingCancellation(projectId, orderId, mapped)
+      if (compensation === 'no-prior') {
+        // No order_placed exists for this cancellation in our DB — nothing to
+        // compensate. Skip silently; the cancelled order was never ingested,
+        // which is the desired post-fix steady state.
+        continue
+      }
+      if (compensation === 'already-compensated') {
+        // The compensating order_cancelled event was emitted on a prior sync.
+        // Idempotent skip.
+        continue
+      }
+      pending.push({ rawCustomerId: customerExternalId, row: compensation })
+      continue
+    }
+
     const total = mapped.total
     if (typeof total !== 'number' || total <= 0) {
       stats.failed += 1
@@ -303,6 +329,105 @@ async function importOrderBatch(
         opts: { jobId: `agg-${ev.id}`, removeOnComplete: true, removeOnFail: false },
       })),
     )
+  }
+}
+
+/**
+ * For an order that's now canceled in the source system, emit a paired
+ * order_cancelled event so the customer-aggregate worker subtracts the
+ * original revenue from customers.total_spent on its next pass.
+ *
+ * Steady-state semantics:
+ *   - If the source-side cancellation has no prior order_placed in our DB,
+ *     there's nothing to compensate (the order was either never ingested
+ *     OR ingestion happened after the fix). Returns 'no-prior'.
+ *   - If a compensating order_cancelled already exists (prior sync emitted
+ *     it), this is idempotent — returns 'already-compensated'.
+ *   - Otherwise builds a fresh order_cancelled event carrying the ORIGINAL
+ *     order_placed total in properties.total. Aggregator subtracts that
+ *     value via REVENUE_DECREMENT_EVENTS path.
+ *
+ * Idempotency key intentionally differs from the original order_placed
+ * row (`order_cancelled_compensation:<orderId>` vs
+ * `order_placed_historical:<orderId>`) so:
+ *   1. Both rows coexist in the events table — audit trail preserved.
+ *   2. Re-running the sync doesn't create duplicate compensations (the
+ *      unique index on (project_id, idempotency_key) blocks dupes).
+ */
+type OrderEventRow = NonNullable<ReturnType<typeof buildOrderRow>> & {
+  properties: Record<string, unknown>
+}
+
+async function buildCompensatingCancellation(
+  projectId: string,
+  orderId: string,
+  mapped: Record<string, unknown>,
+): Promise<'no-prior' | 'already-compensated' | OrderEventRow> {
+  const compensatingKey = `order_cancelled_compensation:${orderId}`
+  const originalKey = `order_placed_historical:${orderId}`
+
+  // Already emitted compensation? Skip — idempotent.
+  const existingCompensation = await db
+    .select({ id: eventsTable.id })
+    .from(eventsTable)
+    .where(
+      and(
+        eq(eventsTable.projectId, projectId),
+        eq(eventsTable.idempotencyKey, compensatingKey),
+      ),
+    )
+    .limit(1)
+  if (existingCompensation.length > 0) return 'already-compensated'
+
+  // Find the original order_placed event to recover the canonical total —
+  // the source system has zeroed it on cancellation, but we need the
+  // pre-cancellation amount to subtract correctly.
+  const [prior] = await db
+    .select({ properties: eventsTable.properties, customerId: eventsTable.customerId })
+    .from(eventsTable)
+    .where(
+      and(
+        eq(eventsTable.projectId, projectId),
+        eq(eventsTable.idempotencyKey, originalKey),
+      ),
+    )
+    .limit(1)
+  if (!prior) return 'no-prior'
+
+  const priorProps = (prior.properties ?? {}) as Record<string, unknown>
+  const priorTotal = Number(priorProps.total ?? 0)
+  if (!Number.isFinite(priorTotal) || priorTotal <= 0) return 'no-prior'
+
+  // Stamp the cancellation event at the canceled_at moment if available,
+  // otherwise at the order's created_at. Better than NOW() — keeps the
+  // timeline truthful.
+  const cancelTimestampRaw = (mapped.canceled_at ?? mapped.timestamp) as string
+  let cancelTimestamp: Date
+  try {
+    cancelTimestamp = new Date(cancelTimestampRaw)
+    if (Number.isNaN(cancelTimestamp.getTime())) cancelTimestamp = new Date()
+  } catch {
+    cancelTimestamp = new Date()
+  }
+
+  return {
+    projectId,
+    eventName: 'order_cancelled',
+    platform: 'api',
+    source: 'connector_sync',
+    timestamp: cancelTimestamp,
+    idempotencyKey: compensatingKey,
+    sessionId: null,
+    customerId: null as string | null,
+    properties: {
+      order_id: orderId,
+      total: priorTotal,
+      currency: mapped.currency ?? priorProps.currency ?? 'INR',
+      line_items: [],
+      reason: 'source_status_canceled',
+      compensating: true,
+      historical: true,
+    },
   }
 }
 
