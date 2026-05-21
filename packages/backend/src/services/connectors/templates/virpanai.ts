@@ -132,11 +132,12 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     orders: {
       customer_id: 'customer_id',
       order_id: 'id',
-      // Medusa lifecycle fields. Surface both so the importer can detect
-      // cancellations regardless of which one the source populates (some
-      // Medusa versions only set canceled_at on cancellation; older ones
-      // also flip status='canceled').
+      // Medusa lifecycle fields. GWM's canonical signal is fulfillment_status
+      // (delivered = revenue, canceled = not revenue, anything else =
+      // pending/processing). status and canceled_at are also captured as
+      // fallbacks — some Medusa versions only set one of them on cancellation.
       order_status: 'status',
+      fulfillment_status: 'fulfillment_status',
       canceled_at: 'canceled_at',
       timestamp: 'created_at',
       total: 'summary.current_order_total',

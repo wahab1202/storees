@@ -222,14 +222,31 @@ async function importOrderBatch(
       continue
     }
 
-    // Cancellation detection. Source systems may set either status='canceled'
-    // or canceled_at, depending on version — accept both. We check this BEFORE
-    // total/timestamp validation because a cancelled order's source-side total
-    // is typically zeroed, and we want to compensate against the original
-    // order_placed event regardless of what the source currently reports.
+    // Cancellation detection — Medusa / VirpanAI ONLY. The detection is
+    // scope-safe by field-naming: every signal below only fires when the
+    // connector's field map explicitly maps these keys. Shopify (when it
+    // lands) uses different spelling ('cancelled' with two Ls, cancelled_at)
+    // and different semantics (financial_status='voided', etc.), and will
+    // need its own detection branch keyed on those Shopify-shaped fields.
+    //
+    // Medusa lifecycle (per GWM backend team's spec):
+    //   fulfillment_status='delivered' → completed   (real revenue)
+    //   fulfillment_status='canceled'  → canceled    (NOT revenue)
+    //   otherwise                       → pending/processing
+    // fulfillment_status is the canonical signal. status and canceled_at
+    // are fallbacks for other Medusa versions where one or the other
+    // isn't populated on cancellation.
+    //
+    // Checked BEFORE total/timestamp validation because cancelled Medusa
+    // orders have zeroed totals upstream — we compensate against the
+    // ORIGINAL order_placed event's amount, not the source's current zero.
     const status = mapped.order_status as string | undefined
+    const fulfillmentStatus = mapped.fulfillment_status as string | undefined
     const canceledAt = mapped.canceled_at as string | null | undefined
-    const isCanceled = status === 'canceled' || (canceledAt != null && canceledAt !== '')
+    const isCanceled =
+      fulfillmentStatus === 'canceled' ||
+      status === 'canceled' ||
+      (canceledAt != null && canceledAt !== '')
 
     if (isCanceled) {
       const compensation = await buildCompensatingCancellation(projectId, orderId, mapped)
@@ -424,6 +441,11 @@ async function buildCompensatingCancellation(
       total: priorTotal,
       currency: mapped.currency ?? priorProps.currency ?? 'INR',
       line_items: [],
+      // Carry the source-side signals so future queries can confirm WHY a
+      // compensation was emitted (audit trail).
+      status: mapped.order_status ?? null,
+      fulfillment_status: mapped.fulfillment_status ?? null,
+      canceled_at: mapped.canceled_at ?? null,
       reason: 'source_status_canceled',
       compensating: true,
       historical: true,
