@@ -111,6 +111,15 @@ async function importCustomerBatch(
         }
 
         try {
+          // Parse source_created_at if the template provides it. Used to
+          // set first_seen accurately and prevent batch syncs from labelling
+          // every historical customer as "new today".
+          const rawSourceCreatedAt = mapped.source_created_at
+          let sourceCreatedAt: Date | null = null
+          if (rawSourceCreatedAt) {
+            const d = new Date(rawSourceCreatedAt as string)
+            if (!Number.isNaN(d.getTime())) sourceCreatedAt = d
+          }
           await resolveCustomer({
             projectId,
             externalId,
@@ -124,6 +133,13 @@ async function importCustomerBatch(
             // B2B: stamp customers.agent_id when the dealer exists and store
             // dealer_id in custom_attributes for deferred backlinking.
             agentExternalDealerId: (mapped.dealer_id as string | undefined) ?? null,
+            // Connector sync is pipeline activity, not customer activity —
+            // don't masquerade as activity by bumping last_seen. The
+            // customer-aggregate worker bumps last_seen from real event
+            // timestamps via GREATEST(last_seen, event_ts) — that's the
+            // correct path.
+            skipLastSeenBump: true,
+            sourceCreatedAt,
           })
           stats.imported += 1
         } catch (err) {

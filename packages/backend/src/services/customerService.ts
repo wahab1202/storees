@@ -185,6 +185,16 @@ type ResolveParams = {
    *  customers.agent_id when the agent row already exists AND the customer
    *  has no agent assigned yet. Silently skipped if dealer not found. */
   agentExternalDealerId?: string | null
+  /** When true, last_seen is NOT bumped on resolution. Set by batch sync /
+   *  bulk-import paths so that pipeline activity doesn't masquerade as
+   *  customer activity. Live event ingestion leaves this false — an event
+   *  IS activity. */
+  skipLastSeenBump?: boolean
+  /** Source-system created_at (e.g. Medusa customer.created_at). Used to
+   *  set first_seen accurately when ingesting an existing customer from a
+   *  source whose history predates Storees. Falls back to NOW() on insert
+   *  and is LEAST()-merged into an existing first_seen if older. */
+  sourceCreatedAt?: Date | null
 }
 
 /**
@@ -228,7 +238,7 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
 }
 
 async function resolveCustomerCore(params: ResolveParams): Promise<string> {
-  const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed, region, city } = params
+  const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed, region, city, skipLastSeenBump, sourceCreatedAt } = params
 
   // 1. Try external_id (has unique index: idx_customers_external)
   if (externalId) {
@@ -239,7 +249,7 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed, region, city })
+      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed, region, city, skipLastSeenBump, sourceCreatedAt })
       return found.id
     }
   }
@@ -253,7 +263,8 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      const updates: Record<string, unknown> = { lastSeen: new Date(), updatedAt: new Date() }
+      const updates: Record<string, unknown> = { updatedAt: new Date() }
+      if (!skipLastSeenBump) updates.lastSeen = new Date()
       if (externalId) updates.externalId = externalId
       if (name) updates.name = name
       if (phone) updates.phone = phone
@@ -262,6 +273,10 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       // Region/city: only fill if currently NULL (don't clobber other-source data like B2B dealer assignment)
       if (region) updates.region = sql`COALESCE(${customers.region}, ${region})`
       if (city) updates.city = sql`COALESCE(${customers.city}, ${city})`
+      // first_seen: only ever moves backward (toward earlier dates), never forward.
+      // Lets a sync from a source whose history predates Storees correct an
+      // existing row whose first_seen was set to ingest-time.
+      if (sourceCreatedAt) updates.firstSeen = sql`LEAST(${customers.firstSeen}, ${sourceCreatedAt})`
       await db.update(customers).set(updates).where(eq(customers.id, found.id))
       return found.id
     }
@@ -276,26 +291,35 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed, region, city })
+      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed, region, city, skipLastSeenBump, sourceCreatedAt })
       return found.id
     }
   }
 
-  // 4. Atomic create — ON CONFLICT prevents duplicate creation race condition
-  // Try insert with the best unique key available
+  // 4. Atomic create — ON CONFLICT prevents duplicate creation race condition.
+  // first_seen / last_seen handling:
+  //   - INSERT: prefer sourceCreatedAt when provided (sync path) so an
+  //     ingested historical customer doesn't get labelled "new today".
+  //     last_seen on a brand-new INSERT defaults to first_seen so an
+  //     unseen customer doesn't immediately count as "active 7d".
+  //   - ON CONFLICT UPDATE: same LEAST() rule for first_seen; last_seen
+  //     only bumped when skipLastSeenBump is false.
+  const initialFirstSeen = sourceCreatedAt ?? new Date()
+  const initialLastSeen = skipLastSeenBump ? initialFirstSeen : new Date()
   if (email) {
     const result = await db.execute(sql`
-      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics)
-      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb)
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics, first_seen, last_seen)
+      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb, ${initialFirstSeen}, ${initialLastSeen})
       ON CONFLICT (project_id, email) WHERE email IS NOT NULL
       DO UPDATE SET
-        last_seen = NOW(),
-        updated_at = NOW(),
+        last_seen   = CASE WHEN ${skipLastSeenBump ?? false} THEN customers.last_seen ELSE NOW() END,
+        first_seen  = LEAST(customers.first_seen, EXCLUDED.first_seen),
+        updated_at  = NOW(),
         external_id = COALESCE(EXCLUDED.external_id, customers.external_id),
-        phone = COALESCE(EXCLUDED.phone, customers.phone),
-        name = COALESCE(EXCLUDED.name, customers.name),
-        region = COALESCE(customers.region, EXCLUDED.region),
-        city = COALESCE(customers.city, EXCLUDED.city)
+        phone       = COALESCE(EXCLUDED.phone, customers.phone),
+        name        = COALESCE(EXCLUDED.name, customers.name),
+        region      = COALESCE(customers.region, EXCLUDED.region),
+        city        = COALESCE(customers.city, EXCLUDED.city)
       RETURNING id
     `)
     return (result.rows[0] as { id: string }).id
@@ -303,16 +327,17 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
 
   if (phone) {
     const result = await db.execute(sql`
-      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics)
-      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb)
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics, first_seen, last_seen)
+      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb, ${initialFirstSeen}, ${initialLastSeen})
       ON CONFLICT (project_id, phone) WHERE phone IS NOT NULL
       DO UPDATE SET
-        last_seen = NOW(),
-        updated_at = NOW(),
+        last_seen   = CASE WHEN ${skipLastSeenBump ?? false} THEN customers.last_seen ELSE NOW() END,
+        first_seen  = LEAST(customers.first_seen, EXCLUDED.first_seen),
+        updated_at  = NOW(),
         external_id = COALESCE(EXCLUDED.external_id, customers.external_id),
-        name = COALESCE(EXCLUDED.name, customers.name),
-        region = COALESCE(customers.region, EXCLUDED.region),
-        city = COALESCE(customers.city, EXCLUDED.city)
+        name        = COALESCE(EXCLUDED.name, customers.name),
+        region      = COALESCE(customers.region, EXCLUDED.region),
+        city        = COALESCE(customers.city, EXCLUDED.city)
       RETURNING id
     `)
     return (result.rows[0] as { id: string }).id
@@ -330,6 +355,8 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
     region: region ?? null,
     city: city ?? null,
     metrics: {},
+    firstSeen: initialFirstSeen,
+    lastSeen: initialLastSeen,
   }).returning({ id: customers.id })
 
   return created.id
@@ -346,12 +373,18 @@ async function updateLastSeen(
     smsSubscribed?: boolean
     region?: string | null
     city?: string | null
+    skipLastSeenBump?: boolean
+    sourceCreatedAt?: Date | null
   },
 ): Promise<void> {
   const updates: Record<string, unknown> = {
-    lastSeen: new Date(),
     updatedAt: new Date(),
   }
+  // last_seen only bumps when this resolution represents real customer
+  // activity — set by callers that aren't batch-sync.
+  if (!extra?.skipLastSeenBump) updates.lastSeen = new Date()
+  // first_seen only moves backward toward earlier dates — never forward.
+  if (extra?.sourceCreatedAt) updates.firstSeen = sql`LEAST(${customers.firstSeen}, ${extra.sourceCreatedAt})`
   if (extra?.name) updates.name = extra.name
   if (extra?.externalId) updates.externalId = extra.externalId
   if (extra?.email) updates.email = extra.email

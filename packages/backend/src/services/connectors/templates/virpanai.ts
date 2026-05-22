@@ -85,6 +85,11 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
       phone: 'phone',
       name: { concat: ['first_name', 'last_name'], separator: ' ' },
       email_subscribed: 'has_account',
+      // Medusa customer.created_at — used by resolveCustomer to set
+      // first_seen accurately. Without this, every customer ingested by a
+      // resync looks like a brand-new acquisition even when they were
+      // created years ago in Medusa.
+      source_created_at: 'created_at',
       // GWM B2B: dealer_id is stamped on Medusa customer.metadata. Surface it
       // at top level so dataSyncService's customer importer can wire it into
       // resolveCustomer's agentExternalDealerId param (which stamps
