@@ -101,7 +101,8 @@ function SortIcon({ column, sortBy, sortOrder }: { column: string; sortBy?: stri
     : <ArrowDown className="h-3.5 w-3.5 text-accent" />
 }
 
-function formatDate(date: Date | string): string {
+function formatDate(date: Date | string | null | undefined): string {
+  if (date == null) return '—'
   return new Date(date).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',

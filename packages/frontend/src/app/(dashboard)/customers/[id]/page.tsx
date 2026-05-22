@@ -30,11 +30,13 @@ function getInitials(name: string | null, email: string | null): string {
   return '?'
 }
 
-function daysSince(date: Date | string): number {
+function daysSince(date: Date | string | null | undefined): number {
+  if (date == null) return Number.POSITIVE_INFINITY  // never-seen customers are infinitely inactive
   return Math.floor((Date.now() - new Date(date).getTime()) / (1000 * 60 * 60 * 24))
 }
 
-function formatDate(date: Date | string): string {
+function formatDate(date: Date | string | null | undefined): string {
+  if (date == null) return '—'
   return new Date(date).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',

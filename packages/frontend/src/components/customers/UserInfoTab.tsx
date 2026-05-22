@@ -21,7 +21,8 @@ type Props = {
 
 // ─── Helpers ──────────────────────────────────────────────
 
-function formatDate(date: Date | string): string {
+function formatDate(date: Date | string | null | undefined): string {
+  if (date == null) return '—'
   return new Date(date).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -31,7 +32,8 @@ function formatDate(date: Date | string): string {
   })
 }
 
-function formatShortDate(date: Date | string): string {
+function formatShortDate(date: Date | string | null | undefined): string {
+  if (date == null) return '—'
   return new Date(date).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',

@@ -11,15 +11,24 @@
 -- sync date, inflating the dashboard's "Active (7d)" metric.
 --
 -- The honest answer for a customer with zero observable activity is:
--- last_seen has no meaningful value. NULL it out. The schema already
--- allows NULL, and the dashboard's `WHERE last_seen >= now-7d` filter
--- naturally excludes NULL rows.
+-- last_seen has no meaningful value. NULL it out.
 --
--- Future-proofing: the deployed code (commit 2536f3e) sets
--- skipLastSeenBump:true on all connector-driven resolveCustomer calls, so
--- this kind of artefact can't accumulate again. first_seen will be
--- corrected on the next Full Resync via the source_created_at field map.
+-- BUT: the column was originally NOT NULL with a default of NOW(). We
+-- have to drop the NOT NULL constraint BEFORE the UPDATE can succeed,
+-- otherwise Postgres rejects the SET NULL clause. The Drizzle schema is
+-- updated in the same commit so future types reflect Date | null.
+--
+-- Future-proofing: deployed code (2536f3e) sets skipLastSeenBump:true on
+-- all connector-driven resolveCustomer calls, so this artefact can't
+-- accumulate again. first_seen will correct on next Full Resync via the
+-- source_created_at field map.
 
+BEGIN;
+
+-- Drop the NOT NULL constraint so the UPDATE can succeed.
+ALTER TABLE customers ALTER COLUMN last_seen DROP NOT NULL;
+
+-- NULL out customers with no activity signal at all.
 UPDATE customers c
 SET last_seen  = NULL,
     updated_at = NOW()
@@ -28,3 +37,5 @@ WHERE c.last_seen IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM events e WHERE e.customer_id = c.id
   );
+
+COMMIT;

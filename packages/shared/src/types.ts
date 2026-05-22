@@ -49,7 +49,7 @@ export type Customer = {
   phone: string | null
   name: string | null
   firstSeen: Date
-  lastSeen: Date
+  lastSeen: Date | null
   totalOrders: number
   totalSpent: number
   avgOrderValue: number

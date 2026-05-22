@@ -114,7 +114,12 @@ export const customers = pgTable('customers', {
   phone: varchar('phone', { length: 50 }),
   name: varchar('name', { length: 255 }),
   firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().defaultNow(),
-  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().defaultNow(),
+  // last_seen is nullable (migration 0060) — represents "no observable
+  // activity signal" for profile-only customers ingested from upstream
+  // sources who haven't placed orders or generated events. Was previously
+  // NOT NULL with default NOW(); that caused the dashboard's Active (7d)
+  // metric to inflate after every sync.
+  lastSeen: timestamp('last_seen', { withTimezone: true }).defaultNow(),
   totalOrders: integer('total_orders').notNull().default(0),
   totalSpent: decimal('total_spent', { precision: 12, scale: 2 }).notNull().default('0'),
   avgOrderValue: decimal('avg_order_value', { precision: 12, scale: 2 }).notNull().default('0'),
