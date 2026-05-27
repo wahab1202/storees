@@ -36,6 +36,33 @@ export async function runMigrations(): Promise<void> {
     )
     const applied = new Set(rows.map(r => r.filename))
 
+    // Baseline adoption. An empty ledger against a database that already has
+    // the core schema means this DB pre-dates the ledger — it was provisioned
+    // from a dump, or the ledger table was lost/wiped. Replaying from
+    // 0000_init would collide with existing objects ("relation ... already
+    // exists") and, worse, re-run data migrations. So adopt the schema:
+    // record every current migration as applied WITHOUT running it. A truly
+    // fresh DB has no `customers` table and falls through to a normal run;
+    // an in-flight DB has a non-empty ledger and applies only what's pending.
+    if (applied.size === 0 && files.length > 0) {
+      const { rows: [{ exists }] } = await client.query<{ exists: boolean }>(
+        `SELECT to_regclass('public.customers') IS NOT NULL AS exists`,
+      )
+      if (exists) {
+        console.warn(
+          `[migrate] Empty ledger but schema already present — baselining ${files.length} migration(s) as applied without running them.`,
+        )
+        for (const filename of files) {
+          await client.query(
+            'INSERT INTO storees_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING',
+            [filename],
+          )
+        }
+        console.log(`[migrate] Baseline complete (${files.length} recorded); skipping replay.`)
+        return
+      }
+    }
+
     const pending = files.filter(f => !applied.has(f))
     if (pending.length === 0) {
       console.log(`[migrate] DB schema up to date (${files.length} migrations recorded)`)
