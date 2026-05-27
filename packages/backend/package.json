@@ -13,7 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "tsx src/scripts/seed.ts",
-    "db:migrate": "drizzle-kit push"
+    "db:migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {
     "@shopify/shopify-api": "^11.0.0",
