@@ -106,7 +106,9 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
 
     const whereClause = and(...conditions)
 
-    // Sort
+    // Sort. last_seen is NULL for profile-only customers (no events, no
+    // orders); push those to the end (Postgres sorts NULLS FIRST on DESC by
+    // default) so the list opens on genuinely-recent customers, not blanks.
     const sortColumn = {
       lastSeen: customers.lastSeen,
       totalSpent: customers.totalSpent,
@@ -114,7 +116,11 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       name: customers.name,
     }[sortBy] ?? customers.lastSeen
 
-    const orderFn = sortOrder === 'asc' ? asc : desc
+    const orderExpr = sortBy === 'lastSeen'
+      ? (sortOrder === 'asc'
+          ? sql`${customers.lastSeen} ASC NULLS LAST`
+          : sql`${customers.lastSeen} DESC NULLS LAST`)
+      : (sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn))
 
     // Count total
     const [{ total }] = await db
@@ -127,7 +133,7 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       .select()
       .from(customers)
       .where(whereClause)
-      .orderBy(orderFn(sortColumn))
+      .orderBy(orderExpr)
       .limit(pageSize)
       .offset(offset)
 
