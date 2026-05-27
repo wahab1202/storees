@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { requireProjectId } from '../middleware/projectId.js'
 import { db } from '../db/connection.js'
 import { predictionScores, predictionGoals, customers } from '../db/schema.js'
-import { eq, and, desc, asc, count, avg } from 'drizzle-orm'
+import { eq, and, desc, asc, count, avg, sql } from 'drizzle-orm'
 import { checkMlHealth, explainCustomer } from '../services/mlProxyService.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 
@@ -34,7 +34,11 @@ router.get('/goals/:goalId/customers', requireProjectId, async (req, res) => {
     ]
 
     if (bucket) {
-      conditions.push(eq(predictionScores.bucket, bucket))
+      // Buckets are stored with the ML service's casing ("High"/"Medium"/
+      // "Low") while the frontend sends lowercase. Compare case-insensitively
+      // so the filtered list matches the bucket counts, which lowercase the
+      // value before grouping (see bucketStats below).
+      conditions.push(sql`lower(${predictionScores.bucket}) = ${bucket.toLowerCase()}`)
     }
 
     const whereClause = and(...conditions)
