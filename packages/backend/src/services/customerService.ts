@@ -505,6 +505,13 @@ export async function recalculateAggregates(
  */
 export async function recalculateAllAggregates(projectId: string): Promise<number> {
   // Primary: compute from order_completed events (real GoWelmart data)
+  // Per-order revenue mirrors the dashboard (dashboard.ts): prefer the
+  // canonical properties.total the connector sets (Medusa
+  // summary.current_order_total — already 0 for canceled/refunded orders),
+  // falling back to summing line items. Connectors rename source `unit_price`
+  // → `price` on line_items, but older bulk imports keep `unit_price` — accept
+  // either. Counting orders, not revenue, gates inclusion so a buyer whose
+  // order total parses to 0 still gets total_orders set.
   const result = await db.execute(sql`
     UPDATE customers c SET
       total_orders = agg.order_count,
@@ -517,20 +524,27 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       updated_at = NOW()
     FROM (
       SELECT
-        e.customer_id,
+        customer_id,
         COUNT(*)::integer AS order_count,
-        COALESCE(SUM(
-          (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
-           FROM jsonb_array_elements(e.properties->'line_items') item)
-        ), 0)::numeric(12,2) AS total_revenue
-      FROM events e
-      WHERE e.project_id = ${projectId}
-        AND e.event_name IN ('order_placed', 'order_completed')
-      GROUP BY e.customer_id
-      HAVING COALESCE(SUM(
-        (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
-         FROM jsonb_array_elements(e.properties->'line_items') item)
-      ), 0) > 0
+        COALESCE(SUM(order_revenue), 0)::numeric(12,2) AS total_revenue
+      FROM (
+        SELECT
+          e.customer_id,
+          COALESCE(
+            (e.properties->>'total')::numeric,
+            (SELECT COALESCE(SUM(COALESCE(
+                                   (item->>'price')::numeric,
+                                   (item->>'unit_price')::numeric,
+                                   0)), 0)
+             FROM jsonb_array_elements(e.properties->'line_items') item),
+            0
+          ) AS order_revenue
+        FROM events e
+        WHERE e.project_id = ${projectId}
+          AND e.event_name IN ('order_placed', 'order_completed')
+      ) per_order
+      GROUP BY customer_id
+      HAVING COUNT(*) > 0
     ) agg
     WHERE c.id = agg.customer_id
       AND c.project_id = ${projectId}
