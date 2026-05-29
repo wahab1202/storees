@@ -20,7 +20,7 @@ import '@xyflow/react/dist/style.css'
 import { nodeTypes } from './FlowNodes'
 import { NodePalette } from './NodePalette'
 import { NodeConfigPanel } from './NodeConfigPanel'
-import type { FlowNode, ExitConfig } from '@storees/shared'
+import type { FlowNode, ExitConfig, FilterConfig } from '@storees/shared'
 
 type FlowBuilderProps = {
   flowNodes: FlowNode[]
@@ -108,7 +108,10 @@ function reactFlowToFlowNodes(nodes: Node[], edges: Edge[]): FlowNode[] {
         return {
           id: node.id,
           type: 'trigger',
-          config: d.event ? { event: d.event as string, filters: { logic: 'AND' as const, rules: [] } } : undefined,
+          config: d.event ? {
+            event: d.event as string,
+            filters: (d.filters as FilterConfig | undefined) ?? { logic: 'AND', rules: [] },
+          } : undefined,
         }
       case 'delay':
         return {
@@ -128,6 +131,7 @@ function reactFlowToFlowNodes(nodes: Node[], edges: Edge[]): FlowNode[] {
           config: {
             check: (d.check as 'event_occurred' | 'attribute_check') ?? 'event_occurred',
             event: d.event as string | undefined,
+            filters: d.filters as FilterConfig | undefined,
             field: d.field as string | undefined,
             since: 'trip_start',
             branches: {

@@ -5,7 +5,8 @@ import { db } from '../db/connection.js'
 import { flows, flowTrips, customers } from '../db/schema.js'
 import { evaluateFilter } from '@storees/segments'
 import { checkExitEvents, advanceTrip } from '../services/flowExecutor.js'
-import type { TriggerConfig, FilterConfig, FilterRule, Customer } from '@storees/shared'
+import { evaluateEventFilters } from '@storees/shared'
+import type { TriggerConfig, Customer } from '@storees/shared'
 
 type EventJob = {
   projectId: string
@@ -185,44 +186,3 @@ async function evaluateFlowTrigger(flow: Record<string, unknown>, event: EventJo
   return created.id
 }
 
-/**
- * Evaluate trigger filters against event properties.
- * Simple property matching — not the same as segment filters.
- */
-function evaluateEventFilters(
-  filters: FilterConfig,
-  properties: Record<string, unknown>,
-): boolean {
-  const results = filters.rules.map(item => {
-    // Skip nested groups in event filter context — only flat rules apply
-    if ('type' in item && item.type === 'group') return true
-
-    const rule = item as FilterRule
-    // Support dotted paths like "properties.cart_value"
-    const fieldPath = rule.field.replace(/^properties\./, '')
-    const value = properties[fieldPath]
-
-    switch (rule.operator) {
-      case 'is':
-        return value === rule.value
-      case 'is_not':
-        return value !== rule.value
-      case 'greater_than':
-        return Number(value) > Number(rule.value)
-      case 'less_than':
-        return Number(value) < Number(rule.value)
-      case 'contains':
-        return String(value ?? '').includes(String(rule.value))
-      case 'is_true':
-        return value === true
-      case 'is_false':
-        return value === false
-      default:
-        return false
-    }
-  })
-
-  return filters.logic === 'AND'
-    ? results.every(Boolean)
-    : results.some(Boolean)
-}

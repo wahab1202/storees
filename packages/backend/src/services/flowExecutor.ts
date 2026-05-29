@@ -1,10 +1,11 @@
-import { eq, and, gt, sql } from 'drizzle-orm'
+import { eq, and, gt, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
 import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
 import { createHash } from 'node:crypto'
+import { evaluateEventFilters } from '@storees/shared'
 import type {
   FlowNode,
   ActionNode,
@@ -405,8 +406,11 @@ async function evaluateCondition(
       }
     }
 
-    const [result] = await db
-      .select({ id: events.id })
+    // Pull a bounded set of recent candidates; if a property filter is
+    // attached, any matching event makes the condition true (mirrors the
+    // trigger worker's matcher).
+    const candidates = await db
+      .select({ properties: events.properties })
       .from(events)
       .where(
         and(
@@ -415,9 +419,15 @@ async function evaluateCondition(
           gt(events.timestamp, since),
         ),
       )
-      .limit(1)
+      .orderBy(desc(events.timestamp))
+      .limit(100)
 
-    return !!result
+    if (candidates.length === 0) return false
+    if (!config.filters || config.filters.rules.length === 0) return true
+
+    return candidates.some(e =>
+      evaluateEventFilters(config.filters!, (e.properties ?? {}) as Record<string, unknown>),
+    )
   }
 
   // attribute_check — check customer attribute
