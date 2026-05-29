@@ -303,6 +303,11 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
             ) o ON o.day = d.day::date
             ORDER BY d.day
           `)
+        // Per-order revenue mirrors /stats: prefer the canonical
+        // properties.total the connector sets (Medusa
+        // summary.current_order_total), falling back to summing line items.
+        // Connectors rename source `unit_price` -> `price` on line_items, but
+        // older bulk imports keep `unit_price` — accept either.
         : await db.execute(sql`
             SELECT
               d.day::date AS date,
@@ -311,10 +316,15 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
             FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
             LEFT JOIN (
               SELECT timestamp::date AS day, COUNT(*) AS order_count,
-                COALESCE(SUM(
-                  (SELECT COALESCE(SUM((item->>'unit_price')::numeric), 0)
-                   FROM jsonb_array_elements(properties->'line_items') item)
-                ), 0) AS revenue
+                COALESCE(SUM(COALESCE(
+                  (properties->>'total')::numeric,
+                  (SELECT COALESCE(SUM(COALESCE(
+                                         (item->>'price')::numeric,
+                                         (item->>'unit_price')::numeric,
+                                         0)), 0)
+                   FROM jsonb_array_elements(properties->'line_items') item),
+                  0
+                )), 0) AS revenue
               FROM events WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed') AND timestamp >= ${startDate} AND ${customerIdScope}
               GROUP BY timestamp::date
             ) o ON o.day = d.day::date
