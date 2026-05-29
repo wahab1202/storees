@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { X } from 'lucide-react'
-import { EVENTS_BY_DOMAIN } from '@storees/shared'
+import { EVENTS_BY_DOMAIN, getEventProperties } from '@storees/shared'
 import type { Node } from '@xyflow/react'
+import type { FilterConfig, FilterRule } from '@storees/shared'
 import { useTemplates } from '@/hooks/useTemplates'
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
+import { useSegments } from '@/hooks/useSegments'
 
 type NodeConfigPanelProps = {
   node: Node | null
@@ -63,9 +65,12 @@ export function NodeConfigPanel({ node, onUpdate, onClose, domainType = 'ecommer
 function TriggerForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (id: string, data: Record<string, unknown>) => void; eventOptions: string[] }) {
   const d = node.data as Record<string, unknown>
   const [event, setEvent] = useState((d.event as string) ?? '')
+  const [filters, setFilters] = useState<FilterConfig | undefined>(d.filters as FilterConfig | undefined)
 
   useEffect(() => {
-    setEvent((node.data as Record<string, unknown>).event as string ?? '')
+    const nd = node.data as Record<string, unknown>
+    setEvent((nd.event as string) ?? '')
+    setFilters(nd.filters as FilterConfig | undefined)
   }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
@@ -74,10 +79,13 @@ function TriggerForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (
         <select
           value={event}
           onChange={e => {
-            setEvent(e.target.value)
-            onUpdate(node.id, { ...d, event: e.target.value })
+            const ev = e.target.value
+            setEvent(ev)
+            // Switching events invalidates any param filter the old event had.
+            setFilters(undefined)
+            onUpdate(node.id, { ...d, event: ev, filters: undefined })
           }}
-          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
+          className={SELECT_CLASS}
         >
           <option value="">Select event...</option>
           {eventOptions.map((ev: string) => (
@@ -85,6 +93,16 @@ function TriggerForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate: (
           ))}
         </select>
       </FieldLabel>
+      {event && (
+        <EventParamsEditor
+          event={event}
+          filters={filters}
+          onChange={next => {
+            setFilters(next)
+            onUpdate(node.id, { ...d, event, filters: next })
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -141,12 +159,14 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
   const [check, setCheck] = useState((d.check as string) ?? 'event_occurred')
   const [event, setEvent] = useState((d.event as string) ?? '')
   const [field, setField] = useState((d.field as string) ?? '')
+  const [filters, setFilters] = useState<FilterConfig | undefined>(d.filters as FilterConfig | undefined)
 
   useEffect(() => {
     const nd = node.data as Record<string, unknown>
     setCheck((nd.check as string) ?? 'event_occurred')
     setEvent((nd.event as string) ?? '')
     setField((nd.field as string) ?? '')
+    setFilters(nd.filters as FilterConfig | undefined)
   }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
@@ -156,9 +176,11 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
           value={check}
           onChange={e => {
             setCheck(e.target.value)
-            onUpdate(node.id, { ...d, check: e.target.value })
+            // Switching check type invalidates the event-side filter.
+            setFilters(undefined)
+            onUpdate(node.id, { ...d, check: e.target.value, filters: undefined })
           }}
-          className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
+          className={SELECT_CLASS}
         >
           <option value="event_occurred">Event Occurred</option>
           <option value="attribute_check">Attribute Check</option>
@@ -166,21 +188,35 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
       </FieldLabel>
 
       {check === 'event_occurred' ? (
-        <FieldLabel label="Event Name">
-          <select
-            value={event}
-            onChange={e => {
-              setEvent(e.target.value)
-              onUpdate(node.id, { ...d, check, event: e.target.value })
-            }}
-            className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
-          >
-            <option value="">Select event...</option>
-            {eventOptions.map((ev: string) => (
-              <option key={ev} value={ev}>{formatEvent(ev)}</option>
-            ))}
-          </select>
-        </FieldLabel>
+        <>
+          <FieldLabel label="Event Name">
+            <select
+              value={event}
+              onChange={e => {
+                const ev = e.target.value
+                setEvent(ev)
+                setFilters(undefined)
+                onUpdate(node.id, { ...d, check, event: ev, filters: undefined })
+              }}
+              className={SELECT_CLASS}
+            >
+              <option value="">Select event...</option>
+              {eventOptions.map((ev: string) => (
+                <option key={ev} value={ev}>{formatEvent(ev)}</option>
+              ))}
+            </select>
+          </FieldLabel>
+          {event && (
+            <EventParamsEditor
+              event={event}
+              filters={filters}
+              onChange={next => {
+                setFilters(next)
+                onUpdate(node.id, { ...d, check, event, filters: next })
+              }}
+            />
+          )}
+        </>
       ) : (
         <FieldLabel label="Customer Field">
           <input
@@ -191,7 +227,7 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
               setField(e.target.value)
               onUpdate(node.id, { ...d, check, field: e.target.value })
             }}
-            className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent appearance-none cursor-pointer transition-colors duration-150 bg-[length:14px] bg-[right_8px_center] bg-no-repeat bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')]"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
           />
         </FieldLabel>
       )}
@@ -199,6 +235,90 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
       <p className="text-xs text-text-muted">
         Yes/No branches are connected via edges on the canvas.
       </p>
+    </div>
+  )
+}
+
+/**
+ * Renders one input per known property of the selected event (from
+ * EVENT_PROPERTIES) and produces a FilterConfig with one `is` rule per filled
+ * field. Used by both Trigger and Condition forms. Returns null for events
+ * with no registry entry — keeps the panel clean for events we don't model.
+ */
+function EventParamsEditor({
+  event,
+  filters,
+  onChange,
+}: {
+  event: string
+  filters: FilterConfig | undefined
+  onChange: (next: FilterConfig | undefined) => void
+}) {
+  const defs = getEventProperties(event)
+  const segments = useSegments()
+  const segmentList = segments.data?.data ?? []
+
+  // Read current rule values into a {fieldName: stringValue} map for inputs.
+  const valueMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const rule of filters?.rules ?? []) {
+      if ('type' in rule && rule.type === 'group') continue
+      const r = rule as FilterRule
+      if (r.operator === 'is') m[r.field] = r.value == null ? '' : String(r.value)
+    }
+    return m
+  }, [filters])
+
+  function setParam(name: string, raw: string) {
+    const next: Record<string, string> = { ...valueMap }
+    if (raw === '') delete next[name]
+    else next[name] = raw
+
+    const rules: FilterRule[] = Object.entries(next).map(([f, v]) => {
+      const def = defs.find(p => p.name === f)
+      let value: unknown = v
+      if (def?.type === 'number') value = Number(v)
+      else if (def?.type === 'boolean') value = v === 'true'
+      return { field: f, operator: 'is', value }
+    })
+    onChange(rules.length ? { logic: 'AND', rules } : undefined)
+  }
+
+  if (defs.length === 0) return null
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-surface-elevated p-2.5">
+      <p className="text-[11px] font-medium text-text-secondary">
+        Match params (leave blank to ignore)
+      </p>
+      {defs.map((p) => {
+        const v = valueMap[p.name] ?? ''
+        return (
+          <div key={p.name}>
+            <span className="block text-[11px] text-text-secondary mb-0.5">{p.label}</span>
+            {p.picker === 'segment' ? (
+              <select
+                value={v}
+                onChange={e => setParam(p.name, e.target.value)}
+                className={SELECT_CLASS}
+              >
+                <option value="">Any segment</option>
+                {segmentList.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type={p.type === 'number' ? 'number' : 'text'}
+                value={v}
+                placeholder={p.placeholder ?? 'Any value'}
+                onChange={e => setParam(p.name, e.target.value)}
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+              />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

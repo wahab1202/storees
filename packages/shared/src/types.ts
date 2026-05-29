@@ -538,6 +538,10 @@ export type ConditionNode = {
   config: {
     check: 'event_occurred' | 'attribute_check'
     event?: string
+    /** Event-property filter, only meaningful when check === 'event_occurred'.
+     *  Mirrors TriggerConfig.filters and is evaluated by the same matcher so a
+     *  condition can ask "has done product_viewed where product_id = X". */
+    filters?: FilterConfig
     field?: string
     operator?: FilterOperator
     value?: unknown
