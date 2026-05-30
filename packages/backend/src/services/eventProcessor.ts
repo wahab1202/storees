@@ -184,7 +184,9 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
   switch (eventName) {
     case 'customer_created':
     case 'customer_updated':
-      base.externalCustomerId = String(payload.id ?? '')
+      // Canonical-first: connectors map source id -> customer_id (or pass
+      // through external_id); Shopify webhooks still emit `id`. Accept all.
+      base.externalCustomerId = String(payload.customer_id ?? payload.external_id ?? payload.id ?? '')
       base.email = (payload.email as string) ?? null
       base.phone = (payload.phone as string) ?? null
       base.customerName = buildName(
@@ -207,17 +209,21 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
     case 'order_cancelled': {
       base.email = (payload.email as string) ?? base.email
       const lineItems = (payload.line_items as unknown[]) ?? []
+      // Canonical-first per the connector mapping (order_id/total/discount/
+      // product_name/image_url); Shopify webhooks still emit the raw shape
+      // (id/total_price/total_discounts/title/image.src). Accept both so
+      // every connector flows through cleanly.
       base.properties = {
-        order_id: String(payload.id ?? ''),
-        total: Number(payload.total_price ?? 0),
-        discount: Number(payload.total_discounts ?? 0),
+        order_id: String(payload.order_id ?? payload.id ?? ''),
+        total: Number(payload.total ?? payload.total_price ?? 0),
+        discount: Number(payload.discount ?? payload.total_discounts ?? 0),
         item_count: lineItems.length,
         items: (lineItems as Record<string, unknown>[]).map(item => ({
-          product_id: String(item.product_id ?? ''),
-          product_name: (item.title as string) ?? '',
+          product_id: String(item.product_id ?? item.productId ?? ''),
+          product_name: String(item.product_name ?? item.title ?? ''),
           quantity: Number(item.quantity ?? 1),
-          price: Number(item.price ?? 0),
-          image_url: (item.image as Record<string, unknown>)?.src as string ?? undefined,
+          price: Number(item.price ?? item.unit_price ?? 0),
+          image_url: (item.image_url as string) ?? (item.image as Record<string, unknown>)?.src as string ?? undefined,
         })),
       }
       base.timestamp = payload.created_at ? new Date(payload.created_at as string) : new Date()
@@ -227,8 +233,8 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
     case 'checkout_started':
       base.email = (payload.email as string) ?? base.email
       base.properties = {
-        checkout_id: String(payload.id ?? ''),
-        total: Number(payload.total_price ?? 0),
+        checkout_id: String(payload.checkout_id ?? payload.id ?? ''),
+        total: Number(payload.total ?? payload.total_price ?? 0),
       }
       break
 
@@ -236,19 +242,19 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
     case 'cart_updated': {
       const cartItems = (payload.line_items as unknown[]) ?? []
       const cartValue = (cartItems as Record<string, unknown>[]).reduce(
-        (sum, item) => sum + Number(item.price ?? 0) * Number(item.quantity ?? 1),
+        (sum, item) => sum + Number(item.price ?? item.unit_price ?? 0) * Number(item.quantity ?? 1),
         0,
       )
       base.properties = {
-        cart_id: String(payload.id ?? payload.token ?? ''),
+        cart_id: String(payload.cart_id ?? payload.id ?? payload.token ?? ''),
         cart_value: cartValue,
         item_count: cartItems.length,
         items: (cartItems as Record<string, unknown>[]).map(item => ({
-          product_id: String(item.product_id ?? ''),
-          product_name: (item.title as string) ?? '',
+          product_id: String(item.product_id ?? item.productId ?? ''),
+          product_name: String(item.product_name ?? item.title ?? ''),
           quantity: Number(item.quantity ?? 1),
-          price: Number(item.price ?? 0),
-          image_url: (item.image as string) ?? undefined,
+          price: Number(item.price ?? item.unit_price ?? 0),
+          image_url: (item.image_url as string) ?? (item.image as string) ?? undefined,
         })),
         checkout_url: payload.token
           ? `https://${base.externalCustomerId ? '' : ''}cart/${payload.token}`
@@ -273,9 +279,11 @@ async function handleSideEffects(
   switch (eventName) {
     case 'order_placed':
     case 'order_completed': {
-      const externalOrderId = String(payload.id ?? '')
-      const total = Number(payload.total_price ?? 0)
-      const discount = Number(payload.total_discounts ?? 0)
+      // Canonical-first per the connector mapping (order_id/total/discount);
+      // Shopify still emits id/total_price/total_discounts.
+      const externalOrderId = String(payload.order_id ?? payload.id ?? '')
+      const total = Number(payload.total ?? payload.total_price ?? 0)
+      const discount = Number(payload.discount ?? payload.total_discounts ?? 0)
       const currency = (payload.currency as string) ?? 'INR'
       const lineItems = (payload.line_items as Record<string, unknown>[]) ?? []
 
@@ -295,17 +303,21 @@ async function handleSideEffects(
           total: String(total),
           discount: String(discount),
           currency,
+          // Canonical-first across every field. Connectors (VirpanAI / Medusa
+          // / any using the canonical mapping) emit snake_case names —
+          // product_id, product_name, price (renamed from source unit_price),
+          // image_url. Shopify-direct webhooks still emit the raw shape —
+          // product_id, title, image.src, sometimes unit_price. Accept all so
+          // a switch of source doesn't silently empty fields downstream.
           lineItems: lineItems.map(item => ({
-            productId: String(item.product_id ?? ''),
-            // Modern connectors (VirpanAI / Medusa / any using the canonical
-            // mapping) rename source `title` to `product_name` on line items
-            // before the event lands here, so reading `item.title` produced
-            // empty strings for them. Prefer the renamed field, fall back to
-            // `title` for Shopify-direct webhooks that still emit it raw.
+            productId: String(item.product_id ?? item.productId ?? ''),
             productName: String(item.product_name ?? item.title ?? ''),
             quantity: Number(item.quantity ?? 1),
-            price: Number(item.price ?? 0),
-            imageUrl: (item.image as Record<string, unknown>)?.src as string ?? undefined,
+            price: Number(item.price ?? item.unit_price ?? 0),
+            imageUrl:
+              (item.image_url as string) ??
+              (item.image as Record<string, unknown>)?.src as string ??
+              undefined,
           })),
           createdAt: normalized.timestamp,
         })
@@ -316,7 +328,7 @@ async function handleSideEffects(
     }
 
     case 'order_fulfilled': {
-      const externalOrderId = String(payload.id ?? '')
+      const externalOrderId = String(payload.order_id ?? payload.id ?? '')
       await db.update(orders).set({
         status: 'fulfilled',
         fulfilledAt: new Date(),
@@ -325,8 +337,8 @@ async function handleSideEffects(
     }
 
     case 'order_cancelled': {
-      const externalOrderId = String(payload.id ?? '')
-      const total = Number(payload.total_price ?? 0)
+      const externalOrderId = String(payload.order_id ?? payload.id ?? '')
+      const total = Number(payload.total ?? payload.total_price ?? 0)
 
       await db.update(orders).set({
         status: 'cancelled',
