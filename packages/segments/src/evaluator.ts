@@ -101,7 +101,7 @@ function ruleToSql(rule: FilterRule): SQL {
 
   // Product-based operators use special subqueries
   switch (rule.operator) {
-    case 'has_purchased':
+    case 'has_purchased': {
       // For product_category field, match by product_type via products table
       if (rule.field === 'product_category') {
         return sql`EXISTS (
@@ -110,19 +110,40 @@ function ruleToSql(rule: FilterRule): SQL {
           WHERE o.customer_id = customers.id
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
-            WHERE item->>'productId' = p.shopify_product_id
+            WHERE COALESCE(item->>'product_id', item->>'productId') = p.shopify_product_id
           )
           AND p.product_type = ${value}
         )`
       }
-      // value is product name (string) — check if customer has any order with this product
-      return sql`EXISTS (
-        SELECT 1 FROM orders
-        WHERE orders.customer_id = customers.id
-        AND orders.line_items::jsonb @> ${JSON.stringify([{ productName: value }])}::jsonb
+      // For product_name and collection_name: a purchase can live in two
+      // places — the `orders` table (Shopify-direct path, eventProcessor
+      // writes camelCase) OR the order events themselves (event-driven
+      // tenants like GWM/VirpanAI where the connector keeps snake_case).
+      // Match either source, and tolerate either casing on each, so a single
+      // segment rule "Product has_purchased X" works regardless of stack.
+      const isCollection = rule.field === 'collection_name'
+      const snakeKey = isCollection ? 'product_collection' : 'product_name'
+      const camelKey = isCollection ? 'productCollection' : 'productName'
+      return sql`(
+        EXISTS (
+          SELECT 1 FROM orders
+          WHERE orders.customer_id = customers.id
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(orders.line_items::jsonb) item
+            WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
+          )
+        ) OR EXISTS (
+          SELECT 1 FROM events
+          WHERE events.customer_id = customers.id
+          AND events.event_name IN ('order_placed', 'order_completed')
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(events.properties->'line_items') item
+            WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
+          )
+        )
       )`
-    case 'has_not_purchased':
-      // For product_category field, match by product_type via products table
+    }
+    case 'has_not_purchased': {
       if (rule.field === 'product_category') {
         return sql`NOT EXISTS (
           SELECT 1 FROM orders o
@@ -130,16 +151,35 @@ function ruleToSql(rule: FilterRule): SQL {
           WHERE o.customer_id = customers.id
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
-            WHERE item->>'productId' = p.shopify_product_id
+            WHERE COALESCE(item->>'product_id', item->>'productId') = p.shopify_product_id
           )
           AND p.product_type = ${value}
         )`
       }
-      return sql`NOT EXISTS (
-        SELECT 1 FROM orders
-        WHERE orders.customer_id = customers.id
-        AND orders.line_items::jsonb @> ${JSON.stringify([{ productName: value }])}::jsonb
+      // Mirror of has_purchased; negate both sources so the customer hasn't
+      // bought it in `orders` AND hasn't bought it via order events.
+      const isCollection = rule.field === 'collection_name'
+      const snakeKey = isCollection ? 'product_collection' : 'product_name'
+      const camelKey = isCollection ? 'productCollection' : 'productName'
+      return sql`(
+        NOT EXISTS (
+          SELECT 1 FROM orders
+          WHERE orders.customer_id = customers.id
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(orders.line_items::jsonb) item
+            WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
+          )
+        ) AND NOT EXISTS (
+          SELECT 1 FROM events
+          WHERE events.customer_id = customers.id
+          AND events.event_name IN ('order_placed', 'order_completed')
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(events.properties->'line_items') item
+            WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
+          )
+        )
       )`
+    }
     case 'has_viewed':
       // Check if customer has product_viewed events for a product name or category
       if (rule.field === 'product_category') {
