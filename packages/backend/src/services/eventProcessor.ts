@@ -297,7 +297,12 @@ async function handleSideEffects(
           currency,
           lineItems: lineItems.map(item => ({
             productId: String(item.product_id ?? ''),
-            productName: (item.title as string) ?? '',
+            // Modern connectors (VirpanAI / Medusa / any using the canonical
+            // mapping) rename source `title` to `product_name` on line items
+            // before the event lands here, so reading `item.title` produced
+            // empty strings for them. Prefer the renamed field, fall back to
+            // `title` for Shopify-direct webhooks that still emit it raw.
+            productName: String(item.product_name ?? item.title ?? ''),
             quantity: Number(item.quantity ?? 1),
             price: Number(item.price ?? 0),
             imageUrl: (item.image as Record<string, unknown>)?.src as string ?? undefined,
