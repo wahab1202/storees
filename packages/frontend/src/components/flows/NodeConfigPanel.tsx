@@ -4,10 +4,11 @@ import { useState, useEffect, useMemo } from 'react'
 import { X } from 'lucide-react'
 import { EVENTS_BY_DOMAIN, getEventProperties } from '@storees/shared'
 import type { Node } from '@xyflow/react'
-import type { FilterConfig, FilterRule } from '@storees/shared'
+import type { FilterConfig, FilterRule, FilterOperator, EventPropertyDef } from '@storees/shared'
 import { useTemplates } from '@/hooks/useTemplates'
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
 import { useSegments } from '@/hooks/useSegments'
+import { useProducts, useCollections } from '@/hooks/useProducts'
 
 type NodeConfigPanelProps = {
   node: Node | null
@@ -239,11 +240,35 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
   )
 }
 
+const OPERATOR_LABELS: Record<string, string> = {
+  is: 'is',
+  is_not: 'is not',
+  greater_than: '>',
+  less_than: '<',
+  contains: 'contains',
+  is_true: 'is true',
+  is_false: 'is false',
+}
+
+// Which operators make sense for a given field. Picker fields (segment /
+// product / collection) are id lookups — only equality reads sensibly;
+// numbers add comparators; booleans collapse to true/false (value implicit).
+function operatorsForField(def: EventPropertyDef): FilterOperator[] {
+  if (def.picker) return ['is', 'is_not']
+  if (def.type === 'boolean') return ['is_true', 'is_false']
+  if (def.type === 'number') return ['is', 'is_not', 'greater_than', 'less_than']
+  return ['is', 'is_not', 'contains']
+}
+
+const COMPACT_SELECT =
+  "w-full px-2 py-1.5 text-xs border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent cursor-pointer"
+
 /**
- * Renders one input per known property of the selected event (from
- * EVENT_PROPERTIES) and produces a FilterConfig with one `is` rule per filled
- * field. Used by both Trigger and Condition forms. Returns null for events
- * with no registry entry — keeps the panel clean for events we don't model.
+ * Renders one row per known property of the selected event (from
+ * EVENT_PROPERTIES): operator dropdown + value input/picker. Produces a
+ * FilterConfig with one rule per non-empty field (boolean operators carry
+ * the value implicitly so the rule persists even with no UI value).
+ * Used by both Trigger and Condition forms.
  */
 function EventParamsEditor({
   event,
@@ -256,32 +281,48 @@ function EventParamsEditor({
 }) {
   const defs = getEventProperties(event)
   const segments = useSegments()
+  const products = useProducts()
+  const collections = useCollections()
   const segmentList = segments.data?.data ?? []
+  const productList = products.data?.data ?? []
+  const collectionList = collections.data?.data ?? []
 
-  // Read current rule values into a {fieldName: stringValue} map for inputs.
+  // Read current rules into a {fieldName: {operator, value}} map for inputs.
   const valueMap = useMemo(() => {
-    const m: Record<string, string> = {}
+    const m: Record<string, { operator: FilterOperator; value: string }> = {}
     for (const rule of filters?.rules ?? []) {
       if ('type' in rule && rule.type === 'group') continue
       const r = rule as FilterRule
-      if (r.operator === 'is') m[r.field] = r.value == null ? '' : String(r.value)
+      m[r.field] = { operator: r.operator, value: r.value == null ? '' : String(r.value) }
     }
     return m
   }, [filters])
 
-  function setParam(name: string, raw: string) {
-    const next: Record<string, string> = { ...valueMap }
-    if (raw === '') delete next[name]
-    else next[name] = raw
-
-    const rules: FilterRule[] = Object.entries(next).map(([f, v]) => {
-      const def = defs.find(p => p.name === f)
-      let value: unknown = v
-      if (def?.type === 'number') value = Number(v)
-      else if (def?.type === 'boolean') value = v === 'true'
-      return { field: f, operator: 'is', value }
-    })
+  function commit(next: Record<string, { operator: FilterOperator; value: string }>) {
+    const rules: FilterRule[] = []
+    for (const [field, entry] of Object.entries(next)) {
+      const def = defs.find(p => p.name === field)
+      // Boolean operators carry their value implicitly.
+      if (entry.operator === 'is_true')  { rules.push({ field, operator: 'is_true',  value: true  }); continue }
+      if (entry.operator === 'is_false') { rules.push({ field, operator: 'is_false', value: false }); continue }
+      if (entry.value === '') continue
+      let value: unknown = entry.value
+      if (def?.type === 'number') value = Number(entry.value)
+      rules.push({ field, operator: entry.operator, value })
+    }
     onChange(rules.length ? { logic: 'AND', rules } : undefined)
+  }
+
+  function setOperator(name: string, op: FilterOperator) {
+    const current = valueMap[name] ?? { operator: 'is' as FilterOperator, value: '' }
+    const nextEntry = { ...current, operator: op }
+    if (op === 'is_true' || op === 'is_false') nextEntry.value = ''
+    commit({ ...valueMap, [name]: nextEntry })
+  }
+
+  function setValue(name: string, val: string) {
+    const current = valueMap[name] ?? { operator: 'is' as FilterOperator, value: '' }
+    commit({ ...valueMap, [name]: { ...current, value: val } })
   }
 
   if (defs.length === 0) return null
@@ -292,30 +333,71 @@ function EventParamsEditor({
         Match params (leave blank to ignore)
       </p>
       {defs.map((p) => {
-        const v = valueMap[p.name] ?? ''
+        const entry = valueMap[p.name] ?? { operator: 'is' as FilterOperator, value: '' }
+        const ops = operatorsForField(p)
+        const valueless = entry.operator === 'is_true' || entry.operator === 'is_false'
         return (
-          <div key={p.name}>
-            <span className="block text-[11px] text-text-secondary mb-0.5">{p.label}</span>
-            {p.picker === 'segment' ? (
-              <select
-                value={v}
-                onChange={e => setParam(p.name, e.target.value)}
-                className={SELECT_CLASS}
-              >
-                <option value="">Any segment</option>
-                {segmentList.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type={p.type === 'number' ? 'number' : 'text'}
-                value={v}
-                placeholder={p.placeholder ?? 'Any value'}
-                onChange={e => setParam(p.name, e.target.value)}
-                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
-              />
-            )}
+          <div key={p.name} className="space-y-1">
+            <span className="block text-[11px] text-text-secondary">{p.label}</span>
+            <div className="flex gap-1.5 items-stretch">
+              <div className="w-24 shrink-0">
+                <select
+                  value={entry.operator}
+                  onChange={e => setOperator(p.name, e.target.value as FilterOperator)}
+                  className={COMPACT_SELECT}
+                >
+                  {ops.map(op => (
+                    <option key={op} value={op}>{OPERATOR_LABELS[op]}</option>
+                  ))}
+                </select>
+              </div>
+              {!valueless && (
+                <div className="flex-1 min-w-0">
+                  {p.picker === 'segment' ? (
+                    <select
+                      value={entry.value}
+                      onChange={e => setValue(p.name, e.target.value)}
+                      className={COMPACT_SELECT}
+                    >
+                      <option value="">Choose…</option>
+                      {segmentList.map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  ) : p.picker === 'product' ? (
+                    <select
+                      value={entry.value}
+                      onChange={e => setValue(p.name, e.target.value)}
+                      className={COMPACT_SELECT}
+                    >
+                      <option value="">Choose…</option>
+                      {productList.map(pr => (
+                        <option key={pr.id} value={pr.shopifyProductId}>{pr.title}</option>
+                      ))}
+                    </select>
+                  ) : p.picker === 'collection' ? (
+                    <select
+                      value={entry.value}
+                      onChange={e => setValue(p.name, e.target.value)}
+                      className={COMPACT_SELECT}
+                    >
+                      <option value="">Choose…</option>
+                      {collectionList.map(c => (
+                        <option key={c.id} value={c.shopifyCollectionId}>{c.title}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={p.type === 'number' ? 'number' : 'text'}
+                      value={entry.value}
+                      placeholder={p.placeholder ?? 'value'}
+                      onChange={e => setValue(p.name, e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs border border-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+                    />
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )
       })}
