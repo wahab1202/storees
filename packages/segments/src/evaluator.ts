@@ -409,29 +409,46 @@ function fieldToSqlExpression(field: string): SQL {
         FROM orders WHERE orders.customer_id = customers.id
       ), 0)`
     case 'product_purchase_count':
-      // Used with a value parameter — but as a standalone field, returns total distinct products
+      // Total distinct products the customer has bought. Pulls from BOTH the
+      // orders table (Shopify-direct: camelCase) AND order events (event-
+      // driven tenants like GWM/VirpanAI: snake_case). UNION + DISTINCT
+      // dedups across sources; COALESCE on both casings tolerates either.
       return sql`COALESCE((
-        SELECT COUNT(DISTINCT elem->>'productName')
-        FROM orders, jsonb_array_elements(orders.line_items::jsonb) AS elem
-        WHERE orders.customer_id = customers.id
+        SELECT COUNT(DISTINCT name) FROM (
+          SELECT COALESCE(elem->>'product_name', elem->>'productName') AS name
+          FROM orders, jsonb_array_elements(orders.line_items::jsonb) AS elem
+          WHERE orders.customer_id = customers.id
+          UNION ALL
+          SELECT COALESCE(elem->>'product_name', elem->>'productName') AS name
+          FROM events, jsonb_array_elements(events.properties->'line_items') AS elem
+          WHERE events.customer_id = customers.id
+          AND events.event_name IN ('order_placed', 'order_completed')
+        ) names
+        WHERE name IS NOT NULL AND name <> ''
       ), 0)`
     case 'orders_in_last_30_days':
+      // Count order events within the window — robust across both tenant
+      // shapes since the orders table is empty for event-driven tenants
+      // (eventProcessor's external-id dedup collapses GWM-style orders).
       return sql`COALESCE((
-        SELECT COUNT(*) FROM orders
-        WHERE orders.customer_id = customers.id
-        AND orders.created_at > NOW() - INTERVAL '30 days'
+        SELECT COUNT(*) FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name IN ('order_placed', 'order_completed')
+        AND events.timestamp > NOW() - INTERVAL '30 days'
       ), 0)`
     case 'orders_in_last_90_days':
       return sql`COALESCE((
-        SELECT COUNT(*) FROM orders
-        WHERE orders.customer_id = customers.id
-        AND orders.created_at > NOW() - INTERVAL '90 days'
+        SELECT COUNT(*) FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name IN ('order_placed', 'order_completed')
+        AND events.timestamp > NOW() - INTERVAL '90 days'
       ), 0)`
     case 'orders_in_last_365_days':
       return sql`COALESCE((
-        SELECT COUNT(*) FROM orders
-        WHERE orders.customer_id = customers.id
-        AND orders.created_at > NOW() - INTERVAL '365 days'
+        SELECT COUNT(*) FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name IN ('order_placed', 'order_completed')
+        AND events.timestamp > NOW() - INTERVAL '365 days'
       ), 0)`
 
     // ──── Metrics-based fields (domain-agnostic — reads from customers.metrics JSONB) ────
