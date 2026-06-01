@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import {
   dataSourceConnectors,
@@ -357,10 +357,22 @@ async function importOrderBatch(
 
   if (resolved.length === 0) return
 
+  // On re-sync, merge the freshly-mapped properties into the existing row
+  // (jsonb `||` — incoming keys win on collision, untouched keys preserved).
+  // This lets a full re-sync retrofit newly-mapped fields (e.g. discount,
+  // added to the VirpanAI template after history was already ingested)
+  // onto historical events without losing any worker-added keys. Nothing
+  // else mutates events.properties post-insert (see customerAggregateWorker
+  // — it only stamps processed_at), so the merge is safe.
   const inserted = await db
     .insert(eventsTable)
     .values(resolved.map((r) => ({ ...r.row!, customerId: r.customerId })))
-    .onConflictDoNothing({ target: [eventsTable.projectId, eventsTable.idempotencyKey] })
+    .onConflictDoUpdate({
+      target: [eventsTable.projectId, eventsTable.idempotencyKey],
+      set: {
+        properties: sql`${eventsTable.properties} || excluded.properties`,
+      },
+    })
     .returning({ id: eventsTable.id, customerId: eventsTable.customerId, timestamp: eventsTable.timestamp, eventName: eventsTable.eventName, properties: eventsTable.properties })
 
   stats.imported += inserted.length
