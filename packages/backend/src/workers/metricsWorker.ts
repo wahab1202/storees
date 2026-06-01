@@ -154,19 +154,29 @@ async function computeEcommerceMetrics(
       COUNT(*) FILTER (
         WHERE event_name IN ('order_placed', 'order_completed')
           AND timestamp > NOW() - INTERVAL '90 days'
-      ) AS orders_last_90d
+      ) AS orders_last_90d,
+      COALESCE(ROUND(100.0 *
+        COUNT(*) FILTER (
+          WHERE event_name IN ('order_placed', 'order_completed')
+            AND (properties->>'discount')::numeric > 0
+        )
+        / NULLIF(
+          COUNT(*) FILTER (WHERE event_name IN ('order_placed', 'order_completed')),
+          0
+        )
+      ), 0) AS discount_pct
     FROM events
     WHERE project_id = ${projectId} AND customer_id = ${customerId}
   `)
 
-  // Query 2: orders-table-only metrics (lifetime totals + first/last dates +
-  // discount %). Time-windowed counts moved to the event query above.
+  // Query 2: orders-table-only metrics (lifetime totals + first/last dates).
+  // Time-windowed counts and discount % moved to the event query above —
+  // the orders table is near-empty for event-driven tenants.
   const orderAgg = await db.execute(sql`
     SELECT
       COUNT(*) AS order_count,
       MIN(created_at) AS first_order_at,
-      MAX(created_at) AS last_order_at,
-      COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE discount::numeric > 0) / NULLIF(COUNT(*), 0)), 0) AS discount_pct
+      MAX(created_at) AS last_order_at
     FROM orders
     WHERE project_id = ${projectId} AND customer_id = ${customerId} AND status != 'cancelled'
   `)
@@ -238,7 +248,7 @@ async function computeEcommerceMetrics(
     last_order_date: lastOrderAt?.toISOString() ?? null,
     last_event_at: eRow?.last_event_at ?? null,
     first_event_at: eRow?.first_event_at ?? null,
-    discount_order_percentage: Number(oRow?.discount_pct ?? 0),
+    discount_order_percentage: Number(eRow?.discount_pct ?? 0),
     orders_in_last_30_days: Number(eRow?.orders_last_30d ?? 0),
     orders_in_last_90_days: Number(eRow?.orders_last_90d ?? 0),
     ...clvResult,
