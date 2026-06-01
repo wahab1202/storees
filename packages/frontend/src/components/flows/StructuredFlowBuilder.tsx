@@ -754,13 +754,24 @@ function ConditionBlock({
           <Fld label="Event">
             <select
               value={cfg.event ?? ''}
-              onChange={e => patch({ event: e.target.value })}
+              // Switching events invalidates any property filter the old
+              // event had (e.g. product_id rule on a non-product event).
+              onChange={e => patch({ event: e.target.value, filters: undefined })}
               className={INPUT}
             >
               <option value="">Select...</option>
               {events.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
             </select>
           </Fld>
+          {/* Same event-property rule editor the Trigger uses. The condition
+              evaluator (flowExecutor) applies these against past events of
+              the trip's customer, so a condition can ask "has done
+              product_viewed where product_id = X". */}
+          <TriggerFiltersBlock
+            event={cfg.event ?? ''}
+            filters={cfg.filters}
+            onChange={next => patch({ filters: next })}
+          />
           <Fld label="Time window">
             <select
               value={cfg.since ?? 'trip_start'}
