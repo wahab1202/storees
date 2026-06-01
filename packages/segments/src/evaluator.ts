@@ -134,7 +134,7 @@ function ruleToSql(rule: FilterRule): SQL {
           )
         ) OR EXISTS (
           SELECT 1 FROM events
-          WHERE events.customer_id = customers.id
+          WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
           AND events.event_name IN ('order_placed', 'order_completed')
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(events.properties->'line_items') item
@@ -171,7 +171,7 @@ function ruleToSql(rule: FilterRule): SQL {
           )
         ) AND NOT EXISTS (
           SELECT 1 FROM events
-          WHERE events.customer_id = customers.id
+          WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
           AND events.event_name IN ('order_placed', 'order_completed')
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(events.properties->'line_items') item
@@ -185,14 +185,14 @@ function ruleToSql(rule: FilterRule): SQL {
       if (rule.field === 'product_category') {
         return sql`EXISTS (
           SELECT 1 FROM events
-          WHERE events.customer_id = customers.id
+          WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
           AND events.event_name = 'product_viewed'
           AND events.properties->>'product_type' = ${value}
         )`
       }
       return sql`EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name = 'product_viewed'
         AND events.properties->>'product_name' = ${value}
       )`
@@ -200,28 +200,28 @@ function ruleToSql(rule: FilterRule): SQL {
       if (rule.field === 'product_category') {
         return sql`NOT EXISTS (
           SELECT 1 FROM events
-          WHERE events.customer_id = customers.id
+          WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
           AND events.event_name = 'product_viewed'
           AND events.properties->>'product_type' = ${value}
         )`
       }
       return sql`NOT EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name = 'product_viewed'
         AND events.properties->>'product_name' = ${value}
       )`
     case 'has_wishlisted':
       return sql`EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name = 'added_to_wishlist'
         AND events.properties->>'product_name' = ${value}
       )`
     case 'has_not_wishlisted':
       return sql`NOT EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name = 'added_to_wishlist'
         AND events.properties->>'product_name' = ${value}
       )`
@@ -286,7 +286,7 @@ function ruleToSql(rule: FilterRule): SQL {
     if (op === 'less_than') {
       return sql`EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - (${num}::int * INTERVAL '1 day')
       )`
@@ -295,7 +295,7 @@ function ruleToSql(rule: FilterRule): SQL {
     if (op === 'greater_than') {
       return sql`NOT EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - (${num}::int * INTERVAL '1 day')
       )`
@@ -307,7 +307,7 @@ function ruleToSql(rule: FilterRule): SQL {
       const maxDays = Math.max(a, b)
       return sql`EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - (${maxDays}::int * INTERVAL '1 day')
         AND events.timestamp <= NOW() - (${minDays}::int * INTERVAL '1 day')
@@ -317,7 +317,7 @@ function ruleToSql(rule: FilterRule): SQL {
     if (op === 'is') {
       return sql`EXISTS (
         SELECT 1 FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ${eventNames}
         AND events.timestamp >= NOW() - ((${num}::int + 1) * INTERVAL '1 day')
         AND events.timestamp < NOW() - (${num}::int * INTERVAL '1 day')
@@ -412,7 +412,7 @@ function fieldToSqlExpression(field: string): SQL {
           WHERE (events.properties->>'discount')::numeric > 0
         ) / NULLIF(COUNT(*), 0))
         FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ('order_placed', 'order_completed')
       ), 0)`
     case 'product_purchase_count':
@@ -428,7 +428,7 @@ function fieldToSqlExpression(field: string): SQL {
           UNION ALL
           SELECT COALESCE(elem->>'product_name', elem->>'productName') AS name
           FROM events, jsonb_array_elements(events.properties->'line_items') AS elem
-          WHERE events.customer_id = customers.id
+          WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
           AND events.event_name IN ('order_placed', 'order_completed')
         ) names
         WHERE name IS NOT NULL AND name <> ''
@@ -439,21 +439,21 @@ function fieldToSqlExpression(field: string): SQL {
       // (eventProcessor's external-id dedup collapses GWM-style orders).
       return sql`COALESCE((
         SELECT COUNT(*) FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ('order_placed', 'order_completed')
         AND events.timestamp > NOW() - INTERVAL '30 days'
       ), 0)`
     case 'orders_in_last_90_days':
       return sql`COALESCE((
         SELECT COUNT(*) FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ('order_placed', 'order_completed')
         AND events.timestamp > NOW() - INTERVAL '90 days'
       ), 0)`
     case 'orders_in_last_365_days':
       return sql`COALESCE((
         SELECT COUNT(*) FROM events
-        WHERE events.customer_id = customers.id
+        WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND events.event_name IN ('order_placed', 'order_completed')
         AND events.timestamp > NOW() - INTERVAL '365 days'
       ), 0)`
