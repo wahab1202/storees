@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { NumberInput } from '@/components/ui/NumberInput'
 import {
   useOptinWidgets,
   useCreateOptinWidget,
@@ -228,12 +229,12 @@ function WidgetEditor({ initial, onSave, onCancel, saving, mode }: {
             </Field>
             {form.triggerType === 'time_on_page' && (
               <Field label="Seconds">
-                <input type="number" min={1} max={600} value={(form.triggerConfig as { seconds?: number }).seconds ?? 30} onChange={e => updateTriggerConfig('seconds', Number(e.target.value))} className={INPUT} />
+                <NumberInput min={1} max={600} value={(form.triggerConfig as { seconds?: number }).seconds ?? 30} onChange={n => updateTriggerConfig('seconds', n ?? 30)} className={INPUT} />
               </Field>
             )}
             {form.triggerType === 'scroll_depth' && (
               <Field label="Scroll %">
-                <input type="number" min={1} max={100} value={(form.triggerConfig as { percent?: number }).percent ?? 50} onChange={e => updateTriggerConfig('percent', Number(e.target.value))} className={INPUT} />
+                <NumberInput min={1} max={100} value={(form.triggerConfig as { percent?: number }).percent ?? 50} onChange={n => updateTriggerConfig('percent', n ?? 50)} className={INPUT} />
               </Field>
             )}
           </div>
