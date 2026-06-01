@@ -113,6 +113,20 @@ export function applyFieldMap(record: unknown, spec: FieldMapValue): unknown {
     return raw
   }
 
+  // Numeric subtract: minuend - subtrahends (paths). Used e.g. to derive
+  // discount from `original_order_total - current_order_total` when the
+  // source doesn't ship a discount field directly. Missing / non-numeric
+  // operands fall back to 0 so a partial payload can't crash sync.
+  if (Array.isArray(s.subtract) && s.subtract.every((x) => typeof x === 'string')) {
+    const parts = (s.subtract as string[]).map(p => {
+      const raw = getByPath(record, p)
+      const n = typeof raw === 'number' ? raw : Number(raw)
+      return Number.isFinite(n) ? n : 0
+    })
+    if (parts.length === 0) return 0
+    return parts.slice(1).reduce((acc, n) => acc - n, parts[0])
+  }
+
   if (typeof s.fromArray === 'string' && typeof s.field === 'string') {
     const fromArray = s.fromArray as string
     const field = s.field as string

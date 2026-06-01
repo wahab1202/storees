@@ -146,6 +146,11 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
       canceled_at: 'canceled_at',
       timestamp: 'created_at',
       total: 'summary.current_order_total',
+      // Medusa doesn't ship a flat discount field. summary.original_order_total
+      // is gross (before discount), current_order_total is net (after) — the
+      // delta IS the discount applied to the order. Negative shouldn't happen
+      // in practice; if it does we treat it as 0 downstream.
+      discount: { subtract: ['summary.original_order_total', 'summary.current_order_total'] },
       currency: 'currency_code',
       line_items: {
         sourcePath: 'items',

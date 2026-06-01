@@ -404,9 +404,16 @@ function fieldToSqlExpression(field: string): SQL {
     case 'days_since_first_seen':
       return sql`EXTRACT(DAY FROM NOW() - first_seen)`
     case 'discount_order_percentage':
+      // Source: order events' properties.discount, like the rest of the
+      // event-driven order metrics. Negative or non-numeric values are
+      // treated as no-discount via the > 0 filter on the cast.
       return sql`COALESCE((
-        SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE discount > 0) / NULLIF(COUNT(*), 0))
-        FROM orders WHERE orders.customer_id = customers.id
+        SELECT ROUND(100.0 * COUNT(*) FILTER (
+          WHERE (events.properties->>'discount')::numeric > 0
+        ) / NULLIF(COUNT(*), 0))
+        FROM events
+        WHERE events.customer_id = customers.id
+        AND events.event_name IN ('order_placed', 'order_completed')
       ), 0)`
     case 'product_purchase_count':
       // Total distinct products the customer has bought. Pulls from BOTH the
