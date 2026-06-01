@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { cn } from '@/lib/utils'
+import { NumberInput } from '@/components/ui/NumberInput'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import { BLOCK_DEFAULTS, BLOCK_LABELS, generateBlockId } from '@/lib/emailTypes'
 import { useCampaignVariations, type CampaignVariation } from '@/hooks/useCampaignAi'
@@ -352,7 +353,7 @@ export function BlockPropertyEditor({ block, onChange, globalStyles, onGlobalSty
               aiVariations={aiResults[block.id]}
               onGenerateAi={generateTextVariations}
             />
-            <div><label className={labelClass}>Font Size</label><input type="number" value={block.props.fontSize} onChange={e => onChange({ fontSize: Number(e.target.value) })} min={10} max={32} className={inputClass} /></div>
+            <div><label className={labelClass}>Font Size</label><NumberInput value={block.props.fontSize} onChange={n => onChange({ fontSize: n ?? 14 })} min={10} max={32} className={inputClass} /></div>
             <AlignSelect value={block.props.align} onChange={v => onChange({ align: v })} />
             <ColorInput value={block.props.color} onChange={v => onChange({ color: v })} label="Text Color" />
           </>
@@ -407,8 +408,8 @@ export function BlockPropertyEditor({ block, onChange, globalStyles, onGlobalSty
         {block?.type === 'divider' && (
           <>
             <ColorInput value={block.props.color} onChange={v => onChange({ color: v })} label="Line Color" />
-            <div><label className={labelClass}>Thickness</label><input type="number" value={block.props.thickness} onChange={e => onChange({ thickness: Number(e.target.value) })} min={1} max={8} className={inputClass} /></div>
-            <div><label className={labelClass}>Padding</label><input type="number" value={block.props.padding} onChange={e => onChange({ padding: Number(e.target.value) })} min={0} max={48} className={inputClass} /></div>
+            <div><label className={labelClass}>Thickness</label><NumberInput value={block.props.thickness} onChange={n => onChange({ thickness: n ?? 1 })} min={1} max={8} className={inputClass} /></div>
+            <div><label className={labelClass}>Padding</label><NumberInput value={block.props.padding} onChange={n => onChange({ padding: n ?? 0 })} min={0} max={48} className={inputClass} /></div>
           </>
         )}
 
@@ -514,7 +515,7 @@ export function BlockPropertyEditor({ block, onChange, globalStyles, onGlobalSty
                   </div>
                   <div>
                     <label className={labelClass}>Border</label>
-                    <input type="number" min={0} max={8} value={block.props.borderWidth ?? 0} onChange={e => onChange({ borderWidth: Number(e.target.value) })} className={inputClass} />
+                    <NumberInput min={0} max={8} value={block.props.borderWidth ?? 0} onChange={n => onChange({ borderWidth: n ?? 0 })} className={inputClass} />
                   </div>
                 </div>
                 <div>
@@ -756,7 +757,7 @@ export function BlockPropertyEditor({ block, onChange, globalStyles, onGlobalSty
                                 </div>
                                 <div>
                                   <label className={labelClass}>Font Size</label>
-                                  <input type="number" value={child.props.fontSize} onChange={e => updateColumnChild(child.id, { fontSize: Number(e.target.value) })} min={10} max={32} className={inputClass} />
+                                  <NumberInput value={child.props.fontSize} onChange={n => updateColumnChild(child.id, { fontSize: n ?? 14 })} min={10} max={32} className={inputClass} />
                                 </div>
                                 <AlignSelect value={child.props.align} onChange={v => updateColumnChild(child.id, { align: v })} />
                                 <ColorInput value={child.props.color} onChange={v => updateColumnChild(child.id, { color: v })} label="Text Color" />
@@ -801,7 +802,7 @@ export function BlockPropertyEditor({ block, onChange, globalStyles, onGlobalSty
                                 <ColorInput value={child.props.color} onChange={v => updateColumnChild(child.id, { color: v })} label="Line Color" />
                                 <div>
                                   <label className={labelClass}>Thickness</label>
-                                  <input type="number" value={child.props.thickness} onChange={e => updateColumnChild(child.id, { thickness: Number(e.target.value) })} min={1} max={8} className={inputClass} />
+                                  <NumberInput value={child.props.thickness} onChange={n => updateColumnChild(child.id, { thickness: n ?? 1 })} min={1} max={8} className={inputClass} />
                                 </div>
                               </div>
                             )}

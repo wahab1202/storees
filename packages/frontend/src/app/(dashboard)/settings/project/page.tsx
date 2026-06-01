@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { NumberInput } from '@/components/ui/NumberInput'
 import {
   useProjects,
   useUpdateProjectFeatures,
@@ -160,21 +161,19 @@ function FrequencyCapsSection({ projectId }: { projectId: string }) {
                   </div>
                   <div className="flex items-center gap-2 text-sm">
                     <span className="text-slate-600">Max</span>
-                    <input
-                      type="number"
+                    <NumberInput
                       min={0}
                       max={100}
                       value={cap.max}
-                      onChange={e => setForm(f => ({ ...f, [key]: { ...cap, max: Number(e.target.value) } }))}
+                      onChange={n => setForm(f => ({ ...f, [key]: { ...cap, max: n ?? 0 } }))}
                       className="w-16 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
                     />
                     <span className="text-slate-600">per</span>
-                    <input
-                      type="number"
+                    <NumberInput
                       min={1}
                       max={90}
                       value={cap.perDays}
-                      onChange={e => setForm(f => ({ ...f, [key]: { ...cap, perDays: Number(e.target.value) } }))}
+                      onChange={n => setForm(f => ({ ...f, [key]: { ...cap, perDays: n ?? 1 } }))}
                       className="w-16 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
                     />
                     <span className="text-slate-600">{cap.perDays === 1 ? 'day' : 'days'}</span>

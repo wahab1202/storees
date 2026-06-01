@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Sparkles, X, Wand2, Check, Loader2, Mail, MessageSquare, Bell, Phone } from 'lucide-react'
+import { NumberInput } from '@/components/ui/NumberInput'
 import {
   useAiCopywriter,
   type CopywriterChannel,
@@ -165,12 +166,11 @@ export function AiCopywriterPanel({ open, onClose, channel, onApply, initialUseC
 
             <div>
               <label className="block text-xs font-medium text-text-secondary mb-1">Variants</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={5}
                 value={variantCount}
-                onChange={(e) => setVariantCount(parseInt(e.target.value) || 3)}
+                onChange={n => setVariantCount(n ?? 3)}
                 className="w-20 px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20"
               />
             </div>

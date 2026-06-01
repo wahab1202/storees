@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react'
 import { Smartphone, Apple, Globe, Image as ImageIcon, ExternalLink } from 'lucide-react'
+import { NumberInput } from '@/components/ui/NumberInput'
 import type { PushPlatform, PushPlatformContent, PushContent } from '@storees/shared'
 
 // Gap 2: multi-platform push authoring. Mirrors MoEngage's "Target
@@ -176,11 +177,10 @@ export function MultiPlatformPushBlock({
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-text-secondary mb-1">Badge (iOS)</label>
-                    <input
-                      type="number"
+                    <NumberInput
                       min={0}
-                      value={activeContent.badge ?? ''}
-                      onChange={(e) => updateContent(activeTab, { badge: parseInt(e.target.value) || 0 })}
+                      value={activeContent.badge ?? undefined}
+                      onChange={n => updateContent(activeTab, { badge: n ?? 0 })}
                       placeholder="0"
                       className={inputClass}
                     />

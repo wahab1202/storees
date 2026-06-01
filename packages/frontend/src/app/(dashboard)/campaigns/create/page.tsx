@@ -2,6 +2,7 @@
 
 import { useState, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { NumberInput } from '@/components/ui/NumberInput'
 import { useCreateCampaign, usePreviewCampaignAudience, type CampaignAttachmentUpload, type CampaignAudiencePreview } from '@/hooks/useCampaigns'
 import { useSegments } from '@/hooks/useSegments'
 import { useCreateTemplate, usePreviewTemplate, useTemplates } from '@/hooks/useTemplates'
@@ -3144,10 +3145,9 @@ function AbTestSection({
             <div>
               <label className="block text-xs font-medium text-text-secondary mb-1">Test Duration</label>
               <div className="flex items-center gap-2">
-                <input
-                  type="number"
+                <NumberInput
                   value={testDurationHours}
-                  onChange={e => setTestDurationHours(parseInt(e.target.value) || 4)}
+                  onChange={n => setTestDurationHours(n ?? 4)}
                   min={1} max={72}
                   className="w-20 h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/30"
                 />
@@ -3527,7 +3527,7 @@ function Step3ScheduleGoals({
 
         <div className="mt-5 pt-4 border-t border-border flex items-center gap-3">
           <span className="text-xs font-medium text-text-secondary">Track above goals for</span>
-          <input type="number" value={goalTrackingHours} onChange={e => setGoalTrackingHours(parseInt(e.target.value) || 36)} className="w-16 h-8 px-2 text-sm text-center border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          <NumberInput value={goalTrackingHours} onChange={n => setGoalTrackingHours(n ?? 36)} className="w-16 h-8 px-2 text-sm text-center border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/30" />
           <span className="text-xs text-text-secondary">Hours</span>
           <span className="text-xs text-text-muted">from the time the {channelLabel} is opened</span>
         </div>
