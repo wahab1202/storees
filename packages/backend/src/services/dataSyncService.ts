@@ -486,6 +486,10 @@ async function buildCompensatingCancellation(
     properties: {
       order_id: orderId,
       total: priorTotal,
+      // Cancellation reverses the order; no discount value applies. Kept
+      // explicit so the merge-on-conflict doesn't preserve a stale value
+      // from the original order_placed row.
+      discount: 0,
       currency: mapped.currency ?? priorProps.currency ?? 'INR',
       line_items: [],
       // Carry the source-side signals so future queries can confirm WHY a
@@ -538,6 +542,10 @@ function buildOrderRow(
     properties: {
       order_id: orderId,
       total: mapped.total,
+      // Connector-derived per-order discount (e.g. VirpanAI subtract:
+      // summary.original_order_total - summary.current_order_total). Read by
+      // discount_order_percentage in metricsWorker + segment evaluator.
+      discount: typeof mapped.discount === 'number' ? mapped.discount : 0,
       currency: mapped.currency ?? 'INR',
       line_items: Array.isArray(mapped.line_items) ? mapped.line_items : [],
       // Carry source-side state so future queries / segments can filter on it.
