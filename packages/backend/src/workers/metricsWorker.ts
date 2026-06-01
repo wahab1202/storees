@@ -137,27 +137,36 @@ async function computeEcommerceMetrics(
   projectId: string,
   customerId: string,
 ): Promise<Record<string, unknown>> {
-  // Query 1: Event aggregates
+  // Query 1: Event aggregates. The time-windowed order counts live here
+  // (not on the orders table) so they're correct for event-driven tenants
+  // whose orders table is mostly empty. Mirrors the segment evaluator.
   const eventAgg = await db.execute(sql`
     SELECT
       COUNT(*) AS total_events,
       MAX(timestamp) AS last_event_at,
       MIN(timestamp) AS first_event_at,
       COUNT(*) FILTER (WHERE event_name IN ('order_placed', 'order_completed')) AS order_event_count,
-      COUNT(*) FILTER (WHERE event_name = 'cart_created') AS cart_count
+      COUNT(*) FILTER (WHERE event_name = 'cart_created') AS cart_count,
+      COUNT(*) FILTER (
+        WHERE event_name IN ('order_placed', 'order_completed')
+          AND timestamp > NOW() - INTERVAL '30 days'
+      ) AS orders_last_30d,
+      COUNT(*) FILTER (
+        WHERE event_name IN ('order_placed', 'order_completed')
+          AND timestamp > NOW() - INTERVAL '90 days'
+      ) AS orders_last_90d
     FROM events
     WHERE project_id = ${projectId} AND customer_id = ${customerId}
   `)
 
-  // Query 2: Real order-based metrics (source of truth for order dates)
+  // Query 2: orders-table-only metrics (lifetime totals + first/last dates +
+  // discount %). Time-windowed counts moved to the event query above.
   const orderAgg = await db.execute(sql`
     SELECT
       COUNT(*) AS order_count,
       MIN(created_at) AS first_order_at,
       MAX(created_at) AS last_order_at,
-      COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE discount::numeric > 0) / NULLIF(COUNT(*), 0)), 0) AS discount_pct,
-      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') AS orders_last_30d,
-      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '90 days') AS orders_last_90d
+      COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE discount::numeric > 0) / NULLIF(COUNT(*), 0)), 0) AS discount_pct
     FROM orders
     WHERE project_id = ${projectId} AND customer_id = ${customerId} AND status != 'cancelled'
   `)
@@ -230,8 +239,8 @@ async function computeEcommerceMetrics(
     last_event_at: eRow?.last_event_at ?? null,
     first_event_at: eRow?.first_event_at ?? null,
     discount_order_percentage: Number(oRow?.discount_pct ?? 0),
-    orders_in_last_30_days: Number(oRow?.orders_last_30d ?? 0),
-    orders_in_last_90_days: Number(oRow?.orders_last_90d ?? 0),
+    orders_in_last_30_days: Number(eRow?.orders_last_30d ?? 0),
+    orders_in_last_90_days: Number(eRow?.orders_last_90d ?? 0),
     ...clvResult,
     // Churn risk as 0-100 integer (used by segment evaluator + predictions)
     churn_risk: Math.round(clvResult.clv_churn_probability * 100),
