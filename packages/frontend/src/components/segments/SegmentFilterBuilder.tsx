@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useRef, useEffect, useLayoutEffect
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2, FolderPlus } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { NumberInput } from '@/components/ui/NumberInput'
 import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
 import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef } from '@storees/shared'
@@ -367,25 +368,22 @@ function RuleRow({
           </select>
         ) : rule.operator === 'between' ? (
           <div className="flex items-center gap-2">
-            <input
-              type="number"
-              value={Array.isArray(rule.value) ? rule.value[0] : 0}
-              onChange={e => onChange({ value: [Number(e.target.value), Array.isArray(rule.value) ? rule.value[1] : 100] })}
+            <NumberInput
+              value={Array.isArray(rule.value) ? rule.value[0] : undefined}
+              onChange={n => onChange({ value: [n ?? 0, Array.isArray(rule.value) ? rule.value[1] : 100] })}
               className={cn(inputClass, 'w-24')}
             />
             <span className="text-xs font-medium text-text-muted">and</span>
-            <input
-              type="number"
-              value={Array.isArray(rule.value) ? rule.value[1] : 100}
-              onChange={e => onChange({ value: [Array.isArray(rule.value) ? rule.value[0] : 0, Number(e.target.value)] })}
+            <NumberInput
+              value={Array.isArray(rule.value) ? rule.value[1] : undefined}
+              onChange={n => onChange({ value: [Array.isArray(rule.value) ? rule.value[0] : 0, n ?? 0] })}
               className={cn(inputClass, 'w-24')}
             />
           </div>
         ) : fieldType === 'number' ? (
-          <input
-            type="number"
-            value={rule.value as number}
-            onChange={e => onChange({ value: Number(e.target.value) })}
+          <NumberInput
+            value={typeof rule.value === 'number' ? rule.value : undefined}
+            onChange={n => onChange({ value: n ?? 0 })}
             className={cn(inputClass, 'w-28')}
           />
         ) : fieldType === 'date' ? (

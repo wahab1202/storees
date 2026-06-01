@@ -9,6 +9,7 @@ import { useTemplates } from '@/hooks/useTemplates'
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
 import { useSegments } from '@/hooks/useSegments'
 import { useProducts, useCollections } from '@/hooks/useProducts'
+import { NumberInput } from '@/components/ui/NumberInput'
 
 type NodeConfigPanelProps = {
   node: Node | null
@@ -123,12 +124,11 @@ function DelayForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, data
     <div className="space-y-3">
       <FieldLabel label="Duration">
         <div className="flex gap-2">
-          <input
-            type="number"
+          <NumberInput
             min={1}
             value={value}
-            onChange={e => {
-              const v = parseInt(e.target.value) || 1
+            onChange={n => {
+              const v = n ?? 1
               setValue(v)
               onUpdate(node.id, { ...d, value: v, unit })
             }}
@@ -539,12 +539,11 @@ function AbSplitForm({ node, onUpdate }: { node: Node; onUpdate: (id: string, da
                 placeholder="Branch label"
                 className="flex-1 h-7 px-2 text-xs border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent/30"
               />
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={99}
                 value={b.weight}
-                onChange={e => update(branches.map((x, j) => j === i ? { ...x, weight: parseInt(e.target.value) || 0 } : x))}
+                onChange={n => update(branches.map((x, j) => j === i ? { ...x, weight: n ?? 0 } : x))}
                 className="w-14 h-7 px-2 text-xs border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent/30"
               />
               <span className="text-xs text-text-muted">%</span>
