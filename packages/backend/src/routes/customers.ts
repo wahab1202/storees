@@ -8,6 +8,7 @@ import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
+import { computeAndUpdateMetrics } from '../workers/metricsWorker.js'
 import { getConsentAuditLog, getConsentStatus } from '../services/consentService.js'
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
 
@@ -544,6 +545,46 @@ router.post('/recalculate', requireRole('admin'), requireProjectId, async (req, 
   } catch (err) {
     console.error('Recalculate error:', err)
     res.status(500).json({ success: false, error: 'Failed to recalculate aggregates' })
+  }
+})
+
+// Admin-only: re-run the metrics worker for every customer in the project.
+// Use after a metricsWorker / evaluator change to refresh customers.metrics
+// immediately instead of waiting for the next event per customer. Processes
+// in parallel chunks so large projects (15k+) complete in seconds, not
+// hours; per-customer failures are logged and skipped, never abort the run.
+router.post('/refresh-metrics', requireRole('admin'), requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const rows = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.projectId, projectId))
+
+    const CONCURRENCY = 10
+    let refreshed = 0
+    let failed = 0
+    for (let i = 0; i < rows.length; i += CONCURRENCY) {
+      const chunk = rows.slice(i, i + CONCURRENCY)
+      const results = await Promise.allSettled(
+        chunk.map(r => computeAndUpdateMetrics(projectId, r.id)),
+      )
+      for (const r of results) {
+        if (r.status === 'fulfilled') refreshed++
+        else { failed++; console.error('[refresh-metrics] customer failed:', r.reason instanceof Error ? r.reason.message : r.reason) }
+      }
+    }
+    res.json({
+      success: true,
+      data: {
+        refreshed,
+        failed,
+        message: `Refreshed metrics for ${refreshed} customers${failed ? ` (${failed} failed)` : ''}`,
+      },
+    })
+  } catch (err) {
+    console.error('Refresh metrics error:', err)
+    res.status(500).json({ success: false, error: 'Failed to refresh metrics' })
   }
 })
 
