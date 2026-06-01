@@ -552,6 +552,42 @@ function isUnaryOperator(op: FilterOperator | undefined): boolean {
   return op === 'is_true' || op === 'is_false'
 }
 
+// Searchable product dropdown — each instance owns its own search query so
+// adding multiple product-field rules doesn't collide. Backend caps results
+// at 50; with no search, we show the first 50; typing re-queries via ilike
+// on title. A current selection that's out of the filtered window stays
+// pickable through the "(current)" sentinel option.
+function ProductPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [search, setSearch] = useState('')
+  const { data, isLoading } = useProducts(search)
+  const products = data?.data ?? []
+  const selectedInList = !!products.find(p => (p.shopifyProductId ?? p.id) === value)
+  return (
+    <div className="flex-1 space-y-1">
+      <input
+        type="text"
+        value={search}
+        placeholder="Search products…"
+        onChange={(e) => setSearch(e.target.value)}
+        className="w-full text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+      />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+      >
+        <option value="">{isLoading ? 'Loading…' : 'Pick a product…'}</option>
+        {value && !selectedInList && (
+          <option value={value}>{value} (current)</option>
+        )}
+        {products.map(p => (
+          <option key={p.id} value={p.shopifyProductId ?? p.id}>{p.title}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 function TriggerFiltersBlock({
   event, filters, onChange,
 }: {
@@ -564,12 +600,6 @@ function TriggerFiltersBlock({
   const hintedProperties = EVENT_PROPERTY_HINTS[event] ?? []
   // Merge — observed first (real data), then hints not already covered.
   const propertyOptions = Array.from(new Set([...observedProperties, ...hintedProperties]))
-
-  const productsRequired = (filters?.rules ?? []).some(r =>
-    !('type' in r) && (r.field === 'product_id' || r.field === 'product_external_id'),
-  )
-  const { data: productsData } = useProducts(productsRequired ? '' : undefined)
-  const products = productsData?.data ?? []
 
   const rules = (filters?.rules ?? []).filter((r): r is FilterRule => !('type' in r))
   const logic = filters?.logic ?? 'AND'
@@ -663,16 +693,10 @@ function TriggerFiltersBlock({
               </select>
               {!unary && (
                 isProductField ? (
-                  <select
+                  <ProductPicker
                     value={String(rule.value ?? '')}
-                    onChange={(e) => updateRule(idx, { value: e.target.value })}
-                    className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                  >
-                    <option value="">Pick a product…</option>
-                    {products.map(p => (
-                      <option key={p.id} value={p.shopifyProductId ?? p.id}>{p.title}</option>
-                    ))}
-                  </select>
+                    onChange={(v) => updateRule(idx, { value: v })}
+                  />
                 ) : (
                   <input
                     type="text"
