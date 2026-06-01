@@ -7,6 +7,7 @@ import {
   Minus, Maximize2, Shuffle, CornerDownRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { NumberInput } from '@/components/ui/NumberInput'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
 import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
@@ -473,7 +474,7 @@ function ConfigDrawer({
         {node.type === 'delay' && (
           <Fld label="Duration">
             <div className="flex gap-2">
-              <input type="number" min={1} value={node.config.value} onChange={e => onUpdate({ ...node, config: { ...node.config, value: parseInt(e.target.value) || 1 } })} className={cn(INPUT, '!w-20')} />
+              <NumberInput min={1} value={node.config.value} onChange={n => onUpdate({ ...node, config: { ...node.config, value: n ?? 1 } })} className={cn(INPUT, '!w-20')} />
               <select value={node.config.unit} onChange={e => onUpdate({ ...node, config: { ...node.config, unit: e.target.value as 'minutes' | 'hours' | 'days' } })} className={cn(INPUT, 'flex-1')}>
                 <option value="minutes">Minutes</option>
                 <option value="hours">Hours</option>
@@ -1055,12 +1056,11 @@ function FixedTimeFields({ cfg, patch }: { cfg: Record<string, unknown>; patch: 
       )}
       {sched.frequency === 'monthly' && (
         <Fld label="Day of month">
-          <input
-            type="number"
+          <NumberInput
             min={1}
             max={28}
-            value={sched.dayOfMonth ?? 1}
-            onChange={(e) => patchSched({ dayOfMonth: parseInt(e.target.value) || 1 })}
+            value={sched.dayOfMonth}
+            onChange={n => patchSched({ dayOfMonth: n ?? 1 })}
             className={INPUT}
           />
           <p className="mt-1 text-[11px] text-gray-500">1–28 (avoids month-end edge cases)</p>
