@@ -10,6 +10,7 @@ import {
   segments,
   emailSuppressions,
   consents,
+  events,
   projects,
   campaignSubscriptionCategories,
   customerSubscriptions,
@@ -299,14 +300,21 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
 
     if (channel === 'email' && allowed.length > 0) {
       const customerIds = allowed.map(c => c.customerId)
-      const recentlyOpenedRows = await db.execute(sql`
-        SELECT DISTINCT customer_id
-        FROM events
-        WHERE customer_id = ANY(${customerIds}::uuid[])
-        AND event_name IN ('email_opened', 'email_read')
-        AND timestamp >= NOW() - INTERVAL '90 days'
-      `)
-      const recentlyOpened = new Set(recentlyOpenedRows.rows.map(r => String((r as { customer_id: string }).customer_id)))
+      // Use the typed query builder rather than a raw `ANY($1::uuid[])`
+      // template — drizzle interpolates a JS array as a `($1, $2, ...)`
+      // tuple, which Postgres treats as a record and refuses to cast to
+      // uuid[] ("cannot cast type record to uuid[]"). project_id filter
+      // also lets the planner use idx_events_customer.
+      const recentlyOpenedRows = await db
+        .selectDistinct({ customerId: events.customerId })
+        .from(events)
+        .where(and(
+          eq(events.projectId, input.projectId),
+          inArray(events.customerId, customerIds),
+          inArray(events.eventName, ['email_opened', 'email_read']),
+          sql`${events.timestamp} >= NOW() - INTERVAL '90 days'`,
+        ))
+      const recentlyOpened = new Set(recentlyOpenedRows.map(r => String(r.customerId)).filter(Boolean))
       stale += allowed.filter(c => !recentlyOpened.has(c.customerId)).length
     }
 
