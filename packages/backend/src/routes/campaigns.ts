@@ -1,8 +1,10 @@
 import { Router } from 'express'
 import { eq, and, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { campaigns, campaignSends, campaignSubscriptionCategories, customers, projects } from '../db/schema.js'
+import { campaigns, campaignSends, campaignSubscriptionCategories, customers, projects, segments } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { resolveScopedAgentIds } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import {
   listCampaigns,
   getCampaignWithSegment,
@@ -32,6 +34,27 @@ import { loadResendAttachments } from '../services/campaignAttachmentService.js'
 import type { CampaignUtmParameters, FilterConfig, GmailAnnotation, TemplateVariable } from '@storees/shared'
 
 const router = Router()
+
+// Dealer RBAC helpers. A dealer owns the campaigns they create; admin owns all.
+function isScopedDealer(req: AuthenticatedRequest): boolean {
+  const role = req.adminUser?.role
+  return role === 'agent' || role === 'manager'
+}
+function canManageCampaign(req: AuthenticatedRequest, c: { createdByAgentId: string | null }): boolean {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return true
+  return !!user.agentId && c.createdByAgentId === user.agentId
+}
+// Owner precheck for action routes that load via a service (send/duplicate/archive).
+// Returns true if the campaign exists in this project AND the caller may manage it.
+async function callerOwnsCampaign(req: AuthenticatedRequest, id: string): Promise<boolean> {
+  const [c] = await db
+    .select({ projectId: campaigns.projectId, createdByAgentId: campaigns.createdByAgentId })
+    .from(campaigns)
+    .where(eq(campaigns.id, id))
+    .limit(1)
+  return !!c && c.projectId === req.projectId && canManageCampaign(req, c)
+}
 
 function normalizeEmailList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
@@ -68,11 +91,14 @@ function utmParams(value: CampaignUtmParameters | null | undefined) {
 
 // GET /api/campaigns?projectId=&includeArchived=true&archivedOnly=true
 // Default: active campaigns only, latest first.
-router.get('/', requireProjectId, async (req, res) => {
+router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
+    // [] = admin (all), null = deny, [ids] = dealer's own campaigns only.
+    const ownerAgentIds = await resolveScopedAgentIds(req)
     const rows = await listCampaigns(req.projectId!, {
       includeArchived: req.query.includeArchived === 'true',
       archivedOnly: req.query.archivedOnly === 'true',
+      ownerAgentIds,
     })
     res.json({ success: true, data: rows })
   } catch (err) {
@@ -82,11 +108,11 @@ router.get('/', requireProjectId, async (req, res) => {
 })
 
 // GET /api/campaigns/:id?projectId=
-router.get('/:id', requireProjectId, async (req, res) => {
+router.get('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
     const campaign = await getCampaignWithSegment(id)
-    if (!campaign || campaign.projectId !== req.projectId) {
+    if (!campaign || campaign.projectId !== req.projectId || !canManageCampaign(req, campaign)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
     res.json({ success: true, data: campaign })
@@ -97,7 +123,7 @@ router.get('/:id', requireProjectId, async (req, res) => {
 })
 
 // POST /api/campaigns?projectId=
-router.post('/', requireProjectId, async (req, res) => {
+router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       name, channel, deliveryType, subject, htmlBody, emailBuilderTemplate, bodyText,
@@ -206,6 +232,26 @@ router.post('/', requireProjectId, async (req, res) => {
       })
     }
 
+    // Dealer RBAC: stamp ownership, and ensure a dealer can only target one of
+    // their OWN segments (defense-in-depth on top of the send-side owner gate).
+    let createdByAgentId: string | null = null
+    if (isScopedDealer(req)) {
+      if (!req.adminUser?.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      createdByAgentId = req.adminUser.agentId
+      if (segmentId) {
+        const [seg] = await db
+          .select({ createdByAgentId: segments.createdByAgentId })
+          .from(segments)
+          .where(and(eq(segments.id, segmentId), eq(segments.projectId, req.projectId!)))
+          .limit(1)
+        if (!seg || seg.createdByAgentId !== createdByAgentId) {
+          return res.status(403).json({ success: false, error: 'You can only target your own segments' })
+        }
+      }
+    }
+
     const [campaign] = await db.insert(campaigns).values({
       projectId: req.projectId!,
       name: name.trim(),
@@ -216,6 +262,7 @@ router.post('/', requireProjectId, async (req, res) => {
       emailBuilderTemplate: ch === 'email' ? emailBuilderTemplate ?? null : null,
       bodyText: bodyText?.trim() ?? null,
       segmentId: segmentId ?? null,
+      createdByAgentId,
       fromName: fromName?.trim() ?? null,
       fromEmail: fromEmail?.trim() || null,
       replyToEmail: replyToEmail?.trim() || null,
@@ -281,7 +328,7 @@ router.post('/', requireProjectId, async (req, res) => {
 
 // POST /api/campaigns/lint?projectId= — preview content lint without persisting
 // Lets the frontend live-preview warnings as the admin types.
-router.post('/lint', requireProjectId, async (req, res) => {
+router.post('/lint', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const { subject, htmlBody, bodyText, variables } = req.body as { subject?: string; htmlBody?: string; bodyText?: string; variables?: TemplateVariable[] }
     const findings = lintCampaignContent({
@@ -298,7 +345,7 @@ router.post('/lint', requireProjectId, async (req, res) => {
 })
 
 // POST /api/campaigns/audience-preview?projectId= — draft audience math without saving
-router.post('/audience-preview', requireProjectId, async (req, res) => {
+router.post('/audience-preview', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       channel,
@@ -344,7 +391,7 @@ router.post('/audience-preview', requireProjectId, async (req, res) => {
 })
 
 // PATCH /api/campaigns/:id?projectId=
-router.patch('/:id', requireProjectId, async (req, res) => {
+router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
     const {
@@ -424,13 +471,14 @@ router.patch('/:id', requireProjectId, async (req, res) => {
         templateId: campaigns.templateId,
         status: campaigns.status,
         projectId: campaigns.projectId,
+        createdByAgentId: campaigns.createdByAgentId,
         controlGroupSeed: campaigns.controlGroupSeed,
       })
       .from(campaigns)
       .where(eq(campaigns.id, id))
       .limit(1)
 
-    if (!existing || existing.projectId !== req.projectId) {
+    if (!existing || existing.projectId !== req.projectId || !canManageCampaign(req, existing)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
 
@@ -572,17 +620,17 @@ router.patch('/:id', requireProjectId, async (req, res) => {
 })
 
 // DELETE /api/campaigns/:id?projectId=
-router.delete('/:id', requireProjectId, async (req, res) => {
+router.delete('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
 
     const [existing] = await db
-      .select({ status: campaigns.status, projectId: campaigns.projectId })
+      .select({ status: campaigns.status, projectId: campaigns.projectId, createdByAgentId: campaigns.createdByAgentId })
       .from(campaigns)
       .where(eq(campaigns.id, id))
       .limit(1)
 
-    if (!existing || existing.projectId !== req.projectId) {
+    if (!existing || existing.projectId !== req.projectId || !canManageCampaign(req, existing)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
 
@@ -600,9 +648,12 @@ router.delete('/:id', requireProjectId, async (req, res) => {
 
 // POST /api/campaigns/:id/archive?projectId=
 // Sets archived_at = NOW. Idempotent (re-archiving a row updates the timestamp).
-router.post('/:id/archive', requireProjectId, async (req, res) => {
+router.post('/:id/archive', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
+    if (!(await callerOwnsCampaign(req, id))) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
     const [updated] = await db
       .update(campaigns)
       .set({ archivedAt: new Date(), updatedAt: new Date() })
@@ -617,9 +668,12 @@ router.post('/:id/archive', requireProjectId, async (req, res) => {
 })
 
 // POST /api/campaigns/:id/unarchive?projectId=
-router.post('/:id/unarchive', requireProjectId, async (req, res) => {
+router.post('/:id/unarchive', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
+    if (!(await callerOwnsCampaign(req, id))) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
     const [updated] = await db
       .update(campaigns)
       .set({ archivedAt: null, updatedAt: new Date() })
@@ -635,10 +689,17 @@ router.post('/:id/unarchive', requireProjectId, async (req, res) => {
 
 // POST /api/campaigns/:id/duplicate?projectId=
 // Clones the campaign as a fresh draft with " (Copy)" suffix. Counters reset.
-router.post('/:id/duplicate', requireProjectId, async (req, res) => {
+router.post('/:id/duplicate', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
+    if (!(await callerOwnsCampaign(req, id))) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
     const created = await duplicateCampaign(req.projectId!, id)
+    // The copy is owned by whoever duplicated it (dealer → themselves).
+    if (isScopedDealer(req) && req.adminUser?.agentId && created?.id) {
+      await db.update(campaigns).set({ createdByAgentId: req.adminUser.agentId }).where(eq(campaigns.id, created.id))
+    }
     res.status(201).json({ success: true, data: created })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to duplicate campaign'
@@ -652,10 +713,16 @@ router.post('/:id/duplicate', requireProjectId, async (req, res) => {
 // Phase E3.2 — pre-flight stale-list audit. If >30% of the deliverable list
 // hasn't opened any email in 90 days, return 409 with the audit; admin
 // re-sends with ?force=true to override after acknowledging.
-router.post('/:id/send', requireProjectId, async (req, res) => {
+router.post('/:id/send', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
     const force = req.query.force === 'true'
+
+    // Ownership gate BEFORE dispatch — a dealer must never be able to trigger
+    // another dealer's (or an admin's project-wide) campaign.
+    if (!(await callerOwnsCampaign(req, id))) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
 
     if (!force) {
       const audit = await previewCampaignAudience(id)
@@ -678,9 +745,12 @@ router.post('/:id/send', requireProjectId, async (req, res) => {
 })
 
 // GET /api/campaigns/:id/audience-preview?projectId= — pre-flight audit (no side effects)
-router.get('/:id/audience-preview', requireProjectId, async (req, res) => {
+router.get('/:id/audience-preview', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
+    if (!(await callerOwnsCampaign(req, id))) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
     const audit = await previewCampaignAudience(id)
     res.json({ success: true, data: audit })
   } catch (err) {
@@ -690,7 +760,7 @@ router.get('/:id/audience-preview', requireProjectId, async (req, res) => {
 })
 
 // POST /api/campaigns/:id/test-email?projectId= — render a saved email campaign with sample data and send to a test inbox.
-router.post('/:id/test-email', requireProjectId, async (req, res) => {
+router.post('/:id/test-email', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
     const { to, sampleCustomerId } = req.body as { to?: string; sampleCustomerId?: string }
@@ -700,7 +770,7 @@ router.post('/:id/test-email', requireProjectId, async (req, res) => {
     }
 
     const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id)).limit(1)
-    if (!campaign || campaign.projectId !== req.projectId) {
+    if (!campaign || campaign.projectId !== req.projectId || !canManageCampaign(req, campaign)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
     if (campaign.channel !== 'email') {
@@ -803,9 +873,13 @@ router.post('/:id/test-email', requireProjectId, async (req, res) => {
 })
 
 // POST /api/campaigns/:id/retry?projectId= — Retry failed recipients
-router.post('/:id/retry', requireProjectId, async (req, res) => {
+router.post('/:id/retry', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
+
+    if (!(await callerOwnsCampaign(req, id))) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
 
     // Reset failed sends back to pending
     const result = await db.update(campaignSends).set({
@@ -840,17 +914,17 @@ router.post('/:id/retry', requireProjectId, async (req, res) => {
 })
 
 // GET /api/campaigns/:id/sends?projectId=
-router.get('/:id/sends', requireProjectId, async (req, res) => {
+router.get('/:id/sends', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
 
     const [campaign] = await db
-      .select({ projectId: campaigns.projectId })
+      .select({ projectId: campaigns.projectId, createdByAgentId: campaigns.createdByAgentId })
       .from(campaigns)
       .where(eq(campaigns.id, id))
       .limit(1)
 
-    if (!campaign || campaign.projectId !== req.projectId) {
+    if (!campaign || campaign.projectId !== req.projectId || !canManageCampaign(req, campaign)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
 
@@ -869,17 +943,17 @@ router.get('/:id/sends', requireProjectId, async (req, res) => {
 })
 
 // GET /api/campaigns/:id/analytics?projectId=
-router.get('/:id/analytics', requireProjectId, async (req, res) => {
+router.get('/:id/analytics', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
 
     const [campaign] = await db
-      .select({ projectId: campaigns.projectId })
+      .select({ projectId: campaigns.projectId, createdByAgentId: campaigns.createdByAgentId })
       .from(campaigns)
       .where(eq(campaigns.id, id))
       .limit(1)
 
-    if (!campaign || campaign.projectId !== req.projectId) {
+    if (!campaign || campaign.projectId !== req.projectId || !canManageCampaign(req, campaign)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
 
@@ -903,17 +977,17 @@ router.get('/:id/analytics', requireProjectId, async (req, res) => {
 })
 
 // GET /api/campaigns/:id/ab-results?projectId=
-router.get('/:id/ab-results', requireProjectId, async (req, res) => {
+router.get('/:id/ab-results', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
 
     const [campaign] = await db
-      .select({ projectId: campaigns.projectId })
+      .select({ projectId: campaigns.projectId, createdByAgentId: campaigns.createdByAgentId })
       .from(campaigns)
       .where(eq(campaigns.id, id))
       .limit(1)
 
-    if (!campaign || campaign.projectId !== req.projectId) {
+    if (!campaign || campaign.projectId !== req.projectId || !canManageCampaign(req, campaign)) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
     }
 

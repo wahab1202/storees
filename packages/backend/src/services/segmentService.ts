@@ -60,6 +60,12 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
   const filters = segment.filters as FilterConfig
   const filterSql = filterToSql(filters)
 
+  // Dealer RBAC: an agent-owned segment only ever counts/materializes the
+  // owning dealer's own customers. NULL owner = admin/project-global (no scope).
+  const ownerScope = segment.createdByAgentId
+    ? eq(customers.agentId, segment.createdByAgentId)
+    : undefined
+
   // Find all matching customers for this project. Pull reachability flags
   // alongside so we can compute reachableCount in the same scan — match +
   // (subscribed AND identifier present) on at least one channel.
@@ -72,7 +78,7 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
       smsSubscribed: customers.smsSubscribed,
     })
     .from(customers)
-    .where(and(eq(customers.projectId, segment.projectId), filterSql))
+    .where(and(eq(customers.projectId, segment.projectId), filterSql, ownerScope))
 
   const matchingIds = new Set(matchingCustomers.map(c => c.id))
 

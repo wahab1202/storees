@@ -432,6 +432,13 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   const audienceCap = campaign.audienceCap ?? null
   const ctrlPct = campaign.controlGroupPct ?? 0
   const ctrlSeed = campaign.controlGroupSeed ?? ''
+
+  // Dealer RBAC: a dealer-owned campaign only ever sends to that dealer's own
+  // customers, regardless of audience mode (inline filter / segment / all-users).
+  // NULL owner = admin/project-global campaign (no scope). This is the
+  // authoritative send-side gate that keeps a dealer's blast inside their book.
+  const campaignOwnerAgentId = (campaign.createdByAgentId as string | null) ?? null
+  const ownerScope = campaignOwnerAgentId ? eq(customers.agentId, campaignOwnerAgentId) : undefined
   const subscriptionRows = await db
     .select({ categoryId: campaignSubscriptionCategories.categoryId })
     .from(campaignSubscriptionCategories)
@@ -468,6 +475,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
               cursor ? gt(customers.id, cursor) : undefined,
               filterToSql(audienceFilter),
               excludeClause,
+              ownerScope,
             ))
             .orderBy(customers.id)
             .limit(pageLimit)
@@ -484,8 +492,8 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
             .from(customerSegments)
             .innerJoin(customers, eq(customers.id, customerSegments.customerId))
             .where(cursor
-              ? and(eq(customerSegments.segmentId, campaign.segmentId), gt(customers.id, cursor), excludeClause)
-              : and(eq(customerSegments.segmentId, campaign.segmentId), excludeClause))
+              ? and(eq(customerSegments.segmentId, campaign.segmentId), gt(customers.id, cursor), excludeClause, ownerScope)
+              : and(eq(customerSegments.segmentId, campaign.segmentId), excludeClause, ownerScope))
             .orderBy(customers.id)
             .limit(pageLimit)
         : await db
@@ -499,8 +507,8 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
             })
             .from(customers)
             .where(cursor
-              ? and(eq(customers.projectId, campaign.projectId), gt(customers.id, cursor), excludeClause)
-              : and(eq(customers.projectId, campaign.projectId), excludeClause))
+              ? and(eq(customers.projectId, campaign.projectId), gt(customers.id, cursor), excludeClause, ownerScope)
+              : and(eq(customers.projectId, campaign.projectId), excludeClause, ownerScope))
             .orderBy(customers.id)
             .limit(pageLimit)
 
@@ -1129,7 +1137,7 @@ export async function getCampaignWithSegment(campaignId: string) {
  */
 export async function listCampaigns(
   projectId: string,
-  opts: { includeArchived?: boolean; archivedOnly?: boolean } = {},
+  opts: { includeArchived?: boolean; archivedOnly?: boolean; ownerAgentIds?: string[] | null } = {},
 ) {
   // Default: active only (archived_at IS NULL), most recent first.
   // includeArchived=true: include both active + archived.
@@ -1140,6 +1148,14 @@ export async function listCampaigns(
       ? sql`TRUE`
       : sql`${campaigns.archivedAt} IS NULL`
 
+  // Dealer RBAC ownership filter. undefined/[] → admin (all). null → deny.
+  // [ids] → only campaigns owned by those agent(s).
+  const ownerFilter = opts.ownerAgentIds === null
+    ? sql`FALSE`
+    : opts.ownerAgentIds && opts.ownerAgentIds.length > 0
+      ? inArray(campaigns.createdByAgentId, opts.ownerAgentIds)
+      : undefined
+
   const rows = await db
     .select({
       campaign: campaigns,
@@ -1147,7 +1163,7 @@ export async function listCampaigns(
     })
     .from(campaigns)
     .leftJoin(segments, eq(segments.id, campaigns.segmentId))
-    .where(and(eq(campaigns.projectId, projectId), archivedFilter))
+    .where(and(eq(campaigns.projectId, projectId), archivedFilter, ownerFilter))
     .orderBy(sql`${campaigns.createdAt} DESC`)
 
   const campaignIds = rows.map(r => r.campaign.id)

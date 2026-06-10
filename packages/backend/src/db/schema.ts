@@ -281,11 +281,15 @@ export const segments = pgTable('segments', {
   // WhatsApp). Recomputed by evaluateSegment alongside memberCount.
   reachableCount: integer('reachable_count').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
+  // B2B dealer RBAC: owner of an agent-authored segment. NULL = admin/project-global.
+  // Agents see + manage only segments they own; evaluation is scoped to their customers.
+  createdByAgentId: uuid('created_by_agent_id').references(() => agents.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_segments_project').on(table.projectId),
   index('idx_segments_project_active').on(table.projectId, table.isActive),
+  index('idx_segments_owner').on(table.projectId, table.createdByAgentId),
 ])
 
 // ============ FLOWS ============
@@ -302,11 +306,15 @@ export const flows = pgTable('flows', {
   // Phase F3 — replay lookback window in days. Events older than this are not
   // back-attributed when an anonymous session is linked to a customer.
   lookbackDays: integer('lookback_days').notNull().default(30),
+  // B2B dealer RBAC: owner of an agent-authored flow. NULL = admin/project-global.
+  // Agents see + manage only flows they own; the flow's audience is scoped to their customers.
+  createdByAgentId: uuid('created_by_agent_id').references(() => agents.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_flows_project').on(table.projectId),
   index('idx_flows_project_status').on(table.projectId, table.status),
+  index('idx_flows_owner').on(table.projectId, table.createdByAgentId),
 ])
 
 // ============ FLOW TRIPS ============
@@ -434,11 +442,16 @@ export const campaigns = pgTable('campaigns', {
   // Soft-archive — hides the campaign from default list views without losing
   // its lifecycle state. NULL = active; non-NULL = archived at this time.
   archivedAt: timestamp('archived_at', { withTimezone: true }),
+  // B2B dealer RBAC: owner of a dealer-authored campaign. NULL = admin/project-global.
+  // Dealers see/manage only campaigns they own; the send audience is scoped to
+  // their customers (enforced in dispatchCampaign).
+  createdByAgentId: uuid('created_by_agent_id').references(() => agents.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_campaigns_project').on(table.projectId),
   index('idx_campaigns_status').on(table.projectId, table.status),
+  index('idx_campaigns_owner').on(table.projectId, table.createdByAgentId),
 ])
 
 // ============ CAMPAIGN SENDS ============

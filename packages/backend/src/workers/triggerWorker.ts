@@ -93,6 +93,19 @@ async function evaluateFlowTrigger(flow: Record<string, unknown>, event: EventJo
     if (!match) return null
   }
 
+  // 3b. Dealer RBAC: a dealer-owned flow only ever enrolls that dealer's own
+  // customers. NULL owner = admin/project-global flow (no scope). This is the
+  // single authoritative gate that keeps a dealer's automation inside their book.
+  const ownerAgentId = (flow.createdByAgentId as string | null) ?? null
+  if (ownerAgentId) {
+    const [scopeRow] = await db
+      .select({ agentId: customers.agentId })
+      .from(customers)
+      .where(eq(customers.id, event.customerId))
+      .limit(1)
+    if (!scopeRow || scopeRow.agentId !== ownerAgentId) return null
+  }
+
   // 4. Check audience filters against customer
   if (triggerConfig.audienceFilter) {
     const [customer] = await db

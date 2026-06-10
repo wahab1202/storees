@@ -48,17 +48,23 @@ const navItems: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/customers', label: 'Customers', icon: Users },
   { href: '/segments', label: 'Segments', icon: PieChart },
-  { href: '/analytics', label: 'Analytics', icon: BarChart3 },
+  // Analytics (funnels/cohorts) is project-wide aggregate data that is NOT yet
+  // dealer-scoped — admin-only until scoped. Dealers get scoped reporting from Dashboard.
+  { href: '/analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
-  { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
+  // Dealers (agent/manager) build and run their own flows, scoped to their
+  // customers — so Flows is visible to them. Backend enforces ownership + audience scope.
+  { href: '/flows', label: 'Flows', icon: Workflow },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
 ]
 
 const bottomItems: NavItem[] = [
   { href: '/projects', label: 'Projects', icon: FolderOpen, adminOnly: true },
   { href: '/onboarding', label: 'New Project', icon: Plus, adminOnly: true },
-  { href: '/settings', label: 'Settings', icon: Settings },
+  // Settings holds admin-only config (SDK keys, channel providers, AI). Dealers
+  // reach Account + Security via the user menu, so the full Settings nav is admin-only.
+  { href: '/settings', label: 'Settings', icon: Settings, adminOnly: true },
   { href: '/integrations', label: 'Connected Stores', icon: Store, adminOnly: true },
 ]
 

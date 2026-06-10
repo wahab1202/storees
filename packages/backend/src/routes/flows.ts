@@ -3,25 +3,44 @@ import { eq, and, sql, count, inArray, desc, or } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flows, flowTrips, customers, messages, scheduledJobs } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
-import { requireRole } from '../middleware/agentScope.js'
+import { resolveScopedAgentIds } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
 import { listFlowTemplates, installFlowTemplate, type FlowTemplateId } from '../services/flowTemplates.js'
 
 const router = Router()
 
-// Flows are admin-only. Sub-admins (manager/agent roles) are fenced out:
-// flows reference segments + customers across regions, so read-only would still leak.
-router.use(requireRole('admin'))
+// Dealer RBAC: a dealer (role 'agent'/'manager') owns the flows they create and
+// the flow only ever enrolls that dealer's own customers (enforced in
+// triggerWorker). Admin owns/sees everything. NULL createdByAgentId = admin-global.
+function isScopedDealer(req: AuthenticatedRequest): boolean {
+  const role = req.adminUser?.role
+  return role === 'agent' || role === 'manager'
+}
+function canManageFlow(req: AuthenticatedRequest, flow: { createdByAgentId: string | null }): boolean {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return true
+  return !!user.agentId && flow.createdByAgentId === user.agentId
+}
 
 // GET /api/flows?projectId=...
-router.get('/', requireProjectId, async (req, res) => {
+// Admin → all project flows. Dealer (agent/manager) → only flows they own.
+router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
+
+    const scopedIds = await resolveScopedAgentIds(req)
+    if (scopedIds === null) {
+      return res.json({ success: true, data: [] })
+    }
+    const flowWhere = scopedIds.length === 0
+      ? eq(flows.projectId, projectId)
+      : and(eq(flows.projectId, projectId), inArray(flows.createdByAgentId, scopedIds))
 
     const flowRows = await db
       .select()
       .from(flows)
-      .where(eq(flows.projectId, projectId))
+      .where(flowWhere)
 
     // Get trip counts per flow
     const tripCounts = flowRows.length > 0
@@ -60,7 +79,7 @@ router.get('/', requireProjectId, async (req, res) => {
 })
 
 // GET /api/flows/:id?projectId=...
-router.get('/:id', requireProjectId, async (req, res) => {
+router.get('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -70,7 +89,7 @@ router.get('/:id', requireProjectId, async (req, res) => {
       .from(flows)
       .where(and(eq(flows.id, id), eq(flows.projectId, projectId)))
 
-    if (!flow) {
+    if (!flow || !canManageFlow(req, flow)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
     }
 
@@ -100,13 +119,23 @@ router.get('/:id', requireProjectId, async (req, res) => {
 
 // POST /api/flows?projectId=...
 // Body: { name, description?, triggerEvent? }
-router.post('/', requireProjectId, async (req, res) => {
+// Admin → project-global flow. Dealer (agent/manager) → flow owned by them whose
+// audience is restricted to their own customers.
+router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const { name, description, triggerEvent } = req.body
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ success: false, error: 'Name is required' })
+    }
+
+    let createdByAgentId: string | null = null
+    if (isScopedDealer(req)) {
+      if (!req.adminUser?.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      createdByAgentId = req.adminUser.agentId
     }
 
     const triggerConfig = {
@@ -125,6 +154,7 @@ router.post('/', requireProjectId, async (req, res) => {
       triggerConfig,
       nodes: defaultNodes,
       status: 'draft',
+      createdByAgentId,
     }).returning()
 
     res.status(201).json({ success: true, data: flow })
@@ -136,7 +166,7 @@ router.post('/', requireProjectId, async (req, res) => {
 
 // PATCH /api/flows/:id/status?projectId=...
 // Body: { status: 'active' | 'paused' | 'draft' }
-router.patch('/:id/status', requireProjectId, async (req, res) => {
+router.patch('/:id/status', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -156,7 +186,7 @@ router.patch('/:id/status', requireProjectId, async (req, res) => {
       .from(flows)
       .where(and(eq(flows.id, id), eq(flows.projectId, projectId)))
 
-    if (!existing) {
+    if (!existing || !canManageFlow(req, existing)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
     }
 
@@ -189,7 +219,7 @@ router.patch('/:id/status', requireProjectId, async (req, res) => {
 
 // PATCH /api/flows/:id?projectId=...
 // Body: { name?, description?, nodes?, triggerConfig?, exitConfig? }
-router.patch('/:id', requireProjectId, async (req, res) => {
+router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -200,7 +230,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       .from(flows)
       .where(and(eq(flows.id, id), eq(flows.projectId, projectId)))
 
-    if (!existing) {
+    if (!existing || !canManageFlow(req, existing)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
     }
 
@@ -225,7 +255,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
 })
 
 // DELETE /api/flows/:id?projectId=...
-router.delete('/:id', requireProjectId, async (req, res) => {
+router.delete('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -235,7 +265,7 @@ router.delete('/:id', requireProjectId, async (req, res) => {
       .from(flows)
       .where(and(eq(flows.id, id), eq(flows.projectId, projectId)))
 
-    if (!existing) {
+    if (!existing || !canManageFlow(req, existing)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
     }
 
@@ -268,7 +298,7 @@ router.delete('/:id', requireProjectId, async (req, res) => {
 // Used by the "Debug" tab on the flow detail page. Big support unlock —
 // instead of trawling logs to answer "why didn't this user get message
 // 3?", ops can search and see the full timeline.
-router.get('/:id/debug', requireProjectId, async (req, res) => {
+router.get('/:id/debug', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const flowId = req.params.id as string
     const projectId = req.projectId!
@@ -279,12 +309,12 @@ router.get('/:id/debug', requireProjectId, async (req, res) => {
     }
 
     const [flow] = await db
-      .select({ projectId: flows.projectId, name: flows.name })
+      .select({ projectId: flows.projectId, name: flows.name, createdByAgentId: flows.createdByAgentId })
       .from(flows)
       .where(eq(flows.id, flowId))
       .limit(1)
 
-    if (!flow || flow.projectId !== projectId) {
+    if (!flow || flow.projectId !== projectId || !canManageFlow(req, flow)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
     }
 
@@ -406,17 +436,17 @@ router.get('/:id/debug', requireProjectId, async (req, res) => {
   }
 })
 
-router.get('/:id/analytics', requireProjectId, async (req, res) => {
+router.get('/:id/analytics', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const id = req.params.id as string
 
     const [flow] = await db
-      .select({ projectId: flows.projectId })
+      .select({ projectId: flows.projectId, createdByAgentId: flows.createdByAgentId })
       .from(flows)
       .where(eq(flows.id, id))
       .limit(1)
 
-    if (!flow || flow.projectId !== req.projectId) {
+    if (!flow || flow.projectId !== req.projectId || !canManageFlow(req, flow)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
     }
 
@@ -429,7 +459,7 @@ router.get('/:id/analytics', requireProjectId, async (req, res) => {
 })
 
 // POST /api/flows/:id/clone?projectId=...
-router.post('/:id/clone', requireProjectId, async (req, res) => {
+router.post('/:id/clone', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -439,8 +469,17 @@ router.post('/:id/clone', requireProjectId, async (req, res) => {
       .from(flows)
       .where(and(eq(flows.id, id), eq(flows.projectId, projectId)))
 
-    if (!existing) {
+    if (!existing || !canManageFlow(req, existing)) {
       return res.status(404).json({ success: false, error: 'Flow not found' })
+    }
+
+    // The clone is owned by whoever cloned it (dealer → themselves; admin → global).
+    let cloneOwner: string | null = null
+    if (isScopedDealer(req)) {
+      if (!req.adminUser?.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      cloneOwner = req.adminUser.agentId
     }
 
     const [cloned] = await db.insert(flows).values({
@@ -451,6 +490,7 @@ router.post('/:id/clone', requireProjectId, async (req, res) => {
       exitConfig: existing.exitConfig,
       nodes: existing.nodes,
       status: 'draft',
+      createdByAgentId: cloneOwner,
     }).returning()
 
     res.status(201).json({ success: true, data: cloned })
@@ -467,14 +507,25 @@ router.get('/templates/list', requireProjectId, (_req, res) => {
 
 // POST /api/flows/templates/install?projectId=  body: { templateId }
 // Installs a pre-built flow template (e.g. CTWA Welcome) as a draft flow.
-router.post('/templates/install', requireProjectId, async (req, res) => {
+router.post('/templates/install', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const { templateId } = req.body as { templateId: FlowTemplateId }
     if (!templateId) {
       return res.status(400).json({ success: false, error: 'templateId is required' })
     }
+    // Dealers must own (and have their customers scoped on) the flow they install.
+    let ownerAgentId: string | null = null
+    if (isScopedDealer(req)) {
+      if (!req.adminUser?.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      ownerAgentId = req.adminUser.agentId
+    }
     const result = await installFlowTemplate(projectId, templateId)
+    if (ownerAgentId) {
+      await db.update(flows).set({ createdByAgentId: ownerAgentId }).where(eq(flows.id, result.flowId))
+    }
     res.status(201).json({ success: true, data: result })
   } catch (err) {
     console.error('Install flow template error:', err)

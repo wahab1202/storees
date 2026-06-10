@@ -5,6 +5,8 @@ import { predictionScores, predictionGoals, customers } from '../db/schema.js'
 import { eq, and, desc, asc, count, avg, sql } from 'drizzle-orm'
 import { checkMlHealth, explainCustomer } from '../services/mlProxyService.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
+import { scopedCustomerIdsSubquery, customerScopeFilter } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 const router = Router()
 
@@ -17,7 +19,7 @@ router.get('/health', async (_req, res) => {
 
 // GET /api/predictions/goals/:goalId/customers?projectId=...&bucket=high|medium|low&page=1&pageSize=25&sort=score_desc|score_asc
 // Returns paginated customers with their prediction scores for a specific goal, plus aggregate stats
-router.get('/goals/:goalId/customers', requireProjectId, async (req, res) => {
+router.get('/goals/:goalId/customers', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const goalId = req.params.goalId as string
@@ -27,10 +29,15 @@ router.get('/goals/:goalId/customers', requireProjectId, async (req, res) => {
     const sort = (req.query.sort as string) || 'score_desc'
     const offset = (page - 1) * pageSize
 
+    // Dealer RBAC: restrict scores to the caller's own customers. Returns TRUE
+    // for admin (no-op). Operates on prediction_scores.customer_id.
+    const customerScope = await scopedCustomerIdsSubquery(req, projectId)
+
     // Build WHERE conditions
     const conditions = [
       eq(predictionScores.projectId, projectId),
       eq(predictionScores.goalId, goalId),
+      customerScope,
     ]
 
     if (bucket) {
@@ -73,10 +80,13 @@ router.get('/goals/:goalId/customers', requireProjectId, async (req, res) => {
       .from(predictionScores)
       .where(whereClause)
 
-    // Aggregate stats: count by bucket + average score (unfiltered by bucket)
+    // Aggregate stats: count by bucket + average score (unfiltered by bucket,
+    // but still scoped to the caller's customers so the dealer's bucket counts
+    // match their list).
     const baseConditions = [
       eq(predictionScores.projectId, projectId),
       eq(predictionScores.goalId, goalId),
+      customerScope,
     ]
     const baseWhere = and(...baseConditions)
 
@@ -125,9 +135,12 @@ router.get('/goals/:goalId/customers', requireProjectId, async (req, res) => {
 
 // GET /api/predictions/:customerId?projectId=...
 // Returns all prediction scores for a customer with goal metadata
-router.get('/:customerId', requireProjectId, async (req, res) => {
+router.get('/:customerId', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const customerId = req.params.customerId as string
+
+    // Dealer RBAC: only return scores for a customer in the caller's scope.
+    const customerScope = await scopedCustomerIdsSubquery(req, req.projectId!)
 
     // Get latest score per goal for this customer from DB
     const rows = await db
@@ -150,6 +163,7 @@ router.get('/:customerId', requireProjectId, async (req, res) => {
           eq(predictionScores.projectId, req.projectId!),
           eq(predictionScores.customerId, customerId),
           eq(predictionGoals.status, 'active'),
+          customerScope,
         ),
       )
       .orderBy(desc(predictionScores.computedAt))
@@ -172,13 +186,24 @@ router.get('/:customerId', requireProjectId, async (req, res) => {
 // POST /api/predictions/:customerId/explain?projectId=...
 // Body: { goalId }
 // Get SHAP explainability from ML service in real-time
-router.post('/:customerId/explain', requireProjectId, async (req, res) => {
+router.post('/:customerId/explain', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const customerId = req.params.customerId as string
     const { goalId } = req.body
 
     if (!goalId) {
       return res.status(400).json({ success: false, error: 'goalId is required' })
+    }
+
+    // Dealer RBAC: a dealer can only explain a customer within their scope.
+    const scopeSql = await customerScopeFilter(req, req.projectId!)
+    const [owned] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), scopeSql))
+      .limit(1)
+    if (!owned) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
     }
 
     const mlAvailable = await checkMlHealth()

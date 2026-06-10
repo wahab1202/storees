@@ -1,10 +1,22 @@
 import { Router } from 'express'
-import { eq, and, count } from 'drizzle-orm'
+import { eq, and, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { segments, customers, customerSegments } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole, resolveScopedAgentIds } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
+
+// Dealer RBAC helpers. A dealer (role 'agent'/'manager') owns the segments they
+// create; admin owns/sees everything. NULL createdByAgentId = admin-global.
+function isScopedDealer(req: AuthenticatedRequest): boolean {
+  const role = req.adminUser?.role
+  return role === 'agent' || role === 'manager'
+}
+function canManageSegment(req: AuthenticatedRequest, seg: { createdByAgentId: string | null }): boolean {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return true
+  return !!user.agentId && seg.createdByAgentId === user.agentId
+}
 import { evaluateSegment, evaluateAllSegments, instantiateDefaultSegments } from '../services/segmentService.js'
 import { getLifecycleChart, filterToSql, scopedFilterToSql } from '@storees/segments'
 import type { FilterConfig } from '@storees/shared'
@@ -13,28 +25,40 @@ import { exportSegmentAudience, SUPPORTED_PLATFORMS, platformLabel, type AdPlatf
 const router = Router()
 
 // GET /api/segments?projectId=...
-router.get('/', requireProjectId, async (req, res) => {
+// Admin → all project segments. Dealer (agent/manager) → only segments they own.
+router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
 
-    // Ensure default segments exist (evaluates them on first creation)
-    await instantiateDefaultSegments(projectId)
+    // [] = admin (no owner filter); null = scoped user with no agentId (deny);
+    // [ids] = the agent(s) whose owned segments this user may see.
+    const scopedIds = await resolveScopedAgentIds(req)
+    if (scopedIds === null) {
+      return res.json({ success: true, data: [] })
+    }
+    const isAdminScope = scopedIds.length === 0
 
-    // Return cached counts immediately, re-evaluate in background
-    const rows = await db
-      .select()
-      .from(segments)
-      .where(eq(segments.projectId, projectId))
+    // Default segments are admin/project-global — only materialize them for admins.
+    if (isAdminScope) {
+      await instantiateDefaultSegments(projectId)
+    }
 
-    res.json({
-      success: true,
-      data: rows,
-    })
+    const whereClause = isAdminScope
+      ? eq(segments.projectId, projectId)
+      : and(eq(segments.projectId, projectId), inArray(segments.createdByAgentId, scopedIds))
 
-    // Fire-and-forget: re-evaluate all segments after response is sent
-    evaluateAllSegments(projectId).catch(err => {
-      console.error('Background segment evaluation error:', err)
-    })
+    const rows = await db.select().from(segments).where(whereClause)
+
+    res.json({ success: true, data: rows })
+
+    // Fire-and-forget re-eval. Owned segments self-scope in evaluateSegment, so
+    // we only kick off the project-wide pass for admins (avoids a dealer
+    // triggering a full-project recompute).
+    if (isAdminScope) {
+      evaluateAllSegments(projectId).catch(err => {
+        console.error('Background segment evaluation error:', err)
+      })
+    }
   } catch (err) {
     console.error('Segment list error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch segments' })
@@ -162,9 +186,9 @@ router.get('/:id/export-audience', requireProjectId, async (req, res) => {
 
 // POST /api/segments?projectId=...
 // Body: { name, description?, filters }
-// Admin-only for v1. Agent-authored segments require a createdBy column + scoped
-// evaluation on write; tracked as follow-up.
-router.post('/', requireRole('admin'), requireProjectId, async (req, res) => {
+// Admin → project-global segment. Dealer (agent/manager) → segment owned by them
+// and evaluated only over their own customers.
+router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const { name, description, filters } = req.body
@@ -177,6 +201,16 @@ router.post('/', requireRole('admin'), requireProjectId, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Valid filters config is required' })
     }
 
+    // Ownership: admins create project-global (NULL owner); dealers own their own.
+    // A scoped user with no agentId has nothing to own → reject.
+    let createdByAgentId: string | null = null
+    if (isScopedDealer(req)) {
+      if (!req.adminUser?.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      createdByAgentId = req.adminUser.agentId
+    }
+
     const [segment] = await db.insert(segments).values({
       projectId,
       name: name.trim(),
@@ -185,6 +219,7 @@ router.post('/', requireRole('admin'), requireProjectId, async (req, res) => {
       filters,
       memberCount: 0,
       isActive: true,
+      createdByAgentId,
     }).returning()
 
     // Evaluate the new segment immediately (non-fatal — don't fail creation if SQL evaluation errors)
@@ -204,7 +239,7 @@ router.post('/', requireRole('admin'), requireProjectId, async (req, res) => {
 
 // PATCH /api/segments/:id?projectId=...
 // Body: { name?, description?, filters?, isActive? }
-router.patch('/:id', requireRole('admin'), requireProjectId, async (req, res) => {
+router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -215,7 +250,8 @@ router.patch('/:id', requireRole('admin'), requireProjectId, async (req, res) =>
       .from(segments)
       .where(and(eq(segments.id, id), eq(segments.projectId, projectId)))
 
-    if (!existing) {
+    if (!existing || !canManageSegment(req, existing)) {
+      // 404 (not 403) so dealers can't probe which segment ids exist outside their scope.
       return res.status(404).json({ success: false, error: 'Segment not found' })
     }
 
@@ -245,7 +281,7 @@ router.patch('/:id', requireRole('admin'), requireProjectId, async (req, res) =>
 })
 
 // DELETE /api/segments/:id?projectId=...
-router.delete('/:id', requireRole('admin'), requireProjectId, async (req, res) => {
+router.delete('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
@@ -255,7 +291,7 @@ router.delete('/:id', requireRole('admin'), requireProjectId, async (req, res) =
       .from(segments)
       .where(and(eq(segments.id, id), eq(segments.projectId, projectId)))
 
-    if (!existing) {
+    if (!existing || !canManageSegment(req, existing)) {
       return res.status(404).json({ success: false, error: 'Segment not found' })
     }
 
@@ -294,9 +330,22 @@ router.post('/evaluate', requireRole('admin'), requireProjectId, async (req, res
 })
 
 // POST /api/segments/:id/evaluate?projectId=...
-router.post('/:id/evaluate', requireRole('admin'), requireProjectId, async (req, res) => {
+// Dealers may re-evaluate their own segments (evaluation self-scopes to their customers).
+router.post('/:id/evaluate', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
-    const count = await evaluateSegment(req.params.id as string)
+    const projectId = req.projectId!
+    const id = req.params.id as string
+
+    const [existing] = await db
+      .select({ id: segments.id, createdByAgentId: segments.createdByAgentId })
+      .from(segments)
+      .where(and(eq(segments.id, id), eq(segments.projectId, projectId)))
+
+    if (!existing || !canManageSegment(req, existing)) {
+      return res.status(404).json({ success: false, error: 'Segment not found' })
+    }
+
+    const count = await evaluateSegment(id)
     res.json({ success: true, data: { memberCount: count } })
   } catch (err) {
     console.error('Segment evaluation error:', err)
