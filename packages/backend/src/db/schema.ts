@@ -533,10 +533,15 @@ export const emailTemplates = pgTable('email_templates', {
   inAppPosition: text('in_app_position'),       // modal | banner | toast | inbox
   inAppFrequency: text('in_app_frequency'),     // always | once | daily
   inAppTargetPages: jsonb('in_app_target_pages'),
+  // B2B dealer RBAC (HYBRID model): NULL = admin/shared template (visible to all
+  // dealers as a building block); non-NULL = private to that dealer. A dealer
+  // sees shared + their own; admin sees all.
+  createdByAgentId: uuid('created_by_agent_id').references(() => agents.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_email_templates_project').on(table.projectId),
+  index('idx_email_templates_owner').on(table.projectId, table.createdByAgentId),
 ])
 
 // ============ API KEYS ============
@@ -1073,11 +1078,15 @@ export const whatsappTemplates = pgTable('whatsapp_templates', {
   rejectionReason: text('rejection_reason'),
   previousCategory: varchar('previous_category', { length: 50 }),
   syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
+  // B2B dealer RBAC (HYBRID): NULL = admin/shared (incl. provider-synced); non-NULL
+  // = private to that dealer. Dealer sees shared + their own; admin sees all.
+  createdByAgentId: uuid('created_by_agent_id').references(() => agents.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('idx_wa_templates_unique').on(table.projectId, table.provider, table.name, table.language),
   index('idx_wa_templates_status').on(table.projectId, table.status),
+  index('idx_wa_templates_owner').on(table.projectId, table.createdByAgentId),
 ])
 
 export const whatsappInboundMessages = pgTable('whatsapp_inbound_messages', {

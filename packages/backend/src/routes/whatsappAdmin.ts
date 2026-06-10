@@ -1,8 +1,19 @@
 import { Router } from 'express'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, sql, or, isNull, type SQL } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { whatsappTemplates, ctwaAttributions, customers, projects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
+
+// Dealer RBAC — HYBRID template model (same as email templates): a dealer sees
+// SHARED (admin-owned/provider-synced, NULL owner) + their OWN WhatsApp templates.
+function waTemplateVisibilityWhere(req: AuthenticatedRequest): SQL | undefined {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return undefined
+  return user.agentId
+    ? or(isNull(whatsappTemplates.createdByAgentId), eq(whatsappTemplates.createdByAgentId, user.agentId))
+    : isNull(whatsappTemplates.createdByAgentId)
+}
 import { getChannelProvider, getProviderCapabilities } from '../services/channelProviderRegistry.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters } from '../services/providers/whatsappUtils.js'
@@ -63,13 +74,13 @@ router.get('/provider-status', requireProjectId, async (req, res) => {
  * GET /api/whatsapp/templates?projectId=...
  * Lists all synced WhatsApp templates for the project.
  */
-router.get('/templates', requireProjectId, async (req, res) => {
+router.get('/templates', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const rows = await db
       .select()
       .from(whatsappTemplates)
-      .where(eq(whatsappTemplates.projectId, projectId))
+      .where(and(eq(whatsappTemplates.projectId, projectId), waTemplateVisibilityWhere(req)))
       .orderBy(desc(whatsappTemplates.syncedAt))
     res.json({ success: true, data: rows })
   } catch (err) {
@@ -123,7 +134,7 @@ router.post('/templates/lint', requireProjectId, async (req, res) => {
  *      and the provider's reported status.
  *   4. Return the row so the UI can poll /templates for status updates.
  */
-router.post('/templates', requireProjectId, async (req, res) => {
+router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const body = req.body as TemplateLintInput & { force?: boolean }
@@ -152,10 +163,21 @@ router.post('/templates', requireProjectId, async (req, res) => {
     }
 
     // 3. Insert PENDING row first so we have a record even if the provider call fails
+    // Dealer RBAC: a dealer-authored WhatsApp template is private to them.
+    let createdByAgentId: string | null = null
+    const u = req.adminUser
+    if (u && (u.role === 'agent' || u.role === 'manager')) {
+      if (!u.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      createdByAgentId = u.agentId
+    }
+
     const now = new Date()
     const paramCount = countParameters(body.bodyText)
     const [inserted] = await db.insert(whatsappTemplates).values({
       projectId,
+      createdByAgentId,
       provider: provider.name,
       providerTemplateId: body.name, // updated after provider response
       name: body.name,

@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import { db } from '../db/connection.js'
 import { emailTemplates, customers, products, projects } from '../db/schema.js'
-import { eq, and, count, desc, sql } from 'drizzle-orm'
+import { eq, and, count, desc, sql, or, isNull, type SQL } from 'drizzle-orm'
 import { requireProjectId } from '../middleware/projectId.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { SEED_TEMPLATES } from '../data/seedTemplates.js'
 import { buildVariableCatalog } from '../services/variableSources.js'
 import { lintTemplate, hasBlockingErrors } from '../services/templateLint.js'
@@ -16,6 +17,27 @@ import { interpolateTemplate } from '../services/emailService.js'
 import type { TemplateVariable } from '@storees/shared'
 
 const router = Router()
+
+// Dealer RBAC — HYBRID template model. A dealer sees SHARED (admin-owned, NULL)
+// templates + their OWN; admin sees all. A dealer may only edit/delete their own
+// (shared admin templates are read-only building blocks).
+function isScopedDealer(req: AuthenticatedRequest): boolean {
+  const role = req.adminUser?.role
+  return role === 'agent' || role === 'manager'
+}
+function templateVisibilityWhere(req: AuthenticatedRequest): SQL | undefined {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return undefined // admin: no owner filter
+  // Dealer sees shared (NULL owner) + their own. No agentId → shared only.
+  return user.agentId
+    ? or(isNull(emailTemplates.createdByAgentId), eq(emailTemplates.createdByAgentId, user.agentId))
+    : isNull(emailTemplates.createdByAgentId)
+}
+function canEditTemplate(req: AuthenticatedRequest, t: { createdByAgentId: string | null }): boolean {
+  const user = req.adminUser
+  if (!user || user.role === 'admin') return true
+  return !!user.agentId && t.createdByAgentId === user.agentId
+}
 
 function builderTemplateFromHtml(subject: string | null | undefined, htmlBody: string | null | undefined) {
   const html = htmlBody?.trim()
@@ -45,13 +67,15 @@ function builderTemplateFromHtml(subject: string | null | undefined, htmlBody: s
 }
 
 // GET /api/templates?projectId=...
-router.get('/', requireProjectId, async (req, res) => {
+// Admin → all project templates. Dealer → shared (admin-owned) + their own.
+// This is what scopes the flow "send message" template picker.
+router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.query.projectId as string
     const rows = await db
       .select()
       .from(emailTemplates)
-      .where(eq(emailTemplates.projectId, projectId))
+      .where(and(eq(emailTemplates.projectId, projectId), templateVisibilityWhere(req)))
       .orderBy(emailTemplates.createdAt)
 
     res.json({ success: true, data: rows })
@@ -270,13 +294,13 @@ function placeholderCustomer(): CustomerLike {
 }
 
 // GET /api/templates/:id?projectId=...
-router.get('/:id', requireProjectId, async (req, res) => {
+router.get('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.query.projectId as string
     const [template] = await db
       .select()
       .from(emailTemplates)
-      .where(and(eq(emailTemplates.id, req.params.id as string), eq(emailTemplates.projectId, projectId)))
+      .where(and(eq(emailTemplates.id, req.params.id as string), eq(emailTemplates.projectId, projectId), templateVisibilityWhere(req)))
       .limit(1)
 
     if (!template) return res.status(404).json({ success: false, error: 'Template not found' })
@@ -289,7 +313,8 @@ router.get('/:id', requireProjectId, async (req, res) => {
 })
 
 // POST /api/templates?projectId=...
-router.post('/', requireProjectId, async (req, res) => {
+// Admin → shared template (NULL owner). Dealer → private template owned by them.
+router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.query.projectId as string
     const {
@@ -307,6 +332,14 @@ router.post('/', requireProjectId, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid channel' })
     }
 
+    let createdByAgentId: string | null = null
+    if (isScopedDealer(req)) {
+      if (!req.adminUser?.agentId) {
+        return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
+      }
+      createdByAgentId = req.adminUser.agentId
+    }
+
     // Save-time lint — undefined `{{key}}` references in body block the save.
     const issues = lintTemplate({ variables, subject, htmlBody, bodyText })
     if (hasBlockingErrors(issues)) {
@@ -317,6 +350,7 @@ router.post('/', requireProjectId, async (req, res) => {
       .insert(emailTemplates)
       .values({
         projectId,
+        createdByAgentId,
         name: name.trim(),
         channel,
         subject: subject?.trim() || null,
@@ -342,7 +376,8 @@ router.post('/', requireProjectId, async (req, res) => {
 })
 
 // PATCH /api/templates/:id?projectId=...
-router.patch('/:id', requireProjectId, async (req, res) => {
+// A dealer may only edit their OWN template — shared (admin) templates are read-only.
+router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.query.projectId as string
     const {
@@ -356,7 +391,7 @@ router.patch('/:id', requireProjectId, async (req, res) => {
       .where(and(eq(emailTemplates.id, req.params.id as string), eq(emailTemplates.projectId, projectId)))
       .limit(1)
 
-    if (!existing) return res.status(404).json({ success: false, error: 'Template not found' })
+    if (!existing || !canEditTemplate(req, existing)) return res.status(404).json({ success: false, error: 'Template not found' })
 
     // Lint against the merged shape (caller may patch only some fields).
     const merged = {
@@ -398,17 +433,18 @@ router.patch('/:id', requireProjectId, async (req, res) => {
 })
 
 // DELETE /api/templates/:id?projectId=...
-router.delete('/:id', requireProjectId, async (req, res) => {
+// A dealer may only delete their OWN template — shared (admin) templates are protected.
+router.delete('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.query.projectId as string
 
     const [existing] = await db
-      .select({ id: emailTemplates.id })
+      .select({ id: emailTemplates.id, createdByAgentId: emailTemplates.createdByAgentId })
       .from(emailTemplates)
       .where(and(eq(emailTemplates.id, req.params.id as string), eq(emailTemplates.projectId, projectId)))
       .limit(1)
 
-    if (!existing) return res.status(404).json({ success: false, error: 'Template not found' })
+    if (!existing || !canEditTemplate(req, existing)) return res.status(404).json({ success: false, error: 'Template not found' })
 
     await db.delete(emailTemplates).where(eq(emailTemplates.id, req.params.id as string))
 
