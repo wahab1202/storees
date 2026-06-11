@@ -974,6 +974,18 @@ export type WhatsappOtpConfig = {
   addSecurityRecommendation?: boolean  // appends Meta's security disclaimer
 }
 
+/**
+ * One card of a Carousel template. Meta requires all cards to share the same
+ * structure (same header media type + same button set). Stored in the
+ * whatsapp_templates.carousel jsonb column.
+ */
+export type WhatsappCarouselCard = {
+  headerType: 'IMAGE' | 'VIDEO'
+  headerExample?: string   // sample media URL for review
+  bodyText: string         // ≤160 chars
+  buttons: WhatsappButton[]
+}
+
 export type WhatsappTemplate = {
   id: string
   projectId: string
@@ -990,6 +1002,8 @@ export type WhatsappTemplate = {
   parameterCount: number
   /** Default CDP source mapping per numbered param; `key` is '1','2',… */
   variables: TemplateVariable[] | null
+  /** Carousel cards (when this is a carousel template); null otherwise. */
+  carousel?: WhatsappCarouselCard[] | null
   rejectionReason: string | null
   previousCategory: string | null
   submittedAt: string | null

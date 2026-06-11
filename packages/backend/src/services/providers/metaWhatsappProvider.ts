@@ -81,16 +81,39 @@ export function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
   if (input.footer) components.push({ type: 'FOOTER', text: input.footer })
 
   if (input.buttons && input.buttons.length > 0) {
-    const btns = input.buttons.map(b => {
-      if (b.type === 'URL') return { type: 'URL', text: b.text, url: b.url }
-      if (b.type === 'PHONE_NUMBER') return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phone }
-      if (b.type === 'COPY_CODE') return { type: 'COPY_CODE', text: b.text, example: b.example ? [b.example] : undefined }
-      return { type: 'QUICK_REPLY', text: b.text }
+    components.push({ type: 'BUTTONS', buttons: input.buttons.map(metaButton) })
+  }
+
+  // CAROUSEL — appended after the message BODY. Each card carries a media header,
+  // a body, and (optionally) buttons. Meta requires all cards to share structure.
+  if (input.carousel && input.carousel.length > 0) {
+    components.push({
+      type: 'CAROUSEL',
+      cards: input.carousel.map(card => {
+        const cardComponents: Array<Record<string, unknown>> = [
+          {
+            type: 'HEADER',
+            format: card.headerType,
+            ...(card.headerExample ? { example: { header_handle: [card.headerExample] } } : {}),
+          },
+          { type: 'BODY', text: card.bodyText },
+        ]
+        if (card.buttons && card.buttons.length > 0) {
+          cardComponents.push({ type: 'BUTTONS', buttons: card.buttons.map(metaButton) })
+        }
+        return { components: cardComponents }
+      }),
     })
-    components.push({ type: 'BUTTONS', buttons: btns })
   }
 
   return components
+}
+
+function metaButton(b: { type: string; text: string; url?: string; phone?: string; example?: string }): Record<string, unknown> {
+  if (b.type === 'URL') return { type: 'URL', text: b.text, url: b.url }
+  if (b.type === 'PHONE_NUMBER') return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phone }
+  if (b.type === 'COPY_CODE') return { type: 'COPY_CODE', text: b.text, example: b.example ? [b.example] : undefined }
+  return { type: 'QUICK_REPLY', text: b.text }
 }
 
 export function parseMetaTemplate(t: MetaTemplate): ProviderTemplate {

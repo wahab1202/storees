@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { toast } from 'sonner'
-import type { TemplateVariable, WhatsappTemplate, WhatsappHeader, WhatsappButton, WhatsappTemplateCategory, WhatsappOtpConfig } from '@storees/shared'
+import type { TemplateVariable, WhatsappTemplate, WhatsappHeader, WhatsappButton, WhatsappTemplateCategory, WhatsappOtpConfig, WhatsappCarouselCard } from '@storees/shared'
 
 export type { WhatsappTemplate } from '@storees/shared'
 
@@ -21,6 +21,7 @@ export type LintInput = {
   footer?: string | null
   buttons?: WhatsappButton[]
   otp?: WhatsappOtpConfig
+  carousel?: WhatsappCarouselCard[]
 }
 
 export type SubmitInput = LintInput & { bodyExample?: string[]; variables?: TemplateVariable[] }

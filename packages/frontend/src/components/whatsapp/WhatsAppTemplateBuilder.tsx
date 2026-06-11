@@ -30,6 +30,7 @@ import type {
   WhatsappHeaderType,
   WhatsappButton,
   WhatsappOtpConfig,
+  WhatsappCarouselCard,
   VariableSourceCatalog,
 } from '@storees/shared'
 
@@ -113,6 +114,10 @@ type BuilderState = {
   otpButtonText: string
   otpExpiryMinutes: string
   otpSecurityRecommendation: boolean
+  // Carousel
+  templateType: 'CUSTOM' | 'CAROUSEL'
+  carouselHeaderType: 'IMAGE' | 'VIDEO'
+  carousel: WhatsappCarouselCard[]
 }
 
 function initialState(editing: WhatsappTemplate | null): BuilderState {
@@ -139,6 +144,9 @@ function initialState(editing: WhatsappTemplate | null): BuilderState {
     otpButtonText: 'Copy code',
     otpExpiryMinutes: '10',
     otpSecurityRecommendation: true,
+    templateType: editing?.carousel && editing.carousel.length > 0 ? 'CAROUSEL' : 'CUSTOM',
+    carouselHeaderType: editing?.carousel?.[0]?.headerType ?? 'IMAGE',
+    carousel: editing?.carousel ?? [],
   }
 }
 
@@ -164,6 +172,7 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
   const [showBrief, setShowBrief] = useState(false)
 
   const isAuth = s.category === 'AUTHENTICATION'
+  const isCarousel = !isAuth && s.templateType === 'CAROUSEL'
   const effectiveBody = isAuth ? AUTH_BODY : s.bodyText
   const paramCount = countBodyParams(effectiveBody)
   const canSubmit = !!providerStatus.data?.data?.capabilities.submitTemplate && !!providerStatus.data?.data?.configured
@@ -245,6 +254,20 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
         source: s.sources[i] ?? { kind: 'customer', field: 'name' },
       })
     }
+    // Carousel templates: header/footer/top-level buttons are not used; the cards
+    // carry their own media + body + buttons (with a uniform header media type).
+    if (isCarousel) {
+      return {
+        name: s.name,
+        language: s.language,
+        category: s.category,
+        bodyText: s.bodyText,
+        bodyExample: paramCount > 0 ? bodyExample : undefined,
+        variables: variables.length ? variables : undefined,
+        carousel: s.carousel.map(c => ({ ...c, headerType: s.carouselHeaderType })),
+      }
+    }
+
     return {
       name: s.name,
       language: s.language,
@@ -346,12 +369,35 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
                 <p className="mt-2 text-xs text-amber-700">This wording may be re-categorised as Marketing by Meta — keep it transactional.</p>
               )}
             </div>
+            {!isAuth && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">Template type</label>
+                <div className="grid grid-cols-2 gap-2 sm:max-w-sm">
+                  {([['CUSTOM', 'Custom'], ['CAROUSEL', 'Carousel']] as const).map(([val, label]) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => set({ templateType: val })}
+                      className={cn(
+                        'h-10 rounded-lg border text-sm font-medium transition-colors',
+                        s.templateType === val ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-secondary hover:border-text-muted',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {isCarousel && <p className="mt-1 text-xs text-text-muted">An intro message followed by up to 10 swipeable cards.</p>}
+              </div>
+            )}
           </div>
         </section>
 
         {isAuth ? (
           <AuthOtpEditor s={s} set={set} />
         ) : (
+        <>
+        {!isCarousel && (
         <>
         {/* Header */}
         <section className="rounded-xl border border-border bg-white">
@@ -395,11 +441,13 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
             )}
           </div>
         </section>
+        </>
+        )}
 
-        {/* Body */}
+        {/* Body (intro message for carousel) */}
         <section className="rounded-xl border border-border bg-white">
           <div className="flex items-center justify-between border-b border-border px-5 py-3">
-            <h2 className="text-sm font-semibold text-text-primary">Body</h2>
+            <h2 className="text-sm font-semibold text-text-primary">{isCarousel ? 'Intro message' : 'Body'}</h2>
             <button
               type="button"
               onClick={insertVariable}
@@ -425,6 +473,8 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
           </div>
         </section>
 
+        {!isCarousel && (
+        <>
         {/* Footer */}
         <section className="rounded-xl border border-border bg-white">
           <div className="border-b border-border px-5 py-3">
@@ -443,6 +493,17 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
 
         {/* Buttons */}
         <ButtonsEditor buttons={s.buttons} onChange={buttons => set({ buttons })} />
+        </>
+        )}
+
+        {isCarousel && (
+          <CarouselEditor
+            headerType={s.carouselHeaderType}
+            cards={s.carousel}
+            onHeaderTypeChange={t => set({ carouselHeaderType: t })}
+            onChange={carousel => set({ carousel })}
+          />
+        )}
         </>
         )}
 
@@ -729,6 +790,81 @@ function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onCha
   )
 }
 
+// ===== Carousel editor =====
+
+function CarouselEditor({
+  headerType, cards, onHeaderTypeChange, onChange,
+}: {
+  headerType: 'IMAGE' | 'VIDEO'
+  cards: WhatsappCarouselCard[]
+  onHeaderTypeChange: (t: 'IMAGE' | 'VIDEO') => void
+  onChange: (cards: WhatsappCarouselCard[]) => void
+}) {
+  const updateCard = (idx: number, patch: Partial<WhatsappCarouselCard>) => {
+    const next = [...cards]; next[idx] = { ...next[idx], ...patch }; onChange(next)
+  }
+  const addCard = () => onChange([...cards, { headerType, bodyText: '', buttons: [] }])
+  const removeCard = (idx: number) => onChange(cards.filter((_, i) => i !== idx))
+
+  return (
+    <section className="rounded-xl border border-border bg-white">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3">
+        <h2 className="text-sm font-semibold text-text-primary">Cards <span className="font-normal text-text-muted">· {cards.length}/10</span></h2>
+        <div className="flex items-center gap-1">
+          {(['IMAGE', 'VIDEO'] as const).map(t => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onHeaderTypeChange(t)}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
+                headerType === t ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-secondary hover:border-text-muted',
+              )}
+            >
+              {t === 'IMAGE' ? <ImageIcon className="h-3.5 w-3.5" /> : <Video className="h-3.5 w-3.5" />} {t === 'IMAGE' ? 'Image' : 'Video'}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-4 p-5">
+        {cards.length === 0 && <p className="text-center text-xs text-text-muted">No cards yet. Add up to 10 — all cards share the same media type and button layout.</p>}
+        {cards.map((card, idx) => (
+          <div key={idx} className="space-y-3 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-text-secondary">Card {idx + 1}</span>
+              <button type="button" onClick={() => removeCard(idx)} className="rounded p-1 text-text-muted hover:text-red-500" aria-label={`Remove card ${idx + 1}`}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <MediaHeaderUpload
+              headerType={headerType}
+              value={card.headerExample ?? ''}
+              onChange={url => updateCard(idx, { headerExample: url })}
+            />
+            <textarea
+              value={card.bodyText}
+              onChange={e => updateCard(idx, { bodyText: e.target.value })}
+              rows={2}
+              maxLength={160}
+              placeholder="Card text (max 160 chars)"
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
+            />
+            <ButtonsEditor buttons={card.buttons} onChange={buttons => updateCard(idx, { buttons })} />
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addCard}
+          disabled={cards.length >= 10}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-accent/40 px-3 py-2 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-40"
+        >
+          <Plus className="h-3.5 w-3.5" /> Add card
+        </button>
+      </div>
+    </section>
+  )
+}
+
 // ===== Variable mapping list =====
 
 function WhatsAppVariableList({
@@ -824,6 +960,21 @@ function WhatsAppPreview({ state: s, paramCount, isAuth }: { state: BuilderState
               <div key={i} className="flex items-center justify-center gap-1.5 rounded-lg bg-white py-2 text-[13px] font-medium text-[#00A5F4] shadow-sm">
                 {b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : b.type === 'PHONE_NUMBER' ? <Phone className="h-3.5 w-3.5" /> : b.type === 'COPY_CODE' ? <Copy className="h-3.5 w-3.5" /> : <MessageSquareReply className="h-3.5 w-3.5" />}
                 {b.text || 'Button'}
+              </div>
+            ))}
+          </div>
+        )}
+        {!isAuth && s.templateType === 'CAROUSEL' && s.carousel.length > 0 && (
+          <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+            {s.carousel.map((card, i) => (
+              <div key={i} className="w-[150px] shrink-0 overflow-hidden rounded-lg bg-white shadow-sm">
+                <div className="flex h-20 items-center justify-center bg-slate-100 text-slate-400">
+                  {s.carouselHeaderType === 'IMAGE' ? <ImageIcon className="h-6 w-6" /> : <Video className="h-6 w-6" />}
+                </div>
+                <p className="line-clamp-3 px-2 py-1.5 text-[11px] leading-snug text-slate-800">{card.bodyText || 'Card text'}</p>
+                {(card.buttons ?? []).map((b, j) => (
+                  <div key={j} className="border-t border-slate-100 py-1.5 text-center text-[11px] font-medium text-[#00A5F4]">{b.text || 'Button'}</div>
+                ))}
               </div>
             ))}
           </div>
