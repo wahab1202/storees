@@ -2,30 +2,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { toast } from 'sonner'
-import type { TemplateVariable } from '@storees/shared'
+import type { TemplateVariable, WhatsappTemplate } from '@storees/shared'
 
-export type WhatsappTemplate = {
-  id: string
-  projectId: string
-  provider: string
-  providerTemplateId: string
-  name: string
-  language: string
-  category: string | null
-  status: string
-  bodyText: string
-  header: { type?: string; format?: string; text?: string } | null
-  footer: string | null
-  buttons: Array<{ type: string; text: string; url?: string; phone?: string }> | null
-  parameterCount: number
-  rejectionReason: string | null
-  previousCategory: string | null
-  submittedAt: string | null
-  lastStatusCheckAt: string | null
-  syncedAt: string
-  createdAt: string
-  updatedAt: string
-}
+export type { WhatsappTemplate } from '@storees/shared'
 
 export type LintFinding = {
   code: string
@@ -43,7 +22,7 @@ export type LintInput = {
   buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'; text: string; url?: string; phone?: string }>
 }
 
-export type SubmitInput = LintInput & { bodyExample?: string[] }
+export type SubmitInput = LintInput & { bodyExample?: string[]; variables?: TemplateVariable[] }
 
 export type WhatsappProviderStatus = {
   configured: boolean

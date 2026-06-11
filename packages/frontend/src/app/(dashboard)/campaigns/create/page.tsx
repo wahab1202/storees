@@ -104,11 +104,19 @@ const CHANNEL_ICONS: Record<string, typeof Mail> = {
 }
 
 function seedWhatsappTemplateVariables(template: WhatsappTemplate): TemplateVariable[] {
-  const vars: TemplateVariable[] = Array.from({ length: template.parameterCount ?? 0 }, (_, idx) => ({
-    key: String(idx + 1),
-    source: { kind: 'customer', field: idx === 0 ? 'name' : 'city' },
-    defaultValue: idx === 0 ? 'there' : '',
-  }))
+  // Prefer the mapping saved on the template (from the builder); fall back to a
+  // sensible guess for any param the template didn't map.
+  const stored = new Map((template.variables ?? []).map(v => [v.key, v]))
+  const vars: TemplateVariable[] = Array.from({ length: template.parameterCount ?? 0 }, (_, idx) => {
+    const key = String(idx + 1)
+    const fromTemplate = stored.get(key)
+    if (fromTemplate) return { ...fromTemplate, key }
+    return {
+      key,
+      source: { kind: 'customer', field: idx === 0 ? 'name' : 'city' } as TemplateVariable['source'],
+      defaultValue: idx === 0 ? 'there' : '',
+    }
+  })
   const headerType = (template.header?.format ?? template.header?.type ?? '').toUpperCase()
   if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerType)) {
     vars.push({ key: 'wa_header_media_url', source: { kind: 'literal', value: '' } })

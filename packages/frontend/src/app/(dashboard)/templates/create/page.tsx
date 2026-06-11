@@ -7,16 +7,17 @@ import { VariablePanel } from '@/components/templates/VariablePanel'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
-import { ArrowLeft, Mail, MessageSquare, Bell, Phone, Loader2, Columns2, Columns3, Columns4, LayoutTemplate, Layers } from 'lucide-react'
+import { ArrowLeft, Mail, MessageSquare, Bell, Loader2, Columns2, Columns3, Columns4, LayoutTemplate, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateChannel, TemplateVariable } from '@storees/shared'
 
+// WhatsApp is intentionally excluded — it has its own Meta-structured builder at
+// /templates/whatsapp/new (category, header/body/footer/buttons, approval lifecycle).
 const CHANNELS: { value: TemplateChannel; label: string; icon: typeof Mail; description: string }[] = [
   { value: 'email',    label: 'Email',    icon: Mail,          description: 'HTML email with subject line' },
   { value: 'sms',      label: 'SMS',      icon: MessageSquare, description: 'Plain text, up to 160 chars' },
   { value: 'push',     label: 'Push',     icon: Bell,          description: 'Title + body notification' },
-  { value: 'whatsapp', label: 'WhatsApp', icon: Phone,         description: 'Text message with variables' },
   { value: 'in_app',   label: 'In-App',   icon: Layers,        description: 'Modal, banner, toast, or inbox card rendered inside the storefront' },
 ]
 

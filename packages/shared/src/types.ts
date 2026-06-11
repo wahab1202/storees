@@ -932,6 +932,63 @@ export type VariableSourceCatalog = {
   events: Array<{ name: string; properties: string[] }>  // top events + their property keys
 }
 
+// ============ WHATSAPP TEMPLATE TYPES ============
+
+/**
+ * Meta WhatsApp template structure (Cloud API). Mirrors the `whatsapp_templates`
+ * table. Numbered params `{{1}}`, `{{2}}` are positional — `variables[]` carries
+ * the default CDP source mapping (key = the param number as a string) and
+ * `bodyExample[]` carries the sample values Meta requires for review.
+ */
+export type WhatsappTemplateCategory = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'
+
+export type WhatsappTemplateStatus =
+  | 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED'
+  | 'IN_APPEAL' | 'FLAGGED' | 'PAUSED' | 'DISABLED'
+
+export type WhatsappHeaderType = 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'
+
+export type WhatsappHeader = {
+  type: WhatsappHeaderType
+  format?: WhatsappHeaderType  // Meta's field name on provider-synced headers (alias of type)
+  text?: string          // for TEXT headers (may contain a single {{1}})
+  example?: string       // sample value / media URL for review
+}
+
+export type WhatsappButtonType = 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'
+
+export type WhatsappButton = {
+  type: WhatsappButtonType
+  text: string
+  url?: string           // for URL buttons (may end with {{1}} for dynamic)
+  phone?: string         // for PHONE_NUMBER buttons
+}
+
+export type WhatsappTemplate = {
+  id: string
+  projectId: string
+  provider: string
+  providerTemplateId: string
+  name: string
+  language: string
+  category: WhatsappTemplateCategory | null
+  status: WhatsappTemplateStatus | string
+  bodyText: string
+  header: WhatsappHeader | null
+  footer: string | null
+  buttons: WhatsappButton[] | null
+  parameterCount: number
+  /** Default CDP source mapping per numbered param; `key` is '1','2',… */
+  variables: TemplateVariable[] | null
+  rejectionReason: string | null
+  previousCategory: string | null
+  submittedAt: string | null
+  lastStatusCheckAt: string | null
+  syncedAt: string
+  createdAt: string
+  updatedAt: string
+}
+
 // ============ GENERIC EVENT API TYPES ============
 
 export type EventIngestionPayload = {
