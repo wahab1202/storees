@@ -2,12 +2,47 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { mkdir, readdir, stat, unlink, writeFile } from 'fs/promises'
 import { Router, type Request, type Response } from 'express'
+import multer from 'multer'
 import { requireProjectId } from '../middleware/projectId.js'
 
 const router = Router()
 
 const UPLOAD_ROOT = process.env.ASSET_UPLOAD_ROOT
   ?? path.resolve(process.cwd(), '.storees/uploads/email-assets')
+
+// ── WhatsApp header media (image/video/document). Uses multipart streaming so we
+// can accept large files (video 16MB, document 100MB) that the base64/JSON path
+// (8MB cap) can't handle. Stored on the same public /uploads/email-assets root.
+const WA_MEDIA_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+  'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/3gpp': '3gp',
+  'application/pdf': 'pdf',
+}
+const WA_MEDIA_MAX: Record<'image' | 'video' | 'document', number> = {
+  image: 5 * 1024 * 1024,
+  video: 16 * 1024 * 1024,
+  document: 100 * 1024 * 1024,
+}
+function waMediaKind(mime: string): 'image' | 'video' | 'document' | null {
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('video/')) return 'video'
+  if (mime === 'application/pdf') return 'document'
+  return null
+}
+const waUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const dir = path.join(UPLOAD_ROOT, (req as Request).projectId ?? '_orphan')
+      mkdir(dir, { recursive: true }).then(() => cb(null, dir)).catch((e) => cb(e as Error, dir))
+    },
+    filename: (_req, file, cb) => {
+      const ext = WA_MEDIA_EXT[file.mimetype] ?? 'bin'
+      cb(null, `${Date.now()}-${randomUUID()}.${ext}`)
+    },
+  }),
+  limits: { fileSize: WA_MEDIA_MAX.document },  // hard ceiling; per-type checked after
+  fileFilter: (_req, file, cb) => cb(null, !!WA_MEDIA_EXT[file.mimetype]),
+})
 
 const ALLOWED_IMAGE_TYPES = new Set([
   'image/jpeg',
@@ -118,6 +153,44 @@ router.get('/email-images', requireProjectId, async (req: Request, res: Response
     console.error('email image list failed', error)
     res.status(500).json({ success: false, error: 'Failed to list images' })
   }
+})
+
+// POST /api/assets/whatsapp-media — multipart upload for WhatsApp header media.
+// Field name: "file". Returns a public URL usable as a header sample.
+router.post('/whatsapp-media', requireProjectId, (req: Request, res: Response) => {
+  waUpload.single('file')(req, res, async (err: unknown) => {
+    try {
+      if (err) {
+        const msg = (err as { code?: string }).code === 'LIMIT_FILE_SIZE'
+          ? 'File exceeds the maximum size'
+          : (err instanceof Error ? err.message : 'Upload failed')
+        return res.status(400).json({ success: false, error: msg })
+      }
+      const file = req.file
+      if (!file) {
+        return res.status(400).json({ success: false, error: 'No file uploaded, or unsupported type (image/video/PDF only)' })
+      }
+      const kind = waMediaKind(file.mimetype)
+      if (!kind || file.size > WA_MEDIA_MAX[kind]) {
+        await unlink(file.path).catch(() => {})
+        const cap = kind ? Math.round(WA_MEDIA_MAX[kind] / (1024 * 1024)) : 0
+        return res.status(400).json({ success: false, error: `${kind ?? 'File'} exceeds the ${cap}MB limit for that media type` })
+      }
+      res.status(201).json({
+        success: true,
+        data: {
+          url: publicUrl(req, req.projectId!, file.filename),
+          filename: file.filename,
+          mime: file.mimetype,
+          size: file.size,
+          kind,
+        },
+      })
+    } catch (error) {
+      console.error('whatsapp media upload failed', error)
+      res.status(500).json({ success: false, error: 'Failed to upload media' })
+    }
+  })
 })
 
 router.delete('/email-images/:filename', requireProjectId, async (req: Request, res: Response) => {

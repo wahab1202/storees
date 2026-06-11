@@ -22,6 +22,7 @@ import {
   type LintFinding,
 } from '@/hooks/useWhatsappTemplates'
 import type { WhatsappCopilotDraft } from '@/hooks/useAiWhatsappTemplate'
+import { useUploadWhatsappMedia } from '@/hooks/useUploadWhatsappMedia'
 import type {
   TemplateVariable,
   TemplateVariableSource,
@@ -386,15 +387,11 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
               />
             )}
             {(s.headerType === 'IMAGE' || s.headerType === 'VIDEO' || s.headerType === 'DOCUMENT') && (
-              <div>
-                <input
-                  value={s.headerExample}
-                  onChange={e => set({ headerExample: e.target.value })}
-                  placeholder={`https://cdn.example.com/sample.${s.headerType === 'IMAGE' ? 'jpg' : s.headerType === 'VIDEO' ? 'mp4' : 'pdf'}`}
-                  className={inputClass}
-                />
-                <p className="mt-1 text-xs text-text-muted">Sample media URL shown to Meta for review. The real media is set when sending.</p>
-              </div>
+              <MediaHeaderUpload
+                headerType={s.headerType}
+                value={s.headerExample}
+                onChange={url => set({ headerExample: url })}
+              />
             )}
           </div>
         </section>
@@ -595,6 +592,55 @@ function AuthOtpEditor({ s, set }: { s: BuilderState; set: (patch: Partial<Build
         </div>
       </div>
     </section>
+  )
+}
+
+// ===== Media header upload =====
+
+const MEDIA_ACCEPT: Record<'IMAGE' | 'VIDEO' | 'DOCUMENT', string> = {
+  IMAGE: 'image/jpeg,image/png,image/webp',
+  VIDEO: 'video/mp4,video/quicktime,video/3gpp',
+  DOCUMENT: 'application/pdf',
+}
+const MEDIA_CAP: Record<'IMAGE' | 'VIDEO' | 'DOCUMENT', string> = { IMAGE: '5MB', VIDEO: '16MB', DOCUMENT: '100MB' }
+
+function MediaHeaderUpload({
+  headerType, value, onChange,
+}: {
+  headerType: 'IMAGE' | 'VIDEO' | 'DOCUMENT'
+  value: string
+  onChange: (url: string) => void
+}) {
+  const upload = useUploadWhatsappMedia()
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface">
+          {upload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+          {upload.isPending ? 'Uploading…' : `Upload ${headerType.toLowerCase()}`}
+          <input
+            type="file"
+            accept={MEDIA_ACCEPT[headerType]}
+            disabled={upload.isPending}
+            className="hidden"
+            onChange={e => {
+              const file = e.target.files?.[0]
+              if (file) upload.mutate(file, { onSuccess: res => { if (res.data?.url) onChange(res.data.url) } })
+              e.target.value = ''
+            }}
+          />
+        </label>
+        <span className="text-xs text-text-muted">Max {MEDIA_CAP[headerType]}</span>
+      </div>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={`…or paste a public URL (https://…/sample.${headerType === 'IMAGE' ? 'jpg' : headerType === 'VIDEO' ? 'mp4' : 'pdf'})`}
+        className={inputClass}
+      />
+      {value && <p className="truncate text-xs text-emerald-700" title={value}>✓ {value}</p>}
+      <p className="text-xs text-text-muted">A sample is shown to Meta for review; the real media is set when sending.</p>
+    </div>
   )
 }
 
