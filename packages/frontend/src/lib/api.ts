@@ -30,10 +30,12 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const authHeaders = await getAuthHeaders()
+  // For FormData bodies, let the browser set the multipart Content-Type (boundary).
+  const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData
 
   const response = await fetch(`${BASE_URL}${path}`, {
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...authHeaders,
       ...options?.headers,
     },
@@ -61,6 +63,11 @@ export const api = {
     request<ApiResponse<T>>(path, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+  upload: <T>(path: string, formData: FormData) =>
+    request<ApiResponse<T>>(path, {
+      method: 'POST',
+      body: formData,
     }),
   put: <T>(path: string, body: unknown) =>
     request<ApiResponse<T>>(path, {
