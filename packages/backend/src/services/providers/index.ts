@@ -8,6 +8,7 @@ import { gupshupSmsProvider, gupshupWhatsappProvider } from './gupshupProvider.j
 import { birdSmsProvider, birdWhatsappProvider } from './birdProvider.js'
 import { vonageSmsProvider, vonageWhatsappProvider } from './vonageProvider.js'
 import { metaWhatsappProvider } from './metaWhatsappProvider.js'
+import { pinnacleWhatsappProvider } from './pinnacleWhatsappProvider.js'
 import { fcmProvider } from './fcmProvider.js'
 import { registerEmailProvider } from '../emailProviderRegistry.js'
 import { resendEmailProvider } from './resendEmailProvider.js'
@@ -33,9 +34,10 @@ export function registerAllProviders(): void {
   registerChannelProvider('whatsapp_bird', birdWhatsappProvider)
   registerChannelProvider('whatsapp_vonage', vonageWhatsappProvider)
   registerChannelProvider('whatsapp_meta', metaWhatsappProvider)
+  registerChannelProvider('whatsapp_pinnacle', pinnacleWhatsappProvider)
 
   // Push providers
   registerChannelProvider('push_fcm', fcmProvider)
 
-  console.log('[channels] All providers registered (5 Email, 4 SMS, 5 WhatsApp, 1 Push)')
+  console.log('[channels] All providers registered (5 Email, 4 SMS, 6 WhatsApp, 1 Push)')
 }

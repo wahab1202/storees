@@ -3,11 +3,17 @@ import { eq, and, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { whatsappTemplates, ctwaAttributions, customers, projects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
-import { getChannelProvider, getProviderCapabilities } from '../services/channelProviderRegistry.js'
+import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache } from '../services/channelProviderRegistry.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters } from '../services/providers/whatsappUtils.js'
 import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from '../services/templateContext.js'
+import { encrypt } from '../services/encryption.js'
+import {
+  pinnacleGetUserDetails,
+  pinnacleGetWabaInfo,
+  pinnacleSetWebhook,
+} from '../services/providers/pinnacleWhatsappProvider.js'
 import type { TemplateVariable } from '@storees/shared'
 
 const router = Router()
@@ -40,9 +46,12 @@ router.get('/provider-status', requireProjectId, async (req, res) => {
     }
 
     const { provider, config } = channelResult
-    const missingConfig = provider.name === 'meta'
-      ? ['phoneNumberId', 'wabaId', 'accessToken'].filter(key => !String(config[key] ?? '').trim())
-      : []
+    const requiredKeysByProvider: Record<string, string[]> = {
+      meta: ['phoneNumberId', 'wabaId', 'accessToken'],
+      pinnacle: ['phoneNumberId', 'wabaId', 'apikey'],
+    }
+    const missingConfig = (requiredKeysByProvider[provider.name] ?? [])
+      .filter(key => !String(config[key] ?? '').trim())
 
     res.json({
       success: true,
@@ -144,6 +153,48 @@ router.post('/templates', requireProjectId, async (req, res) => {
       return res.status(400).json({ success: false, error: 'No WhatsApp provider configured for this project' })
     }
     const { provider, config } = channelResult
+
+    // DRAFT path: save the template locally WITHOUT submitting to the provider.
+    // Drafts are freely editable; "Submit for approval" (POST /:id/submit) is
+    // what later pushes it to Meta for MARKETING / UTILITY / AUTH review.
+    if ((body as { draft?: boolean }).draft) {
+      const now = new Date()
+      const paramCount = countParameters(body.bodyText)
+      const bodyExample = (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample
+      const [draft] = await db.insert(whatsappTemplates).values({
+        projectId,
+        provider: provider.name,
+        providerTemplateId: body.name,
+        name: body.name,
+        language: body.language,
+        category: body.category,
+        status: 'DRAFT',
+        bodyText: body.bodyText,
+        header: body.header as object | null,
+        footer: body.footer,
+        buttons: body.buttons as object | null,
+        parameterCount: paramCount,
+        // Stash the example values for {{1}}.. so submission can supply them later.
+        rawPayload: bodyExample ? { bodyExample } : null,
+        submittedAt: null,
+      }).onConflictDoUpdate({
+        target: [whatsappTemplates.projectId, whatsappTemplates.provider, whatsappTemplates.name, whatsappTemplates.language],
+        set: {
+          category: body.category,
+          bodyText: body.bodyText,
+          header: body.header as object | null,
+          footer: body.footer,
+          buttons: body.buttons as object | null,
+          parameterCount: paramCount,
+          rawPayload: bodyExample ? { bodyExample } : null,
+          status: 'DRAFT',
+          rejectionReason: null,
+          updatedAt: now,
+        },
+      }).returning()
+      return res.status(201).json({ success: true, data: { template: draft, lintFindings: findings } })
+    }
+
     if (!provider.submitTemplate) {
       return res.status(400).json({
         success: false,
@@ -188,7 +239,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
     // 4. Call provider — on failure, mark template REJECTED with the error message
     try {
       const cat = body.category as 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'
-      const result = await provider.submitTemplate({
+      const result = await provider.submitTemplate!({
         name: body.name,
         language: body.language,
         category: cat,
@@ -220,6 +271,122 @@ router.post('/templates', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('POST /whatsapp/templates error:', err)
     res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Submission failed' })
+  }
+})
+
+/**
+ * POST /api/whatsapp/templates/:id/submit?projectId=...
+ *
+ * Push a DRAFT (or re-push a REJECTED) template to the provider for Meta
+ * approval. Meta routes it to MARKETING / UTILITY / AUTHENTICATION review based
+ * on the template's category. On success the row flips DRAFT → PENDING.
+ */
+router.post('/templates/:id/submit', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+
+    const [tmpl] = await db
+      .select()
+      .from(whatsappTemplates)
+      .where(and(eq(whatsappTemplates.id, id), eq(whatsappTemplates.projectId, projectId)))
+      .limit(1)
+    if (!tmpl) return res.status(404).json({ success: false, error: 'Template not found' })
+    if (tmpl.status !== 'DRAFT' && tmpl.status !== 'REJECTED') {
+      return res.status(400).json({ success: false, error: `Only DRAFT or REJECTED templates can be submitted (current: ${tmpl.status})` })
+    }
+
+    const channelResult = await getChannelProvider(projectId, 'whatsapp')
+    if (!channelResult?.provider.submitTemplate) {
+      return res.status(400).json({ success: false, error: 'WhatsApp provider not configured or does not support submission' })
+    }
+    const { provider, config } = channelResult
+    const bodyExample = (tmpl.rawPayload as { bodyExample?: string[] } | null)?.bodyExample
+    const now = new Date()
+
+    try {
+      const result = await provider.submitTemplate!({
+        name: tmpl.name,
+        language: tmpl.language,
+        category: tmpl.category as 'MARKETING' | 'UTILITY' | 'AUTHENTICATION',
+        bodyText: tmpl.bodyText,
+        header: tmpl.header as { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string; example?: string } | null,
+        footer: tmpl.footer,
+        buttons: tmpl.buttons as Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'; text: string; url?: string; phone?: string }> | undefined,
+        bodyExample,
+      }, config)
+      const [updated] = await db.update(whatsappTemplates).set({
+        providerTemplateId: result.providerTemplateId,
+        status: result.status,
+        category: result.category ?? tmpl.category,
+        submittedAt: now,
+        lastStatusCheckAt: now,
+        rejectionReason: null,
+        updatedAt: now,
+      }).where(eq(whatsappTemplates.id, id)).returning()
+      res.json({ success: true, data: { template: updated } })
+    } catch (providerErr) {
+      const reason = providerErr instanceof Error ? providerErr.message : 'Unknown provider error'
+      const [failed] = await db.update(whatsappTemplates).set({
+        status: 'REJECTED', rejectionReason: reason, lastStatusCheckAt: now, updatedAt: now,
+      }).where(eq(whatsappTemplates.id, id)).returning()
+      res.status(502).json({ success: false, error: 'Provider rejected the submission', data: { template: failed, providerError: reason } })
+    }
+  } catch (err) {
+    console.error('POST /whatsapp/templates/:id/submit error:', err)
+    res.status(500).json({ success: false, error: 'Submission failed' })
+  }
+})
+
+/**
+ * PATCH /api/whatsapp/templates/:id?projectId=...
+ *
+ * Edit a DRAFT (or REJECTED) template before submission. APPROVED / PENDING
+ * templates are Meta-managed and not editable here.
+ */
+router.patch('/templates/:id', requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[] }
+
+    const [tmpl] = await db
+      .select()
+      .from(whatsappTemplates)
+      .where(and(eq(whatsappTemplates.id, id), eq(whatsappTemplates.projectId, projectId)))
+      .limit(1)
+    if (!tmpl) return res.status(404).json({ success: false, error: 'Template not found' })
+    if (tmpl.status !== 'DRAFT' && tmpl.status !== 'REJECTED') {
+      return res.status(400).json({ success: false, error: `Only DRAFT or REJECTED templates can be edited (current: ${tmpl.status})` })
+    }
+
+    const merged = {
+      name: tmpl.name,
+      language: tmpl.language,
+      category: (body.category ?? tmpl.category) as 'MARKETING' | 'UTILITY' | 'AUTHENTICATION',
+      bodyText: body.bodyText ?? tmpl.bodyText,
+      header: (body.header ?? tmpl.header) as TemplateLintInput['header'],
+      footer: body.footer ?? tmpl.footer ?? undefined,
+      buttons: (body.buttons ?? tmpl.buttons) as TemplateLintInput['buttons'],
+    }
+    const findings = lintTemplate(merged as TemplateLintInput)
+    if (hasBlockingErrors(findings)) {
+      return res.status(400).json({ success: false, error: 'lint_blocking', data: { findings } })
+    }
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() }
+    if (body.category !== undefined) updates.category = body.category
+    if (body.bodyText !== undefined) { updates.bodyText = body.bodyText; updates.parameterCount = countParameters(body.bodyText) }
+    if (body.header !== undefined) updates.header = body.header as object | null
+    if (body.footer !== undefined) updates.footer = body.footer
+    if (body.buttons !== undefined) updates.buttons = body.buttons as object | null
+    if (body.bodyExample !== undefined) updates.rawPayload = body.bodyExample ? { bodyExample: body.bodyExample } : null
+
+    const [updated] = await db.update(whatsappTemplates).set(updates).where(eq(whatsappTemplates.id, id)).returning()
+    res.json({ success: true, data: { template: updated, lintFindings: findings } })
+  } catch (err) {
+    console.error('PATCH /whatsapp/templates/:id error:', err)
+    res.status(500).json({ success: false, error: 'Update failed' })
   }
 })
 
@@ -482,6 +649,111 @@ router.get('/ctwa-attributions', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('GET /whatsapp/ctwa-attributions error:', err)
     res.status(500).json({ success: false, error: 'Failed to load CTWA attributions' })
+  }
+})
+
+/**
+ * POST /api/whatsapp/connect-pinnacle?projectId=...
+ * Connector onboarding (BYO credentials): the brand pastes ONE secret (apikey).
+ * We discover their numbers via getuserdetails, store the channel config (apikey
+ * encrypted, phone_number_id + waba_id plaintext so webhook routing resolves the
+ * project), register the webhook, and import existing Pinnacle templates.
+ *
+ * Body: { apikey: string, phoneNumberId?: string }
+ *  - If the apikey owns multiple numbers and none is chosen, returns the list
+ *    with needsSelection=true and does NOT save — the UI prompts for a default.
+ */
+router.post('/connect-pinnacle', requireProjectId, async (req, res) => {
+  try {
+    const { apikey, phoneNumberId } = (req.body ?? {}) as { apikey?: string; phoneNumberId?: string }
+    const rawApikey = String(apikey ?? '').trim()
+    if (!rawApikey) {
+      return res.status(400).json({ success: false, error: 'apikey is required' })
+    }
+
+    // 1. Discover accounts/numbers from the single secret.
+    let accounts
+    try {
+      accounts = await pinnacleGetUserDetails(rawApikey)
+    } catch (err) {
+      console.warn('[whatsapp/connect-pinnacle] getuserdetails failed:', (err as Error).message)
+      return res.status(400).json({ success: false, error: 'Key not recognised — could not fetch account details from Pinnacle' })
+    }
+    if (accounts.length === 0) {
+      return res.status(400).json({ success: false, error: 'Key not recognised — no WhatsApp numbers found for this apikey' })
+    }
+
+    // 2. Resolve the sending number.
+    const selected = phoneNumberId
+      ? accounts.find(a => a.phoneNumberId === phoneNumberId)
+      : accounts.length === 1 ? accounts[0] : undefined
+    if (!selected) {
+      return res.json({ success: true, data: { needsSelection: true, numbers: accounts } })
+    }
+
+    // 3. WABA info (namespace) — best-effort.
+    const wabaInfo = await pinnacleGetWabaInfo(selected.wabaId, rawApikey).catch(() => ({ name: undefined, namespace: undefined }))
+
+    // 4. Persist channel config. apikey encrypted; ids plaintext for routing.
+    const waConfig: Record<string, string> = {
+      apikey: encrypt(rawApikey),
+      phoneNumberId: selected.phoneNumberId,
+      wabaId: selected.wabaId,
+      waNumber: selected.waNumber,
+    }
+    if (wabaInfo.namespace) waConfig.templateNamespace = wabaInfo.namespace
+
+    const [project] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, req.projectId!)).limit(1)
+    const settings = (project?.settings ?? {}) as Record<string, unknown>
+    const existingChannels = (settings.channels ?? {}) as Record<string, { provider?: string; config?: Record<string, string> }>
+    const mergedChannels = { ...existingChannels, whatsapp: { provider: 'pinnacle', config: waConfig } }
+
+    await db.execute(sql`
+      UPDATE projects SET
+        settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{channels}', ${JSON.stringify(mergedChannels)}::jsonb),
+        updated_at = NOW()
+      WHERE id = ${req.projectId!}
+    `)
+    clearProjectChannelProviderCache(req.projectId!)
+
+    // 5. Register the webhook (non-fatal). Uses the platform shared secret.
+    const appUrl = process.env.APP_URL
+    const secret = process.env.PINNACLE_WEBHOOK_SECRET
+    let webhookRegistered = false
+    if (appUrl && secret) {
+      try {
+        await pinnacleSetWebhook(selected.phoneNumberId, rawApikey, `${appUrl}/api/webhooks/channel/whatsapp/pinnacle`, secret)
+        webhookRegistered = true
+      } catch (err) {
+        console.warn('[whatsapp/connect-pinnacle] setwebhook failed:', (err as Error).message)
+      }
+    } else {
+      console.warn('[whatsapp/connect-pinnacle] APP_URL or PINNACLE_WEBHOOK_SECRET unset — skipping webhook registration')
+    }
+
+    // 6. Import existing Pinnacle templates (non-fatal).
+    let templatesImported = 0
+    try {
+      const sync = await syncWhatsappTemplatesForProject(req.projectId!)
+      templatesImported = sync.count
+    } catch (err) {
+      console.warn('[whatsapp/connect-pinnacle] template import failed:', (err as Error).message)
+    }
+
+    res.json({
+      success: true,
+      data: {
+        connected: true,
+        provider: 'pinnacle',
+        selectedNumber: { phoneNumberId: selected.phoneNumberId, waNumber: selected.waNumber, wabaId: selected.wabaId },
+        numbers: accounts,
+        webhookRegistered,
+        templatesImported,
+      },
+    })
+  } catch (err) {
+    console.error('POST /whatsapp/connect-pinnacle error:', err)
+    res.status(500).json({ success: false, error: 'Failed to connect Pinnacle WhatsApp' })
   }
 })
 
