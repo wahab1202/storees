@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
+import { PinnacleConnect } from './PinnacleConnect'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
@@ -320,6 +321,8 @@ const CHANNEL_PROVIDERS: Record<string, ProviderDef[]> = {
         { key: 'wabaId', label: 'WhatsApp Business Account ID', placeholder: '1234567890' },
         { key: 'accessToken', label: 'Access Token', type: 'password' },
       ] },
+    { value: 'pinnacle', label: 'Pinnacle', description: 'BYO Pinnacle WhatsApp — connect with one API key', initials: 'Pn', color: 'bg-indigo-600',
+      fields: [] },
     { value: 'twilio', label: 'Twilio', description: 'WhatsApp via Twilio — same credentials as SMS', initials: 'Tw', color: 'bg-red-500',
       fields: [{ key: 'accountSid', label: 'Account SID' }, { key: 'authToken', label: 'Auth Token', type: 'password' }, { key: 'fromNumber', label: 'WhatsApp Number', placeholder: '+1234567890' }] },
     { value: 'gupshup', label: 'Gupshup', description: 'WhatsApp Business API with template support', initials: 'Gs', color: 'bg-green-600',
@@ -338,7 +341,7 @@ const CHANNEL_PROVIDERS: Record<string, ProviderDef[]> = {
 const CHANNEL_META: Record<string, { label: string; description: string; icon: typeof Activity }> = {
   email: { label: 'Email', description: 'Resend active, multi-ESP routing ready', icon: Mail },
   sms: { label: 'SMS', description: '5 providers available', icon: Smartphone },
-  whatsapp: { label: 'WhatsApp', description: '5 providers available', icon: MessageSquare },
+  whatsapp: { label: 'WhatsApp', description: '6 providers available', icon: MessageSquare },
   push: { label: 'Push Notifications', description: '1 provider available', icon: Bell },
 }
 
@@ -472,6 +475,12 @@ function ChannelProviderSettings() {
             const providerDef = CHANNEL_PROVIDERS[activeChannel]?.find(p => p.value === selectedProvider[activeChannel])
             if (!providerDef) return null
             const status = saveStatus[activeChannel] ?? 'idle'
+
+            // Pinnacle WhatsApp uses a connector flow (discover → pick → connect),
+            // not the generic save-fields form.
+            if (activeChannel === 'whatsapp' && providerDef.value === 'pinnacle') {
+              return <PinnacleConnect />
+            }
 
             return (
               <div className="p-4 space-y-4">

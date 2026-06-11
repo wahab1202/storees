@@ -100,6 +100,57 @@ export function useSubmitWhatsappTemplate() {
   })
 }
 
+/** Save a template as a DRAFT (no provider submission yet). */
+export function useSaveWhatsappDraft() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: SubmitInput) =>
+      api.post<{ template: WhatsappTemplate; lintFindings: LintFinding[] }>(
+        withProject('/api/whatsapp/templates'),
+        { ...input, draft: true },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['whatsapp-templates'] })
+      toast.success('Draft saved')
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Could not save draft'),
+  })
+}
+
+/** Edit a DRAFT / REJECTED template before submission. */
+export function useEditWhatsappDraft() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Partial<SubmitInput> }) =>
+      api.patch<{ template: WhatsappTemplate; lintFindings: LintFinding[] }>(
+        withProject(`/api/whatsapp/templates/${id}`),
+        input,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['whatsapp-templates'] })
+      toast.success('Draft updated')
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Could not update draft'),
+  })
+}
+
+/** Push a DRAFT / REJECTED template to the provider for Meta approval. */
+export function useSubmitWhatsappForApproval() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ template: WhatsappTemplate }>(
+        withProject(`/api/whatsapp/templates/${id}/submit`),
+        {},
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['whatsapp-templates'] })
+      toast.success('Submitted for approval')
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Submission failed'),
+  })
+}
+
 export function useSyncWhatsappTemplates() {
   const qc = useQueryClient()
   return useMutation({

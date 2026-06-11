@@ -10,7 +10,7 @@ import type {
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
-import { countParameters } from './whatsappUtils.js'
+import { countParameters, buildTemplateComponents } from './whatsappUtils.js'
 
 // Subset of Meta's message_templates response we care about
 type MetaComponent =
@@ -18,7 +18,7 @@ type MetaComponent =
   | { type: 'HEADER'; format?: string; text?: string }
   | { type: 'FOOTER'; text?: string }
   | { type: 'BUTTONS'; buttons?: unknown[] }
-type MetaTemplate = {
+export type MetaTemplate = {
   name: string
   language: string
   status: string
@@ -30,8 +30,11 @@ type MetaTemplate = {
  * Translate Storees' SubmitTemplateInput into Meta's `components` array shape.
  * Meta requires example values for any parameter — these power the preview in
  * Meta's review UI and are ALSO checked by their automated reviewer.
+ *
+ * Exported because Pinnacle (and any Meta-relaying BSP) speaks the exact same
+ * Cloud API component shape — the Pinnacle provider reuses this verbatim.
  */
-function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
+export function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
   const components: Array<Record<string, unknown>> = []
 
   // BODY (required) — with example values for {{1}}..{{N}}
@@ -68,7 +71,7 @@ function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
   return components
 }
 
-function parseMetaTemplate(t: MetaTemplate): ProviderTemplate {
+export function parseMetaTemplate(t: MetaTemplate): ProviderTemplate {
   let bodyText = ''
   let header: unknown
   let footer: string | undefined
@@ -144,38 +147,7 @@ export const metaWhatsappProvider: ChannelProvider = {
     }
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
-    // Body params → ordered text components
-    const components: Array<Record<string, unknown>> = command.templateParams.length > 0
-      ? [{
-          type: 'body',
-          parameters: command.templateParams.map(p => ({ type: 'text', text: p })),
-        }]
-      : []
-    const header = command.templateHeader as { type?: string; format?: string } | null | undefined
-    const headerFormat = (header?.format ?? header?.type ?? '').toUpperCase()
-    const mediaUrl = command.variables.wa_header_media_url || command.variables.header_media_url
-    if (mediaUrl && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormat)) {
-      const mediaType = headerFormat === 'DOCUMENT' ? 'document' : headerFormat.toLowerCase()
-      components.push({
-        type: 'header',
-        parameters: [{ type: mediaType, [mediaType]: { link: mediaUrl } }],
-      })
-    }
-
-    const buttons = Array.isArray(command.templateButtons) ? command.templateButtons as Array<{ type?: string; url?: string }> : []
-    let urlButtonPosition = 0
-    buttons.forEach((button, idx) => {
-      if ((button.type ?? '').toUpperCase() !== 'URL') return
-      urlButtonPosition += 1
-      const suffix = command.variables[`wa_button_url_${urlButtonPosition}`] || command.variables[`button_url_${urlButtonPosition}`]
-      if (!suffix) return
-      components.push({
-        type: 'button',
-        sub_type: 'url',
-        index: String(idx),
-        parameters: [{ type: 'text', text: suffix }],
-      })
-    })
+    const components = buildTemplateComponents(command)
 
     const resp = await fetch(`https://graph.facebook.com/v23.0/${phoneNumberId}/messages`, {
       method: 'POST',

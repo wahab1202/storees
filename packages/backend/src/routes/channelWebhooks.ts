@@ -320,4 +320,116 @@ router.post('/whatsapp', async (req, res) => {
   }
 })
 
+// ============ WHATSAPP (PINNACLE) WEBHOOK ============
+// Pinnacle is a BSP that relays Meta's Cloud API callbacks, so the payload shape
+// is identical to the Meta handler above. Two differences:
+//   1. Verification is the `x-storees-secret` header we registered via setwebhook
+//      (Pinnacle echoes the headers object back on every callback), not Meta's
+//      hub.verify_token handshake.
+//   2. Inbound messages are NOT ingested — replies stay on the Pinnacle dashboard
+//      (product decision). We handle delivery status + template status only.
+
+router.post('/whatsapp/pinnacle', async (req, res) => {
+  try {
+    // Verify the relayed shared secret. If PINNACLE_WEBHOOK_SECRET is unset we
+    // process anyway (dev), but log it — prod must set the secret.
+    const expected = process.env.PINNACLE_WEBHOOK_SECRET
+    if (expected) {
+      const got = req.get('x-storees-secret')
+      if (got !== expected) {
+        console.warn('[whatsapp/pinnacle] rejected callback: bad or missing x-storees-secret')
+        return res.sendStatus(403)
+      }
+    } else {
+      console.warn('[whatsapp/pinnacle] PINNACLE_WEBHOOK_SECRET unset — processing callback without verification')
+    }
+
+    const body = req.body as {
+      entry?: Array<{
+        id?: string  // WABA id for template events
+        changes?: Array<{
+          field?: string
+          value?: {
+            statuses?: Array<{ id: string; status: string }>
+            event?: string
+            message_template_id?: string | number
+            message_template_name?: string
+            message_template_language?: string
+            reason?: string
+            previous_category?: string
+            new_category?: string
+          }
+        }>
+      }>
+    }
+
+    // Branch 1 — outbound delivery status (the send/delivered/read/failed funnel)
+    for (const entry of body.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        for (const status of change.value?.statuses ?? []) {
+          // 'sent' is intentionally not mapped — the row is already 'sent' at
+          // send time; only delivered/read/failed are real transitions here.
+          const statusMap: Record<string, 'delivered' | 'read' | 'failed'> = {
+            delivered: 'delivered',
+            read: 'read',
+            failed: 'failed',
+          }
+          const mapped = statusMap[status.status]
+          if (mapped) {
+            await handleDeliveryReceipt(status.id, mapped, 'whatsapp', 'pinnacle')
+          }
+        }
+      }
+    }
+
+    // Branch 2 — template status updates (the authoring approval tracker)
+    for (const entry of body.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        if (change.field !== 'message_template_status_update') continue
+        const wabaId = entry.id
+        if (!wabaId) continue
+        const projectId = await findProjectByWabaId(wabaId)
+        if (!projectId) {
+          console.warn(`[whatsapp/pinnacle] template status event for unknown WABA=${wabaId}`)
+          continue
+        }
+        await handleMetaTemplateStatusEvent(projectId, change.value ?? {})
+      }
+    }
+
+    // Branch 3 — inbound user messages (replies). Pinnacle relays Meta's Cloud
+    // API inbound shape, so we reuse the Meta parser + project resolution by
+    // phone_number_id. (Opted into beyond the original no-inbox MVP.)
+    const inbound = req.body as {
+      entry?: Array<{ changes?: Array<{ field?: string; value?: { messages?: unknown[]; metadata?: { phone_number_id?: string } } }> }>
+    }
+    const hasInbound = (inbound.entry ?? []).some(e =>
+      (e.changes ?? []).some(c => (c.value?.messages ?? []).length > 0),
+    )
+    if (hasInbound && metaWhatsappProvider.parseInbound) {
+      const parsed = metaWhatsappProvider.parseInbound(inbound)
+      let inboundProjectId: string | null = null
+      for (const entry of inbound.entry ?? []) {
+        for (const change of entry.changes ?? []) {
+          if ((change.value?.messages ?? []).length > 0 && change.value?.metadata?.phone_number_id) {
+            inboundProjectId = await findProjectByMetaPhoneNumberId(change.value.metadata.phone_number_id)
+            if (inboundProjectId) break
+          }
+        }
+        if (inboundProjectId) break
+      }
+      if (inboundProjectId && parsed.length > 0) {
+        await persistInboundMessages(inboundProjectId, 'pinnacle', parsed)
+      } else if (parsed.length > 0) {
+        console.warn('[whatsapp/pinnacle] inbound received but no project matched phone_number_id')
+      }
+    }
+
+    res.sendStatus(200)
+  } catch (err) {
+    console.error('Pinnacle WhatsApp webhook error:', err)
+    res.sendStatus(500)
+  }
+})
+
 export default router

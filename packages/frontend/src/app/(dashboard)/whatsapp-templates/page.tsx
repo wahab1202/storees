@@ -7,6 +7,9 @@ import {
   useWhatsappTemplates,
   useLintWhatsappTemplate,
   useSubmitWhatsappTemplate,
+  useSaveWhatsappDraft,
+  useEditWhatsappDraft,
+  useSubmitWhatsappForApproval,
   useSyncWhatsappTemplates,
   useRefreshTemplateStatus,
   type WhatsappTemplate,
@@ -15,9 +18,10 @@ import {
   type SubmitInput,
 } from '@/hooks/useWhatsappTemplates'
 import { cn } from '@/lib/utils'
-import { Loader2, RefreshCw, AlertCircle, CheckCircle2, Clock, Plus, X, Send } from 'lucide-react'
+import { Loader2, RefreshCw, AlertCircle, CheckCircle2, Clock, Plus, X, Send, Save, Pencil, FileText } from 'lucide-react'
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; icon: typeof Clock }> = {
+  DRAFT:      { bg: 'bg-slate-100',   text: 'text-slate-600',   icon: FileText },
   APPROVED:   { bg: 'bg-emerald-100', text: 'text-emerald-700', icon: CheckCircle2 },
   PENDING:    { bg: 'bg-amber-100',   text: 'text-amber-700',   icon: Clock },
   IN_APPEAL:  { bg: 'bg-amber-100',   text: 'text-amber-700',   icon: Clock },
@@ -38,9 +42,13 @@ export default function WhatsappTemplatesPage() {
   const { data, isLoading } = useWhatsappTemplates()
   const sync = useSyncWhatsappTemplates()
   const refresh = useRefreshTemplateStatus()
+  const submitApproval = useSubmitWhatsappForApproval()
   const [showForm, setShowForm] = useState(false)
+  const [editing, setEditing] = useState<WhatsappTemplate | null>(null)
 
   const templates = data?.data ?? []
+  const formOpen = showForm || !!editing
+  const canSubmit = !!providerStatus.data?.data?.capabilities.submitTemplate && !!providerStatus.data?.data?.configured
 
   return (
     <div className="space-y-6">
@@ -53,11 +61,11 @@ export default function WhatsappTemplatesPage() {
 
       <div className="flex flex-wrap gap-2">
         <button
-          onClick={() => setShowForm(v => !v)}
+          onClick={() => { setEditing(null); setShowForm(v => !v) }}
           className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700"
         >
-          {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-          {showForm ? 'Cancel' : 'Submit new template'}
+          {formOpen ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+          {formOpen ? 'Cancel' : 'New template'}
         </button>
         <button
           onClick={() => sync.mutate()}
@@ -69,7 +77,14 @@ export default function WhatsappTemplatesPage() {
         </button>
       </div>
 
-      {showForm && <SubmitForm onDone={() => setShowForm(false)} canSubmit={!!providerStatus.data?.data?.capabilities.submitTemplate && !!providerStatus.data?.data?.configured} />}
+      {formOpen && (
+        <SubmitForm
+          key={editing?.id ?? 'new'}
+          editing={editing}
+          onDone={() => { setShowForm(false); setEditing(null) }}
+          canSubmit={canSubmit}
+        />
+      )}
 
       <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
         <header className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
@@ -104,6 +119,10 @@ export default function WhatsappTemplatesPage() {
                   template={t}
                   onRefresh={() => refresh.mutate(t.id)}
                   isRefreshing={refresh.isPending && refresh.variables === t.id}
+                  onEdit={() => { setShowForm(false); setEditing(t) }}
+                  onSubmitForApproval={() => submitApproval.mutate(t.id)}
+                  isSubmitting={submitApproval.isPending && submitApproval.variables === t.id}
+                  canSubmit={canSubmit}
                 />
               ))}
             </tbody>
@@ -174,11 +193,16 @@ function CapabilityPill({ enabled, label }: { enabled: boolean; label: string })
   )
 }
 
-function TemplateRow({ template: t, onRefresh, isRefreshing }: {
+function TemplateRow({ template: t, onRefresh, isRefreshing, onEdit, onSubmitForApproval, isSubmitting, canSubmit }: {
   template: WhatsappTemplate
   onRefresh: () => void
   isRefreshing: boolean
+  onEdit: () => void
+  onSubmitForApproval: () => void
+  isSubmitting: boolean
+  canSubmit: boolean
 }) {
+  const editable = t.status === 'DRAFT' || t.status === 'REJECTED'
   const style = STATUS_STYLES[t.status] ?? STATUS_STYLES.PENDING
   const StatusIcon = style.icon
   const wasRecategorised = !!t.previousCategory && t.previousCategory !== t.category
@@ -211,29 +235,56 @@ function TemplateRow({ template: t, onRefresh, isRefreshing }: {
         {t.lastStatusCheckAt ? new Date(t.lastStatusCheckAt).toLocaleString() : 'never'}
       </td>
       <td className="px-4 py-3 text-right">
-        <button
-          onClick={onRefresh}
-          disabled={isRefreshing}
-          className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 disabled:opacity-50"
-        >
-          {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-          Refresh
-        </button>
+        <div className="inline-flex items-center gap-3 justify-end">
+          {editable && (
+            <>
+              <button
+                onClick={onEdit}
+                className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1"
+              >
+                <Pencil className="h-3 w-3" /> Edit
+              </button>
+              <button
+                onClick={onSubmitForApproval}
+                disabled={isSubmitting || !canSubmit}
+                title={!canSubmit ? 'Connect a WhatsApp provider that supports submission' : undefined}
+                className="text-xs font-medium text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                Submit for approval
+              </button>
+            </>
+          )}
+          {t.status !== 'DRAFT' && (
+            <button
+              onClick={onRefresh}
+              disabled={isRefreshing}
+              className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 disabled:opacity-50"
+            >
+              {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              Refresh
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   )
 }
 
-function SubmitForm({ onDone, canSubmit }: { onDone: () => void; canSubmit: boolean }) {
+function SubmitForm({ onDone, canSubmit, editing }: { onDone: () => void; canSubmit: boolean; editing: WhatsappTemplate | null }) {
   const lint = useLintWhatsappTemplate()
-  const submit = useSubmitWhatsappTemplate()
+  const submit = useSubmitWhatsappTemplate()       // new: create + immediate submit
+  const saveDraft = useSaveWhatsappDraft()          // new: create as draft
+  const editDraft = useEditWhatsappDraft()          // edit existing draft
+  const submitApproval = useSubmitWhatsappForApproval() // submit existing draft
 
+  const isEditing = !!editing
   const [form, setForm] = useState<SubmitInput>({
-    name: '',
-    language: 'en_US',
-    category: 'UTILITY',
-    bodyText: '',
-    footer: '',
+    name: editing?.name ?? '',
+    language: editing?.language ?? 'en_US',
+    category: (editing?.category as SubmitInput['category']) ?? 'UTILITY',
+    bodyText: editing?.bodyText ?? '',
+    footer: editing?.footer ?? '',
   })
 
   const findings: LintFinding[] = lint.data?.data?.findings ?? []
@@ -241,19 +292,40 @@ function SubmitForm({ onDone, canSubmit }: { onDone: () => void; canSubmit: bool
   const errors = findings.filter(f => f.severity === 'error')
   const warnings = findings.filter(f => f.severity === 'warning')
   const parameterCount = countTemplateParameters(form.bodyText)
+  const pending = submit.isPending || saveDraft.isPending || editDraft.isPending || submitApproval.isPending
+  const incomplete = !form.name || !form.bodyText
+
+  const buildInput = (): SubmitInput => ({
+    ...form,
+    bodyExample: parameterCount > 0
+      ? Array.from({ length: parameterCount }, (_, idx) => form.bodyExample?.[idx]?.trim() || sampleValueFor(idx))
+      : undefined,
+  })
 
   const handleLint = () => lint.mutate(form)
 
-  const handleSubmit = () => {
-    submit.mutate({
-      ...form,
-      bodyExample: parameterCount > 0 ? Array.from({ length: parameterCount }, (_, idx) => form.bodyExample?.[idx]?.trim() || sampleValueFor(idx)) : undefined,
-    }, { onSuccess: () => onDone() })
+  // Save (as draft, or update an existing draft) — no provider submission.
+  const handleSaveDraft = () => {
+    if (isEditing) editDraft.mutate({ id: editing!.id, input: buildInput() }, { onSuccess: () => onDone() })
+    else saveDraft.mutate(buildInput(), { onSuccess: () => onDone() })
+  }
+
+  // Submit for approval. When editing, persist edits first, then push to provider.
+  const handleSubmitForApproval = () => {
+    if (isEditing) {
+      editDraft.mutate({ id: editing!.id, input: buildInput() }, {
+        onSuccess: () => submitApproval.mutate(editing!.id, { onSuccess: () => onDone() }),
+      })
+    } else {
+      submit.mutate(buildInput(), { onSuccess: () => onDone() })
+    }
   }
 
   return (
     <section className="rounded-lg border border-indigo-200 bg-indigo-50/30 p-5">
-      <h3 className="text-sm font-semibold text-slate-900 mb-3">New template submission</h3>
+      <h3 className="text-sm font-semibold text-slate-900 mb-3">
+        {isEditing ? `Edit ${editing!.status === 'REJECTED' ? 'rejected' : 'draft'} template: ${editing!.name}` : 'New template'}
+      </h3>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
         <label className="text-sm">
@@ -262,7 +334,11 @@ function SubmitForm({ onDone, canSubmit }: { onDone: () => void; canSubmit: bool
             value={form.name}
             onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
             placeholder="welcome_offer"
-            className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+            readOnly={isEditing}
+            className={cn(
+              'w-full px-3 py-2 border border-slate-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500',
+              isEditing && 'bg-slate-100 text-slate-500 cursor-not-allowed',
+            )}
           />
         </label>
         <label className="text-sm">
@@ -349,7 +425,7 @@ function SubmitForm({ onDone, canSubmit }: { onDone: () => void; canSubmit: bool
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={handleLint}
           disabled={lint.isPending || !form.bodyText}
@@ -359,15 +435,23 @@ function SubmitForm({ onDone, canSubmit }: { onDone: () => void; canSubmit: bool
           Run lint
         </button>
         <button
-          onClick={handleSubmit}
-          disabled={submit.isPending || blocking || !canSubmit || !form.name || !form.bodyText}
+          onClick={handleSaveDraft}
+          disabled={pending || blocking || incomplete}
+          className="px-4 py-2 border border-indigo-300 text-indigo-700 bg-white text-sm font-medium rounded-md hover:bg-indigo-50 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {(saveDraft.isPending || (editDraft.isPending && !submitApproval.isPending)) ? <Loader2 className="h-4 w-4 animate-spin inline mr-1" /> : <Save className="h-4 w-4 inline mr-1" />}
+          {isEditing ? 'Save draft' : 'Save as draft'}
+        </button>
+        <button
+          onClick={handleSubmitForApproval}
+          disabled={pending || blocking || !canSubmit || incomplete}
           className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          {submit.isPending ? <Loader2 className="h-4 w-4 animate-spin inline mr-1" /> : <Send className="h-4 w-4 inline mr-1" />}
+          {(submit.isPending || submitApproval.isPending) ? <Loader2 className="h-4 w-4 animate-spin inline mr-1" /> : <Send className="h-4 w-4 inline mr-1" />}
           Submit for approval
         </button>
         {blocking && <span className="text-xs text-red-600">Resolve blocking errors before submitting</span>}
-        {!canSubmit && <span className="text-xs text-amber-700">Connected provider cannot submit templates or is missing required config.</span>}
+        {!canSubmit && <span className="text-xs text-amber-700">Save as draft is fine; submission needs a connected provider.</span>}
       </div>
     </section>
   )
