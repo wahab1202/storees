@@ -38,6 +38,12 @@ export async function advanceTrip(tripId: string): Promise<void> {
     .limit(1)
 
   if (!flow) return
+  // flow_trips has no project_id column, but executeAction / condition need it
+  // (project lookup, deliveryService send). Stamp it from the owning flow so the
+  // whole walk has a valid projectId — otherwise sends fail with an empty-UUID error.
+  ;(trip as Record<string, unknown>).projectId = flow.projectId
+
+  if (!flow) return
 
   const nodes = flow.nodes as FlowNode[]
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
@@ -581,15 +587,25 @@ async function executeAction(
   // variables here too so positional params {{1}}, {{2}} (WhatsApp) and named
   // tokens (SMS/push) all read from the same per-customer/per-event context.
   const { send } = await import('./deliveryService.js')
-  // Look up the template's declared variables (SMS/push/WhatsApp templates
-  // share the same email_templates table for now — variable shape is generic).
-  const [providerTemplate] = await db
-    .select({ variables: emailTemplates.variables })
-    .from(emailTemplates)
-    .where(eq(emailTemplates.name, templateId))
-    .limit(1)
+  // Variable declarations for {{1}}..{{N}} / named tokens. Prefer the mapping
+  // configured ON the action node (how WhatsApp templates — resolved by id, not
+  // name — get their positional params filled; mirrors the test-send/campaign
+  // paths). Fall back to an email_templates row matching the name for the legacy
+  // SMS/push case.
+  const nodeVariables = (node.config as { variables?: TemplateVariable[] }).variables
+  let declaredVariables: TemplateVariable[]
+  if (Array.isArray(nodeVariables) && nodeVariables.length > 0) {
+    declaredVariables = nodeVariables
+  } else {
+    const [providerTemplate] = await db
+      .select({ variables: emailTemplates.variables })
+      .from(emailTemplates)
+      .where(eq(emailTemplates.name, templateId))
+      .limit(1)
+    declaredVariables = (providerTemplate?.variables as TemplateVariable[]) ?? []
+  }
   const variables = resolveTemplateVariables({
-    variables: ((providerTemplate?.variables as TemplateVariable[]) ?? []),
+    variables: declaredVariables,
     customer: customerLike,
     project,
     eventProperties,

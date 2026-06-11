@@ -25,6 +25,20 @@ export function registerProvider(name: string, provider: DeliveryProvider): void
  * Returns the message ID or null if blocked.
  */
 export async function send(command: SendCommand): Promise<string | null> {
+  // 0. WhatsApp category drives marketing-vs-transactional treatment. Meta/Pinnacle
+  // classify each approved template: MARKETING (promotional — subject to consent +
+  // the per-user marketing frequency cap, and can be silently dropped by Meta error
+  // 131049) vs UTILITY/AUTHENTICATION (transactional — order/shipping/OTP, always
+  // allowed, no marketing cap). Derive messageType from the template's category so
+  // callers (flows, campaigns) don't have to, and a UTILITY template is never
+  // wrongly marketing-capped.
+  if (command.channel === 'whatsapp' && command.templateId) {
+    const category = await getWhatsappTemplateCategory(command.projectId, command.templateId)
+    if (category) {
+      command.messageType = category === 'MARKETING' ? 'promotional' : 'transactional'
+    }
+  }
+
   // 1. Consent check
   const consented = await checkConsent(
     command.projectId,
@@ -37,8 +51,9 @@ export async function send(command: SendCommand): Promise<string | null> {
     return null
   }
 
-  // 2. Frequency cap check
-  if (!command.ignoreFrequencyCap) {
+  // 2. Frequency cap check — marketing-only. Transactional sends (UTILITY/AUTH
+  // WhatsApp, and any transactional email/sms) bypass it by design.
+  if (!command.ignoreFrequencyCap && command.messageType !== 'transactional') {
     const capped = await checkFrequencyCap(command.projectId, command.userId, command.channel)
     if (capped) {
       await recordMessage(command, 'blocked', 'frequency_capped')
@@ -295,6 +310,18 @@ async function getProjectFreqCaps(projectId: string): Promise<Record<string, Fre
   const caps = (row?.caps as Record<string, FreqCapConfig> | null) ?? DEFAULT_FREQ_CAPS
   freqCapCache.set(projectId, { caps, expiresAt: Date.now() + FREQ_CAP_CACHE_TTL_MS })
   return caps
+}
+
+/** Resolve a WhatsApp template's Meta category (MARKETING | UTILITY |
+ *  AUTHENTICATION) by its id, so the send pipeline can treat it correctly.
+ *  Returns null if the template isn't found (caller keeps the given messageType). */
+async function getWhatsappTemplateCategory(projectId: string, templateId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ category: whatsappTemplates.category })
+    .from(whatsappTemplates)
+    .where(and(eq(whatsappTemplates.id, templateId), eq(whatsappTemplates.projectId, projectId)))
+    .limit(1)
+  return row?.category ?? null
 }
 
 /** Returns true if this customer has hit (or exceeded) the marketing cap on
