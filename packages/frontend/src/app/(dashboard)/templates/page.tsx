@@ -2,15 +2,28 @@
 
 import Link from 'next/link'
 import { useTemplates, useDeleteTemplate, useSeedTemplates } from '@/hooks/useTemplates'
+import { useWhatsappTemplates, useSyncWhatsappTemplates, useRefreshTemplateStatus, type WhatsappTemplate } from '@/hooks/useWhatsappTemplates'
 import { toast } from 'sonner'
 import { TemplatePreviewCard } from '@/components/shared/TemplatePreviewCard'
 import { SlidePanel } from '@/components/shared/SlidePanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles, Layers } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles, Layers, RefreshCw, CheckCircle2, Clock, AlertCircle } from 'lucide-react'
+import { useState, useMemo, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import type { EmailTemplate, TemplateChannel } from '@storees/shared'
+
+const WA_STATUS_STYLES: Record<string, { bg: string; text: string; icon: typeof Clock }> = {
+  DRAFT: { bg: 'bg-slate-100', text: 'text-slate-600', icon: FileText },
+  APPROVED: { bg: 'bg-emerald-100', text: 'text-emerald-700', icon: CheckCircle2 },
+  PENDING: { bg: 'bg-amber-100', text: 'text-amber-700', icon: Clock },
+  IN_APPEAL: { bg: 'bg-amber-100', text: 'text-amber-700', icon: Clock },
+  REJECTED: { bg: 'bg-red-100', text: 'text-red-700', icon: AlertCircle },
+  FLAGGED: { bg: 'bg-red-100', text: 'text-red-700', icon: AlertCircle },
+  PAUSED: { bg: 'bg-slate-100', text: 'text-slate-700', icon: AlertCircle },
+  DISABLED: { bg: 'bg-slate-100', text: 'text-slate-700', icon: AlertCircle },
+}
 
 const CHANNEL_TABS: { value: TemplateChannel | 'all'; label: string; icon: typeof Mail }[] = [
   { value: 'all',      label: 'All',       icon: FileText },
@@ -30,15 +43,32 @@ const CHANNEL_CONFIG = {
 } as const
 
 export default function TemplatesPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-text-secondary">Loading…</div>}>
+      <TemplatesContent />
+    </Suspense>
+  )
+}
+
+function TemplatesContent() {
   const { data, isLoading, isError } = useTemplates()
+  const { data: waData, isLoading: waLoading } = useWhatsappTemplates()
+  const syncWa = useSyncWhatsappTemplates()
+  const refreshWa = useRefreshTemplateStatus()
   const deleteTemplate = useDeleteTemplate()
   const seedTemplates = useSeedTemplates()
+  const searchParams = useSearchParams()
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
-  const [channelFilter, setChannelFilter] = useState<TemplateChannel | 'all'>('all')
+  const [channelFilter, setChannelFilter] = useState<TemplateChannel | 'all'>(
+    (searchParams.get('channel') as TemplateChannel) ?? 'all',
+  )
   const [search, setSearch] = useState('')
   const [previewTemplate, setPreviewTemplate] = useState<EmailTemplate | null>(null)
 
-  const templates = data?.data ?? []
+  // WhatsApp templates live in their own lifecycle-managed table; the generic
+  // editor no longer writes channel='whatsapp' rows, so exclude any legacy ones.
+  const templates = (data?.data ?? []).filter((t: EmailTemplate) => t.channel !== 'whatsapp')
+  const waTemplates = waData?.data ?? []
 
   const filtered = useMemo(() => {
     let result = templates
@@ -55,13 +85,22 @@ export default function TemplatesPage() {
     return result
   }, [templates, channelFilter, search])
 
+  const filteredWa = useMemo(() => {
+    if (channelFilter !== 'all' && channelFilter !== 'whatsapp') return []
+    if (!search.trim()) return waTemplates
+    const q = search.toLowerCase()
+    return waTemplates.filter(t => t.name.toLowerCase().includes(q) || t.bodyText.toLowerCase().includes(q))
+  }, [waTemplates, channelFilter, search])
+
   const channelCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: templates.length }
+    const counts: Record<string, number> = { all: templates.length + waTemplates.length, whatsapp: waTemplates.length }
     for (const t of templates) {
       counts[t.channel] = (counts[t.channel] ?? 0) + 1
     }
     return counts
-  }, [templates])
+  }, [templates, waTemplates])
+
+  const isWhatsappTab = channelFilter === 'whatsapp'
 
   return (
     <div>
@@ -69,6 +108,27 @@ export default function TemplatesPage() {
         title="Templates"
         actions={
           <div className="flex items-center gap-2">
+            {isWhatsappTab && (
+              <>
+                <button
+                  onClick={() => syncWa.mutate()}
+                  disabled={syncWa.isPending}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-secondary rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+                >
+                  {syncWa.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  Sync from provider
+                </button>
+                <Link
+                  href="/templates/whatsapp/new"
+                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
+                >
+                  <Plus className="h-4 w-4" />
+                  New WhatsApp Template
+                </Link>
+              </>
+            )}
+            {!isWhatsappTab && (
+            <>
             <button
               onClick={() => seedTemplates.mutate({ force: true }, {
                 onSuccess: (res) => {
@@ -91,6 +151,8 @@ export default function TemplatesPage() {
               <Plus className="h-4 w-4" />
               New Template
             </Link>
+            </>
+            )}
           </div>
         }
       />
@@ -137,7 +199,7 @@ export default function TemplatesPage() {
         />
       </div>
 
-      {isLoading ? (
+      {isLoading || (isWhatsappTab && waLoading) ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => <CardSkeleton key={i} />)}
         </div>
@@ -145,18 +207,28 @@ export default function TemplatesPage() {
         <div className="text-center py-20">
           <p className="text-red-600 text-sm">Failed to load templates.</p>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : filtered.length === 0 && filteredWa.length === 0 ? (
         <div className="text-center py-20 bg-white border border-border rounded-xl">
           <FileText className="h-10 w-10 text-text-muted mx-auto mb-3" />
           <h3 className="text-sm font-semibold text-text-primary mb-1">
-            {templates.length === 0 ? 'No templates yet' : 'No matching templates'}
+            {isWhatsappTab ? 'No WhatsApp templates yet' : templates.length === 0 ? 'No templates yet' : 'No matching templates'}
           </h3>
           <p className="text-sm text-text-secondary mb-4">
-            {templates.length === 0
-              ? 'Create reusable message templates for email, SMS, push, and WhatsApp.'
-              : 'Try adjusting your search or channel filter.'}
+            {isWhatsappTab
+              ? 'Build a Meta-approved WhatsApp template, or sync existing ones from your provider.'
+              : templates.length === 0
+                ? 'Create reusable message templates for email, SMS, push, and WhatsApp.'
+                : 'Try adjusting your search or channel filter.'}
           </p>
-          {templates.length === 0 && (
+          {isWhatsappTab ? (
+            <Link
+              href="/templates/whatsapp/new"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              New WhatsApp Template
+            </Link>
+          ) : templates.length === 0 && (
             <div className="flex items-center justify-center gap-3">
               <button
                 onClick={() => seedTemplates.mutate({}, {
@@ -183,7 +255,21 @@ export default function TemplatesPage() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="space-y-4">
+          {filteredWa.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {filteredWa.map(t => (
+                <WhatsappTemplateCard
+                  key={t.id}
+                  template={t}
+                  onRefresh={() => refreshWa.mutate(t.id)}
+                  isRefreshing={refreshWa.isPending && refreshWa.variables === t.id}
+                />
+              ))}
+            </div>
+          )}
+          {filtered.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((tpl: EmailTemplate) => {
             const ch = CHANNEL_CONFIG[tpl.channel] ?? CHANNEL_CONFIG.email
             const ChIcon = ch.icon
@@ -247,6 +333,8 @@ export default function TemplatesPage() {
               </div>
             )
           })}
+          </div>
+          )}
         </div>
       )}
 
@@ -299,6 +387,48 @@ export default function TemplatesPage() {
           </div>
         )}
       </SlidePanel>
+    </div>
+  )
+}
+
+function WhatsappTemplateCard({ template: t, onRefresh, isRefreshing }: {
+  template: WhatsappTemplate
+  onRefresh: () => void
+  isRefreshing: boolean
+}) {
+  const style = WA_STATUS_STYLES[t.status] ?? WA_STATUS_STYLES.PENDING
+  const StatusIcon = style.icon
+  const editable = t.status === 'DRAFT' || t.status === 'REJECTED'
+
+  return (
+    <div className="flex flex-col rounded-xl border border-border bg-white p-4 transition-shadow hover:shadow-sm">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="p-2 rounded-lg border text-emerald-600 bg-emerald-50 border-emerald-200">
+            <Phone className="h-4 w-4" />
+          </div>
+          <p className="truncate font-mono text-xs text-text-primary" title={t.name}>{t.name}</p>
+        </div>
+        <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', style.bg, style.text)}>
+          <StatusIcon className="h-3 w-3" /> {t.status}
+        </span>
+      </div>
+      <p className="mb-3 line-clamp-3 min-h-[3rem] text-xs text-text-secondary">{t.bodyText}</p>
+      {t.rejectionReason && <p className="mb-2 line-clamp-2 text-[11px] text-red-600">{t.rejectionReason}</p>}
+      <div className="mt-auto flex items-center justify-between border-t border-border pt-2.5">
+        <span className="text-[11px] text-text-muted">{t.category ?? '—'} · {t.language}</span>
+        <div className="flex items-center gap-3">
+          {editable ? (
+            <Link href={`/templates/whatsapp/${t.id}/edit`} className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover">
+              <Pencil className="h-3 w-3" /> Edit
+            </Link>
+          ) : (
+            <button onClick={onRefresh} disabled={isRefreshing} className="inline-flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50">
+              {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />} Refresh
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

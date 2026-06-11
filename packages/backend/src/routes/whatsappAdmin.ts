@@ -161,6 +161,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
       const now = new Date()
       const paramCount = countParameters(body.bodyText)
       const bodyExample = (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample
+      const variables = (body as TemplateLintInput & { variables?: unknown }).variables ?? null
       const [draft] = await db.insert(whatsappTemplates).values({
         projectId,
         provider: provider.name,
@@ -174,6 +175,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
         footer: body.footer,
         buttons: body.buttons as object | null,
         parameterCount: paramCount,
+        variables: variables as object | null,
         // Stash the example values for {{1}}.. so submission can supply them later.
         rawPayload: bodyExample ? { bodyExample } : null,
         submittedAt: null,
@@ -186,6 +188,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
           footer: body.footer,
           buttons: body.buttons as object | null,
           parameterCount: paramCount,
+          variables: variables as object | null,
           rawPayload: bodyExample ? { bodyExample } : null,
           status: 'DRAFT',
           rejectionReason: null,
@@ -205,6 +208,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
     // 3. Insert PENDING row first so we have a record even if the provider call fails
     const now = new Date()
     const paramCount = countParameters(body.bodyText)
+    const variables = (body as TemplateLintInput & { variables?: unknown }).variables ?? null
     const [inserted] = await db.insert(whatsappTemplates).values({
       projectId,
       provider: provider.name,
@@ -218,6 +222,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
       footer: body.footer,
       buttons: body.buttons as object | null,
       parameterCount: paramCount,
+      variables: variables as object | null,
       submittedAt: now,
       lastStatusCheckAt: now,
     }).onConflictDoUpdate({
@@ -229,6 +234,7 @@ router.post('/templates', requireProjectId, async (req, res) => {
         footer: body.footer,
         buttons: body.buttons as object | null,
         parameterCount: paramCount,
+        variables: variables as object | null,
         submittedAt: now,
         status: 'PENDING',
         rejectionReason: null,
@@ -348,7 +354,7 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
-    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[] }
+    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[]; variables?: unknown }
 
     const [tmpl] = await db
       .select()
@@ -380,6 +386,7 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
     if (body.header !== undefined) updates.header = body.header as object | null
     if (body.footer !== undefined) updates.footer = body.footer
     if (body.buttons !== undefined) updates.buttons = body.buttons as object | null
+    if (body.variables !== undefined) updates.variables = body.variables as object | null
     if (body.bodyExample !== undefined) updates.rawPayload = body.bodyExample ? { bodyExample: body.bodyExample } : null
 
     const [updated] = await db.update(whatsappTemplates).set(updates).where(eq(whatsappTemplates.id, id)).returning()

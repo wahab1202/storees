@@ -1,0 +1,611 @@
+'use client'
+
+import { useMemo, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import {
+  Loader2, Plus, Trash2, Save, Send, X, Image as ImageIcon, Video, FileText, Type,
+  MessageSquareReply, ExternalLink, Phone, Smartphone,
+} from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { useVariableSources } from '@/hooks/useTemplates'
+import { SourcePicker } from '@/components/templates/VariablePanel'
+import {
+  useWhatsappProviderStatus,
+  useLintWhatsappTemplate,
+  useSubmitWhatsappTemplate,
+  useSaveWhatsappDraft,
+  useEditWhatsappDraft,
+  useSubmitWhatsappForApproval,
+  type WhatsappTemplate,
+  type SubmitInput,
+  type LintFinding,
+} from '@/hooks/useWhatsappTemplates'
+import type {
+  TemplateVariable,
+  TemplateVariableSource,
+  WhatsappTemplateCategory,
+  WhatsappHeaderType,
+  WhatsappButton,
+  VariableSourceCatalog,
+} from '@storees/shared'
+
+const CATEGORIES: { value: WhatsappTemplateCategory; label: string; hint: string }[] = [
+  { value: 'MARKETING', label: 'Marketing', hint: 'Promotions, offers, announcements' },
+  { value: 'UTILITY', label: 'Utility', hint: 'Order updates, reminders, alerts' },
+  { value: 'AUTHENTICATION', label: 'Authentication', hint: 'One-time passcodes' },
+]
+
+const LANGUAGES = [
+  { code: 'en_US', label: 'English (US)' },
+  { code: 'en_GB', label: 'English (UK)' },
+  { code: 'en', label: 'English' },
+  { code: 'hi', label: 'Hindi' },
+  { code: 'ta', label: 'Tamil' },
+  { code: 'te', label: 'Telugu' },
+  { code: 'mr', label: 'Marathi' },
+  { code: 'bn', label: 'Bengali' },
+  { code: 'gu', label: 'Gujarati' },
+  { code: 'kn', label: 'Kannada' },
+  { code: 'ml', label: 'Malayalam' },
+]
+
+const HEADER_TYPES: { value: 'NONE' | WhatsappHeaderType; label: string; icon: typeof Type }[] = [
+  { value: 'NONE', label: 'None', icon: X },
+  { value: 'TEXT', label: 'Text', icon: Type },
+  { value: 'IMAGE', label: 'Image', icon: ImageIcon },
+  { value: 'VIDEO', label: 'Video', icon: Video },
+  { value: 'DOCUMENT', label: 'Document', icon: FileText },
+]
+
+const BODY_LIMIT = 1024
+
+const inputClass =
+  'w-full h-10 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
+
+// ----- variable helpers -----
+
+/** Highest {{n}} number used in the body. Body params are always 1..N. */
+function countBodyParams(body: string): number {
+  const nums = Array.from(body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)).map(m => Number(m[1]))
+  return nums.length ? Math.max(...nums) : 0
+}
+
+function defaultSampleFor(idx: number): string {
+  return ['Wahab', 'ORD-1001', 'Storees', '20%', 'June 14'][idx] ?? `sample ${idx + 1}`
+}
+
+// ----- builder state -----
+
+type BuilderState = {
+  name: string
+  category: WhatsappTemplateCategory
+  language: string
+  headerType: 'NONE' | WhatsappHeaderType
+  headerText: string
+  headerExample: string
+  bodyText: string
+  footer: string
+  buttons: WhatsappButton[]
+  /** sample value per body param, index 0 = {{1}} */
+  samples: string[]
+  /** CDP source mapping per body param, index 0 = {{1}} */
+  sources: (TemplateVariableSource | undefined)[]
+}
+
+function initialState(editing: WhatsappTemplate | null): BuilderState {
+  const header = editing?.header ?? null
+  const vars = editing?.variables ?? []
+  const sources: (TemplateVariableSource | undefined)[] = []
+  for (const v of vars) {
+    const n = Number(v.key)
+    if (n >= 1) sources[n - 1] = v.source
+  }
+  return {
+    name: editing?.name ?? '',
+    category: (editing?.category as WhatsappTemplateCategory) ?? 'UTILITY',
+    language: editing?.language ?? 'en_US',
+    headerType: (header?.type as WhatsappHeaderType) ?? 'NONE',
+    headerText: header?.text ?? '',
+    headerExample: header?.example ?? '',
+    bodyText: editing?.bodyText ?? '',
+    footer: editing?.footer ?? '',
+    buttons: editing?.buttons ?? [],
+    samples: [],
+    sources,
+  }
+}
+
+export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplate | null }) {
+  const router = useRouter()
+  const { data: catalogResp } = useVariableSources()
+  const catalog: VariableSourceCatalog | null = catalogResp?.data ?? null
+  const providerStatus = useWhatsappProviderStatus()
+
+  const lint = useLintWhatsappTemplate()
+  const submit = useSubmitWhatsappTemplate()
+  const saveDraft = useSaveWhatsappDraft()
+  const editDraft = useEditWhatsappDraft()
+  const submitApproval = useSubmitWhatsappForApproval()
+
+  const isEditing = !!editing
+  const [s, setS] = useState<BuilderState>(() => initialState(editing ?? null))
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null)
+
+  const set = (patch: Partial<BuilderState>) => setS(prev => ({ ...prev, ...patch }))
+
+  const paramCount = countBodyParams(s.bodyText)
+  const canSubmit = !!providerStatus.data?.data?.capabilities.submitTemplate && !!providerStatus.data?.data?.configured
+  const findings: LintFinding[] = lint.data?.data?.findings ?? []
+  const blocking = lint.data?.data?.blocking ?? false
+  const errors = findings.filter(f => f.severity === 'error')
+  const warnings = findings.filter(f => f.severity === 'warning')
+  const pending = submit.isPending || saveDraft.isPending || editDraft.isPending || submitApproval.isPending
+  const nameValid = /^[a-z0-9_]+$/.test(s.name)
+  const incomplete = !s.name || !nameValid || !s.bodyText
+
+  const insertVariable = () => {
+    const next = paramCount + 1
+    const token = `{{${next}}}`
+    const ta = bodyRef.current
+    if (ta) {
+      const start = ta.selectionStart ?? s.bodyText.length
+      const end = ta.selectionEnd ?? s.bodyText.length
+      const body = s.bodyText.slice(0, start) + token + s.bodyText.slice(end)
+      set({ bodyText: body })
+      requestAnimationFrame(() => {
+        ta.focus()
+        const pos = start + token.length
+        ta.setSelectionRange(pos, pos)
+      })
+    } else {
+      set({ bodyText: s.bodyText + token })
+    }
+  }
+
+  // Build the API payload from builder state.
+  const buildInput = (): SubmitInput => {
+    const header =
+      s.headerType === 'NONE'
+        ? null
+        : s.headerType === 'TEXT'
+          ? { type: 'TEXT' as const, text: s.headerText }
+          : { type: s.headerType, example: s.headerExample || undefined }
+    const variables: TemplateVariable[] = []
+    const bodyExample: string[] = []
+    for (let i = 0; i < paramCount; i++) {
+      bodyExample.push(s.samples[i]?.trim() || defaultSampleFor(i))
+      variables.push({
+        key: String(i + 1),
+        source: s.sources[i] ?? { kind: 'customer', field: 'name' },
+      })
+    }
+    return {
+      name: s.name,
+      language: s.language,
+      category: s.category,
+      bodyText: s.bodyText,
+      header: header as SubmitInput['header'],
+      footer: s.footer.trim() || null,
+      buttons: s.buttons.length ? s.buttons : undefined,
+      bodyExample: paramCount > 0 ? bodyExample : undefined,
+      variables: variables.length ? variables : undefined,
+    }
+  }
+
+  const handleLint = () => lint.mutate(buildInput())
+
+  const done = () => router.push('/templates?channel=whatsapp')
+
+  const handleSaveDraft = () => {
+    if (isEditing) editDraft.mutate({ id: editing!.id, input: buildInput() }, { onSuccess: done })
+    else saveDraft.mutate(buildInput(), { onSuccess: done })
+  }
+
+  const handleSubmitForApproval = () => {
+    if (isEditing) {
+      editDraft.mutate({ id: editing!.id, input: buildInput() }, {
+        onSuccess: () => submitApproval.mutate(editing!.id, { onSuccess: done }),
+      })
+    } else {
+      submit.mutate(buildInput(), { onSuccess: done })
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      {/* ---------- Editor ---------- */}
+      <div className="min-w-0 space-y-5">
+        {/* Setup */}
+        <section className="rounded-xl border border-border bg-white">
+          <div className="border-b border-border px-5 py-4">
+            <h2 className="text-sm font-semibold text-text-primary">Setup</h2>
+            <p className="text-xs text-text-muted">Name, category and language — these are submitted to Meta for approval.</p>
+          </div>
+          <div className="space-y-5 p-5">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">Template Name</label>
+                <input
+                  value={s.name}
+                  onChange={e => set({ name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') })}
+                  placeholder="order_confirmation"
+                  readOnly={isEditing}
+                  autoFocus={!isEditing}
+                  className={cn(inputClass, 'font-mono', isEditing && 'bg-surface text-text-muted cursor-not-allowed')}
+                />
+                <p className="mt-1 text-xs text-text-muted">Lowercase letters, numbers and underscores only.</p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">Language</label>
+                <select value={s.language} onChange={e => set({ language: e.target.value })} className={inputClass}>
+                  {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label} — {l.code}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-text-primary">Category</label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {CATEGORIES.map(c => (
+                  <button
+                    key={c.value}
+                    type="button"
+                    onClick={() => set({ category: c.value })}
+                    className={cn(
+                      'rounded-lg border p-3 text-left transition-colors',
+                      s.category === c.value
+                        ? 'border-accent bg-accent/5'
+                        : 'border-border bg-white hover:border-text-muted',
+                    )}
+                  >
+                    <p className={cn('text-sm font-semibold', s.category === c.value ? 'text-accent' : 'text-text-primary')}>{c.label}</p>
+                    <p className="mt-0.5 text-xs text-text-muted">{c.hint}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Header */}
+        <section className="rounded-xl border border-border bg-white">
+          <div className="border-b border-border px-5 py-3">
+            <h2 className="text-sm font-semibold text-text-primary">Header <span className="font-normal text-text-muted">· optional</span></h2>
+          </div>
+          <div className="space-y-3 p-5">
+            <div className="flex flex-wrap gap-2">
+              {HEADER_TYPES.map(h => {
+                const Icon = h.icon
+                return (
+                  <button
+                    key={h.value}
+                    type="button"
+                    onClick={() => set({ headerType: h.value })}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors',
+                      s.headerType === h.value ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-secondary hover:border-text-muted',
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" /> {h.label}
+                  </button>
+                )
+              })}
+            </div>
+            {s.headerType === 'TEXT' && (
+              <input
+                value={s.headerText}
+                onChange={e => set({ headerText: e.target.value })}
+                maxLength={60}
+                placeholder="Order confirmed 🎉"
+                className={inputClass}
+              />
+            )}
+            {(s.headerType === 'IMAGE' || s.headerType === 'VIDEO' || s.headerType === 'DOCUMENT') && (
+              <div>
+                <input
+                  value={s.headerExample}
+                  onChange={e => set({ headerExample: e.target.value })}
+                  placeholder={`https://cdn.example.com/sample.${s.headerType === 'IMAGE' ? 'jpg' : s.headerType === 'VIDEO' ? 'mp4' : 'pdf'}`}
+                  className={inputClass}
+                />
+                <p className="mt-1 text-xs text-text-muted">Sample media URL shown to Meta for review. The real media is set when sending.</p>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Body */}
+        <section className="rounded-xl border border-border bg-white">
+          <div className="flex items-center justify-between border-b border-border px-5 py-3">
+            <h2 className="text-sm font-semibold text-text-primary">Body</h2>
+            <button
+              type="button"
+              onClick={insertVariable}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-accent/40 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/5"
+            >
+              <Plus className="h-3.5 w-3.5" /> Add variable
+            </button>
+          </div>
+          <div className="p-5">
+            <textarea
+              ref={bodyRef}
+              value={s.bodyText}
+              onChange={e => set({ bodyText: e.target.value })}
+              rows={6}
+              maxLength={BODY_LIMIT}
+              placeholder="Hi {{1}}, your order {{2}} has been confirmed and will arrive soon."
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
+            />
+            <div className="mt-2 flex items-center justify-between">
+              <p className="text-xs text-text-muted">Click <strong>Add variable</strong> to insert {`{{1}}`}, {`{{2}}`}… at the cursor.</p>
+              <p className={cn('text-xs font-medium', s.bodyText.length > BODY_LIMIT ? 'text-red-500' : 'text-text-muted')}>{s.bodyText.length}/{BODY_LIMIT}</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Footer */}
+        <section className="rounded-xl border border-border bg-white">
+          <div className="border-b border-border px-5 py-3">
+            <h2 className="text-sm font-semibold text-text-primary">Footer <span className="font-normal text-text-muted">· optional</span></h2>
+          </div>
+          <div className="p-5">
+            <input
+              value={s.footer}
+              onChange={e => set({ footer: e.target.value })}
+              maxLength={60}
+              placeholder="Reply STOP to unsubscribe"
+              className={inputClass}
+            />
+          </div>
+        </section>
+
+        {/* Buttons */}
+        <ButtonsEditor buttons={s.buttons} onChange={buttons => set({ buttons })} />
+
+        {/* Lint findings */}
+        {findings.length > 0 && (
+          <div className="space-y-1.5">
+            {errors.map((f, i) => (
+              <div key={`e${i}`} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                <strong>Error:</strong> {f.message}
+              </div>
+            ))}
+            {warnings.map((f, i) => (
+              <div key={`w${i}`} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                <strong>Warning:</strong> {f.message}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleLint}
+            disabled={lint.isPending || !s.bodyText}
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-4 text-sm font-medium text-text-secondary hover:bg-surface disabled:opacity-50"
+          >
+            {lint.isPending && <Loader2 className="h-4 w-4 animate-spin" />} Run lint
+          </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={() => router.push('/templates?channel=whatsapp')}
+            className="inline-flex h-10 items-center rounded-lg border border-border bg-white px-4 text-sm font-medium text-text-secondary hover:bg-surface"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSaveDraft}
+            disabled={pending || blocking || incomplete}
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-accent/40 bg-white px-4 text-sm font-medium text-accent hover:bg-accent/5 disabled:opacity-50"
+          >
+            {(saveDraft.isPending || editDraft.isPending) && !submitApproval.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {isEditing ? 'Save draft' : 'Save as draft'}
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmitForApproval}
+            disabled={pending || blocking || incomplete || !canSubmit}
+            title={!canSubmit ? 'Connect a WhatsApp provider that supports submission' : undefined}
+            className="inline-flex h-10 items-center gap-2 rounded-lg bg-accent px-5 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {(submit.isPending || submitApproval.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            Submit for approval
+          </button>
+        </div>
+        {!nameValid && s.name && <p className="text-xs text-red-600">Name must be lowercase letters, numbers and underscores only.</p>}
+        {!canSubmit && <p className="text-xs text-amber-700">Saving a draft works without a provider; submitting for approval needs a connected WhatsApp provider.</p>}
+      </div>
+
+      {/* ---------- Right rail: variables + preview ---------- */}
+      <aside className="space-y-5 xl:sticky xl:top-4 xl:self-start">
+        <WhatsAppPreview state={s} paramCount={paramCount} />
+        <WhatsAppVariableList
+          paramCount={paramCount}
+          samples={s.samples}
+          sources={s.sources}
+          catalog={catalog}
+          onSampleChange={(idx, val) => {
+            const samples = [...s.samples]; samples[idx] = val; set({ samples })
+          }}
+          onSourceChange={(idx, src) => {
+            const sources = [...s.sources]; sources[idx] = src; set({ sources })
+          }}
+        />
+      </aside>
+    </div>
+  )
+}
+
+// ===== Buttons editor =====
+
+function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onChange: (b: WhatsappButton[]) => void }) {
+  const quickReplies = buttons.filter(b => b.type === 'QUICK_REPLY')
+  const ctas = buttons.filter(b => b.type !== 'QUICK_REPLY')
+
+  const update = (idx: number, patch: Partial<WhatsappButton>) => {
+    const next = [...buttons]; next[idx] = { ...next[idx], ...patch }; onChange(next)
+  }
+  const remove = (idx: number) => onChange(buttons.filter((_, i) => i !== idx))
+  const addQuickReply = () => onChange([...buttons, { type: 'QUICK_REPLY', text: '' }])
+  const addUrl = () => onChange([...buttons, { type: 'URL', text: '', url: '' }])
+  const addPhone = () => onChange([...buttons, { type: 'PHONE_NUMBER', text: '', phone: '' }])
+
+  return (
+    <section className="rounded-xl border border-border bg-white">
+      <div className="border-b border-border px-5 py-3">
+        <h2 className="text-sm font-semibold text-text-primary">Buttons <span className="font-normal text-text-muted">· optional</span></h2>
+      </div>
+      <div className="space-y-3 p-5">
+        {buttons.map((b, idx) => (
+          <div key={idx} className="flex items-start gap-2 rounded-lg border border-border p-2.5">
+            <span className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-text-muted">
+              {b.type === 'QUICK_REPLY' ? <MessageSquareReply className="h-3.5 w-3.5" /> : b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
+            </span>
+            <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+              <input
+                value={b.text}
+                onChange={e => update(idx, { text: e.target.value })}
+                maxLength={25}
+                placeholder="Button text"
+                className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
+              />
+              {b.type === 'URL' && (
+                <input
+                  value={b.url ?? ''}
+                  onChange={e => update(idx, { url: e.target.value })}
+                  placeholder="https://shop.example.com"
+                  className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
+                />
+              )}
+              {b.type === 'PHONE_NUMBER' && (
+                <input
+                  value={b.phone ?? ''}
+                  onChange={e => update(idx, { phone: e.target.value })}
+                  placeholder="+91 90000 00000"
+                  className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
+                />
+              )}
+            </div>
+            <button type="button" onClick={() => remove(idx)} className="mt-1 rounded p-1 text-text-muted hover:text-red-500" aria-label="Remove button">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={addQuickReply} disabled={quickReplies.length >= 3} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface disabled:opacity-40">
+            <MessageSquareReply className="h-3.5 w-3.5" /> Quick reply
+          </button>
+          <button type="button" onClick={addUrl} disabled={ctas.length >= 2} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface disabled:opacity-40">
+            <ExternalLink className="h-3.5 w-3.5" /> Visit website
+          </button>
+          <button type="button" onClick={addPhone} disabled={ctas.length >= 2} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface disabled:opacity-40">
+            <Phone className="h-3.5 w-3.5" /> Call phone
+          </button>
+        </div>
+        <p className="text-xs text-text-muted">Up to 3 quick-reply and 2 call-to-action buttons.</p>
+      </div>
+    </section>
+  )
+}
+
+// ===== Variable mapping list =====
+
+function WhatsAppVariableList({
+  paramCount, samples, sources, catalog, onSampleChange, onSourceChange,
+}: {
+  paramCount: number
+  samples: string[]
+  sources: (TemplateVariableSource | undefined)[]
+  catalog: VariableSourceCatalog | null
+  onSampleChange: (idx: number, val: string) => void
+  onSourceChange: (idx: number, src: TemplateVariableSource) => void
+}) {
+  const rows = useMemo(() => Array.from({ length: paramCount }, (_, i) => i), [paramCount])
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-white">
+      <div className="border-b border-border bg-surface px-5 py-3">
+        <h2 className="text-sm font-semibold text-text-primary">
+          Variables{paramCount > 0 && <span className="ml-2 text-xs font-normal text-text-muted">({paramCount})</span>}
+        </h2>
+      </div>
+      <div className="space-y-3 p-4">
+        {paramCount === 0 ? (
+          <p className="py-4 text-center text-xs text-text-muted">
+            No variables yet. Use <strong>Add variable</strong> in the body to insert {`{{1}}`}.
+          </p>
+        ) : (
+          rows.map(i => (
+            <div key={i} className="space-y-2 rounded-lg border border-border p-3">
+              <code className="inline-block rounded bg-surface px-1.5 py-0.5 font-mono text-xs">{`{{${i + 1}}}`}</code>
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-text-muted">Maps to</label>
+                <SourcePicker
+                  catalog={catalog}
+                  source={sources[i] ?? { kind: 'customer', field: 'name' }}
+                  onChange={src => onSourceChange(i, src)}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-text-muted">Sample value (for Meta review)</label>
+                <input
+                  value={samples[i] ?? ''}
+                  onChange={e => onSampleChange(i, e.target.value)}
+                  placeholder={defaultSampleFor(i)}
+                  className="h-8 w-full rounded-md border border-border px-2 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
+                />
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ===== Live WhatsApp phone preview =====
+
+function renderWithSamples(text: string, samples: string[]): string {
+  return text.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => samples[Number(n) - 1]?.trim() || `{{${n}}}`)
+}
+
+function WhatsAppPreview({ state: s, paramCount }: { state: BuilderState; paramCount: number }) {
+  const body = renderWithSamples(s.bodyText, s.samples) || 'Your message preview appears here.'
+  const headerText = s.headerType === 'TEXT' ? s.headerText : ''
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-white">
+      <div className="flex items-center gap-2 border-b border-border bg-surface px-5 py-3">
+        <Smartphone className="h-4 w-4 text-accent" />
+        <h2 className="text-sm font-semibold text-text-primary">Preview</h2>
+      </div>
+      <div className="bg-[#E5DDD5] p-4" style={{ backgroundImage: 'radial-gradient(rgba(0,0,0,0.04) 1px, transparent 0)', backgroundSize: '16px 16px' }}>
+        <div className="ml-auto max-w-[280px] rounded-lg rounded-tr-sm bg-white p-2.5 shadow-sm">
+          {/* media header */}
+          {(s.headerType === 'IMAGE' || s.headerType === 'VIDEO' || s.headerType === 'DOCUMENT') && (
+            <div className="mb-2 flex h-28 items-center justify-center rounded-md bg-slate-100 text-slate-400">
+              {s.headerType === 'IMAGE' ? <ImageIcon className="h-7 w-7" /> : s.headerType === 'VIDEO' ? <Video className="h-7 w-7" /> : <FileText className="h-7 w-7" />}
+            </div>
+          )}
+          {headerText && <p className="mb-1 text-[13px] font-semibold text-slate-900">{headerText}</p>}
+          <p className="whitespace-pre-wrap text-[13px] leading-snug text-slate-800">{body}</p>
+          {s.footer && <p className="mt-1.5 text-[11px] text-slate-400">{s.footer}</p>}
+          <p className="mt-1 text-right text-[10px] text-slate-400">{paramCount > 0 ? `${paramCount} var${paramCount > 1 ? 's' : ''}` : ''} 11:30</p>
+        </div>
+        {s.buttons.length > 0 && (
+          <div className="ml-auto mt-1.5 max-w-[280px] space-y-1.5">
+            {s.buttons.map((b, i) => (
+              <div key={i} className="flex items-center justify-center gap-1.5 rounded-lg bg-white py-2 text-[13px] font-medium text-[#00A5F4] shadow-sm">
+                {b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : b.type === 'PHONE_NUMBER' ? <Phone className="h-3.5 w-3.5" /> : <MessageSquareReply className="h-3.5 w-3.5" />}
+                {b.text || 'Button'}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

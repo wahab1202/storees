@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Sparkles, Plus, Trash2, Eye, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useVariableSources, usePreviewTemplate, type PreviewResponse } from '@/hooks/useTemplates'
@@ -50,17 +50,27 @@ export function VariablePanel({ variables, onChange, contentSources, preview }: 
   const previewMutation = usePreviewTemplate()
   const previewData: PreviewResponse | null = previewMutation.data?.data ?? null
 
-  // Auto-discover keys in body that don't yet have a mapping → seed empty rows
+  // Auto-discover keys in body that don't yet have a mapping → seed empty rows.
+  // Keys we seeded ourselves are tracked so we can PRUNE them once they leave the
+  // body — without this, typing `{{xxxx}}` left orphans for every intermediate
+  // match (`{{x}}`, `{{xx}}`, …). Manually-added rows are never in this set, so
+  // they are preserved even when not referenced.
   const detectedKeys = useMemo(() => extractKeys(...contentSources), [contentSources])
+  const autoSeededRef = useRef<Set<string>>(new Set())
   useEffect(() => {
+    const detected = new Set(detectedKeys)
     const declared = new Set(variables.map(v => v.key))
     const missing = detectedKeys.filter(k => !declared.has(k) && !SYSTEM_KEYS.has(k) && !/^\d+$/.test(k))
-    if (missing.length === 0) return
+    const staleKeys = variables.map(v => v.key).filter(k => autoSeededRef.current.has(k) && !detected.has(k))
+    if (missing.length === 0 && staleKeys.length === 0) return
+    missing.forEach(k => autoSeededRef.current.add(k))
+    staleKeys.forEach(k => autoSeededRef.current.delete(k))
     const seeded: TemplateVariable[] = missing.map(key => ({
       key,
       source: guessSourceForKey(key),
     }))
-    onChange([...variables, ...seeded])
+    const pruned = variables.filter(v => !staleKeys.includes(v.key))
+    onChange([...pruned, ...seeded])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detectedKeys.join('|')])
 
@@ -222,7 +232,7 @@ function VariableRow({
   )
 }
 
-function SourcePicker({
+export function SourcePicker({
   catalog,
   source,
   onChange,
