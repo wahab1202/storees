@@ -76,6 +76,13 @@ export type SubmitTemplateInput = {
   bodyExample?: string[]
   /** AUTHENTICATION-category OTP config; when present, an auth template is built. */
   otp?: { otpType: 'COPY_CODE' | 'ONE_TAP'; buttonText: string; codeExpirationMinutes?: number; addSecurityRecommendation?: boolean }
+  /** Carousel cards; when present, a CAROUSEL component is appended. */
+  carousel?: Array<{
+    headerType: 'IMAGE' | 'VIDEO'
+    headerExample?: string
+    bodyText: string
+    buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'; text: string; url?: string; phone?: string }>
+  }>
 }
 
 export type SubmitTemplateResult = {

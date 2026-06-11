@@ -184,6 +184,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       const paramCount = countParameters(body.bodyText)
       const bodyExample = (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample
       const otp = (body as { otp?: unknown }).otp ?? null
+      const carousel = (body as { carousel?: unknown }).carousel ?? null
       const variables = (body as TemplateLintInput & { variables?: unknown }).variables ?? null
       const [draft] = await db.insert(whatsappTemplates).values({
         projectId,
@@ -200,6 +201,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         buttons: body.buttons as object | null,
         parameterCount: paramCount,
         variables: variables as object | null,
+        carousel: carousel as object | null,
         // Stash the example values for {{1}}.. so submission can supply them later.
         rawPayload: (bodyExample || otp) ? { bodyExample, otp } : null,
         submittedAt: null,
@@ -213,6 +215,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
           buttons: body.buttons as object | null,
           parameterCount: paramCount,
           variables: variables as object | null,
+          carousel: carousel as object | null,
           rawPayload: (bodyExample || otp) ? { bodyExample, otp } : null,
           status: 'DRAFT',
           rejectionReason: null,
@@ -235,6 +238,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
     const variables = (body as TemplateLintInput & { variables?: unknown }).variables ?? null
     const subBodyExample = (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample
     const subOtp = (body as { otp?: unknown }).otp ?? null
+    const subCarousel = (body as { carousel?: unknown }).carousel ?? null
     const subRawPayload = (subBodyExample || subOtp) ? { bodyExample: subBodyExample, otp: subOtp } : null
     const [inserted] = await db.insert(whatsappTemplates).values({
       projectId,
@@ -251,6 +255,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       buttons: body.buttons as object | null,
       parameterCount: paramCount,
       variables: variables as object | null,
+      carousel: subCarousel as object | null,
       rawPayload: subRawPayload,
       submittedAt: now,
       lastStatusCheckAt: now,
@@ -264,6 +269,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         buttons: body.buttons as object | null,
         parameterCount: paramCount,
         variables: variables as object | null,
+        carousel: subCarousel as object | null,
         rawPayload: subRawPayload,
         submittedAt: now,
         status: 'PENDING',
@@ -285,6 +291,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         buttons: body.buttons,
         bodyExample: (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample,
         otp: (body as { otp?: SubmitTemplateInput['otp'] }).otp,
+        carousel: (body as { carousel?: SubmitTemplateInput['carousel'] }).carousel,
       }, config)
       const [updated] = await db.update(whatsappTemplates).set({
         providerTemplateId: result.providerTemplateId,
@@ -353,6 +360,7 @@ router.post('/templates/:id/submit', requireProjectId, async (req, res) => {
         buttons: tmpl.buttons as SubmitTemplateInput['buttons'],
         bodyExample,
         otp: raw?.otp ?? undefined,
+        carousel: tmpl.carousel as SubmitTemplateInput['carousel'],
       }, config)
       const [updated] = await db.update(whatsappTemplates).set({
         providerTemplateId: result.providerTemplateId,
@@ -387,7 +395,7 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
-    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[]; variables?: unknown; otp?: unknown }
+    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[]; variables?: unknown; otp?: unknown; carousel?: unknown }
 
     const [tmpl] = await db
       .select()
@@ -407,6 +415,7 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
       header: (body.header ?? tmpl.header) as TemplateLintInput['header'],
       footer: body.footer ?? tmpl.footer ?? undefined,
       buttons: (body.buttons ?? tmpl.buttons) as TemplateLintInput['buttons'],
+      carousel: (body.carousel ?? tmpl.carousel) as TemplateLintInput['carousel'],
     }
     const findings = lintTemplate(merged as TemplateLintInput)
     if (hasBlockingErrors(findings)) {
@@ -420,6 +429,7 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
     if (body.footer !== undefined) updates.footer = body.footer
     if (body.buttons !== undefined) updates.buttons = body.buttons as object | null
     if (body.variables !== undefined) updates.variables = body.variables as object | null
+    if (body.carousel !== undefined) updates.carousel = body.carousel as object | null
     if (body.bodyExample !== undefined || body.otp !== undefined) {
       const prev = (tmpl.rawPayload as { bodyExample?: string[]; otp?: unknown } | null) ?? {}
       const bodyExample = body.bodyExample !== undefined ? body.bodyExample : prev.bodyExample

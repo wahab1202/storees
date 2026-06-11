@@ -29,7 +29,10 @@ export type TemplateLintInput = {
   header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string } | null
   footer?: string | null
   buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'; text: string; url?: string; phone?: string; example?: string; otpType?: 'COPY_CODE' | 'ONE_TAP' }>
+  carousel?: Array<{ headerType: 'IMAGE' | 'VIDEO'; headerExample?: string; bodyText: string; buttons?: Array<{ type: string; text: string }> }>
 }
+
+const CAROUSEL_BODY_MAX = 160
 
 const BODY_MAX_CHARS = 1024
 const HEADER_TEXT_MAX = 60
@@ -244,6 +247,29 @@ export function lintTemplate(input: TemplateLintInput): TemplateLintFinding[] {
     if (copyCodeButtons > 1) {
       findings.push({ code: 'too_many_copy_code_buttons', severity: 'error', message: 'Templates may have at most 1 copy-code button.' })
     }
+  }
+
+  // ── Carousel
+  if (input.carousel && input.carousel.length > 0) {
+    if (input.carousel.length > 10) {
+      findings.push({ code: 'too_many_carousel_cards', severity: 'error', message: `Carousels may have at most 10 cards (found ${input.carousel.length}).` })
+    }
+    const headerTypes = new Set(input.carousel.map(c => c.headerType))
+    if (headerTypes.size > 1) {
+      findings.push({ code: 'carousel_mixed_headers', severity: 'error', message: 'All carousel cards must use the same media type (all IMAGE or all VIDEO).' })
+    }
+    const buttonCounts = new Set(input.carousel.map(c => c.buttons?.length ?? 0))
+    if (buttonCounts.size > 1) {
+      findings.push({ code: 'carousel_uneven_buttons', severity: 'error', message: 'All carousel cards must have the same number of buttons.' })
+    }
+    input.carousel.forEach((c, i) => {
+      if (!c.bodyText || c.bodyText.length > CAROUSEL_BODY_MAX) {
+        findings.push({ code: 'carousel_card_body_invalid', severity: 'error', message: `Card ${i + 1} body is empty or exceeds ${CAROUSEL_BODY_MAX} characters.` })
+      }
+      if ((c.buttons?.length ?? 0) > 2) {
+        findings.push({ code: 'carousel_card_too_many_buttons', severity: 'error', message: `Card ${i + 1} may have at most 2 buttons.` })
+      }
+    })
   }
 
   return findings

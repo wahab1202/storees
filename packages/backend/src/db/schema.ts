@@ -1072,6 +1072,8 @@ export const whatsappTemplates = pgTable('whatsapp_templates', {
   // Default CDP source mapping per numbered param ({{1}},{{2}}..) as TemplateVariable[]
   // with key = the param number ('1','2',..). Inherited by campaigns/flows at send-time.
   variables: jsonb('variables'),
+  // Carousel cards (WhatsappCarouselCard[]) when this is a carousel template.
+  carousel: jsonb('carousel'),
   rawPayload: jsonb('raw_payload'),
   // Phase F1b — submission lifecycle + re-categorisation detection.
   // submittedAt set when the merchant submits *through* Storees;
