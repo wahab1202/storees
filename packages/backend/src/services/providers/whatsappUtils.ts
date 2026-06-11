@@ -36,19 +36,32 @@ export function buildTemplateComponents(command: SendTemplateCommand): Array<Rec
   }
 
   // Dynamic URL-button suffixes (button_url_1, button_url_2, ... by URL-button order)
-  const buttons = Array.isArray(command.templateButtons) ? command.templateButtons as Array<{ type?: string; url?: string }> : []
+  const buttons = Array.isArray(command.templateButtons) ? command.templateButtons as Array<{ type?: string; url?: string; example?: string }> : []
   let urlButtonPosition = 0
   buttons.forEach((button, idx) => {
-    if ((button.type ?? '').toUpperCase() !== 'URL') return
-    urlButtonPosition += 1
-    const suffix = command.variables[`wa_button_url_${urlButtonPosition}`] || command.variables[`button_url_${urlButtonPosition}`]
-    if (!suffix) return
-    components.push({
-      type: 'button',
-      sub_type: 'url',
-      index: String(idx),
-      parameters: [{ type: 'text', text: suffix }],
-    })
+    const type = (button.type ?? '').toUpperCase()
+    if (type === 'URL') {
+      urlButtonPosition += 1
+      const suffix = command.variables[`wa_button_url_${urlButtonPosition}`] || command.variables[`button_url_${urlButtonPosition}`]
+      if (!suffix) return
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: String(idx),
+        parameters: [{ type: 'text', text: suffix }],
+      })
+    } else if (type === 'COPY_CODE') {
+      // Copy-code buttons carry a coupon code at send-time; fall back to the
+      // template's static sample (button.example) when no per-send code is mapped.
+      const code = command.variables.wa_copy_code || command.variables.copy_code || button.example
+      if (!code) return
+      components.push({
+        type: 'button',
+        sub_type: 'copy_code',
+        index: String(idx),
+        parameters: [{ type: 'coupon_code', coupon_code: code }],
+      })
+    }
   })
 
   return components

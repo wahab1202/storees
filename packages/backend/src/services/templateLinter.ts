@@ -28,7 +28,7 @@ export type TemplateLintInput = {
   bodyText: string
   header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string } | null
   footer?: string | null
-  buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'; text: string; url?: string; phone?: string }>
+  buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'; text: string; url?: string; phone?: string; example?: string; otpType?: 'COPY_CODE' | 'ONE_TAP' }>
 }
 
 const BODY_MAX_CHARS = 1024
@@ -199,7 +199,7 @@ export function lintTemplate(input: TemplateLintInput): TemplateLintFinding[] {
         message: `Templates may have at most 10 buttons (found ${input.buttons.length}).`,
       })
     }
-    let quickReplies = 0, urlButtons = 0, phoneButtons = 0
+    let quickReplies = 0, urlButtons = 0, phoneButtons = 0, copyCodeButtons = 0
     for (const b of input.buttons) {
       if (!b.text || b.text.length > BUTTON_TEXT_MAX) {
         findings.push({
@@ -211,6 +211,7 @@ export function lintTemplate(input: TemplateLintInput): TemplateLintFinding[] {
       if (b.type === 'QUICK_REPLY') quickReplies++
       if (b.type === 'URL') urlButtons++
       if (b.type === 'PHONE_NUMBER') phoneButtons++
+      if (b.type === 'COPY_CODE') copyCodeButtons++
       if (b.type === 'URL' && (!b.url || !/^https?:\/\//.test(b.url))) {
         findings.push({
           code: 'url_button_invalid',
@@ -225,13 +226,23 @@ export function lintTemplate(input: TemplateLintInput): TemplateLintFinding[] {
           message: `Phone button "${b.text}" must have a valid E.164 phone number.`,
         })
       }
+      if (b.type === 'COPY_CODE' && !b.example) {
+        findings.push({
+          code: 'copy_code_button_invalid',
+          severity: 'warning',
+          message: `Copy-code button "${b.text}" should include a sample code for Meta review.`,
+        })
+      }
     }
-    // Meta rule: max 1 PHONE_NUMBER and max 2 URL; any number of QUICK_REPLY up to 10 total.
+    // Meta rule: max 1 PHONE_NUMBER, max 2 URL, max 1 COPY_CODE; any number of QUICK_REPLY up to 10 total.
     if (urlButtons > 2) {
       findings.push({ code: 'too_many_url_buttons', severity: 'error', message: 'Templates may have at most 2 URL buttons.' })
     }
     if (phoneButtons > 1) {
       findings.push({ code: 'too_many_phone_buttons', severity: 'error', message: 'Templates may have at most 1 PHONE_NUMBER button.' })
+    }
+    if (copyCodeButtons > 1) {
+      findings.push({ code: 'too_many_copy_code_buttons', severity: 'error', message: 'Templates may have at most 1 copy-code button.' })
     }
   }
 
