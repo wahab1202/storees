@@ -6,6 +6,16 @@ Storees is a **Shopify marketing automation platform** — a CDP + segmentation 
 
 The goal: connect a live Shopify store, ingest real customer/order data, display it in a professional admin panel, run customer segmentation, and execute an automated abandoned cart email flow end-to-end.
 
+## Current initiative: Dynamic WhatsApp Carousel Engine
+
+Spec: `docs/whatsapp-dynamic-carousel-engine.md`. Alignment + build plan: `docs/WHATSAPP_CAROUSEL_ENGINE_ALIGNMENT.md`. Pinnacle blockers: `docs/PINNACLE_CAROUSEL_QUESTIONS.md`.
+
+**Phase A is NOT done until this real-device smoke test passes** — build toward it, not toward unit tests that pass against *guessed* Pinnacle payloads:
+
+> Submit a 3-card **dynamic** carousel template bound to real catalog fields → get it **approved** → trigger a flow whose node resolves a **collection** source → send to a real phone → **tap a card** → the click logs against **`message_cards`** → the session **stitches via `stid`** into `anonymousSessions`.
+
+Locked decisions (don't re-litigate): product-level cards; reuse `messages` (snapshot template version per send) — no `message_sends`; reuse `events` (+`code_redemption`) — no `attribution_events`; inline node config; single currency+language in Phase A. **Hard rule:** finalize the short-link domain and ship the durable short-link service **before** submitting any dynamic carousel template (the button base URL is baked in at Meta approval).
+
 ### Documentation (domain-based structure)
 - `docs/README.md` — Documentation index with domain map
 - `docs/domains/data-layer/` — Database schema (Postgres), TypeScript types, JSON schemas
