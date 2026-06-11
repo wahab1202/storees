@@ -4,11 +4,12 @@ import { useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Loader2, Plus, Trash2, Save, Send, X, Image as ImageIcon, Video, FileText, Type,
-  MessageSquareReply, ExternalLink, Phone, Smartphone,
+  MessageSquareReply, ExternalLink, Phone, Smartphone, Sparkles, Copy, ShieldCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useVariableSources } from '@/hooks/useTemplates'
 import { SourcePicker } from '@/components/templates/VariablePanel'
+import { WhatsAppBriefModal } from '@/components/whatsapp/WhatsAppBriefModal'
 import {
   useWhatsappProviderStatus,
   useLintWhatsappTemplate,
@@ -20,12 +21,14 @@ import {
   type SubmitInput,
   type LintFinding,
 } from '@/hooks/useWhatsappTemplates'
+import type { WhatsappCopilotDraft } from '@/hooks/useAiWhatsappTemplate'
 import type {
   TemplateVariable,
   TemplateVariableSource,
   WhatsappTemplateCategory,
   WhatsappHeaderType,
   WhatsappButton,
+  WhatsappOtpConfig,
   VariableSourceCatalog,
 } from '@storees/shared'
 
@@ -35,18 +38,32 @@ const CATEGORIES: { value: WhatsappTemplateCategory; label: string; hint: string
   { value: 'AUTHENTICATION', label: 'Authentication', hint: 'One-time passcodes' },
 ]
 
+// Meta-supported template languages (common subset of the 70+ list).
 const LANGUAGES = [
-  { code: 'en_US', label: 'English (US)' },
-  { code: 'en_GB', label: 'English (UK)' },
-  { code: 'en', label: 'English' },
-  { code: 'hi', label: 'Hindi' },
-  { code: 'ta', label: 'Tamil' },
-  { code: 'te', label: 'Telugu' },
-  { code: 'mr', label: 'Marathi' },
-  { code: 'bn', label: 'Bengali' },
-  { code: 'gu', label: 'Gujarati' },
-  { code: 'kn', label: 'Kannada' },
-  { code: 'ml', label: 'Malayalam' },
+  { code: 'en_US', label: 'English (US)' }, { code: 'en_GB', label: 'English (UK)' }, { code: 'en', label: 'English' },
+  { code: 'hi', label: 'Hindi' }, { code: 'ta', label: 'Tamil' }, { code: 'te', label: 'Telugu' },
+  { code: 'mr', label: 'Marathi' }, { code: 'bn', label: 'Bengali' }, { code: 'gu', label: 'Gujarati' },
+  { code: 'kn', label: 'Kannada' }, { code: 'ml', label: 'Malayalam' }, { code: 'pa', label: 'Punjabi' },
+  { code: 'or', label: 'Odia' }, { code: 'as', label: 'Assamese' }, { code: 'ur', label: 'Urdu' },
+  { code: 'ar', label: 'Arabic' }, { code: 'fa', label: 'Persian' }, { code: 'he', label: 'Hebrew' },
+  { code: 'es', label: 'Spanish' }, { code: 'es_ES', label: 'Spanish (Spain)' }, { code: 'es_MX', label: 'Spanish (Mexico)' },
+  { code: 'pt_BR', label: 'Portuguese (Brazil)' }, { code: 'pt_PT', label: 'Portuguese (Portugal)' },
+  { code: 'fr', label: 'French' }, { code: 'de', label: 'German' }, { code: 'it', label: 'Italian' },
+  { code: 'nl', label: 'Dutch' }, { code: 'pl', label: 'Polish' }, { code: 'ru', label: 'Russian' },
+  { code: 'uk', label: 'Ukrainian' }, { code: 'tr', label: 'Turkish' }, { code: 'el', label: 'Greek' },
+  { code: 'cs', label: 'Czech' }, { code: 'sk', label: 'Slovak' }, { code: 'hu', label: 'Hungarian' },
+  { code: 'ro', label: 'Romanian' }, { code: 'bg', label: 'Bulgarian' }, { code: 'hr', label: 'Croatian' },
+  { code: 'sr', label: 'Serbian' }, { code: 'sv', label: 'Swedish' }, { code: 'da', label: 'Danish' },
+  { code: 'fi', label: 'Finnish' }, { code: 'nb', label: 'Norwegian' }, { code: 'id', label: 'Indonesian' },
+  { code: 'ms', label: 'Malay' }, { code: 'th', label: 'Thai' }, { code: 'vi', label: 'Vietnamese' },
+  { code: 'fil', label: 'Filipino' }, { code: 'km', label: 'Khmer' }, { code: 'lo', label: 'Lao' },
+  { code: 'my', label: 'Burmese' }, { code: 'si', label: 'Sinhala' }, { code: 'ne', label: 'Nepali' },
+  { code: 'ko', label: 'Korean' }, { code: 'ja', label: 'Japanese' }, { code: 'zh_CN', label: 'Chinese (Simplified)' },
+  { code: 'zh_HK', label: 'Chinese (Hong Kong)' }, { code: 'zh_TW', label: 'Chinese (Traditional)' },
+  { code: 'sw', label: 'Swahili' }, { code: 'af', label: 'Afrikaans' }, { code: 'sq', label: 'Albanian' },
+  { code: 'az', label: 'Azerbaijani' }, { code: 'ka', label: 'Georgian' }, { code: 'hy', label: 'Armenian' },
+  { code: 'kk', label: 'Kazakh' }, { code: 'lt', label: 'Lithuanian' }, { code: 'lv', label: 'Latvian' },
+  { code: 'et', label: 'Estonian' }, { code: 'sl', label: 'Slovenian' }, { code: 'mk', label: 'Macedonian' },
 ]
 
 const HEADER_TYPES: { value: 'NONE' | WhatsappHeaderType; label: string; icon: typeof Type }[] = [
@@ -90,6 +107,11 @@ type BuilderState = {
   samples: string[]
   /** CDP source mapping per body param, index 0 = {{1}} */
   sources: (TemplateVariableSource | undefined)[]
+  // AUTHENTICATION (OTP) config
+  otpType: 'COPY_CODE' | 'ONE_TAP'
+  otpButtonText: string
+  otpExpiryMinutes: string
+  otpSecurityRecommendation: boolean
 }
 
 function initialState(editing: WhatsappTemplate | null): BuilderState {
@@ -112,8 +134,14 @@ function initialState(editing: WhatsappTemplate | null): BuilderState {
     buttons: editing?.buttons ?? [],
     samples: [],
     sources,
+    otpType: 'COPY_CODE',
+    otpButtonText: 'Copy code',
+    otpExpiryMinutes: '10',
+    otpSecurityRecommendation: true,
   }
 }
+
+const AUTH_BODY = '{{1}} is your verification code.'
 
 export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplate | null }) {
   const router = useRouter()
@@ -132,8 +160,11 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
   const bodyRef = useRef<HTMLTextAreaElement | null>(null)
 
   const set = (patch: Partial<BuilderState>) => setS(prev => ({ ...prev, ...patch }))
+  const [showBrief, setShowBrief] = useState(false)
 
-  const paramCount = countBodyParams(s.bodyText)
+  const isAuth = s.category === 'AUTHENTICATION'
+  const effectiveBody = isAuth ? AUTH_BODY : s.bodyText
+  const paramCount = countBodyParams(effectiveBody)
   const canSubmit = !!providerStatus.data?.data?.capabilities.submitTemplate && !!providerStatus.data?.data?.configured
   const findings: LintFinding[] = lint.data?.data?.findings ?? []
   const blocking = lint.data?.data?.blocking ?? false
@@ -141,7 +172,21 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
   const warnings = findings.filter(f => f.severity === 'warning')
   const pending = submit.isPending || saveDraft.isPending || editDraft.isPending || submitApproval.isPending
   const nameValid = /^[a-z0-9_]+$/.test(s.name)
-  const incomplete = !s.name || !nameValid || !s.bodyText
+  const incomplete = !s.name || !nameValid || (!isAuth && !s.bodyText) || (isAuth && !s.otpButtonText.trim())
+
+  // Apply an AI-generated draft into builder state.
+  const applyDraft = (draft: WhatsappCopilotDraft) => {
+    set({
+      category: draft.category,
+      bodyText: draft.bodyText,
+      samples: draft.variables.map(v => v.sample),
+      sources: [],
+      headerType: draft.header ? 'TEXT' : 'NONE',
+      headerText: draft.header?.text ?? '',
+      footer: draft.footer ?? '',
+      buttons: draft.buttons ?? [],
+    })
+  }
 
   const insertVariable = () => {
     const next = paramCount + 1
@@ -164,6 +209,26 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
 
   // Build the API payload from builder state.
   const buildInput = (): SubmitInput => {
+    // AUTHENTICATION templates: Meta generates the body; we send a standard body
+    // (it's ignored for auth) plus the OTP config.
+    if (isAuth) {
+      const otp: WhatsappOtpConfig = {
+        otpType: s.otpType,
+        buttonText: s.otpButtonText.trim() || 'Copy code',
+        codeExpirationMinutes: s.otpExpiryMinutes.trim() ? Math.max(1, Math.min(90, Number(s.otpExpiryMinutes))) : undefined,
+        addSecurityRecommendation: s.otpSecurityRecommendation,
+      }
+      return {
+        name: s.name,
+        language: s.language,
+        category: 'AUTHENTICATION',
+        bodyText: AUTH_BODY,
+        footer: null,
+        bodyExample: ['123456'],
+        otp,
+      }
+    }
+
     const header =
       s.headerType === 'NONE'
         ? null
@@ -217,9 +282,18 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
       <div className="min-w-0 space-y-5">
         {/* Setup */}
         <section className="rounded-xl border border-border bg-white">
-          <div className="border-b border-border px-5 py-4">
-            <h2 className="text-sm font-semibold text-text-primary">Setup</h2>
-            <p className="text-xs text-text-muted">Name, category and language — these are submitted to Meta for approval.</p>
+          <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+            <div>
+              <h2 className="text-sm font-semibold text-text-primary">Setup</h2>
+              <p className="text-xs text-text-muted">Name, category and language — these are submitted to Meta for approval.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowBrief(true)}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 text-xs font-medium text-accent hover:bg-accent/10"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Generate with AI
+            </button>
           </div>
           <div className="space-y-5 p-5">
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -262,10 +336,22 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
                   </button>
                 ))}
               </div>
+              {s.category === 'MARKETING' && (
+                <p className="mt-2 text-xs text-amber-700">
+                  Marketing templates cost ~6× a Utility template to send. If this is an order/account update, use <strong>Utility</strong>.
+                </p>
+              )}
+              {warnings.some(w => /market/i.test(w.message)) && s.category !== 'MARKETING' && (
+                <p className="mt-2 text-xs text-amber-700">This wording may be re-categorised as Marketing by Meta — keep it transactional.</p>
+              )}
             </div>
           </div>
         </section>
 
+        {isAuth ? (
+          <AuthOtpEditor s={s} set={set} />
+        ) : (
+        <>
         {/* Header */}
         <section className="rounded-xl border border-border bg-white">
           <div className="border-b border-border px-5 py-3">
@@ -360,6 +446,8 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
 
         {/* Buttons */}
         <ButtonsEditor buttons={s.buttons} onChange={buttons => set({ buttons })} />
+        </>
+        )}
 
         {/* Lint findings */}
         {findings.length > 0 && (
@@ -382,7 +470,7 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
           <button
             type="button"
             onClick={handleLint}
-            disabled={lint.isPending || !s.bodyText}
+            disabled={lint.isPending || incomplete}
             className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-4 text-sm font-medium text-text-secondary hover:bg-surface disabled:opacity-50"
           >
             {lint.isPending && <Loader2 className="h-4 w-4 animate-spin" />} Run lint
@@ -421,21 +509,92 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
 
       {/* ---------- Right rail: variables + preview ---------- */}
       <aside className="space-y-5 xl:sticky xl:top-4 xl:self-start">
-        <WhatsAppPreview state={s} paramCount={paramCount} />
-        <WhatsAppVariableList
-          paramCount={paramCount}
-          samples={s.samples}
-          sources={s.sources}
-          catalog={catalog}
-          onSampleChange={(idx, val) => {
-            const samples = [...s.samples]; samples[idx] = val; set({ samples })
-          }}
-          onSourceChange={(idx, src) => {
-            const sources = [...s.sources]; sources[idx] = src; set({ sources })
-          }}
-        />
+        <WhatsAppPreview state={s} paramCount={paramCount} isAuth={isAuth} />
+        {!isAuth && (
+          <WhatsAppVariableList
+            paramCount={paramCount}
+            samples={s.samples}
+            sources={s.sources}
+            catalog={catalog}
+            onSampleChange={(idx, val) => {
+              const samples = [...s.samples]; samples[idx] = val; set({ samples })
+            }}
+            onSourceChange={(idx, src) => {
+              const sources = [...s.sources]; sources[idx] = src; set({ sources })
+            }}
+          />
+        )}
       </aside>
+
+      <WhatsAppBriefModal
+        open={showBrief}
+        category={s.category}
+        language={s.language}
+        onClose={() => setShowBrief(false)}
+        onApply={applyDraft}
+      />
     </div>
+  )
+}
+
+// ===== Authentication (OTP) editor =====
+
+function AuthOtpEditor({ s, set }: { s: BuilderState; set: (patch: Partial<BuilderState>) => void }) {
+  return (
+    <section className="rounded-xl border border-border bg-white">
+      <div className="flex items-center gap-2 border-b border-border px-5 py-3">
+        <ShieldCheck className="h-4 w-4 text-accent" />
+        <h2 className="text-sm font-semibold text-text-primary">Authentication (OTP)</h2>
+      </div>
+      <div className="space-y-4 p-5">
+        <p className="rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-secondary">
+          Meta generates the message body for authentication templates — e.g. <em>&ldquo;123456 is your verification code.&rdquo;</em> You only configure the code button and expiry.
+        </p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-primary">OTP delivery</label>
+            <select
+              value={s.otpType}
+              onChange={e => set({ otpType: e.target.value as 'COPY_CODE' | 'ONE_TAP' })}
+              className={inputClass}
+            >
+              <option value="COPY_CODE">Copy code</option>
+              <option value="ONE_TAP">One-tap autofill</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-primary">Button text</label>
+            <input
+              value={s.otpButtonText}
+              onChange={e => set({ otpButtonText: e.target.value })}
+              maxLength={25}
+              placeholder="Copy code"
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-primary">Code expiry (minutes)</label>
+            <input
+              value={s.otpExpiryMinutes}
+              onChange={e => set({ otpExpiryMinutes: e.target.value.replace(/[^0-9]/g, '') })}
+              inputMode="numeric"
+              placeholder="10"
+              className={inputClass}
+            />
+            <p className="mt-1 text-xs text-text-muted">1–90 minutes. Leave blank for no expiry note.</p>
+          </div>
+          <label className="flex items-center gap-2 self-end pb-2 text-sm text-text-primary">
+            <input
+              type="checkbox"
+              checked={s.otpSecurityRecommendation}
+              onChange={e => set({ otpSecurityRecommendation: e.target.checked })}
+              className="h-4 w-4 rounded border-border text-accent focus:ring-accent/30"
+            />
+            Add security recommendation
+          </label>
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -449,9 +608,11 @@ function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onCha
     const next = [...buttons]; next[idx] = { ...next[idx], ...patch }; onChange(next)
   }
   const remove = (idx: number) => onChange(buttons.filter((_, i) => i !== idx))
+  const copyCodes = buttons.filter(b => b.type === 'COPY_CODE')
   const addQuickReply = () => onChange([...buttons, { type: 'QUICK_REPLY', text: '' }])
   const addUrl = () => onChange([...buttons, { type: 'URL', text: '', url: '' }])
   const addPhone = () => onChange([...buttons, { type: 'PHONE_NUMBER', text: '', phone: '' }])
+  const addCopyCode = () => onChange([...buttons, { type: 'COPY_CODE', text: 'Copy code', example: '' }])
 
   return (
     <section className="rounded-xl border border-border bg-white">
@@ -462,7 +623,7 @@ function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onCha
         {buttons.map((b, idx) => (
           <div key={idx} className="flex items-start gap-2 rounded-lg border border-border p-2.5">
             <span className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-text-muted">
-              {b.type === 'QUICK_REPLY' ? <MessageSquareReply className="h-3.5 w-3.5" /> : b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
+              {b.type === 'QUICK_REPLY' ? <MessageSquareReply className="h-3.5 w-3.5" /> : b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : b.type === 'COPY_CODE' ? <Copy className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
             </span>
             <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
               <input
@@ -488,6 +649,14 @@ function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onCha
                   className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
                 />
               )}
+              {b.type === 'COPY_CODE' && (
+                <input
+                  value={b.example ?? ''}
+                  onChange={e => update(idx, { example: e.target.value })}
+                  placeholder="Sample code e.g. SAVE20"
+                  className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
+                />
+              )}
             </div>
             <button type="button" onClick={() => remove(idx)} className="mt-1 rounded p-1 text-text-muted hover:text-red-500" aria-label="Remove button">
               <Trash2 className="h-3.5 w-3.5" />
@@ -504,8 +673,11 @@ function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onCha
           <button type="button" onClick={addPhone} disabled={ctas.length >= 2} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface disabled:opacity-40">
             <Phone className="h-3.5 w-3.5" /> Call phone
           </button>
+          <button type="button" onClick={addCopyCode} disabled={copyCodes.length >= 1} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface disabled:opacity-40">
+            <Copy className="h-3.5 w-3.5" /> Copy code
+          </button>
         </div>
-        <p className="text-xs text-text-muted">Up to 3 quick-reply and 2 call-to-action buttons.</p>
+        <p className="text-xs text-text-muted">Up to 3 quick-reply, 2 call-to-action, and 1 copy-code button.</p>
       </div>
     </section>
   )
@@ -572,9 +744,14 @@ function renderWithSamples(text: string, samples: string[]): string {
   return text.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => samples[Number(n) - 1]?.trim() || `{{${n}}}`)
 }
 
-function WhatsAppPreview({ state: s, paramCount }: { state: BuilderState; paramCount: number }) {
-  const body = renderWithSamples(s.bodyText, s.samples) || 'Your message preview appears here.'
-  const headerText = s.headerType === 'TEXT' ? s.headerText : ''
+function WhatsAppPreview({ state: s, paramCount, isAuth }: { state: BuilderState; paramCount: number; isAuth: boolean }) {
+  const body = isAuth
+    ? '123456 is your verification code.' + (s.otpSecurityRecommendation ? ' For your security, do not share this code.' : '')
+    : renderWithSamples(s.bodyText, s.samples) || 'Your message preview appears here.'
+  const headerText = !isAuth && s.headerType === 'TEXT' ? s.headerText : ''
+  const previewButtons: WhatsappButton[] = isAuth
+    ? [{ type: 'COPY_CODE', text: s.otpButtonText || 'Copy code' }]
+    : s.buttons
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-white">
@@ -585,21 +762,21 @@ function WhatsAppPreview({ state: s, paramCount }: { state: BuilderState; paramC
       <div className="bg-[#E5DDD5] p-4" style={{ backgroundImage: 'radial-gradient(rgba(0,0,0,0.04) 1px, transparent 0)', backgroundSize: '16px 16px' }}>
         <div className="ml-auto max-w-[280px] rounded-lg rounded-tr-sm bg-white p-2.5 shadow-sm">
           {/* media header */}
-          {(s.headerType === 'IMAGE' || s.headerType === 'VIDEO' || s.headerType === 'DOCUMENT') && (
+          {!isAuth && (s.headerType === 'IMAGE' || s.headerType === 'VIDEO' || s.headerType === 'DOCUMENT') && (
             <div className="mb-2 flex h-28 items-center justify-center rounded-md bg-slate-100 text-slate-400">
               {s.headerType === 'IMAGE' ? <ImageIcon className="h-7 w-7" /> : s.headerType === 'VIDEO' ? <Video className="h-7 w-7" /> : <FileText className="h-7 w-7" />}
             </div>
           )}
           {headerText && <p className="mb-1 text-[13px] font-semibold text-slate-900">{headerText}</p>}
           <p className="whitespace-pre-wrap text-[13px] leading-snug text-slate-800">{body}</p>
-          {s.footer && <p className="mt-1.5 text-[11px] text-slate-400">{s.footer}</p>}
-          <p className="mt-1 text-right text-[10px] text-slate-400">{paramCount > 0 ? `${paramCount} var${paramCount > 1 ? 's' : ''}` : ''} 11:30</p>
+          {!isAuth && s.footer && <p className="mt-1.5 text-[11px] text-slate-400">{s.footer}</p>}
+          <p className="mt-1 text-right text-[10px] text-slate-400">{!isAuth && paramCount > 0 ? `${paramCount} var${paramCount > 1 ? 's' : ''}` : ''} 11:30</p>
         </div>
-        {s.buttons.length > 0 && (
+        {previewButtons.length > 0 && (
           <div className="ml-auto mt-1.5 max-w-[280px] space-y-1.5">
-            {s.buttons.map((b, i) => (
+            {previewButtons.map((b, i) => (
               <div key={i} className="flex items-center justify-center gap-1.5 rounded-lg bg-white py-2 text-[13px] font-medium text-[#00A5F4] shadow-sm">
-                {b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : b.type === 'PHONE_NUMBER' ? <Phone className="h-3.5 w-3.5" /> : <MessageSquareReply className="h-3.5 w-3.5" />}
+                {b.type === 'URL' ? <ExternalLink className="h-3.5 w-3.5" /> : b.type === 'PHONE_NUMBER' ? <Phone className="h-3.5 w-3.5" /> : b.type === 'COPY_CODE' ? <Copy className="h-3.5 w-3.5" /> : <MessageSquareReply className="h-3.5 w-3.5" />}
                 {b.text || 'Button'}
               </div>
             ))}

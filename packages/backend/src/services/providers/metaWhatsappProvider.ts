@@ -35,6 +35,23 @@ export type MetaTemplate = {
  * Cloud API component shape — the Pinnacle provider reuses this verbatim.
  */
 export function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
+  // AUTHENTICATION (OTP) templates have a fixed Meta shape: Meta generates the
+  // body copy, and the template carries an add_security_recommendation flag, an
+  // optional code-expiry footer, and an OTP button.
+  if (input.category === 'AUTHENTICATION' && input.otp) {
+    const otpComponents: Array<Record<string, unknown>> = [
+      { type: 'BODY', add_security_recommendation: !!input.otp.addSecurityRecommendation },
+    ]
+    if (input.otp.codeExpirationMinutes && input.otp.codeExpirationMinutes > 0) {
+      otpComponents.push({ type: 'FOOTER', code_expiration_minutes: input.otp.codeExpirationMinutes })
+    }
+    otpComponents.push({
+      type: 'BUTTONS',
+      buttons: [{ type: 'OTP', otp_type: input.otp.otpType, text: input.otp.buttonText }],
+    })
+    return otpComponents
+  }
+
   const components: Array<Record<string, unknown>> = []
 
   // BODY (required) — with example values for {{1}}..{{N}}
@@ -44,16 +61,20 @@ export function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
   }
   components.push(body)
 
-  // HEADER (optional) — TEXT carries text + example, media carries header_handle from upload
+  // HEADER (optional) — TEXT carries text + example; media carries a sample.
   if (input.header) {
     if (input.header.type === 'TEXT' && input.header.text) {
       const h: Record<string, unknown> = { type: 'HEADER', format: 'TEXT', text: input.header.text }
       if (input.header.example) h.example = { header_text: [input.header.example] }
       components.push(h)
     } else if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(input.header.type)) {
-      // Media headers need an uploaded `header_handle` — caller provides via raw payload
-      // for now; we can extend the interface when a customer needs this end-to-end.
-      components.push({ type: 'HEADER', format: input.header.type })
+      // Media headers: Meta ultimately wants an uploaded header_handle. We pass the
+      // public sample URL through example.header_handle — Pinnacle resolves the handle
+      // on its side. If a provider rejects this, the fast-follow is a Meta
+      // resumable-upload call here to mint a real handle.
+      const h: Record<string, unknown> = { type: 'HEADER', format: input.header.type }
+      if (input.header.example) h.example = { header_handle: [input.header.example] }
+      components.push(h)
     }
   }
 
@@ -63,6 +84,7 @@ export function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
     const btns = input.buttons.map(b => {
       if (b.type === 'URL') return { type: 'URL', text: b.text, url: b.url }
       if (b.type === 'PHONE_NUMBER') return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phone }
+      if (b.type === 'COPY_CODE') return { type: 'COPY_CODE', text: b.text, example: b.example ? [b.example] : undefined }
       return { type: 'QUICK_REPLY', text: b.text }
     })
     components.push({ type: 'BUTTONS', buttons: btns })

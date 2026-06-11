@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { toast } from 'sonner'
-import type { TemplateVariable, WhatsappTemplate } from '@storees/shared'
+import type { TemplateVariable, WhatsappTemplate, WhatsappHeader, WhatsappButton, WhatsappTemplateCategory, WhatsappOtpConfig } from '@storees/shared'
 
 export type { WhatsappTemplate } from '@storees/shared'
 
@@ -15,11 +15,12 @@ export type LintFinding = {
 export type LintInput = {
   name: string
   language: string
-  category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'
+  category: WhatsappTemplateCategory
   bodyText: string
-  header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string } | null
+  header?: WhatsappHeader | null
   footer?: string | null
-  buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'; text: string; url?: string; phone?: string }>
+  buttons?: WhatsappButton[]
+  otp?: WhatsappOtpConfig
 }
 
 export type SubmitInput = LintInput & { bodyExample?: string[]; variables?: TemplateVariable[] }

@@ -4,7 +4,7 @@ import { db } from '../db/connection.js'
 import { whatsappTemplates, ctwaAttributions, customers, projects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
-import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache } from '../services/channelProviderRegistry.js'
+import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache, type SubmitTemplateInput } from '../services/channelProviderRegistry.js'
 
 // Dealer RBAC — HYBRID template model (same as email templates): a dealer sees
 // SHARED (admin-owned/provider-synced, NULL owner) + their OWN WhatsApp templates.
@@ -183,6 +183,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       const now = new Date()
       const paramCount = countParameters(body.bodyText)
       const bodyExample = (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample
+      const otp = (body as { otp?: unknown }).otp ?? null
       const variables = (body as TemplateLintInput & { variables?: unknown }).variables ?? null
       const [draft] = await db.insert(whatsappTemplates).values({
         projectId,
@@ -200,7 +201,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         parameterCount: paramCount,
         variables: variables as object | null,
         // Stash the example values for {{1}}.. so submission can supply them later.
-        rawPayload: bodyExample ? { bodyExample } : null,
+        rawPayload: (bodyExample || otp) ? { bodyExample, otp } : null,
         submittedAt: null,
       }).onConflictDoUpdate({
         target: [whatsappTemplates.projectId, whatsappTemplates.provider, whatsappTemplates.name, whatsappTemplates.language],
@@ -212,7 +213,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
           buttons: body.buttons as object | null,
           parameterCount: paramCount,
           variables: variables as object | null,
-          rawPayload: bodyExample ? { bodyExample } : null,
+          rawPayload: (bodyExample || otp) ? { bodyExample, otp } : null,
           status: 'DRAFT',
           rejectionReason: null,
           updatedAt: now,
@@ -232,6 +233,9 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
     const now = new Date()
     const paramCount = countParameters(body.bodyText)
     const variables = (body as TemplateLintInput & { variables?: unknown }).variables ?? null
+    const subBodyExample = (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample
+    const subOtp = (body as { otp?: unknown }).otp ?? null
+    const subRawPayload = (subBodyExample || subOtp) ? { bodyExample: subBodyExample, otp: subOtp } : null
     const [inserted] = await db.insert(whatsappTemplates).values({
       projectId,
       createdByAgentId,
@@ -247,6 +251,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       buttons: body.buttons as object | null,
       parameterCount: paramCount,
       variables: variables as object | null,
+      rawPayload: subRawPayload,
       submittedAt: now,
       lastStatusCheckAt: now,
     }).onConflictDoUpdate({
@@ -259,6 +264,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         buttons: body.buttons as object | null,
         parameterCount: paramCount,
         variables: variables as object | null,
+        rawPayload: subRawPayload,
         submittedAt: now,
         status: 'PENDING',
         rejectionReason: null,
@@ -278,6 +284,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         footer: body.footer,
         buttons: body.buttons,
         bodyExample: (body as TemplateLintInput & { bodyExample?: string[] }).bodyExample,
+        otp: (body as { otp?: SubmitTemplateInput['otp'] }).otp,
       }, config)
       const [updated] = await db.update(whatsappTemplates).set({
         providerTemplateId: result.providerTemplateId,
@@ -331,7 +338,8 @@ router.post('/templates/:id/submit', requireProjectId, async (req, res) => {
       return res.status(400).json({ success: false, error: 'WhatsApp provider not configured or does not support submission' })
     }
     const { provider, config } = channelResult
-    const bodyExample = (tmpl.rawPayload as { bodyExample?: string[] } | null)?.bodyExample
+    const raw = tmpl.rawPayload as { bodyExample?: string[]; otp?: SubmitTemplateInput['otp'] } | null
+    const bodyExample = raw?.bodyExample
     const now = new Date()
 
     try {
@@ -342,8 +350,9 @@ router.post('/templates/:id/submit', requireProjectId, async (req, res) => {
         bodyText: tmpl.bodyText,
         header: tmpl.header as { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string; example?: string } | null,
         footer: tmpl.footer,
-        buttons: tmpl.buttons as Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'; text: string; url?: string; phone?: string }> | undefined,
+        buttons: tmpl.buttons as SubmitTemplateInput['buttons'],
         bodyExample,
+        otp: raw?.otp ?? undefined,
       }, config)
       const [updated] = await db.update(whatsappTemplates).set({
         providerTemplateId: result.providerTemplateId,
@@ -378,7 +387,7 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
-    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[]; variables?: unknown }
+    const body = req.body as Partial<TemplateLintInput> & { bodyExample?: string[]; variables?: unknown; otp?: unknown }
 
     const [tmpl] = await db
       .select()
@@ -411,7 +420,12 @@ router.patch('/templates/:id', requireProjectId, async (req, res) => {
     if (body.footer !== undefined) updates.footer = body.footer
     if (body.buttons !== undefined) updates.buttons = body.buttons as object | null
     if (body.variables !== undefined) updates.variables = body.variables as object | null
-    if (body.bodyExample !== undefined) updates.rawPayload = body.bodyExample ? { bodyExample: body.bodyExample } : null
+    if (body.bodyExample !== undefined || body.otp !== undefined) {
+      const prev = (tmpl.rawPayload as { bodyExample?: string[]; otp?: unknown } | null) ?? {}
+      const bodyExample = body.bodyExample !== undefined ? body.bodyExample : prev.bodyExample
+      const otp = body.otp !== undefined ? body.otp : prev.otp
+      updates.rawPayload = (bodyExample || otp) ? { bodyExample, otp } : null
+    }
 
     const [updated] = await db.update(whatsappTemplates).set(updates).where(eq(whatsappTemplates.id, id)).returning()
     res.json({ success: true, data: { template: updated, lintFindings: findings } })

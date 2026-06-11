@@ -955,13 +955,23 @@ export type WhatsappHeader = {
   example?: string       // sample value / media URL for review
 }
 
-export type WhatsappButtonType = 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'
+export type WhatsappButtonType = 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'
 
 export type WhatsappButton = {
   type: WhatsappButtonType
   text: string
   url?: string           // for URL buttons (may end with {{1}} for dynamic)
   phone?: string         // for PHONE_NUMBER buttons
+  example?: string       // for COPY_CODE buttons — sample coupon/code for review
+  otpType?: 'COPY_CODE' | 'ONE_TAP'  // for OTP buttons (AUTHENTICATION templates)
+}
+
+/** Extra metadata for AUTHENTICATION-category (OTP) templates. Stored in rawPayload.otp. */
+export type WhatsappOtpConfig = {
+  otpType: 'COPY_CODE' | 'ONE_TAP'
+  buttonText: string
+  codeExpirationMinutes?: number       // 1–90; omit for no expiry
+  addSecurityRecommendation?: boolean  // appends Meta's security disclaimer
 }
 
 export type WhatsappTemplate = {

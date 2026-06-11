@@ -7,6 +7,7 @@ import { generateSegmentFilter, isAiEnabled } from '../services/aiSegmentService
 import { computeNextBestAction } from '../services/nextBestActionService.js'
 import { chatCompletion, getLlmConfig, testConnection } from '../services/llmService.js'
 import { generateCopy, type CopywriterChannel, type VoiceTone, type CopywriterLanguage } from '../services/copywriterService.js'
+import { generateWhatsappTemplate, type WhatsappCopilotTone } from '../services/whatsappCopilotService.js'
 import { clearProjectChannelProviderCache } from '../services/channelProviderRegistry.js'
 
 const router = Router()
@@ -87,6 +88,34 @@ router.post('/copywriter', requireProjectId, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Copywriter failed'
     console.error('[AI] Copywriter error:', message)
+    res.status(500).json({ success: false, error: message })
+  }
+})
+
+// POST /api/ai/whatsapp-template?projectId=...
+// Body: { goal, audience?, tone?, category?, language? }
+// Drafts a Meta-compliant WhatsApp template (body + numbered vars + suggestions).
+const VALID_WA_TONES: WhatsappCopilotTone[] = ['professional', 'friendly', 'witty', 'urgent']
+router.post('/whatsapp-template', requireProjectId, async (req, res) => {
+  try {
+    const { goal, audience, tone, category, language } = req.body as Record<string, unknown>
+    if (typeof goal !== 'string' || goal.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'goal is required' })
+    }
+    if (goal.length > 800) {
+      return res.status(400).json({ success: false, error: 'goal too long (max 800 chars)' })
+    }
+    const result = await generateWhatsappTemplate(req.projectId!, {
+      goal: goal.trim(),
+      audience: typeof audience === 'string' ? audience.trim() : undefined,
+      tone: VALID_WA_TONES.includes(tone as WhatsappCopilotTone) ? (tone as WhatsappCopilotTone) : undefined,
+      category: ['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category as string) ? (category as 'MARKETING' | 'UTILITY' | 'AUTHENTICATION') : undefined,
+      language: typeof language === 'string' ? language.trim() : undefined,
+    })
+    res.json({ success: true, data: result })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'WhatsApp template generation failed'
+    console.error('[AI] WhatsApp template error:', message)
     res.status(500).json({ success: false, error: message })
   }
 })
