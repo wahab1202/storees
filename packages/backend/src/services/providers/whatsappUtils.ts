@@ -1,5 +1,24 @@
 import type { SendTemplateCommand } from '../channelProviderRegistry.js'
 
+/**
+ * Normalize a stored phone into the E.164-style digits WhatsApp/Meta needs (no '+',
+ * no spaces/dashes). A bare national number (e.g. an Indian 10-digit "9677772323")
+ * is undeliverable — Meta requires the country code. We add a default country code
+ * (WHATSAPP_DEFAULT_COUNTRY_CODE, defaults to '91' for India) when the number looks
+ * national; numbers that already carry a country code are left as-is.
+ */
+export function normalizeWhatsAppRecipient(
+  phone: string | null | undefined,
+  defaultCountryCode: string = process.env.WHATSAPP_DEFAULT_COUNTRY_CODE ?? '91',
+): string {
+  let d = String(phone ?? '').replace(/\D/g, '')   // digits only — drops +, spaces, dashes, parens
+  if (!d) return ''
+  if (d.startsWith('00')) d = d.slice(2)            // 00 international prefix → strip
+  if (d.length === 11 && d.startsWith('0')) d = d.slice(1)  // national trunk 0 (e.g. 09677…)
+  if (d.length === 10) d = defaultCountryCode + d   // bare national number → prepend country code
+  return d
+}
+
 /** Count positional template params: {{1}}, {{2}}... → returns the highest index seen. */
 export function countParameters(body: string): number {
   const matches = body.match(/\{\{(\d+)\}\}/g)
