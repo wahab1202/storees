@@ -158,12 +158,15 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       })
     }
 
-    // 2. Resolve provider + verify capability
+    // 2. Resolve provider + verify capability. Drafts can be authored WITHOUT a
+    //    connected provider (matches the UI promise); only submission needs one.
     const channelResult = await getChannelProvider(projectId, 'whatsapp')
-    if (!channelResult) {
+    const isDraft = !!(body as { draft?: boolean }).draft
+    if (!channelResult && !isDraft) {
       return res.status(400).json({ success: false, error: 'No WhatsApp provider configured for this project' })
     }
-    const { provider, config } = channelResult
+    const provider = channelResult?.provider ?? null
+    const config = channelResult?.config ?? {}
 
     // Dealer RBAC: a dealer-authored WhatsApp template (draft or submitted) is
     // private to them. Resolved up-front so both paths below stamp ownership.
@@ -189,7 +192,7 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       const [draft] = await db.insert(whatsappTemplates).values({
         projectId,
         createdByAgentId,
-        provider: provider.name,
+        provider: provider?.name ?? 'unconfigured',
         providerTemplateId: body.name,
         name: body.name,
         language: body.language,
@@ -225,10 +228,10 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
       return res.status(201).json({ success: true, data: { template: draft, lintFindings: findings } })
     }
 
-    if (!provider.submitTemplate) {
+    if (!provider || !provider.submitTemplate) {
       return res.status(400).json({
         success: false,
-        error: `Provider '${provider.name}' does not support template submission. Submit through the provider's dashboard and run "Sync templates" instead.`,
+        error: `Provider '${provider?.name ?? 'none'}' does not support template submission. Submit through the provider's dashboard and run "Sync templates" instead.`,
       })
     }
 
@@ -363,6 +366,7 @@ router.post('/templates/:id/submit', requireProjectId, async (req, res) => {
         carousel: tmpl.carousel as SubmitTemplateInput['carousel'],
       }, config)
       const [updated] = await db.update(whatsappTemplates).set({
+        provider: provider.name,  // adopt the real provider if the draft was saved unconfigured
         providerTemplateId: result.providerTemplateId,
         status: result.status,
         category: result.category ?? tmpl.category,
