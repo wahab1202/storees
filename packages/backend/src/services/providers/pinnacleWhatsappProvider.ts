@@ -9,7 +9,7 @@ import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { decrypt } from '../encryption.js'
-import { countParameters, buildTemplateComponents } from './whatsappUtils.js'
+import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient } from './whatsappUtils.js'
 import { buildMetaComponents, parseMetaTemplate, type MetaTemplate } from './metaWhatsappProvider.js'
 
 /**
@@ -64,7 +64,7 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
       ? (await db.select({ bodyText: emailTemplates.bodyText }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0]
       : undefined
 
-    const to = customer?.phone
+    const to = normalizeWhatsAppRecipient(customer?.phone)
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     let body = template?.bodyText ?? ''
@@ -94,11 +94,12 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
     const { phoneNumberId } = config
     if (!phoneNumberId) return { messageId: '', status: 'failed', error: 'Pinnacle: phoneNumberId not configured' }
 
-    let to: string | null | undefined = command.phoneOverride
-    if (!to) {
+    let rawTo: string | null | undefined = command.phoneOverride
+    if (!rawTo) {
       const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
-      to = customer?.phone
+      rawTo = customer?.phone
     }
+    const to = normalizeWhatsAppRecipient(rawTo)
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     const components = buildTemplateComponents(command)

@@ -10,7 +10,7 @@ import type {
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
-import { countParameters, buildTemplateComponents } from './whatsappUtils.js'
+import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient } from './whatsappUtils.js'
 
 // Subset of Meta's message_templates response we care about
 type MetaComponent =
@@ -151,7 +151,7 @@ export const metaWhatsappProvider: ChannelProvider = {
     const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
     const template = command.templateId ? (await db.select({ bodyText: emailTemplates.bodyText, subject: emailTemplates.subject }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0] : undefined
 
-    const to = customer?.phone
+    const to = normalizeWhatsAppRecipient(customer?.phone)
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     let body = template?.bodyText ?? ''
@@ -185,11 +185,12 @@ export const metaWhatsappProvider: ChannelProvider = {
     const { phoneNumberId, accessToken } = config
     // Test-send path bypasses customer lookup and delivers to an admin-provided
     // phone number. Otherwise resolve from the customer row.
-    let to: string | null | undefined = command.phoneOverride
-    if (!to) {
+    let rawTo: string | null | undefined = command.phoneOverride
+    if (!rawTo) {
       const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
-      to = customer?.phone
+      rawTo = customer?.phone
     }
+    const to = normalizeWhatsAppRecipient(rawTo)
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     const components = buildTemplateComponents(command)
