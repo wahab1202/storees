@@ -5,6 +5,7 @@ import { useTemplates, useDeleteTemplate, useSeedTemplates } from '@/hooks/useTe
 import { useWhatsappTemplates, useSyncWhatsappTemplates, useRefreshTemplateStatus, type WhatsappTemplate } from '@/hooks/useWhatsappTemplates'
 import { toast } from 'sonner'
 import { TemplatePreviewCard } from '@/components/shared/TemplatePreviewCard'
+import { NewTemplateModal } from '@/components/templates/NewTemplateModal'
 import { SlidePanel } from '@/components/shared/SlidePanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CardSkeleton } from '@/components/ui/Skeleton'
@@ -59,6 +60,7 @@ function TemplatesContent() {
   const seedTemplates = useSeedTemplates()
   const searchParams = useSearchParams()
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+  const [showNewModal, setShowNewModal] = useState(false)
   const [channelFilter, setChannelFilter] = useState<TemplateChannel | 'all'>(
     (searchParams.get('channel') as TemplateChannel) ?? 'all',
   )
@@ -144,13 +146,13 @@ function TemplatesContent() {
               {seedTemplates.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               Starter Templates
             </button>
-            <Link
-              href="/templates/create"
+            <button
+              onClick={() => setShowNewModal(true)}
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors"
             >
               <Plus className="h-4 w-4" />
               New Template
-            </Link>
+            </button>
             </>
             )}
           </div>
@@ -244,13 +246,13 @@ function TemplatesContent() {
                 {seedTemplates.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                 Load Starter Templates
               </button>
-              <Link
-                href="/templates/create"
+              <button
+                onClick={() => setShowNewModal(true)}
                 className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-secondary rounded-lg hover:bg-surface transition-colors"
               >
                 <Plus className="h-4 w-4" />
                 Create from Scratch
-              </Link>
+              </button>
             </div>
           )}
         </div>
@@ -337,6 +339,8 @@ function TemplatesContent() {
           )}
         </div>
       )}
+
+      <NewTemplateModal open={showNewModal} onClose={() => setShowNewModal(false)} />
 
       {/* Template preview slide panel */}
       <SlidePanel

@@ -1,13 +1,13 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useCreateTemplate } from '@/hooks/useTemplates'
 import { VariablePanel } from '@/components/templates/VariablePanel'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
-import { ArrowLeft, Mail, MessageSquare, Bell, Loader2, Columns2, Columns3, Columns4, LayoutTemplate, Layers } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Mail, MessageSquare, Bell, Loader2, Columns2, Columns3, Columns4, LayoutTemplate, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
 import type { TemplateChannel, TemplateVariable } from '@storees/shared'
@@ -20,14 +20,6 @@ const CHANNELS: { value: TemplateChannel; label: string; icon: typeof Mail; desc
   { value: 'push',     label: 'Push',     icon: Bell,          description: 'Title + body notification' },
   { value: 'in_app',   label: 'In-App',   icon: Layers,        description: 'Modal, banner, toast, or inbox card rendered inside the storefront' },
 ]
-
-const CHANNEL_LABELS: Record<TemplateChannel, string> = {
-  email: 'Email',
-  sms: 'SMS',
-  push: 'Push',
-  whatsapp: 'WhatsApp',
-  in_app: 'In-App',
-}
 
 const LAYOUT_STARTERS = [
   { key: 'blank', label: 'Blank', icon: LayoutTemplate },
@@ -168,10 +160,27 @@ function starterTemplateForLayout(key: string, subject: string): EmailTemplate {
 }
 
 export default function CreateTemplatePage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-text-secondary">Loading…</div>}>
+      <CreateTemplateContent />
+    </Suspense>
+  )
+}
+
+const VALID_CREATE_CHANNELS: TemplateChannel[] = ['email', 'sms', 'push', 'in_app']
+
+function CreateTemplateContent() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const createTemplate = useCreateTemplate()
 
-  const [channel, setChannel] = useState<TemplateChannel>('email')
+  // Channel is chosen in the New-Template modal and passed as ?channel=…; the
+  // selector lives there now, not on this page. WhatsApp routes to its own builder.
+  const channelParam = searchParams.get('channel') as TemplateChannel | null
+  const [channel] = useState<TemplateChannel>(
+    channelParam && VALID_CREATE_CHANNELS.includes(channelParam) ? channelParam : 'email',
+  )
+  const channelMeta = CHANNELS.find(c => c.value === channel) ?? CHANNELS[0]
   const [name, setName] = useState('')
   const [subject, setSubject] = useState('')
   const [htmlBody, setHtmlBody] = useState(() => compileToHtml(starterTemplateForLayout('blank', '')))
@@ -228,12 +237,22 @@ export default function CreateTemplatePage() {
           <button
             onClick={() => router.push('/templates')}
             className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-white text-text-secondary transition-colors hover:bg-surface"
+            aria-label="Back to Templates"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">Templates</p>
-            <h1 className="text-2xl font-bold text-heading">New Template</h1>
+            <nav className="flex items-center gap-1.5 text-xs font-medium text-text-muted" aria-label="Breadcrumb">
+              <button onClick={() => router.push('/templates')} className="hover:text-text-secondary">Templates</button>
+              <ChevronRight className="h-3 w-3" />
+              <span>New</span>
+              <ChevronRight className="h-3 w-3" />
+              <span className="text-text-secondary">{channelMeta.label}</span>
+            </nav>
+            <h1 className="mt-0.5 flex items-center gap-2 text-2xl font-bold text-heading">
+              <channelMeta.icon className="h-5 w-5 text-accent" />
+              New {channelMeta.label} Template
+            </h1>
           </div>
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
@@ -258,36 +277,10 @@ export default function CreateTemplatePage() {
         <div className="border-b border-border px-5 py-4">
           <div className="flex flex-col gap-1">
             <h2 className="text-sm font-semibold text-text-primary">Setup</h2>
-            <p className="text-xs text-text-muted">Choose the channel and name this reusable template.</p>
+            <p className="text-xs text-text-muted">Name this reusable {channelMeta.label} template.</p>
           </div>
         </div>
         <div className="space-y-5 p-5">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {CHANNELS.map(ch => {
-              const Icon = ch.icon
-              const active = channel === ch.value
-              return (
-                <button
-                  key={ch.value}
-                  type="button"
-                  onClick={() => setChannel(ch.value)}
-                  className={cn(
-                    'flex min-h-[96px] flex-col items-start justify-between rounded-lg border p-4 text-left transition-colors',
-                    active
-                      ? 'border-accent bg-accent/5 text-accent'
-                      : 'border-border text-text-secondary hover:border-text-muted hover:bg-surface',
-                  )}
-                >
-                  <Icon className={cn('h-5 w-5', active ? 'text-accent' : 'text-text-muted')} />
-                  <div>
-                    <p className={cn('text-sm font-semibold', active ? 'text-accent' : 'text-text-primary')}>{ch.label}</p>
-                    <p className="mt-1 text-xs leading-5 text-text-muted">{ch.description}</p>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div>
               <label className="block text-sm font-medium text-text-primary mb-1.5">Template Name</label>
@@ -321,12 +314,7 @@ export default function CreateTemplatePage() {
                 />
                 <p className="mt-1 text-xs text-text-muted">Shown as the heading of the in-app message.</p>
               </div>
-            ) : (
-              <div className="rounded-lg border border-border bg-surface px-4 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">Selected Channel</p>
-                <p className="mt-1 text-sm font-medium text-text-primary">{CHANNEL_LABELS[channel]}</p>
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
       </section>
