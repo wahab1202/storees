@@ -132,8 +132,9 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
       await db.update(messages).set({
         status: 'failed',
         failedAt: new Date(),
+        failureReason: String(sendResult.error).slice(0, 2000),
       }).where(eq(messages.id, messageId))
-      await mirrorCampaignProviderFailure(command)
+      await mirrorCampaignProviderFailure(command, String(sendResult.error))
       return
     }
 
@@ -148,14 +149,15 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
     await db.update(messages).set({
       status: 'failed',
       failedAt: new Date(),
+      failureReason: (err instanceof Error ? err.message : String(err)).slice(0, 2000),
     }).where(eq(messages.id, messageId))
-    await mirrorCampaignProviderFailure(command)
+    await mirrorCampaignProviderFailure(command, err instanceof Error ? err.message : String(err))
   }
 }
 
-async function mirrorCampaignProviderFailure(command: SendCommand): Promise<void> {
+async function mirrorCampaignProviderFailure(command: SendCommand, reason?: string | null): Promise<void> {
   if (!command.campaignId) return
-  await mirrorCampaignReceipt(command.campaignId, command.userId, 'failed')
+  await mirrorCampaignReceipt(command.campaignId, command.userId, 'failed', reason)
 }
 
 /**

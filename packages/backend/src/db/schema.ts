@@ -471,6 +471,8 @@ export const campaignSends = pgTable('campaign_sends', {
   resendMessageId: varchar('resend_message_id', { length: 255 }),
   variant: varchar('variant', { length: 1 }),
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+  // Provider error text on a failed recipient — shown in the campaign Recipients tab.
+  failureReason: text('failure_reason'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('uniq_campaign_sends_campaign_customer').on(table.campaignId, table.customerId),
@@ -789,6 +791,8 @@ export const messages = pgTable('messages', {
   readAt: timestamp('read_at', { withTimezone: true }),
   clickedAt: timestamp('clicked_at', { withTimezone: true }),
   failedAt: timestamp('failed_at', { withTimezone: true }),
+  // Provider/webhook error text on failure (e.g. Meta "131026 …") — shown in the UI for debugging.
+  failureReason: text('failure_reason'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_messages_customer').on(table.projectId, table.customerId, table.createdAt),

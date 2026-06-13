@@ -762,6 +762,11 @@ export default function CampaignDetailPage() {
                       <span className={cn('text-xs font-medium capitalize', SEND_STATUS_COLORS[send.status])}>
                         {send.status}
                       </span>
+                      {send.status === 'failed' && send.failureReason && (
+                        <p className="mt-0.5 max-w-xs truncate text-[11px] text-red-600" title={send.failureReason}>
+                          {send.failureReason}
+                        </p>
+                      )}
                     </td>
                     {campaign.abTestEnabled && (
                       <td className="px-5 py-2.5">

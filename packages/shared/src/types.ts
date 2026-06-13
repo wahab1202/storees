@@ -319,6 +319,7 @@ export type CampaignSend = {
   resendMessageId: string | null
   variant: 'A' | 'B' | null
   scheduledAt: Date | null
+  failureReason: string | null
   createdAt: Date
 }
 

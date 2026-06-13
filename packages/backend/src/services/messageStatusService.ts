@@ -107,6 +107,7 @@ export async function mirrorCampaignReceipt(
   campaignId: string,
   customerId: string,
   status: DeliveryReceiptStatus,
+  failureReason?: string | null,
 ): Promise<void> {
   if (status === 'delivered') {
     await markCampaignDelivered(campaignId, customerId)
@@ -126,7 +127,7 @@ export async function mirrorCampaignReceipt(
     return
   }
 
-  await markCampaignFailed(campaignId, customerId)
+  await markCampaignFailed(campaignId, customerId, failureReason)
 }
 
 async function markCampaignDelivered(campaignId: string, customerId: string): Promise<void> {
@@ -147,10 +148,10 @@ async function markCampaignOpened(campaignId: string, customerId: string): Promi
   await incrementCampaignSendMetric(campaignId, customerId, 'opened_at', 'opened_count')
 }
 
-async function markCampaignFailed(campaignId: string, customerId: string): Promise<void> {
+async function markCampaignFailed(campaignId: string, customerId: string, failureReason?: string | null): Promise<void> {
   const result = await db
     .update(campaignSends)
-    .set({ status: 'failed' })
+    .set({ status: 'failed', ...(failureReason ? { failureReason: failureReason.slice(0, 2000) } : {}) })
     .where(and(
       eq(campaignSends.campaignId, campaignId),
       eq(campaignSends.customerId, customerId),
