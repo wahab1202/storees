@@ -2,6 +2,7 @@ import { eq, and, sql, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { messages, consents, customers, whatsappTemplates, projects } from '../db/schema.js'
 import { deliveryQueue } from './queue.js'
+import { buildBodyParams } from './providers/whatsappUtils.js'
 import { redis } from './redis.js'
 import type { SendCommand, MessageChannel } from '@storees/shared'
 
@@ -101,10 +102,10 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
       // for this provider. Falls through to plain text send otherwise.
       const waTemplate = await resolveWhatsappTemplate(command, providerName)
       if (waTemplate && channelResult.provider.sendTemplate) {
-        const params: string[] = []
-        for (let i = 1; i <= (waTemplate.parameterCount ?? 0); i++) {
-          params.push(command.variables?.[String(i)] ?? '')
-        }
+        // Never send an empty body param — Meta rejects with #131008. Empties
+        // fall back to "-" (the variable's defaultValue is already applied
+        // upstream by resolveTemplateVariables; set one to avoid the dash).
+        const params = buildBodyParams(waTemplate.parameterCount ?? 0, i => command.variables?.[String(i)])
         sendResult = await channelResult.provider.sendTemplate(
           {
             ...command,

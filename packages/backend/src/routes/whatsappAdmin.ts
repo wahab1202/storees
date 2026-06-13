@@ -16,7 +16,7 @@ function waTemplateVisibilityWhere(req: AuthenticatedRequest): SQL | undefined {
     : isNull(whatsappTemplates.createdByAgentId)
 }
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
-import { countParameters } from '../services/providers/whatsappUtils.js'
+import { countParameters, buildBodyParams } from '../services/providers/whatsappUtils.js'
 import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from '../services/templateContext.js'
 import { encrypt } from '../services/encryption.js'
@@ -586,11 +586,15 @@ router.post('/templates/:id/test-send', requireProjectId, async (req, res) => {
       project,
     })
 
-    // Ordered body params {{1}}..{{N}} pulled from the substitutions map.
-    const templateParams: string[] = []
-    for (let i = 1; i <= (tmpl.parameterCount ?? 0); i++) {
-      templateParams.push(substitutions[String(i)] ?? '')
-    }
+    // Ordered body params {{1}}..{{N}} — never empty (Meta #131008). For a test
+    // send we fall back to the template's approved sample values so an
+    // unmapped/blank variable still renders something real.
+    const testBodyExample = (tmpl.rawPayload as { bodyExample?: string[] } | null)?.bodyExample
+    const templateParams = buildBodyParams(
+      tmpl.parameterCount ?? 0,
+      i => substitutions[String(i)],
+      i => testBodyExample?.[i - 1],
+    )
 
     const result = await provider.sendTemplate(
       {

@@ -19,6 +19,25 @@ export function normalizeWhatsAppRecipient(
   return d
 }
 
+/**
+ * Build the ordered body params {{1}}..{{N}}, guaranteeing none are empty —
+ * Meta rejects a blank body parameter with "(#131008) Required parameter is
+ * missing". Falls back: resolved value → per-index fallback (e.g. the template's
+ * approved sample) → "-".
+ */
+export function buildBodyParams(
+  count: number,
+  valueAt: (i: number) => string | null | undefined,
+  fallbackAt?: (i: number) => string | null | undefined,
+): string[] {
+  const out: string[] = []
+  for (let i = 1; i <= count; i++) {
+    const v = valueAt(i)?.toString().trim()
+    out.push(v || fallbackAt?.(i)?.toString().trim() || '-')
+  }
+  return out
+}
+
 /** Count positional template params: {{1}}, {{2}}... → returns the highest index seen. */
 export function countParameters(body: string): number {
   const matches = body.match(/\{\{(\d+)\}\}/g)
