@@ -2264,6 +2264,7 @@ function Step2WhatsappContent({
   const refreshStatus = useRefreshTemplateStatus()
   const testSend = useTestSendWhatsappTemplate()
   const [testPhone, setTestPhone] = useState('')
+  const [tplSearch, setTplSearch] = useState('')
   const approved = templates.filter(t => t.status === 'APPROVED')
   const pending = templates.filter(t => !['APPROVED'].includes(t.status))
   const selected = approved.find(t => t.id === selectedTemplateId) ?? null
@@ -2286,10 +2287,22 @@ function Step2WhatsappContent({
   const canSubmitTemplate = !!provider?.configured && !!provider.capabilities.submitTemplate
   const draftParamCount = countWhatsappTemplateParameters(draftTemplate.bodyText)
   const previewBody = renderedPreview.data?.data.rendered.bodyText ?? selected?.bodyText ?? ''
-  const grouped = approved.reduce<Record<string, WhatsappTemplate[]>>((acc, template) => {
+  const tplQuery = tplSearch.trim().toLowerCase()
+  const approvedVisible = tplQuery
+    ? approved.filter(t =>
+        t.name.toLowerCase().includes(tplQuery) ||
+        (t.bodyText ?? '').toLowerCase().includes(tplQuery) ||
+        (t.language ?? '').toLowerCase().includes(tplQuery))
+    : approved
+  const grouped = approvedVisible.reduce<Record<string, WhatsappTemplate[]>>((acc, template) => {
     acc[template.name] = [...(acc[template.name] ?? []), template]
     return acc
   }, {})
+  // Newest-approved first: sort groups by their most-recently-updated template.
+  const ts = (t: WhatsappTemplate) => new Date(t.updatedAt ?? t.createdAt ?? 0).getTime()
+  const groupedEntries = Object.entries(grouped).sort(
+    (a, b) => Math.max(...b[1].map(ts)) - Math.max(...a[1].map(ts)),
+  )
   const submitForApproval = () => {
     submitTemplate.mutate({
       ...draftTemplate,
@@ -2311,7 +2324,8 @@ function Step2WhatsappContent({
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
+    <div className="grid grid-cols-1 items-start lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
+      <div className="space-y-6 min-w-0">
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="flex items-center justify-between gap-4 px-5 py-3 bg-surface border-b border-border">
           <div className="flex items-center gap-2">
@@ -2483,7 +2497,20 @@ function Step2WhatsappContent({
             </div>
           ) : (
             <div className="space-y-4">
-              {Object.entries(grouped).map(([name, variants]) => (
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-muted" />
+                <input
+                  value={tplSearch}
+                  onChange={e => setTplSearch(e.target.value)}
+                  placeholder="Search approved templates by name, text, or language…"
+                  className="h-9 w-full rounded-lg border border-border bg-white pl-9 pr-3 text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/20"
+                />
+              </div>
+              {groupedEntries.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-text-muted">No templates match &ldquo;{tplSearch}&rdquo;.</p>
+              ) : (
+              <div className="max-h-[480px] space-y-4 overflow-y-auto pr-1">
+              {groupedEntries.map(([name, variants]) => (
                 <div key={name} className="rounded-lg border border-border overflow-hidden">
                   <div className="flex items-center justify-between gap-3 px-4 py-3 bg-surface/70 border-b border-border">
                     <div>
@@ -2519,21 +2546,12 @@ function Step2WhatsappContent({
                   </div>
                 </div>
               ))}
+              </div>
+              )}
             </div>
           )}
         </div>
       </div>
-
-      <CampaignAiCopywriter
-        channel="whatsapp"
-        body={selected?.bodyText ?? draftTemplate.bodyText}
-        onApplyBody={(value) => {
-          setShowTemplateForm(true)
-          setDraftTemplate(template => ({ ...template, bodyText: value }))
-        }}
-        inputClass={inputClass}
-        lockedReason="WhatsApp sends only approved template text. Apply generated copy into the template form, submit for approval, then select it after approval."
-      />
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-5 py-3 bg-surface border-b border-border flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -2632,6 +2650,20 @@ function Step2WhatsappContent({
             </div>
           )}
         </div>
+      </div>
+      </div>
+
+      <div className="lg:sticky lg:top-4">
+        <CampaignAiCopywriter
+          channel="whatsapp"
+          body={selected?.bodyText ?? draftTemplate.bodyText}
+          onApplyBody={(value) => {
+            setShowTemplateForm(true)
+            setDraftTemplate(template => ({ ...template, bodyText: value }))
+          }}
+          inputClass={inputClass}
+          lockedReason="WhatsApp sends only approved template text. Apply generated copy into the template form, submit for approval, then select it after approval."
+        />
       </div>
     </div>
   )
