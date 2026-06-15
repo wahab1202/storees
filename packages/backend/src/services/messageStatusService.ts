@@ -26,6 +26,7 @@ export async function handleDeliveryReceipt(
   status: DeliveryReceiptStatus,
   channel: string,
   providerName: string,
+  errorText?: string | null,
 ): Promise<void> {
   const fieldMap: Record<string, string> = {
     delivered: 'delivered_at',
@@ -55,6 +56,10 @@ export async function handleDeliveryReceipt(
   await db.execute(sql`
     UPDATE messages
     SET ${sql.raw(tsField)} = NOW(),
+        failure_reason = CASE
+          WHEN ${status} = 'failed' THEN COALESCE(${errorText ?? null}, failure_reason)
+          ELSE failure_reason
+        END,
         status = CASE
           WHEN ${status} = 'failed' THEN 'failed'
           WHEN ${status} = 'clicked' THEN 'clicked'
@@ -69,7 +74,7 @@ export async function handleDeliveryReceipt(
   // queries can do `event_name LIKE '%_read'` to find every "customer read it" event.
   if (msg.customerId) {
     if (msg.campaignId) {
-      await mirrorCampaignReceipt(msg.campaignId, msg.customerId, status)
+      await mirrorCampaignReceipt(msg.campaignId, msg.customerId, status, errorText)
     }
 
     const eventName = `${channel}_${status}`
