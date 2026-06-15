@@ -384,7 +384,11 @@ router.post('/whatsapp/pinnacle', async (req, res) => {
         changes?: Array<{
           field?: string
           value?: {
-            statuses?: Array<{ id: string; status: string }>
+            statuses?: Array<{
+              id: string
+              status: string
+              errors?: Array<{ code?: number | string; title?: string; message?: string }>
+            }>
             event?: string
             message_template_id?: string | number
             message_template_name?: string
@@ -410,7 +414,14 @@ router.post('/whatsapp/pinnacle', async (req, res) => {
           }
           const mapped = statusMap[status.status]
           if (mapped) {
-            await handleDeliveryReceipt(status.id, mapped, 'whatsapp', 'pinnacle')
+            // On failure, thread Meta's error code/text so it lands in
+            // failure_reason (UI Recipients tab) instead of a blank "Failed".
+            let errorText: string | undefined
+            if (mapped === 'failed') {
+              const e = status.errors?.[0]
+              if (e) errorText = `(#${e.code ?? '?'}) ${e.title ?? e.message ?? 'Undeliverable'}`
+            }
+            await handleDeliveryReceipt(status.id, mapped, 'whatsapp', 'pinnacle', errorText)
           }
         }
       }
