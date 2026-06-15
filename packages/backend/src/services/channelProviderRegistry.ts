@@ -97,38 +97,6 @@ export type TemplateStatusResult = {
   rejectionReason?: string | null
 }
 
-/**
- * Reconcile a provider's `?name=` template-list response (one entry per language)
- * down to the single (name, language) translation we hold. If the provider has the
- * name but NOT this language, the row is not sendable — return REJECTED with a
- * reason rather than letting a sibling-language entry mark it APPROVED (which then
- * fails every send with Meta #132001). Shared by all WhatsApp providers.
- */
-export function resolveTemplateStatusByLanguage(
-  entries: Array<{ language?: string; status?: string; category?: string; reason?: string }>,
-  providerTemplateId: string,
-  language: string,
-): TemplateStatusResult {
-  if (entries.length === 0) {
-    throw new Error(`getTemplateStatus: template "${providerTemplateId}" not found`)
-  }
-  const match = entries.find(e => (e.language ?? '') === language)
-  if (!match) {
-    const available = entries.map(e => e.language).filter(Boolean).join(', ') || 'none'
-    return {
-      status: 'REJECTED',
-      rejectionReason:
-        `Not approved at the provider for language "${language}" ` +
-        `(available: ${available}). Re-submit this template in "${language}" before sending.`,
-    }
-  }
-  return {
-    status: (match.status ?? 'PENDING').toUpperCase(),
-    category: match.category,
-    rejectionReason: match.reason ?? null,
-  }
-}
-
 export type ChannelProvider = {
   name: string
   send(command: SendCommand, config: Record<string, string>): Promise<SendResult>
@@ -137,13 +105,8 @@ export type ChannelProvider = {
   syncTemplates?(config: Record<string, string>): Promise<ProviderTemplate[]>
   /** Submit a new template to the provider. Returns the provider's id + initial status. */
   submitTemplate?(input: SubmitTemplateInput, config: Record<string, string>): Promise<SubmitTemplateResult>
-  /**
-   * Refresh status for a previously-submitted template. `language` is required:
-   * a single template *name* can have several language translations at Meta, so
-   * status must be reconciled per (name, language) — otherwise an `en`-only
-   * approval wrongly marks our `en_US` row APPROVED and every send fails #132001.
-   */
-  getTemplateStatus?(providerTemplateId: string, language: string, config: Record<string, string>): Promise<TemplateStatusResult>
+  /** Refresh status for a previously-submitted template. */
+  getTemplateStatus?(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult>
   parseInbound?(payload: unknown): InboundMessage[]
 }
 
