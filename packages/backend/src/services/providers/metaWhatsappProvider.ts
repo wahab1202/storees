@@ -7,6 +7,7 @@ import type {
   SubmitTemplateResult,
   TemplateStatusResult,
 } from '../channelProviderRegistry.js'
+import { resolveTemplateStatusByLanguage } from '../channelProviderRegistry.js'
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
@@ -343,7 +344,7 @@ export const metaWhatsappProvider: ChannelProvider = {
    * GET that we trust to be cheap); for production this is fine because the
    * status worker only polls templates we know are still PENDING.
    */
-  async getTemplateStatus(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult> {
+  async getTemplateStatus(providerTemplateId: string, language: string, config: Record<string, string>): Promise<TemplateStatusResult> {
     const { wabaId, accessToken } = config
     if (!wabaId || !accessToken) throw new Error('Meta getTemplateStatus: wabaId and accessToken required')
 
@@ -361,17 +362,14 @@ export const metaWhatsappProvider: ChannelProvider = {
     }
 
     const data = await resp.json() as
-      | { name: string; status?: string; category?: string; reason?: string }                       // single
-      | { data: Array<{ name: string; status?: string; category?: string; reason?: string }> }     // list
+      | { name: string; language?: string; status?: string; category?: string; reason?: string }                       // single
+      | { data: Array<{ name: string; language?: string; status?: string; category?: string; reason?: string }> }     // list
 
-    const t = 'data' in data ? data.data?.[0] : data
-    if (!t) throw new Error(`Meta getTemplateStatus: template "${providerTemplateId}" not found`)
-
-    return {
-      status: (t.status ?? 'PENDING').toUpperCase(),
-      category: t.category,
-      rejectionReason: t.reason ?? null,
-    }
+    return resolveTemplateStatusByLanguage(
+      'data' in data ? (data.data ?? []) : [data],
+      providerTemplateId,
+      language,
+    )
   },
 
   /**

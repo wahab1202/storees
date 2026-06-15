@@ -76,7 +76,7 @@ export function startTemplateStatusWorker(): Worker {
           const channelResult = await getChannelProvider(tmpl.projectId, 'whatsapp')
           if (!channelResult || !channelResult.provider.getTemplateStatus) continue
 
-          const status = await channelResult.provider.getTemplateStatus(tmpl.providerTemplateId, channelResult.config)
+          const status = await channelResult.provider.getTemplateStatus(tmpl.providerTemplateId, tmpl.language, channelResult.config)
           const newCategory = status.category ?? tmpl.category
           const categoryChanged = !!tmpl.category && !!newCategory && tmpl.category !== newCategory
           const statusChanged = status.status !== tmpl.status

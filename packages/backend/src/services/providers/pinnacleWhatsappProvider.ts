@@ -5,6 +5,7 @@ import type {
   SubmitTemplateResult,
   TemplateStatusResult,
 } from '../channelProviderRegistry.js'
+import { resolveTemplateStatusByLanguage } from '../channelProviderRegistry.js'
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
@@ -160,7 +161,7 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
    * Refresh a single template's status. Numeric ids hit /v3/{id}; otherwise
    * filter the WABA template list by name (safety-net poll alongside webhooks).
    */
-  async getTemplateStatus(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult> {
+  async getTemplateStatus(providerTemplateId: string, language: string, config: Record<string, string>): Promise<TemplateStatusResult> {
     const { wabaId } = config
     if (!wabaId) throw new Error('Pinnacle getTemplateStatus: wabaId required')
 
@@ -173,17 +174,14 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
     if (!resp.ok) throw new Error(`Pinnacle getTemplateStatus failed: ${await readError(resp)}`)
 
     const json = await resp.json() as
-      | { name: string; status?: string; category?: string; reason?: string }
-      | { data: Array<{ name: string; status?: string; category?: string; reason?: string }> }
+      | { name: string; language?: string; status?: string; category?: string; reason?: string }
+      | { data: Array<{ name: string; language?: string; status?: string; category?: string; reason?: string }> }
 
-    const t = 'data' in json ? json.data?.[0] : json
-    if (!t) throw new Error(`Pinnacle getTemplateStatus: template "${providerTemplateId}" not found`)
-
-    return {
-      status: (t.status ?? 'PENDING').toUpperCase(),
-      category: t.category,
-      rejectionReason: t.reason ?? null,
-    }
+    return resolveTemplateStatusByLanguage(
+      'data' in json ? (json.data ?? []) : [json],
+      providerTemplateId,
+      language,
+    )
   },
 
   /**

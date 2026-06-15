@@ -450,7 +450,7 @@ router.post('/templates/:id/refresh-status', requireProjectId, async (req, res) 
       return res.status(400).json({ success: false, error: `Provider '${provider.name}' does not support status refresh` })
     }
 
-    const status = await provider.getTemplateStatus(tmpl.providerTemplateId, config)
+    const status = await provider.getTemplateStatus(tmpl.providerTemplateId, tmpl.language, config)
     const previousCategory = tmpl.category && status.category && tmpl.category !== status.category
       ? tmpl.category
       : tmpl.previousCategory
