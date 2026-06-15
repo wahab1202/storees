@@ -133,7 +133,9 @@ app.use('/api/v1', v1EventRoutes)
 app.use('/api/v1', v1ImportRoutes)
 app.use('/api/v1', v1OptInRoutes)
 
-// URL tracker — public (redirect links)
+// Click redirect — public. /c is the short form baked into WhatsApp button URLs;
+// /api/t is the legacy alias. Both resolve via the durable short-link service.
+app.use('/c', urlTrackerRoutes)
 app.use('/api/t', urlTrackerRoutes)
 
 // Unsubscribe — public, mounted short for List-Unsubscribe header brevity

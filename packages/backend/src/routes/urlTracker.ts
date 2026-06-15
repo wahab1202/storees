@@ -1,82 +1,23 @@
 import { Router } from 'express'
-import { eq, sql } from 'drizzle-orm'
-import { db } from '../db/connection.js'
-import { messages, events } from '../db/schema.js'
-import crypto from 'crypto'
+import { resolveAndLogClick } from '../services/shortLinkService.js'
 
 const router = Router()
 
-// In-memory URL mapping (could use Redis for persistence)
-const urlMap = new Map<string, { originalUrl: string; messageId: string; projectId: string; customerId: string }>()
-
 /**
- * Generate a tracked short URL for SMS messages.
- * Call this before sending SMS to replace URLs in the body.
+ * Public click redirect. Mounted at both /c/:slug (the short-link form baked into
+ * WhatsApp button URLs) and /api/t/:slug (legacy alias). Resolves the slug, logs
+ * the click via the durable short-link service, then 302s to the destination.
  */
-export function createTrackedUrl(
-  originalUrl: string,
-  messageId: string,
-  projectId: string,
-  customerId: string,
-  baseUrl: string,
-): string {
-  const trackId = crypto.randomBytes(6).toString('hex')
-  urlMap.set(trackId, { originalUrl, messageId, projectId, customerId })
-  return `${baseUrl}/api/t/${trackId}`
-}
-
-/**
- * Replace URLs in SMS body with tracked short URLs.
- */
-export function trackUrlsInBody(
-  body: string,
-  messageId: string,
-  projectId: string,
-  customerId: string,
-  baseUrl: string,
-): string {
-  return body.replace(
-    /https?:\/\/[^\s]+/g,
-    (url) => createTrackedUrl(url, messageId, projectId, customerId, baseUrl),
-  )
-}
-
-/**
- * GET /api/t/:trackId — redirect to original URL + log click event
- */
-router.get('/:trackId', async (req, res) => {
-  const trackId = req.params.trackId as string
-  const entry = urlMap.get(trackId)
-
-  if (!entry) {
+router.get('/:slug', async (req, res) => {
+  const slug = req.params.slug as string
+  try {
+    const originalUrl = await resolveAndLogClick(slug)
+    if (!originalUrl) return res.status(404).send('Link expired or not found')
+    return res.redirect(302, originalUrl)
+  } catch (err) {
+    console.error('Short-link redirect error:', err)
     return res.status(404).send('Link expired or not found')
   }
-
-  // Log click event
-  try {
-    // Update message clicked_at
-    await db.execute(sql`
-      UPDATE messages SET clicked_at = NOW(), status = 'clicked'
-      WHERE id = ${entry.messageId} AND clicked_at IS NULL
-    `)
-
-    // Create tracking event
-    await db.insert(events).values({
-      projectId: entry.projectId,
-      customerId: entry.customerId,
-      eventName: 'sms_clicked',
-      properties: { message_id: entry.messageId, url: entry.originalUrl },
-      platform: 'sms',
-      source: 'url_tracker',
-      idempotencyKey: `sms_click_${trackId}`,
-      timestamp: new Date(),
-    }).onConflictDoNothing()
-  } catch (err) {
-    console.error('URL tracker error:', err)
-  }
-
-  // Redirect to original URL
-  res.redirect(302, entry.originalUrl)
 })
 
 export default router

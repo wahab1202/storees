@@ -784,6 +784,29 @@ export const messages = pgTable('messages', {
   index('idx_messages_flow').on(table.flowTripId),
 ])
 
+// ============ TRACKED LINKS (durable click tracking / short links) ============
+// Replaces the old in-memory URL map. One row per generated short link; the
+// public redirect (/c/:slug) resolves it, logs a `${channel}_clicked` event +
+// bumps the message/campaign click metrics, then 302s to original_url. Durable
+// so links survive restarts and work across processes — required because a
+// WhatsApp template's button base URL is baked at Meta approval.
+export const trackedLinks = pgTable('tracked_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  slug: varchar('slug', { length: 32 }).notNull().unique(),
+  originalUrl: text('original_url').notNull(),
+  channel: varchar('channel', { length: 20 }), // 'email' | 'sms' | 'whatsapp' | ... — drives the click event name
+  messageId: uuid('message_id'),
+  campaignId: uuid('campaign_id'),
+  customerId: uuid('customer_id'),
+  clickCount: integer('click_count').notNull().default(0),
+  firstClickedAt: timestamp('first_clicked_at', { withTimezone: true }),
+  lastClickedAt: timestamp('last_clicked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_tracked_links_project_campaign').on(table.projectId, table.campaignId),
+])
+
 // ============ CONSENT AUDIT LOG (append-only, immutable) ============
 
 export const consentAuditLog = pgTable('consent_audit_log', {
