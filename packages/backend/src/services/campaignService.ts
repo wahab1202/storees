@@ -1,4 +1,4 @@
-import { eq, and, inArray, gt, sql } from 'drizzle-orm'
+import { eq, and, inArray, gt, sql, desc } from 'drizzle-orm'
 import crypto from 'node:crypto'
 import { db } from '../db/connection.js'
 import {
@@ -16,6 +16,7 @@ import {
   customerSubscriptions,
   whatsappTemplates,
   whatsappInboundMessages,
+  messages,
 } from '../db/schema.js'
 import { sendEmail, interpolateTemplate, appendUtmParameters, appendUtmParametersToText, personalizeDynamicImages } from './emailService.js'
 import { copyCampaignAttachments, listCampaignAttachments, loadResendAttachments, type ResendAttachment } from './campaignAttachmentService.js'
@@ -34,6 +35,16 @@ const SEND_PAGE_SIZE = 500
 const SEND_INSERT_BATCH = 500           // Postgres parameter limit safety
 const PARALLEL_SENDS_PER_PAGE = 10      // bounded in-page concurrency to avoid provider rate-limit storms
 const EMPTY_FILTER: FilterConfig = { logic: 'AND', rules: [] }
+
+// Human-readable labels for a pre-send block (messages.block_reason), surfaced on
+// the campaign Recipients tab so a skipped recipient explains itself instead of a
+// bare "Failed". Falls back to the raw reason for any unmapped value.
+const BLOCK_REASON_LABELS: Record<string, string> = {
+  frequency_capped: 'Skipped — frequency cap reached',
+  consent_blocked: 'Skipped — no marketing consent',
+  no_channel_reachability: 'Skipped — not reachable on this channel',
+  user_inactive: 'Skipped — user inactive',
+}
 
 /** Deterministic A/B variant assignment — same customer always gets same variant for a given campaign. */
 function assignVariant(customerId: string, campaignId: string, isAb: boolean, splitPct: number): 'A' | 'B' | null {
@@ -935,6 +946,23 @@ async function sendOneRecipient(
         status: 'sent', sentAt: new Date(),
       }).where(eq(campaignSends.id, send.id))
       return { id: send.id, success: true }
+    }
+    // deliverySend returned null = a pre-send gate blocked this recipient
+    // (frequency cap, consent, reachability). It recorded a `messages` row with a
+    // block_reason but no campaign_sends reason, so the Recipients tab showed a
+    // blank "Failed". Surface that reason here. (Provider-level send failures are
+    // mirrored separately by executeSend → mirrorCampaignReceipt.) The bulk
+    // status='failed' update in the caller only sets status, so this survives.
+    const [blocked] = await db
+      .select({ blockReason: messages.blockReason })
+      .from(messages)
+      .where(and(eq(messages.campaignId, campaign.id), eq(messages.customerId, send.customerId)))
+      .orderBy(desc(messages.createdAt))
+      .limit(1)
+    if (blocked?.blockReason) {
+      await db.update(campaignSends)
+        .set({ failureReason: BLOCK_REASON_LABELS[blocked.blockReason] ?? blocked.blockReason })
+        .where(eq(campaignSends.id, send.id))
     }
   } catch (err) {
     console.error(`Campaign ${channel} send failed for ${send.customerId}:`, err)
