@@ -309,6 +309,7 @@ router.post('/audience-preview', requireProjectId, async (req, res) => {
       controlGroupPct,
       subscriptionCategoryIds,
       templateId,
+      ignoreFrequencyCap,
     } = req.body as {
       channel?: string
       segmentId?: string | null
@@ -318,6 +319,7 @@ router.post('/audience-preview', requireProjectId, async (req, res) => {
       controlGroupPct?: number
       subscriptionCategoryIds?: string[]
       templateId?: string | null
+      ignoreFrequencyCap?: boolean
     }
 
     if (audienceCap != null && audienceCap <= 0) {
@@ -334,6 +336,7 @@ router.post('/audience-preview', requireProjectId, async (req, res) => {
       controlGroupPct,
       subscriptionCategoryIds,
       templateId,
+      ignoreFrequencyCap,
     })
 
     res.json({ success: true, data: preview })

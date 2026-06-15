@@ -289,7 +289,7 @@ async function checkConsent(
 // Per-project frequency-cap config cached for 60s. Capped values rarely
 // change (admin tweaks them once during onboarding) but the hot path runs
 // per-send, so a DB lookup every time is wasteful.
-type FreqCapConfig = { perDays: number; max: number }
+export type FreqCapConfig = { perDays: number; max: number }
 const FREQ_CAP_CACHE_TTL_MS = 60_000
 const freqCapCache = new Map<string, { caps: Record<string, FreqCapConfig>; expiresAt: number }>()
 
@@ -300,7 +300,7 @@ const DEFAULT_FREQ_CAPS: Record<string, FreqCapConfig> = {
   push_marketing: { perDays: 1, max: 5 },
 }
 
-async function getProjectFreqCaps(projectId: string): Promise<Record<string, FreqCapConfig>> {
+export async function getProjectFreqCaps(projectId: string): Promise<Record<string, FreqCapConfig>> {
   const cached = freqCapCache.get(projectId)
   if (cached && cached.expiresAt > Date.now()) return cached.caps
 

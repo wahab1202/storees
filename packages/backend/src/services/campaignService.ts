@@ -1,4 +1,4 @@
-import { eq, and, inArray, gt, sql, desc } from 'drizzle-orm'
+import { eq, and, inArray, gt, gte, sql, desc } from 'drizzle-orm'
 import crypto from 'node:crypto'
 import { db } from '../db/connection.js'
 import {
@@ -78,6 +78,7 @@ export type CampaignAudiencePreview = {
   optedOut: number
   subscriptionBlocked: number
   serviceWindowBlocked: number
+  frequencyCapped: number
   deliverable: number
   estimatedHoldouts: number
   estimatedRecipients: number
@@ -96,6 +97,7 @@ export type CampaignAudiencePreviewInput = {
   controlGroupPct?: number
   subscriptionCategoryIds?: string[]
   templateId?: string | null
+  ignoreFrequencyCap?: boolean
 }
 
 function hasRules(filter: FilterConfig | null | undefined): filter is FilterConfig {
@@ -129,6 +131,7 @@ export async function previewCampaignAudience(campaignId: string): Promise<{
       audienceCap: campaigns.audienceCap,
       controlGroupPct: campaigns.controlGroupPct,
       templateId: campaigns.templateId,
+      ignoreFrequencyCap: campaigns.ignoreFrequencyCap,
     })
     .from(campaigns)
     .where(eq(campaigns.id, campaignId))
@@ -151,6 +154,7 @@ export async function previewCampaignAudience(campaignId: string): Promise<{
     controlGroupPct: campaign.controlGroupPct,
     subscriptionCategoryIds: categoryRows.map(r => r.categoryId),
     templateId: campaign.templateId,
+    ignoreFrequencyCap: campaign.ignoreFrequencyCap,
   })
 
   return {
@@ -177,12 +181,24 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
   let optedOut = 0
   let subscriptionBlocked = 0
   let serviceWindowBlocked = 0
+  let frequencyCapped = 0
   let deliverable = 0
   let stale = 0
   let cursor: string | null = null
   const requiresWhatsappServiceWindow = channel === 'whatsapp'
     ? await whatsappTemplateRequiresServiceWindow(input.projectId, input.templateId)
     : false
+
+  // Frequency-cap simulation. Mirrors deliveryService.checkFrequencyCap so the
+  // preview's deliverable count matches the real send instead of over-promising
+  // (the trap where a preview shows N deliverable but the cap silently drops them).
+  // Marketing only: WhatsApp UTILITY/AUTH templates and ignoreFrequencyCap bypass.
+  const appliesFrequencyCap =
+    !input.ignoreFrequencyCap && (channel === 'whatsapp' ? !requiresWhatsappServiceWindow : true)
+  const { getProjectFreqCaps } = await import('./deliveryService.js')
+  const freqCap = appliesFrequencyCap
+    ? (await getProjectFreqCaps(input.projectId))[`${channel}_marketing`] ?? null
+    : null
 
   while (true) {
     const excludeClause = excludeAudienceFilter ? sql`NOT (${filterToSql(excludeAudienceFilter)})` : undefined
@@ -309,6 +325,26 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
       serviceWindowBlocked += before - allowed.length
     }
 
+    if (freqCap && freqCap.max > 0 && allowed.length > 0) {
+      const customerIds = allowed.map(c => c.customerId)
+      const countRows = await db
+        .select({ customerId: messages.customerId, c: sql<number>`count(*)::int` })
+        .from(messages)
+        .where(and(
+          eq(messages.projectId, input.projectId),
+          inArray(messages.customerId, customerIds),
+          eq(messages.channel, channel),
+          eq(messages.messageType, 'promotional'),
+          eq(messages.countsTowardFrequencyCap, true),
+          gte(messages.createdAt, sql`NOW() - (${freqCap.perDays}::int * INTERVAL '1 day')`),
+        ))
+        .groupBy(messages.customerId)
+      const cappedSet = new Set(countRows.filter(r => r.c >= freqCap.max).map(r => r.customerId))
+      const before = allowed.length
+      allowed = allowed.filter(c => !cappedSet.has(c.customerId))
+      frequencyCapped += before - allowed.length
+    }
+
     if (channel === 'email' && allowed.length > 0) {
       const customerIds = allowed.map(c => c.customerId)
       // Use the typed query builder rather than a raw `ANY($1::uuid[])`
@@ -350,6 +386,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
     optedOut,
     subscriptionBlocked,
     serviceWindowBlocked,
+    frequencyCapped,
     deliverable,
     estimatedHoldouts,
     estimatedRecipients,

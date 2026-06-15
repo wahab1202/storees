@@ -660,6 +660,7 @@ function CreateCampaignContent() {
         audienceCap: audienceCapEnabled && audienceCap ? parseInt(audienceCap) : null,
         controlGroupPct: controlGroupEnabled ? controlGroupPct : 0,
         subscriptionCategoryIds,
+        ignoreFrequencyCap: ignoreFreqCapping,
       },
       { onSuccess: res => setAudiencePreview(res.data ?? null) },
     )
@@ -1412,6 +1413,7 @@ function Step1TargetUsers({
               ['Opted out', audiencePreview.optedOut],
               ['Category blocked', audiencePreview.subscriptionBlocked],
               ['24h window blocked', audiencePreview.serviceWindowBlocked],
+              ['Frequency capped', audiencePreview.frequencyCapped],
               ['Holdouts', audiencePreview.estimatedHoldouts],
             ].map(([label, value]) => (
               <div key={label} className="rounded-lg border border-border bg-surface/40 p-3">
@@ -1419,6 +1421,22 @@ function Step1TargetUsers({
                 <div className="text-lg font-semibold text-text-primary tabular-nums mt-0.5">{Number(value).toLocaleString()}</div>
               </div>
             ))}
+            {audiencePreview.estimatedRecipients === 0 && (
+              <div className="col-span-2 sm:col-span-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                <span className="font-semibold">0 recipients.</span>{' '}
+                {(() => {
+                  const p = audiencePreview
+                  const r = [
+                    [Math.max(0, p.totalCandidates - p.reachable), 'No candidate has a phone/email for this channel.'],
+                    [p.subscriptionBlocked, 'No one here is subscribed to the selected category — deselect it or pick one your customers opted into.'],
+                    [p.frequencyCapped, 'Everyone has hit the frequency cap — enable “ignore frequency cap”, or wait for the window to reset.'],
+                    [p.serviceWindowBlocked, 'No one is inside the WhatsApp 24h window — a MARKETING template is exempt.'],
+                    [(p.suppressed ?? 0) + (p.optedOut ?? 0), 'All recipients are suppressed or opted out.'],
+                  ].filter(x => (x[0] as number) > 0).sort((a, b) => (b[0] as number) - (a[0] as number))
+                  return r.length ? (r[0][1] as string) : 'No customers match this audience.'
+                })()}
+              </div>
+            )}
             {audiencePreview.warning && (
               <div className="col-span-2 sm:col-span-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
                 {audiencePreview.warning}

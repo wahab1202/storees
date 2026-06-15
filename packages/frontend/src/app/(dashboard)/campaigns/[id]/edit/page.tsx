@@ -613,6 +613,7 @@ export default function EditCampaignPage() {
         audienceCap: audienceCapEnabled && audienceCap ? parseInt(audienceCap) : null,
         controlGroupPct: controlGroupEnabled ? controlGroupPct : 0,
         subscriptionCategoryIds,
+        ignoreFrequencyCap: ignoreFreqCapping,
       },
       { onSuccess: res => setAudiencePreview(res.data ?? null) },
     )
@@ -1638,19 +1639,42 @@ export default function EditCampaignPage() {
                   Preview audience
                 </button>
 
-                {audiencePreview && (
-                  <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/60 p-3 text-[11px]">
-                    <span className="text-text-muted">Candidates</span><span className="text-right font-medium text-text-primary">{audiencePreview.totalCandidates.toLocaleString()}</span>
-                    <span className="text-text-muted">Deliverable</span><span className="text-right font-medium text-text-primary">{audiencePreview.deliverable.toLocaleString()}</span>
-                    {audiencePreview.serviceWindowBlocked > 0 && (
-                      <>
-                        <span className="text-text-muted">24h blocked</span><span className="text-right font-medium text-amber-600">{audiencePreview.serviceWindowBlocked.toLocaleString()}</span>
-                      </>
-                    )}
-                    <span className="text-text-muted">Holdouts</span><span className="text-right font-medium text-text-primary">{audiencePreview.estimatedHoldouts.toLocaleString()}</span>
-                    <span className="text-text-muted">Recipients</span><span className="text-right font-semibold text-accent">{audiencePreview.estimatedRecipients.toLocaleString()}</span>
-                  </div>
-                )}
+                {audiencePreview && (() => {
+                  const p = audiencePreview
+                  const noChannel = Math.max(0, p.totalCandidates - p.reachable)
+                  const emailBlocked = (p.suppressed ?? 0) + (p.optedOut ?? 0)
+                  // Dominant reason recipients dropped to 0, with the concrete fix.
+                  const zeroReasons = [
+                    { n: noChannel, msg: 'no candidate has a phone/email for this channel.' },
+                    { n: p.subscriptionBlocked, msg: 'no one here is subscribed to the selected subscription category — deselect it or choose one your customers opted into.' },
+                    { n: p.frequencyCapped, msg: 'everyone has hit the frequency cap — turn on “ignore frequency cap” for this campaign, or wait for the cap window to reset.' },
+                    { n: p.serviceWindowBlocked, msg: 'no one is inside the WhatsApp 24h service window — a MARKETING template is exempt.' },
+                    { n: emailBlocked, msg: 'all recipients are suppressed or opted out.' },
+                  ].filter(r => r.n > 0).sort((a, b) => b.n - a.n)
+                  return (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/60 p-3 text-[11px]">
+                        <span className="text-text-muted">Candidates</span><span className="text-right font-medium text-text-primary">{p.totalCandidates.toLocaleString()}</span>
+                        {noChannel > 0 && (<><span className="text-text-muted">No phone/email</span><span className="text-right font-medium text-amber-600">−{noChannel.toLocaleString()}</span></>)}
+                        {p.subscriptionBlocked > 0 && (<><span className="text-text-muted">Not subscribed</span><span className="text-right font-medium text-amber-600">−{p.subscriptionBlocked.toLocaleString()}</span></>)}
+                        {p.serviceWindowBlocked > 0 && (<><span className="text-text-muted">Outside 24h window</span><span className="text-right font-medium text-amber-600">−{p.serviceWindowBlocked.toLocaleString()}</span></>)}
+                        {p.frequencyCapped > 0 && (<><span className="text-text-muted">Frequency capped</span><span className="text-right font-medium text-amber-600">−{p.frequencyCapped.toLocaleString()}</span></>)}
+                        {emailBlocked > 0 && (<><span className="text-text-muted">Suppressed / opted out</span><span className="text-right font-medium text-amber-600">−{emailBlocked.toLocaleString()}</span></>)}
+                        <span className="text-text-muted">Deliverable</span><span className="text-right font-medium text-text-primary">{p.deliverable.toLocaleString()}</span>
+                        {p.estimatedHoldouts > 0 && (<><span className="text-text-muted">Holdouts</span><span className="text-right font-medium text-text-primary">{p.estimatedHoldouts.toLocaleString()}</span></>)}
+                        <span className="text-text-muted">Recipients</span><span className="text-right font-semibold text-accent">{p.estimatedRecipients.toLocaleString()}</span>
+                      </div>
+                      {p.estimatedRecipients === 0 && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-800">
+                          <span className="font-semibold">0 recipients</span>{zeroReasons.length ? ` — ${zeroReasons[0].msg}` : ' match this audience.'}
+                        </div>
+                      )}
+                      {p.warning && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-800">{p.warning}</div>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
             </div>
           </div>

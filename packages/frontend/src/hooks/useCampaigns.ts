@@ -167,6 +167,7 @@ export type CampaignAudiencePreview = {
   optedOut: number
   subscriptionBlocked: number
   serviceWindowBlocked: number
+  frequencyCapped: number
   deliverable: number
   estimatedHoldouts: number
   estimatedRecipients: number
@@ -186,6 +187,7 @@ export function usePreviewCampaignAudience() {
       controlGroupPct?: number
       subscriptionCategoryIds?: string[]
       templateId?: string | null
+      ignoreFrequencyCap?: boolean
     }) => api.post<CampaignAudiencePreview>(withProject('/api/campaigns/audience-preview'), data),
   })
 }
