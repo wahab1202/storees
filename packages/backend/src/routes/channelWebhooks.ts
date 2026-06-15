@@ -13,6 +13,26 @@ import {
 } from '../services/whatsappInboundService.js'
 import { handleDeliveryReceipt } from '../services/messageStatusService.js'
 import { handleMetaTemplateStatusEvent } from '../services/templateStatusService.js'
+import { getChannelProvider } from '../services/channelProviderRegistry.js'
+import { decrypt } from '../services/encryption.js'
+
+/**
+ * The expected webhook secret for a Pinnacle callback. Prefers the per-project
+ * secret stored at connect time (resolved via the payload's phone_number_id or
+ * WABA id); falls back to the legacy platform env for connections made before
+ * per-project secrets existed. Returns null when neither is available.
+ */
+async function resolvePinnacleWebhookSecret(phoneNumberId?: string, wabaId?: string): Promise<string | null> {
+  let projectId: string | null = null
+  if (phoneNumberId) projectId = await findProjectByMetaPhoneNumberId(phoneNumberId)
+  if (!projectId && wabaId) projectId = await findProjectByWabaId(wabaId)
+  if (projectId) {
+    const channel = await getChannelProvider(projectId, 'whatsapp')
+    const stored = channel?.config?.webhookSecret
+    if (stored) return decrypt(stored)
+  }
+  return process.env.PINNACLE_WEBHOOK_SECRET ?? null
+}
 
 const router = Router()
 
@@ -331,9 +351,23 @@ router.post('/whatsapp', async (req, res) => {
 
 router.post('/whatsapp/pinnacle', async (req, res) => {
   try {
-    // Verify the relayed shared secret. If PINNACLE_WEBHOOK_SECRET is unset we
-    // process anyway (dev), but log it — prod must set the secret.
-    const expected = process.env.PINNACLE_WEBHOOK_SECRET
+    // Verify the relayed shared secret against the per-project secret (resolved
+    // from the payload's phone_number_id / WABA id), falling back to the legacy
+    // env. If neither is configured we process anyway (dev) but log it.
+    const probe = req.body as {
+      entry?: Array<{ id?: string; changes?: Array<{ value?: { metadata?: { phone_number_id?: string } } }> }>
+    }
+    let probePhoneNumberId: string | undefined
+    let probeWabaId: string | undefined
+    for (const entry of probe.entry ?? []) {
+      if (!probeWabaId && entry.id) probeWabaId = entry.id
+      for (const change of entry.changes ?? []) {
+        if (!probePhoneNumberId && change.value?.metadata?.phone_number_id) {
+          probePhoneNumberId = change.value.metadata.phone_number_id
+        }
+      }
+    }
+    const expected = await resolvePinnacleWebhookSecret(probePhoneNumberId, probeWabaId)
     if (expected) {
       const got = req.get('x-storees-secret')
       if (got !== expected) {
@@ -341,7 +375,7 @@ router.post('/whatsapp/pinnacle', async (req, res) => {
         return res.sendStatus(403)
       }
     } else {
-      console.warn('[whatsapp/pinnacle] PINNACLE_WEBHOOK_SECRET unset — processing callback without verification')
+      console.warn('[whatsapp/pinnacle] no webhook secret configured — processing callback without verification')
     }
 
     const body = req.body as {

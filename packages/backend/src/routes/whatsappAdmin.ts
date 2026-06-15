@@ -8,7 +8,8 @@ import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../serv
 import { countParameters, buildBodyParams } from '../services/providers/whatsappUtils.js'
 import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from '../services/templateContext.js'
-import { encrypt } from '../services/encryption.js'
+import { encrypt, decrypt } from '../services/encryption.js'
+import crypto from 'node:crypto'
 import {
   pinnacleGetUserDetails,
   pinnacleGetWabaInfo,
@@ -41,6 +42,7 @@ router.get('/provider-status', requireProjectId, async (req, res) => {
             parseInbound: false,
           },
           missingConfig: [],
+          webhookRegistered: false,
         },
       })
     }
@@ -60,6 +62,9 @@ router.get('/provider-status', requireProjectId, async (req, res) => {
         provider: provider.name,
         capabilities: getProviderCapabilities(provider),
         missingConfig,
+        // Delivery/read receipts only flow once the callback is registered. Stored
+        // at connect time; surfaced so the connected card can flag broken tracking.
+        webhookRegistered: !!config.webhookRegisteredAt,
       },
     })
   } catch (err) {
@@ -745,8 +750,35 @@ router.post('/connect-pinnacle', requireProjectId, async (req, res) => {
     const [project] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, req.projectId!)).limit(1)
     const settings = (project?.settings ?? {}) as Record<string, unknown>
     const existingChannels = (settings.channels ?? {}) as Record<string, { provider?: string; config?: Record<string, string> }>
-    const mergedChannels = { ...existingChannels, whatsapp: { provider: 'pinnacle', config: waConfig } }
 
+    // Per-project webhook secret — generated here so delivery/read receipts work
+    // WITHOUT any platform env. Reuse the existing one on reconnect so the already
+    // registered callback keeps verifying. Encrypted at rest like the apikey.
+    const existingWaConfig = existingChannels.whatsapp?.config ?? {}
+    const webhookSecret = existingWaConfig.webhookSecret
+      ? decrypt(existingWaConfig.webhookSecret)
+      : crypto.randomBytes(24).toString('hex')
+    waConfig.webhookSecret = encrypt(webhookSecret)
+
+    // 5. Register the webhook (non-fatal) BEFORE persisting, using the per-project
+    //    secret — no platform env required, so receipts work out of the box. The
+    //    registered flag is stored in config so the connected card can show health.
+    const appUrl = process.env.APP_URL
+    let webhookRegistered = false
+    if (appUrl) {
+      try {
+        await pinnacleSetWebhook(selected.phoneNumberId, rawApikey, `${appUrl}/api/webhooks/channel/whatsapp/pinnacle`, webhookSecret)
+        webhookRegistered = true
+        waConfig.webhookRegisteredAt = new Date().toISOString()
+      } catch (err) {
+        console.warn('[whatsapp/connect-pinnacle] setwebhook failed:', (err as Error).message)
+      }
+    } else {
+      console.warn('[whatsapp/connect-pinnacle] APP_URL unset — skipping webhook registration')
+    }
+
+    // 6. Persist channel config (incl. the registration flag).
+    const mergedChannels = { ...existingChannels, whatsapp: { provider: 'pinnacle', config: waConfig } }
     await db.execute(sql`
       UPDATE projects SET
         settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{channels}', ${JSON.stringify(mergedChannels)}::jsonb),
@@ -755,22 +787,7 @@ router.post('/connect-pinnacle', requireProjectId, async (req, res) => {
     `)
     clearProjectChannelProviderCache(req.projectId!)
 
-    // 5. Register the webhook (non-fatal). Uses the platform shared secret.
-    const appUrl = process.env.APP_URL
-    const secret = process.env.PINNACLE_WEBHOOK_SECRET
-    let webhookRegistered = false
-    if (appUrl && secret) {
-      try {
-        await pinnacleSetWebhook(selected.phoneNumberId, rawApikey, `${appUrl}/api/webhooks/channel/whatsapp/pinnacle`, secret)
-        webhookRegistered = true
-      } catch (err) {
-        console.warn('[whatsapp/connect-pinnacle] setwebhook failed:', (err as Error).message)
-      }
-    } else {
-      console.warn('[whatsapp/connect-pinnacle] APP_URL or PINNACLE_WEBHOOK_SECRET unset — skipping webhook registration')
-    }
-
-    // 6. Import existing Pinnacle templates (non-fatal).
+    // 7. Import existing Pinnacle templates (non-fatal).
     let templatesImported = 0
     try {
       const sync = await syncWhatsappTemplatesForProject(req.projectId!)

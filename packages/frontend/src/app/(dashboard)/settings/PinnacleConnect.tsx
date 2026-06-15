@@ -12,6 +12,7 @@ type ProviderStatus = {
   provider: string | null
   capabilities: { submitTemplate: boolean; syncTemplates: boolean; getTemplateStatus: boolean }
   missingConfig: string[]
+  webhookRegistered?: boolean
 }
 
 type WaNumber = { wabaId: string; waNumber: string; phoneNumberId: string }
@@ -102,12 +103,16 @@ export function PinnacleConnect() {
             Sending from <span className="font-medium text-text-primary">{result.selectedNumber.waNumber || result.selectedNumber.phoneNumberId}</span>
           </div>
         )}
-        {result && (
-          <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-text-muted">
-            <span>{result.webhookRegistered ? '✓ Webhook registered' : '⚠ Webhook not registered (set PINNACLE_WEBHOOK_SECRET + APP_URL)'}</span>
-            <span>{(result.templatesImported ?? 0)} template{result.templatesImported === 1 ? '' : 's'} imported</span>
-          </div>
-        )}
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px]">
+          {(result?.webhookRegistered ?? data?.webhookRegistered) ? (
+            <span className="text-text-muted">✓ Delivery tracking active</span>
+          ) : (
+            <span className="text-amber-600">⚠ Delivery tracking inactive — delivered/read won&apos;t update. Click “Reconnect / update key” to fix.</span>
+          )}
+          {result && (
+            <span className="text-text-muted">{(result.templatesImported ?? 0)} template{result.templatesImported === 1 ? '' : 's'} imported</span>
+          )}
+        </div>
 
         <p className="text-xs text-text-secondary">
           Author and sync templates from the <span className="font-medium">WhatsApp Templates</span> page. Inbound replies stay on your Pinnacle dashboard.
