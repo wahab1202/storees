@@ -8,6 +8,7 @@ import type { SendCommand, MessageChannel } from '@storees/shared'
 
 import { getChannelProvider } from './channelProviderRegistry.js'
 import { mirrorCampaignReceipt } from './messageStatusService.js'
+import { createTrackedLink } from './shortLinkService.js'
 
 type DeliveryProvider = {
   name: string
@@ -102,13 +103,18 @@ export async function executeSend(messageId: string, command: SendCommand): Prom
       // for this provider. Falls through to plain text send otherwise.
       const waTemplate = await resolveWhatsappTemplate(command, providerName)
       if (waTemplate && channelResult.provider.sendTemplate) {
+        // Tracked URL buttons: mint a per-recipient short link and pass its slug
+        // as the dynamic suffix (wa_button_url_N). buildTemplateComponents reads
+        // it; the tap then routes through /c/:slug and logs a whatsapp_clicked.
+        const variables = await injectTrackedButtonSlugs(command, messageId, waTemplate.buttons)
         // Never send an empty body param — Meta rejects with #131008. Empties
         // fall back to "-" (the variable's defaultValue is already applied
         // upstream by resolveTemplateVariables; set one to avoid the dash).
-        const params = buildBodyParams(waTemplate.parameterCount ?? 0, i => command.variables?.[String(i)])
+        const params = buildBodyParams(waTemplate.parameterCount ?? 0, i => variables[String(i)])
         sendResult = await channelResult.provider.sendTemplate(
           {
             ...command,
+            variables,
             templateName: waTemplate.providerTemplateId,
             templateLanguage: waTemplate.language,
             templateParams: params,
@@ -218,6 +224,38 @@ async function resolveWhatsappTemplate(
     ))
     .limit(1)
   return localized ?? selected
+}
+
+/**
+ * For each tracked URL button, mint a per-recipient short link pointing at the
+ * button's real destination and expose its slug as `wa_button_url_N` (N = the
+ * URL button's position). buildTemplateComponents turns that into the dynamic
+ * suffix, so the approved `…/c/{{1}}` base resolves to `…/c/<slug>` and the tap
+ * is tracked. Returns a fresh variables map (untracked buttons are unaffected).
+ */
+async function injectTrackedButtonSlugs(
+  command: SendCommand,
+  messageId: string,
+  buttons: unknown,
+): Promise<Record<string, string>> {
+  const variables: Record<string, string> = { ...(command.variables ?? {}) }
+  const list = Array.isArray(buttons) ? buttons as Array<{ type?: string; url?: string; track?: boolean }> : []
+  let urlPos = 0
+  for (const b of list) {
+    if ((b.type ?? '').toUpperCase() !== 'URL') continue
+    urlPos += 1 // counts every URL button, matching buildTemplateComponents
+    if (!b.track || !b.url) continue
+    const { slug } = await createTrackedLink({
+      originalUrl: b.url,
+      projectId: command.projectId,
+      channel: 'whatsapp',
+      messageId,
+      campaignId: command.campaignId ?? null,
+      customerId: command.userId,
+    })
+    variables[`wa_button_url_${urlPos}`] = slug
+  }
+  return variables
 }
 
 /**

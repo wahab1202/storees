@@ -71,7 +71,7 @@ export type SubmitTemplateInput = {
   bodyText: string
   header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string; example?: string } | null
   footer?: string | null
-  buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'; text: string; url?: string; phone?: string; example?: string; otpType?: 'COPY_CODE' | 'ONE_TAP' }>
+  buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'; text: string; url?: string; phone?: string; example?: string; otpType?: 'COPY_CODE' | 'ONE_TAP'; track?: boolean }>
   /** Sample values for body parameters {{1}}..{{N}}. Meta rejects without these. */
   bodyExample?: string[]
   /** AUTHENTICATION-category OTP config; when present, an auth template is built. */

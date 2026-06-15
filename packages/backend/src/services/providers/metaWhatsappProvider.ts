@@ -11,6 +11,7 @@ import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient } from './whatsappUtils.js'
+import { shortLinkBaseUrl } from '../shortLinkService.js'
 
 // Subset of Meta's message_templates response we care about
 type MetaComponent =
@@ -109,8 +110,18 @@ export function buildMetaComponents(input: SubmitTemplateInput): unknown[] {
   return components
 }
 
-function metaButton(b: { type: string; text: string; url?: string; phone?: string; example?: string }): Record<string, unknown> {
-  if (b.type === 'URL') return { type: 'URL', text: b.text, url: b.url }
+function metaButton(b: { type: string; text: string; url?: string; phone?: string; example?: string; track?: boolean }): Record<string, unknown> {
+  if (b.type === 'URL') {
+    // Tracked URL buttons submit a DYNAMIC base — `https://<domain>/c/{{1}}` —
+    // so each send appends a per-recipient slug as the suffix and the tap routes
+    // through our click redirect. Meta requires a full example URL. The real
+    // destination stays on the stored template for slug minting at send time.
+    if (b.track) {
+      const base = shortLinkBaseUrl()
+      return { type: 'URL', text: b.text, url: `${base}/c/{{1}}`, example: [`${base}/c/sample1234`] }
+    }
+    return { type: 'URL', text: b.text, url: b.url }
+  }
   if (b.type === 'PHONE_NUMBER') return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phone }
   if (b.type === 'COPY_CODE') return { type: 'COPY_CODE', text: b.text, example: b.example ? [b.example] : undefined }
   return { type: 'QUICK_REPLY', text: b.text }

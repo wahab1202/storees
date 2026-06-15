@@ -741,12 +741,23 @@ function ButtonsEditor({ buttons, onChange }: { buttons: WhatsappButton[]; onCha
                 className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
               />
               {b.type === 'URL' && (
-                <input
-                  value={b.url ?? ''}
-                  onChange={e => update(idx, { url: e.target.value })}
-                  placeholder="https://shop.example.com"
-                  className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
-                />
+                <>
+                  <input
+                    value={b.url ?? ''}
+                    onChange={e => update(idx, { url: e.target.value })}
+                    placeholder="https://shop.example.com"
+                    className="h-9 rounded-md border border-border px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/30"
+                  />
+                  <label className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={!!b.track}
+                      onChange={e => update(idx, { track: e.target.checked })}
+                      className="h-3.5 w-3.5 rounded border-border text-accent focus:ring-accent/30"
+                    />
+                    Track clicks <span className="text-text-muted">(wraps the link so taps show in analytics)</span>
+                  </label>
+                </>
               )}
               {b.type === 'PHONE_NUMBER' && (
                 <input

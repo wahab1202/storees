@@ -14,6 +14,12 @@ import { trackedLinks, messages, events } from '../db/schema.js'
 
 const BASE_URL = (process.env.SHORTLINK_BASE_URL ?? process.env.APP_URL ?? 'http://localhost:3001').replace(/\/$/, '')
 
+/** Public base for short links, e.g. https://go.storees.io. Used to bake the
+ *  `/c/{{1}}` dynamic base into tracked WhatsApp URL buttons at submit time. */
+export function shortLinkBaseUrl(): string {
+  return BASE_URL
+}
+
 export type TrackedLinkInput = {
   originalUrl: string
   projectId: string
