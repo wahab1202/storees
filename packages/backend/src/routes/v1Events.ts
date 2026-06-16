@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import crypto from 'node:crypto'
 import { db } from '../db/connection.js'
 import { events, customers, entities, identities, anonymousSessions } from '../db/schema.js'
 import { eq, and, sql } from 'drizzle-orm'
@@ -10,6 +11,27 @@ import { resolveCustomer as resolveCustomerService } from '../services/customerS
 import type { EventIngestionPayload } from '@storees/shared'
 
 const router = Router()
+
+// Fallback dedup key for events that arrive WITHOUT a caller-supplied
+// idempotency_key. Same (event, customer, properties) inside a 10s window →
+// same key → collapsed by the (project_id, idempotency_key) unique index.
+// Different properties (e.g. a different cart total/items) → different hash →
+// kept; a later window → different bucket → kept (legit repeat states survive).
+const DEDUP_WINDOW_MS = 10_000
+function deriveIdempotencyKey(
+  eventName: string,
+  customerId: string,
+  properties: Record<string, unknown> | undefined,
+  ts: Date,
+): string {
+  const bucket = Math.floor(ts.getTime() / DEDUP_WINDOW_MS)
+  const hash = crypto
+    .createHash('sha1')
+    .update(`${customerId}|${JSON.stringify(properties ?? {})}`)
+    .digest('hex')
+    .slice(0, 24)
+  return `auto:${eventName}:${hash}:${bucket}`
+}
 
 // All v1 routes require API key auth (public-key-only for SDK compatibility)
 router.use(requirePublicKeyAuth())
@@ -60,43 +82,36 @@ router.post('/events', async (req: Request, res: Response) => {
     const eventSource = payload.source ?? 'api'
     const eventSessionId = payload.session_id ?? null
 
-    if (payload.idempotency_key) {
-      const result = await db.execute(sql`
-        INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
-        VALUES (${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${eventPlatform}, ${eventSource}, ${eventSessionId}, ${payload.idempotency_key}, ${eventTimestamp})
-        ON CONFLICT (project_id, idempotency_key) DO NOTHING
-        RETURNING id
-      `)
-      if (result.rows.length === 0) {
-        // Already exists — deduplicated
-        const [existing] = await db
-          .select({ id: events.id })
-          .from(events)
-          .where(and(
-            eq(events.projectId, projectId),
-            eq(events.idempotencyKey, payload.idempotency_key),
-          ))
-          .limit(1)
-        return res.status(200).json({
-          success: true,
-          data: { id: existing?.id, deduplicated: true },
-        })
-      }
-      eventId = (result.rows[0] as { id: string }).id
-    } else {
-      const [inserted] = await db.insert(events).values({
-        projectId,
-        customerId,
-        eventName: payload.event_name.trim(),
-        properties: payload.properties ?? {},
-        platform: eventPlatform,
-        source: eventSource,
-        sessionId: eventSessionId,
-        idempotencyKey: null,
-        timestamp: eventTimestamp,
-      }).returning({ id: events.id })
-      eventId = inserted.id
+    // Dedup key: use the caller's idempotency_key when provided; otherwise derive
+    // one so duplicate webhook deliveries of the same event (same customer + same
+    // properties) within a short window collapse instead of piling up. Chatty
+    // sources (e.g. Shopify carts/update retries) were creating many identical
+    // rows because a NULL key dedupes nothing. Distinct states differ in
+    // properties → different hash → preserved; the time bucket lets a cart
+    // legitimately return to an earlier state later without being dropped.
+    const effectiveKey = payload.idempotency_key
+      ? payload.idempotency_key
+      : deriveIdempotencyKey(payload.event_name.trim(), customerId, payload.properties, eventTimestamp)
+
+    const result = await db.execute(sql`
+      INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
+      VALUES (${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${eventPlatform}, ${eventSource}, ${eventSessionId}, ${effectiveKey}, ${eventTimestamp})
+      ON CONFLICT (project_id, idempotency_key) DO NOTHING
+      RETURNING id
+    `)
+    if (result.rows.length === 0) {
+      // Already exists — deduplicated (provided or derived key)
+      const [existing] = await db
+        .select({ id: events.id })
+        .from(events)
+        .where(and(eq(events.projectId, projectId), eq(events.idempotencyKey, effectiveKey)))
+        .limit(1)
+      return res.status(200).json({
+        success: true,
+        data: { id: existing?.id, deduplicated: true },
+      })
     }
+    eventId = (result.rows[0] as { id: string }).id
 
     // Upsert entities if provided
     if (payload.entities && payload.entities.length > 0) {

@@ -399,9 +399,15 @@ POST /api/v1/events
 | `source` | No | How it was sent — `sdk`, `webhook`, `api`. Defaults to `api` |
 | `timestamp` | No | ISO 8601 timestamp. Defaults to now. Cannot be older than 7 days |
 | `session_id` | No | Group events into sessions |
-| `idempotency_key` | No | Prevent duplicate events. Same key = same event (ignored on re-send) |
+| `idempotency_key` | Recommended | Prevent duplicate events. Same key = same event (ignored on re-send). **Strongly recommended for chatty/server sources** (e.g. Shopify/Medusa `carts/update`, which retries and fires repeatedly). Use a stable key per state, e.g. `cart_updated:<cart_id>:<cart_updated_at>`. |
 
 *At least one of `customer_id`, `customer_email`, or `customer_phone` is required.
+
+> **Duplicate protection.** If you omit `idempotency_key`, Storees derives a fallback
+> one from `(event_name, customer, properties)` within a ~10s window, so duplicate
+> deliveries of the *same* event collapse automatically. This is a safety net, not a
+> substitute — high-frequency server integrations should still send their own stable
+> `idempotency_key` so identical states more than 10s apart don't double-count.
 
 ### Response
 
@@ -586,7 +592,8 @@ Each domain has a set of **suggested events** that Storees understands and uses 
 | `order_placed` | `total`, `item_count`, `order_id` | Order count, total spend, AOV |
 | `order_fulfilled` | `order_id` | Fulfillment rate |
 | `order_cancelled` | `order_id`, `reason` | Cancellation tracking |
-| `cart_created` | `cart_value`, `item_count` | Cart activity |
+| `cart_updated` | `cart_value`, `item_count`, `line_items[]` | Cart activity, abandoned-cart flows |
+| `cart_created` | `cart_value`, `item_count` | First cart creation (Shopify/Medusa connectors emit `cart_updated`, **not** `cart_created`, on every add/remove — target `cart_updated` in flows) |
 | `checkout_started` | `cart_value` | Checkout funnel |
 | `customer_created` | — | New customer |
 
