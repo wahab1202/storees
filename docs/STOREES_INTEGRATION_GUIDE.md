@@ -167,7 +167,8 @@ POST /api/v1/customers
 | `order_completed` | Order placed | `order_id`, `order_total`, `line_items[]`, `city` |
 | `order_cancelled` | Order cancelled | `order_id`, `reason` |
 | `checkout_started` | Cart → checkout | `cart_id`, `total`, `item_count` |
-| `cart_created` | New cart | `cart_id`, `line_items[]`, `total` |
+| `cart_updated` | Cart add/remove/change | `cart_id`, `line_items[]`, `total`, `item_count` — **the event Shopify/Medusa connectors actually emit; target this in abandoned-cart flows** |
+| `cart_created` | First cart creation only | `cart_id`, `line_items[]`, `total` (often not emitted by connectors — prefer `cart_updated`) |
 | `customer_created` | New signup | `name`, `email`, `phone` |
 | `customer_updated` | Profile changed | Changed fields |
 
