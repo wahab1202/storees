@@ -1,6 +1,7 @@
 import { eq, and, gt, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { flowTrips, flows, customers, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
+import { flowTrips, flows, customers, customerSegments, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
+import { filterToSql } from '@storees/segments'
 import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
@@ -436,7 +437,31 @@ async function evaluateCondition(
     )
   }
 
-  // attribute_check — check customer attribute
+  // attribute_filter — match the customer against a segment-style FilterConfig
+  // (multiple attributes, AND/OR). Reuses the exact SQL the segments engine uses,
+  // so semantics match the segment builder the marketer used to author it.
+  if (config.check === 'attribute_filter' && config.attributeFilter && config.attributeFilter.rules?.length) {
+    const customerId = trip.customerId as string
+    const [row] = await db
+      .select({ one: sql`1` })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), filterToSql(config.attributeFilter)))
+      .limit(1)
+    return !!row
+  }
+
+  // in_segment — true when the customer is currently a member of the segment.
+  if (config.check === 'in_segment' && config.segmentId) {
+    const customerId = trip.customerId as string
+    const [row] = await db
+      .select({ one: sql`1` })
+      .from(customerSegments)
+      .where(and(eq(customerSegments.segmentId, config.segmentId), eq(customerSegments.customerId, customerId)))
+      .limit(1)
+    return !!row
+  }
+
+  // attribute_check — legacy single customer attribute (field/operator/value)
   if (config.check === 'attribute_check' && config.field) {
     const customerId = trip.customerId as string
     const [customer] = await db
