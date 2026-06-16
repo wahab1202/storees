@@ -28,9 +28,21 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
     exp: now + 3600,
   })).toString('base64url')
 
+  // Normalize the PEM key: when the service-account JSON is pasted/stored with
+  // escaped newlines, JSON.parse leaves literal "\n" (backslash-n) in the key
+  // instead of real line breaks, so OpenSSL can't decode it
+  // (error:1E08010C:DECODER routine::unsupported). Converting them back is a
+  // no-op for an already-correct key. Also strip stray surrounding quotes/CRs.
+  const privateKey = sa.private_key
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/^["']|["']$/g, '')
+    .trim()
+
   const sign = crypto.createSign('RSA-SHA256')
   sign.update(`${header}.${payload}`)
-  const signature = sign.sign(sa.private_key, 'base64url')
+  const signature = sign.sign(privateKey, 'base64url')
   const jwt = `${header}.${payload}.${signature}`
 
   const tokenUri = sa.token_uri ?? 'https://oauth2.googleapis.com/token'
