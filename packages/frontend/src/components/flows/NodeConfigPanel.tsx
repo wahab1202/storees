@@ -8,6 +8,7 @@ import type { FilterConfig, FilterRule, FilterOperator, EventPropertyDef } from 
 import { useTemplates } from '@/hooks/useTemplates'
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
 import { useSegments } from '@/hooks/useSegments'
+import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 import { useProducts, useCollections } from '@/hooks/useProducts'
 import { NumberInput } from '@/components/ui/NumberInput'
 
@@ -161,6 +162,10 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
   const [event, setEvent] = useState((d.event as string) ?? '')
   const [field, setField] = useState((d.field as string) ?? '')
   const [filters, setFilters] = useState<FilterConfig | undefined>(d.filters as FilterConfig | undefined)
+  const [attributeFilter, setAttributeFilter] = useState<FilterConfig | undefined>(d.attributeFilter as FilterConfig | undefined)
+  const [segmentId, setSegmentId] = useState((d.segmentId as string) ?? '')
+  const { data: segmentsData } = useSegments()
+  const segments = segmentsData?.data ?? []
 
   useEffect(() => {
     const nd = node.data as Record<string, unknown>
@@ -168,6 +173,8 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
     setEvent((nd.event as string) ?? '')
     setField((nd.field as string) ?? '')
     setFilters(nd.filters as FilterConfig | undefined)
+    setAttributeFilter(nd.attributeFilter as FilterConfig | undefined)
+    setSegmentId((nd.segmentId as string) ?? '')
   }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps -- sync only when a different node is selected
 
   return (
@@ -184,11 +191,39 @@ function ConditionForm({ node, onUpdate, eventOptions }: { node: Node; onUpdate:
           className={SELECT_CLASS}
         >
           <option value="event_occurred">Event Occurred</option>
-          <option value="attribute_check">Attribute Check</option>
+          <option value="attribute_filter">Customer Attributes</option>
+          <option value="in_segment">In Segment</option>
+          <option value="attribute_check">Attribute Check (legacy)</option>
         </select>
       </FieldLabel>
 
-      {check === 'event_occurred' ? (
+      {check === 'attribute_filter' ? (
+        <FieldLabel label="Customer matches">
+          <SegmentFilterBuilder
+            filters={attributeFilter ?? { logic: 'AND', rules: [] }}
+            onChange={next => {
+              setAttributeFilter(next)
+              onUpdate(node.id, { ...d, check, attributeFilter: next })
+            }}
+          />
+        </FieldLabel>
+      ) : check === 'in_segment' ? (
+        <FieldLabel label="Segment">
+          <select
+            value={segmentId}
+            onChange={e => {
+              setSegmentId(e.target.value)
+              onUpdate(node.id, { ...d, check, segmentId: e.target.value })
+            }}
+            className={SELECT_CLASS}
+          >
+            <option value="">Select segment...</option>
+            {segments.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        </FieldLabel>
+      ) : check === 'event_occurred' ? (
         <>
           <FieldLabel label="Event Name">
             <select

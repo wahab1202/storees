@@ -537,12 +537,19 @@ export type ConditionNode = {
   id: string
   type: 'condition'
   config: {
-    check: 'event_occurred' | 'attribute_check'
+    check: 'event_occurred' | 'attribute_check' | 'attribute_filter' | 'in_segment'
     event?: string
     /** Event-property filter, only meaningful when check === 'event_occurred'.
      *  Mirrors TriggerConfig.filters and is evaluated by the same matcher so a
      *  condition can ask "has done product_viewed where product_id = X". */
     filters?: FilterConfig
+    /** Customer-attribute filter for check === 'attribute_filter' — the same
+     *  FilterConfig the segment builder produces, evaluated against the customer.
+     *  Supports multiple attributes with AND/OR (replaces the single field/value). */
+    attributeFilter?: FilterConfig
+    /** Segment id for check === 'in_segment' — true when the customer is a member. */
+    segmentId?: string
+    /** Legacy single-attribute check (field/operator/value). Kept for back-compat. */
     field?: string
     operator?: FilterOperator
     value?: unknown
