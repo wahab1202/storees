@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Loader2, ScrollText, Search } from 'lucide-react'
+import { Loader2, ScrollText, Search, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   useNotificationLogs,
@@ -151,7 +151,7 @@ export default function NotificationLogsPage() {
                       {r.status}
                     </span>
                   </td>
-                  <td className="px-4 py-2.5 text-text-secondary max-w-[280px] truncate" title={reason}>{reason || '—'}</td>
+                  <td className="px-4 py-2.5"><ReasonCell reason={reason} /></td>
                 </tr>
               )
             })}
@@ -177,6 +177,33 @@ export default function NotificationLogsPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Failure/block reason with a copy button — reasons (e.g. raw FCM/Meta errors)
+ *  are long and truncated, so make the full text one click to grab for debugging. */
+function ReasonCell({ reason }: { reason: string }) {
+  const [copied, setCopied] = useState(false)
+  if (!reason) return <span className="text-text-muted">—</span>
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(reason)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard unavailable — ignore */ }
+  }
+  return (
+    <div className="flex items-center gap-1.5 max-w-[340px]">
+      <span className="truncate text-text-secondary" title={reason}>{reason}</span>
+      <button
+        onClick={copy}
+        title="Copy full reason"
+        aria-label="Copy full reason"
+        className="shrink-0 rounded p-1 text-text-muted hover:bg-surface hover:text-text-primary"
+      >
+        {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
     </div>
   )
 }
