@@ -11,6 +11,7 @@ import {
   Megaphone,
   Workflow,
   Radio,
+  ScrollText,
   Settings,
   Store,
   Plus,
@@ -53,6 +54,7 @@ const navItems: NavItem[] = [
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
+  { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]
 
 const bottomItems: NavItem[] = [

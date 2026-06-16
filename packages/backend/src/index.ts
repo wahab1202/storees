@@ -43,6 +43,7 @@ import urlTrackerRoutes from './routes/urlTracker.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
+import logsRoutes from './routes/logs.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
 import assetRoutes from './routes/assets.js'
@@ -173,6 +174,7 @@ app.use('/api/predictions', requireAuth, predictionRoutes)
 app.use('/api/send-time', requireAuth, sendTimeRoutes)
 app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
+app.use('/api/logs', requireAuth, logsRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 app.use('/api/assets', requireAuth, assetRoutes)
 
