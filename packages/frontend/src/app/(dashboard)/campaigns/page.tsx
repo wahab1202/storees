@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -467,28 +468,53 @@ function RowActions({
   onUnarchive: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const MENU_WIDTH = 176 // w-44
+
+  const toggle = (e: React.MouseEvent) => {
+    e.preventDefault()
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      // Right-align the menu under the button; clamp to the viewport.
+      setCoords({ top: r.bottom + 4, left: Math.max(8, r.right - MENU_WIDTH) })
+    }
+    setOpen(v => !v)
+  }
 
   useEffect(() => {
     if (!open) return
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!btnRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false)
     }
+    // Close on scroll — the fixed menu would otherwise detach from its row.
+    const onScroll = () => setOpen(false)
     document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', onClick)
+      window.removeEventListener('scroll', onScroll, true)
+    }
   }, [open])
 
   return (
-    <div ref={ref} className="relative inline-block text-left">
+    <div className="relative inline-block text-left">
       <button
-        onClick={(e) => { e.preventDefault(); setOpen(v => !v) }}
+        ref={btnRef}
+        onClick={toggle}
         className="p-1.5 text-text-muted hover:text-text-primary hover:bg-surface rounded-md transition-colors"
         aria-label="Campaign actions"
       >
         <MoreVertical className="h-4 w-4" />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-1 w-44 bg-white border border-border rounded-lg shadow-lg z-20 py-1">
+      {open && coords && createPortal(
+        <div
+          ref={menuRef}
+          style={{ position: 'fixed', top: coords.top, left: coords.left, width: MENU_WIDTH }}
+          className="bg-white border border-border rounded-lg shadow-lg z-50 py-1">
           <Link
             href={`/campaigns/${campaignId}`}
             className="flex items-center gap-2 px-3 py-1.5 text-sm text-text-primary hover:bg-surface w-full text-left"
@@ -519,7 +545,8 @@ function RowActions({
               <Archive className="h-3.5 w-3.5 text-text-muted" /> Archive
             </button>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
