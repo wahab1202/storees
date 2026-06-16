@@ -11,6 +11,7 @@ import {
   Megaphone,
   Workflow,
   Radio,
+  ScrollText,
   Settings,
   Store,
   Plus,
@@ -57,6 +58,7 @@ const navItems: NavItem[] = [
   // customers — so Flows is visible to them. Backend enforces ownership + audience scope.
   { href: '/flows', label: 'Flows', icon: Workflow },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
+  { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]
 
 const bottomItems: NavItem[] = [
