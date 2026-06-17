@@ -179,6 +179,8 @@ type ResolveParams = {
   name?: string | null
   emailSubscribed?: boolean
   smsSubscribed?: boolean
+  pushSubscribed?: boolean
+  whatsappSubscribed?: boolean
   region?: string | null
   city?: string | null
   /** External dealer ID (matches agents.external_dealer_id). Stamps
@@ -238,7 +240,7 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
 }
 
 async function resolveCustomerCore(params: ResolveParams): Promise<string> {
-  const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed, region, city, skipLastSeenBump, sourceCreatedAt } = params
+  const { projectId, externalId, email, phone, name, emailSubscribed, smsSubscribed, pushSubscribed, whatsappSubscribed, region, city, skipLastSeenBump, sourceCreatedAt } = params
 
   // 1. Try external_id (has unique index: idx_customers_external)
   if (externalId) {
@@ -249,7 +251,7 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed, region, city, skipLastSeenBump, sourceCreatedAt })
+      await updateLastSeen(found.id, { name, email, phone, emailSubscribed, smsSubscribed, pushSubscribed, whatsappSubscribed, region, city, skipLastSeenBump, sourceCreatedAt })
       return found.id
     }
   }
@@ -270,6 +272,8 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       if (phone) updates.phone = phone
       if (emailSubscribed !== undefined) updates.emailSubscribed = emailSubscribed
       if (smsSubscribed !== undefined) updates.smsSubscribed = smsSubscribed
+      if (pushSubscribed !== undefined) updates.pushSubscribed = pushSubscribed
+      if (whatsappSubscribed !== undefined) updates.whatsappSubscribed = whatsappSubscribed
       // Region/city: only fill if currently NULL (don't clobber other-source data like B2B dealer assignment)
       if (region) updates.region = sql`COALESCE(${customers.region}, ${region})`
       if (city) updates.city = sql`COALESCE(${customers.city}, ${city})`
@@ -291,7 +295,7 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
       .limit(1)
 
     if (found) {
-      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed, region, city, skipLastSeenBump, sourceCreatedAt })
+      await updateLastSeen(found.id, { name, externalId, email, emailSubscribed, smsSubscribed, pushSubscribed, whatsappSubscribed, region, city, skipLastSeenBump, sourceCreatedAt })
       return found.id
     }
   }
@@ -308,8 +312,8 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
   const initialLastSeen = skipLastSeenBump ? initialFirstSeen : new Date()
   if (email) {
     const result = await db.execute(sql`
-      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics, first_seen, last_seen)
-      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb, ${initialFirstSeen}, ${initialLastSeen})
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, push_subscribed, whatsapp_subscribed, region, city, metrics, first_seen, last_seen)
+      VALUES (${projectId}, ${externalId ?? null}, ${email}, ${phone ?? null}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${pushSubscribed ?? false}, ${whatsappSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb, ${initialFirstSeen}, ${initialLastSeen})
       ON CONFLICT (project_id, email) WHERE email IS NOT NULL
       DO UPDATE SET
         last_seen   = CASE WHEN ${skipLastSeenBump ?? false} THEN customers.last_seen ELSE NOW() END,
@@ -327,8 +331,8 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
 
   if (phone) {
     const result = await db.execute(sql`
-      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, region, city, metrics, first_seen, last_seen)
-      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb, ${initialFirstSeen}, ${initialLastSeen})
+      INSERT INTO customers (project_id, external_id, email, phone, name, email_subscribed, sms_subscribed, push_subscribed, whatsapp_subscribed, region, city, metrics, first_seen, last_seen)
+      VALUES (${projectId}, ${externalId ?? null}, ${null}, ${phone}, ${name ?? null}, ${emailSubscribed ?? false}, ${smsSubscribed ?? false}, ${pushSubscribed ?? false}, ${whatsappSubscribed ?? false}, ${region ?? null}, ${city ?? null}, '{}'::jsonb, ${initialFirstSeen}, ${initialLastSeen})
       ON CONFLICT (project_id, phone) WHERE phone IS NOT NULL
       DO UPDATE SET
         last_seen   = CASE WHEN ${skipLastSeenBump ?? false} THEN customers.last_seen ELSE NOW() END,
@@ -352,6 +356,8 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
     name: name ?? null,
     emailSubscribed: emailSubscribed ?? false,
     smsSubscribed: smsSubscribed ?? false,
+    pushSubscribed: pushSubscribed ?? false,
+    whatsappSubscribed: whatsappSubscribed ?? false,
     region: region ?? null,
     city: city ?? null,
     metrics: {},
@@ -371,6 +377,8 @@ async function updateLastSeen(
     phone?: string | null
     emailSubscribed?: boolean
     smsSubscribed?: boolean
+    pushSubscribed?: boolean
+    whatsappSubscribed?: boolean
     region?: string | null
     city?: string | null
     skipLastSeenBump?: boolean
@@ -391,6 +399,8 @@ async function updateLastSeen(
   if (extra?.phone) updates.phone = extra.phone
   if (extra?.emailSubscribed !== undefined) updates.emailSubscribed = extra.emailSubscribed
   if (extra?.smsSubscribed !== undefined) updates.smsSubscribed = extra.smsSubscribed
+  if (extra?.pushSubscribed !== undefined) updates.pushSubscribed = extra.pushSubscribed
+  if (extra?.whatsappSubscribed !== undefined) updates.whatsappSubscribed = extra.whatsappSubscribed
   // Region/city: only fill if currently NULL — see resolveCustomer for rationale
   if (extra?.region) updates.region = sql`COALESCE(${customers.region}, ${extra.region})`
   if (extra?.city) updates.city = sql`COALESCE(${customers.city}, ${extra.city})`
