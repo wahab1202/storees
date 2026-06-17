@@ -74,7 +74,16 @@ let tokenCache: { token: string; expiresAt: number } | null = null
 export const fcmProvider: ChannelProvider = {
   name: 'fcm',
   async send(command, config) {
-    const { projectId, serviceAccountKey } = config
+    const { serviceAccountKey } = config
+    // Derive the FCM project from the service-account JSON when the config field
+    // is blank/wrong — they must be the same project anyway, and a missing
+    // projectId makes the send URL /projects/undefined/... which FCM rejects as
+    // "Requested entity was not found" (indistinguishable from a dead token).
+    let projectId = config.projectId
+    if (!projectId) {
+      try { projectId = JSON.parse(serviceAccountKey).project_id } catch { /* surfaced below */ }
+    }
+    if (!projectId) return { messageId: '', status: 'failed', error: 'FCM projectId missing (set Project ID or a valid service account)' }
 
     const [customer] = await db.select({ customAttributes: customers.customAttributes }).from(customers).where(eq(customers.id, command.userId)).limit(1)
     const template = command.templateId
