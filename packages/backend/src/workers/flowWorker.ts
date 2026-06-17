@@ -2,7 +2,7 @@ import { Worker } from 'bullmq'
 import { eq, and } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { scheduledJobs } from '../db/schema.js'
+import { scheduledJobs, flowTrips } from '../db/schema.js'
 import { advanceTrip } from '../services/flowExecutor.js'
 
 export function startFlowWorker(): Worker {
@@ -23,8 +23,18 @@ export function startFlowWorker(): Worker {
         ),
       )
 
-      // Advance the trip
-      await advanceTrip(tripId)
+      // Move the trip onto the post-delay node BEFORE advancing. Without this,
+      // advanceTrip re-reads currentNodeId (still the delay node), re-processes
+      // the delay, and reschedules another advance_trip — an infinite wait loop
+      // that never reaches the next node. Guard on status='waiting' so an exit
+      // event that fired during the delay isn't resurrected.
+      const moved = await db.update(flowTrips)
+        .set({ currentNodeId: nextNodeId, status: 'active' })
+        .where(and(eq(flowTrips.id, tripId), eq(flowTrips.status, 'waiting')))
+        .returning({ id: flowTrips.id })
+
+      // Advance the trip (only meaningful if it was still waiting)
+      if (moved.length > 0) await advanceTrip(tripId)
     },
     {
       connection: redisConnection,
