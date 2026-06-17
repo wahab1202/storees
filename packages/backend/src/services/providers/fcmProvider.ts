@@ -82,7 +82,8 @@ export const fcmProvider: ChannelProvider = {
       : undefined
 
     // FCM device token stored in customer.customAttributes.fcm_token
-    const fcmToken = (customer?.customAttributes as Record<string, unknown>)?.fcm_token as string
+    const customAttrs = (customer?.customAttributes as Record<string, unknown>) ?? {}
+    const fcmToken = customAttrs.fcm_token as string
     if (!fcmToken) return { messageId: '', status: 'failed', error: 'No FCM token' }
 
     // Build title and body from template or variables
@@ -134,7 +135,23 @@ export const fcmProvider: ChannelProvider = {
 
     const data = await resp.json() as { name?: string; error?: { message: string; code?: number; status?: string } }
     if (!resp.ok) {
+      const errStatus = data.error?.status ?? ''
       const errMsg = data.error?.message ?? `HTTP ${resp.status}`
+      // Dead token — FCM no longer knows this registration token (uninstalled,
+      // expired, or wrong Firebase project). Clear it so we stop re-sending to a
+      // dead device (FCM hygiene), and surface a readable reason in the logs.
+      const isDeadToken =
+        errStatus === 'UNREGISTERED' || errStatus === 'NOT_FOUND' ||
+        /not.*registered|requested entity was not found|invalid.*registration/i.test(errMsg)
+      if (isDeadToken) {
+        const next = { ...customAttrs, push_subscribed: false }
+        delete (next as Record<string, unknown>).fcm_token
+        await db.update(customers)
+          .set({ customAttributes: next, updatedAt: new Date() })
+          .where(eq(customers.id, command.userId))
+        console.warn(`[FCM] Cleared dead token for ${command.userId}: ${errStatus || errMsg}`)
+        return { messageId: '', status: 'failed', error: 'Device token expired — not registered (token cleared)' }
+      }
       console.error(`[FCM] Push send failed for ${command.userId}: ${errMsg}`)
       return { messageId: '', status: 'failed', error: errMsg }
     }
