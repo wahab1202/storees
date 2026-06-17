@@ -400,6 +400,10 @@ async function checkFrequencyCap(
       eq(messages.channel, channel),
       eq(messages.messageType, 'promotional'),
       eq(messages.countsTowardFrequencyCap, true),
+      // Only messages that actually went out count toward the cap. Failed/blocked
+      // sends never reached the customer, so they must not consume the budget
+      // (otherwise a burst of failed test sends silently caps a real one).
+      sql`${messages.status} NOT IN ('failed', 'blocked')`,
       gte(messages.createdAt, sql`NOW() - (${cap.perDays}::int * INTERVAL '1 day')`),
     ))
 
