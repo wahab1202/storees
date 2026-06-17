@@ -160,6 +160,22 @@ POST /api/v1/customers
 
 ## 3. Standard Events by Domain
 
+> ### ⚠️ Event Naming Convention — read first
+> Storees matches events by **exact name**. Flow triggers, flow conditions, and
+> segments compare the event name as a literal string — a near-miss silently
+> matches nothing (the flow looks like it "never triggers"). Use these **exact**
+> names, and make sure what your connector *emits* is what your flows *target*:
+>
+> | Use this exact name | NOT |
+> |---|---|
+> | `cart_updated` (fires on every cart add/remove — what Shopify/Medusa connectors emit) | ~~`cart_created`~~, ~~`add_to_cart`~~ |
+> | `order_placed` (what the Shopify/Medusa connector emits) | ~~`order_completed`~~ |
+> | `product_viewed` | ~~`product_view`~~, ~~`view_product`~~ |
+>
+> Also send a stable **`idempotency_key`** on every event (see §12). Chatty sources
+> like Shopify `carts/update` retry and fire repeatedly; without a key the same
+> cart state is recorded many times. Recommended format: `cart_updated:<cart_id>:<updated_at>`.
+
 ### Ecommerce Events
 
 | Event | When to fire | Key properties |
@@ -929,7 +945,8 @@ orders/create → order_placed
 orders/fulfilled → order_fulfilled
 orders/cancelled → order_cancelled
 checkouts/create → checkout_started
-carts/create → cart_created
+carts/create → cart_created      (first cart only — often not fired)
+carts/update → cart_updated      (every add/remove — target THIS in abandoned-cart flows)
 ```
 
 ### After Shopify Connection
@@ -1010,12 +1027,17 @@ All delivery data feeds into: engagement scoring, optimal send time, best channe
 | Batch events | 1,000 events per batch, 100 batches/minute |
 | SDK events | Batched client-side (20 events or 30s interval) |
 
-**Idempotency keys** prevent duplicate processing:
+**Idempotency keys** prevent duplicate processing. **Send one on every event** —
+chatty sources (e.g. Shopify `carts/update`) retry and fire repeatedly, so without
+a key the same state is stored many times. If you omit it, Storees derives a
+fallback key from `(event_name, customer, properties)` within a ~10s window as a
+safety net, but you should still send your own stable key:
+
 | Event | Key format |
 |-------|-----------|
-| `order_completed` | `order_{order_id}` |
+| `order_placed` | `order_{order_id}` |
 | `customer_created` | `cust_{customer_id}` |
-| `cart_created` | `cart_{cart_id}` |
+| `cart_updated` | `cart_{cart_id}_{updated_at}` |
 
 ---
 
