@@ -12,6 +12,8 @@ import { EVENTS_BY_DOMAIN } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
 import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
 import { useProducts } from '@/hooks/useProducts'
+import { useSegments } from '@/hooks/useSegments'
+import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 
 type Props = {
   flowNodes: FlowNode[]
@@ -749,6 +751,8 @@ function ConditionBlock({
   const { data: catalog } = useVariableSources()
   const customerFields = catalog?.data.customer ?? []
   const customAttrs = catalog?.data.attributes ?? []
+  const { data: segmentsData } = useSegments()
+  const segments = segmentsData?.data ?? []
   const cfg = node.config
 
   function patch(next: Partial<typeof cfg>) {
@@ -763,18 +767,41 @@ function ConditionBlock({
         <select
           value={cfg.check}
           onChange={e => patch({
-            check: e.target.value as 'event_occurred' | 'attribute_check',
+            check: e.target.value as 'event_occurred' | 'attribute_check' | 'attribute_filter' | 'in_segment',
             // Clear cross-mode fields so stale state doesn't leak across kinds
             event: undefined, field: undefined, operator: undefined, value: undefined,
+            attributeFilter: undefined, segmentId: undefined,
           })}
           className={INPUT}
         >
           <option value="event_occurred">Has Done Event</option>
-          <option value="attribute_check">Check Attribute</option>
+          <option value="attribute_filter">Customer Attributes</option>
+          <option value="in_segment">In Segment</option>
+          <option value="attribute_check">Check Attribute (legacy)</option>
         </select>
       </Fld>
 
-      {cfg.check === 'event_occurred' ? (
+      {cfg.check === 'attribute_filter' ? (
+        <Fld label="Customer matches">
+          <SegmentFilterBuilder
+            filters={cfg.attributeFilter ?? { logic: 'AND', rules: [] }}
+            onChange={next => patch({ attributeFilter: next })}
+          />
+        </Fld>
+      ) : cfg.check === 'in_segment' ? (
+        <Fld label="Segment">
+          <select
+            value={cfg.segmentId ?? ''}
+            onChange={e => patch({ segmentId: e.target.value })}
+            className={INPUT}
+          >
+            <option value="">Select segment…</option>
+            {segments.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        </Fld>
+      ) : cfg.check === 'event_occurred' ? (
         <>
           <Fld label="Event">
             <select
