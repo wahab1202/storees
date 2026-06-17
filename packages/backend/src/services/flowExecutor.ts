@@ -475,9 +475,21 @@ async function evaluateCondition(
     // Support dotted paths like "customAttributes.loyalty_tier" so the UI
     // can target keys nested inside the customAttributes JSON blob.
     const value = resolveDottedPath(customer as Record<string, unknown>, config.field)
+    // is/is_not used to be strict === — which silently failed on any format/type
+    // difference (e.g. phone stored "+919944608585" never equals typed
+    // "9944608585"), routing every trip down No. Compare normalized: trimmed
+    // strings, and digits-only for phone-like fields so country codes/spacing
+    // don't break equality.
+    const isPhoneField = /phone|mobile|whatsapp/i.test(config.field ?? '')
+    const norm = (v: unknown): string => {
+      const s = String(v ?? '').trim()
+      if (!isPhoneField) return s
+      const digits = s.replace(/\D/g, '')
+      return digits.length > 10 ? digits.slice(-10) : digits // last 10 = ignore country code
+    }
     switch (config.operator) {
-      case 'is':           return value === config.value
-      case 'is_not':       return value !== config.value
+      case 'is':           return norm(value) === norm(config.value)
+      case 'is_not':       return norm(value) !== norm(config.value)
       case 'greater_than': return Number(value) > Number(config.value)
       case 'less_than':    return Number(value) < Number(config.value)
       case 'contains':     return String(value ?? '').includes(String(config.value ?? ''))
