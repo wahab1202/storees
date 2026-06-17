@@ -144,6 +144,12 @@ function NodeFunnel({ funnel, totalTrips }: { funnel: FlowAnalytics['nodeFunnel'
   if (funnel.length === 0) return null
 
   const maxEntered = Math.max(...funnel.map(n => n.entered), 1)
+  // Disambiguate repeated labels (a flow has two "End" nodes — Yes-branch and
+  // No-branch — which otherwise render identically).
+  const dupLabels = new Set(
+    funnel.filter((n, idx, a) => a.findIndex(x => x.label === n.label) !== idx).map(n => n.label),
+  )
+  const seen: Record<string, number> = {}
 
   return (
     <div className="bg-white border border-border rounded-xl p-5">
@@ -157,13 +163,16 @@ function NodeFunnel({ funnel, totalTrips }: { funnel: FlowAnalytics['nodeFunnel'
         {funnel.map((node, i) => {
           const barWidth = maxEntered > 0 ? (node.entered / maxEntered) * 100 : 0
           const typeColor = NODE_TYPE_COLORS[node.nodeType] ?? 'bg-gray-400'
+          const displayLabel = dupLabels.has(node.label)
+            ? `${node.label} (${(seen[node.label] = (seen[node.label] ?? 0) + 1)})`
+            : node.label
 
           return (
             <div key={node.nodeId} className="flex items-center gap-3">
               {/* Node indicator */}
               <div className="flex items-center gap-2 w-40 shrink-0">
                 <div className={cn('w-2.5 h-2.5 rounded-full shrink-0', typeColor)} />
-                <span className="text-xs font-medium text-text-primary truncate">{node.label}</span>
+                <span className="text-xs font-medium text-text-primary truncate" title={displayLabel}>{displayLabel}</span>
               </div>
 
               {/* Bar */}
@@ -218,30 +227,33 @@ function WeeklyChart({ data }: { data: FlowAnalytics['weeklyTrips'] }) {
   return (
     <div className="bg-white border border-border rounded-xl p-5">
       <h3 className="text-sm font-semibold text-heading mb-4">Weekly Trips (8 weeks)</h3>
-      <div className="flex items-end gap-2 h-32">
+      {/* Entered + completed are grouped side-by-side (not stacked) and clamped to
+          the 128px track — completed ⊆ entered, so stacking them double-counted and
+          a 100%-completion week overflowed the container. */}
+      <div className="flex items-end gap-2 h-32 overflow-hidden">
         {data.map((w, i) => {
-          const enteredH = (w.entered / maxVal) * 128
-          const completedH = (w.completed / maxVal) * 128
+          const enteredH = Math.min(128, (w.entered / maxVal) * 128)
+          const completedH = Math.min(enteredH, (w.completed / maxVal) * 128)
           const weekLabel = new Date(w.week).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 
           return (
-            <div key={i} className="flex-1 flex flex-col items-center gap-1" title={`${weekLabel}: ${w.entered} entered, ${w.completed} completed`}>
-              <div className="w-full flex flex-col items-center gap-0.5">
-                <div
-                  className="w-full bg-accent/30 rounded-t-sm"
-                  style={{ height: `${Math.max(enteredH, 2)}px` }}
-                />
-                {completedH > 0 && (
-                  <div
-                    className="w-full bg-green-400 rounded-b-sm -mt-0.5"
-                    style={{ height: `${completedH}px` }}
-                  />
-                )}
-              </div>
-              <span className="text-[9px] text-text-muted">{weekLabel}</span>
+            <div
+              key={i}
+              className="flex-1 flex items-end justify-center gap-0.5 h-full"
+              title={`${weekLabel}: ${w.entered} entered, ${w.completed} completed`}
+            >
+              <div className="w-[45%] bg-accent/30 rounded-t-sm" style={{ height: `${Math.max(enteredH, 2)}px` }} />
+              <div className="w-[45%] bg-green-400 rounded-t-sm" style={{ height: `${Math.max(completedH, 2)}px` }} />
             </div>
           )
         })}
+      </div>
+      <div className="flex gap-2 mt-1">
+        {data.map((w, i) => (
+          <span key={i} className="flex-1 text-center text-[9px] text-text-muted">
+            {new Date(w.week).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          </span>
+        ))}
       </div>
       <div className="flex items-center gap-4 mt-3 pt-2 border-t border-border">
         <div className="flex items-center gap-1.5">
