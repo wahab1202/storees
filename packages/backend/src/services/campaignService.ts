@@ -202,7 +202,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
 
   while (true) {
     const excludeClause = excludeAudienceFilter ? sql`NOT (${filterToSql(excludeAudienceFilter)})` : undefined
-    const page: Array<{ customerId: string; email: string | null; phone: string | null; pushSubscribed: boolean }>
+    const page: Array<{ customerId: string; email: string | null; phone: string | null; pushSubscribed: boolean; customAttributes: unknown }>
       = audienceFilter
         ? await db
             .select({
@@ -210,6 +210,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
               email: customers.email,
               phone: customers.phone,
               pushSubscribed: customers.pushSubscribed,
+              customAttributes: customers.customAttributes,
             })
             .from(customers)
             .where(and(
@@ -227,6 +228,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
               email: customers.email,
               phone: customers.phone,
               pushSubscribed: customers.pushSubscribed,
+              customAttributes: customers.customAttributes,
             })
             .from(customerSegments)
             .innerJoin(customers, eq(customers.id, customerSegments.customerId))
@@ -243,6 +245,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
               email: customers.email,
               phone: customers.phone,
               pushSubscribed: customers.pushSubscribed,
+              customAttributes: customers.customAttributes,
             })
             .from(customers)
             .where(and(
@@ -259,7 +262,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
     const reachable = page.filter(c => {
       if (channel === 'email') return !!c.email
       if (channel === 'sms' || channel === 'whatsapp') return !!c.phone
-      if (channel === 'push') return c.pushSubscribed
+      if (channel === 'push') return c.pushSubscribed || !!asRecord(c.customAttributes)?.fcm_token
       return !!c.email
     })
     reachableCount += reachable.length
@@ -558,7 +561,10 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
     const reachable = page.filter(c => {
       if (channel === 'email') return !!c.email
       if (channel === 'sms' || channel === 'whatsapp') return !!c.phone
-      if (channel === 'push') return c.pushSubscribed
+      // Push: a device token is what makes delivery possible (and, per the consent
+      // policy, implies consent). push_subscribed alone (no token) can't deliver,
+      // so accept either — consistent with checkConsent.
+      if (channel === 'push') return c.pushSubscribed || !!asRecord(c.customAttributes)?.fcm_token
       return !!c.email
     })
 
