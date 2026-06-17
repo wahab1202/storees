@@ -25,34 +25,30 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     valuePrefix: 'Bearer ',
   },
 
+  // All four now live under the dedicated /storees-cdp/export/* namespace
+  // (bypasses Medusa's admin permission chain — see STOREES_CDP_AUTH_UPDATE.md).
+  // Auth is a static Bearer pull_token set per-connector-row, NOT in code.
   endpoints: {
     customers: {
-      path: '/admin/customers',
+      path: '/storees-cdp/export/customers',
       method: 'GET',
       responseDataPath: 'customers',
       responseCountPath: 'count',
     },
     products: {
-      path: '/admin/products',
+      path: '/storees-cdp/export/products',
       method: 'GET',
       responseDataPath: 'products',
       responseCountPath: 'count',
     },
     orders: {
-      path: '/admin/orders',
+      path: '/storees-cdp/export/orders',
       method: 'GET',
-      queryParams: { fields: '+items.*,+items.product.*,+customer.*' },
       responseDataPath: 'orders',
       responseCountPath: 'count',
     },
-    // Storees-CDP namespace (NOT Medusa core admin). GWM exposes dealers as
-    // a first-class resource here; response is already in canonical shape
-    // (see STOREES_DEALERS_EXPORT.md), so the field map is mostly 1:1.
-    // Sync of this endpoint is gated server-side on
-    // projects.features.agentScopedAccess — only the GWM project qualifies
-    // today even if another tenant later picks the VirpanAI template.
     dealers: {
-      path: '/admin/storees-cdp/export/dealers',
+      path: '/storees-cdp/export/dealers',
       method: 'GET',
       responseDataPath: 'dealers',
       responseCountPath: 'count',
@@ -69,12 +65,12 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
   interBatchDelayMs: 100,
   maxFetchRetries: 3,
 
+  // The /storees-cdp/export/* endpoints all use `updated_after` (the CDP-export
+  // convention) — unlike the old Medusa admin routes that used updated_at[gte].
   incremental: {
-    customers: { param: 'updated_at[gte]', format: 'iso8601' },
-    products: { param: 'updated_at[gte]', format: 'iso8601' },
-    orders: { param: 'updated_at[gte]', format: 'iso8601' },
-    // GWM's dealer export uses `updated_after` (different param name vs the
-    // Medusa admin endpoints which use updated_at[gte]).
+    customers: { param: 'updated_after', format: 'iso8601' },
+    products: { param: 'updated_after', format: 'iso8601' },
+    orders: { param: 'updated_after', format: 'iso8601' },
     dealers: { param: 'updated_after', format: 'iso8601' },
   },
 
