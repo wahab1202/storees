@@ -636,7 +636,18 @@ async function syncEntity(
       return { ok: false, latestTimestamp: runStart }
     }
 
-    if (pageResult.records.length === 0) break
+    // An empty page with hasMore=true happens when a whole page is filtered out
+    // server-side (e.g. GWM orders without customer_id or total=0). Don't stop —
+    // advance and keep going, or we'd miss every later page. Bounded by
+    // MAX_PAGES_PER_ENTITY. Empty + !hasMore = genuinely done.
+    if (pageResult.records.length === 0) {
+      if (pageResult.hasMore && i < MAX_PAGES_PER_ENTITY - 1) {
+        offset += cfg.template.pagination.pageSize
+        page += 1
+        continue
+      }
+      break
+    }
 
     await handler(projectId, syncId, pageResult.records, cfg.template, stats[entity])
     await updateSyncStats(syncId, fullStats)
