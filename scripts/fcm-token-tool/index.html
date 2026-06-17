@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Storees — FCM Test Token Tool</title>
+<style>
+  body { font: 15px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1e2233; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 28px; }
+  .card { border: 1px solid #e3e6f0; border-radius: 12px; padding: 16px; margin: 14px 0; }
+  label { display: block; font-size: 12px; color: #6b7280; margin: 8px 0 3px; }
+  input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px; }
+  button { background: #4F46E5; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre { background: #f5f6ff; border: 1px solid #e3e6f0; border-radius: 8px; padding: 12px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+  .ok { color: #047857; } .err { color: #b91c1c; } .muted { color: #6b7280; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Storees — FCM Test Token Tool</h1>
+<p class="muted">
+  Mints a real FCM device token for the <code>gowelmart-9b9c8</code> Firebase project and
+  (optionally) registers it on a Storees customer, so you can test push end-to-end
+  without the mobile app. <b>Must be served over http://localhost or https</b> (not file://) —
+  see the README in this folder.
+</p>
+
+<!-- ============ 1. FILL THIS IN ============ -->
+<script>
+  // From Firebase Console → Project settings → General → "Your apps" (Web app).
+  const FIREBASE_CONFIG = {
+    apiKey:            "TODO_FIREBASE_API_KEY",
+    authDomain:        "gowelmart-9b9c8.firebaseapp.com",
+    projectId:         "gowelmart-9b9c8",
+    messagingSenderId: "TODO_SENDER_ID",
+    appId:             "TODO_APP_ID",
+  };
+  // Firebase Console → Project settings → Cloud Messaging → Web Push certificates → Key pair.
+  const VAPID_KEY = "TODO_WEB_PUSH_VAPID_KEY";
+</script>
+<!-- ========================================= -->
+
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
+
+<div class="card">
+  <h2>1. Get a device token</h2>
+  <button id="getToken">Allow notifications & get token</button>
+  <div id="tokenOut"></div>
+</div>
+
+<div class="card">
+  <h2>2. Register it on a Storees customer (optional)</h2>
+  <label>Storees API base</label>
+  <input id="apiBase" value="https://api.storees.io" />
+  <label>Public API key (strs_pub_…)</label>
+  <input id="pub" placeholder="strs_pub_xxx" />
+  <label>Secret API key (strs_sec_…)</label>
+  <input id="sec" placeholder="strs_sec_xxx" />
+  <label>Customer ID (the same id Storees keys on)</label>
+  <input id="cid" placeholder="e.g. the Medusa customer id" />
+  <button id="register" disabled>Register token with Storees</button>
+  <div id="regOut"></div>
+</div>
+
+<script>
+  let currentToken = "";
+  const $ = (id) => document.getElementById(id);
+
+  $("getToken").onclick = async () => {
+    const out = $("tokenOut");
+    out.innerHTML = "Requesting permission…";
+    try {
+      if (FIREBASE_CONFIG.apiKey.startsWith("TODO")) throw new Error("Fill FIREBASE_CONFIG + VAPID_KEY at the top of this file first.");
+      firebase.initializeApp(FIREBASE_CONFIG);
+      const messaging = firebase.messaging();
+
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") throw new Error("Notification permission was not granted.");
+
+      // Register the service worker, passing the config via query string so you
+      // only edit the config in ONE place (here).
+      const swUrl = "firebase-messaging-sw.js?config=" + encodeURIComponent(JSON.stringify(FIREBASE_CONFIG));
+      const reg = await navigator.serviceWorker.register(swUrl);
+
+      const token = await messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+      if (!token) throw new Error("No token returned (permission/SW issue).");
+      currentToken = token;
+      out.innerHTML = '<p class="ok">✓ Token obtained:</p><pre>' + token + "</pre>";
+      $("register").disabled = false;
+
+      // Show foreground pushes so a test send is visible even with the tab open.
+      messaging.onMessage((p) => {
+        const n = p.notification || {};
+        new Notification(n.title || "Storees test", { body: n.body || "" });
+      });
+    } catch (e) {
+      out.innerHTML = '<p class="err">✗ ' + e.message + "</p>";
+    }
+  };
+
+  $("register").onclick = async () => {
+    const out = $("regOut");
+    out.innerHTML = "Registering…";
+    try {
+      const resp = await fetch($("apiBase").value.replace(/\/$/, "") + "/api/v1/customers", {
+        method: "POST",
+        headers: {
+          "X-API-Key": $("pub").value.trim(),
+          "X-API-Secret": $("sec").value.trim(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          customer_id: $("cid").value.trim(),
+          attributes: { fcm_token: currentToken, push_subscribed: true },
+        }),
+      });
+      const data = await resp.json();
+      out.innerHTML = resp.ok
+        ? '<p class="ok">✓ Registered. Now send a push from Storees to this customer.</p><pre>' + JSON.stringify(data, null, 2) + "</pre>"
+        : '<p class="err">✗ ' + (data.error || resp.status) + "</p>";
+    } catch (e) {
+      out.innerHTML = '<p class="err">✗ ' + e.message + "</p>";
+    }
+  };
+</script>
+</body>
+</html>
