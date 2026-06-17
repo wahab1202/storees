@@ -308,9 +308,23 @@ async function checkConsent(
     allowed = record.status === 'opted_in'
   } else if (messageType === 'transactional') {
     allowed = true // transactional always allowed
+  } else if (channel === 'push') {
+    // Push is gated by the OS notification permission, which is implied by the
+    // presence of a device (FCM) token. So treat "has a token OR push_subscribed"
+    // as consent — explicit opt-out is the `consents` row handled above. This
+    // lets push work when a third-party app only relays the token (and not a
+    // separate consent flag), while dead-token pruning removes the token on
+    // uninstall, which correctly revokes consent here.
+    const [cust] = await db
+      .select({
+        sub: customers.pushSubscribed,
+        token: sql<string | null>`${customers.customAttributes}->>'fcm_token'`,
+      })
+      .from(customers).where(eq(customers.id, customerId)).limit(1)
+    allowed = cust?.sub === true || !!(cust?.token && cust.token.trim())
   } else {
     // Fallback: check customer.{channel}_subscribed flag
-    const subField: Record<string, string> = { email: 'email_subscribed', sms: 'sms_subscribed', push: 'push_subscribed', whatsapp: 'whatsapp_subscribed' }
+    const subField: Record<string, string> = { email: 'email_subscribed', sms: 'sms_subscribed', whatsapp: 'whatsapp_subscribed' }
     const col = subField[channel]
     if (col) {
       const [cust] = await db.select({ subscribed: sql<boolean>`${sql.raw(col)}` }).from(customers).where(eq(customers.id, customerId)).limit(1)
