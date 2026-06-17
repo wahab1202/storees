@@ -6,6 +6,7 @@ import { Plus, Trash2, GripVertical, Search, ChevronDown, Loader2, FolderPlus } 
 import { cn } from '@/lib/utils'
 import { NumberInput } from '@/components/ui/NumberInput'
 import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
+import { useCustomers } from '@/hooks/useCustomers'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
 import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef } from '@storees/shared'
 
@@ -188,6 +189,105 @@ function ProductSearchDropdown({ value, onChange }: { value: string; onChange: (
         className={cn(inputClass, 'w-full sm:w-52 flex items-center justify-between gap-1 text-left truncate', !value && 'text-text-muted')}
       >
         <span className="truncate">{value || 'Select product...'}</span>
+        <ChevronDown className="h-3.5 w-3.5 text-text-muted flex-shrink-0" />
+      </button>
+      {panel}
+    </>
+  )
+}
+
+// ============ Customer value typeahead ============
+// For identifier fields (phone/email/name/external id) — search real customers
+// and fill the EXACT stored value, so you don't mistype (and a phone with a
+// country code can't silently mismatch). Still allows free typing.
+
+const CUSTOMER_IDENTIFIER_FIELDS = new Set(['phone', 'email', 'name', 'externalId', 'external_id', 'customerId', 'customer_id'])
+
+function customerFieldValue(c: { phone?: string | null; email?: string | null; name?: string | null; externalId?: string | null }, field: string): string {
+  if (field === 'email') return c.email ?? ''
+  if (field === 'name') return c.name ?? ''
+  if (field === 'externalId' || field === 'external_id' || field === 'customerId' || field === 'customer_id') return c.externalId ?? ''
+  return c.phone ?? '' // phone (default)
+}
+
+function CustomerSearchDropdown({ field, value, onChange }: { field: string; value: string; onChange: (val: string) => void }) {
+  const [search, setSearch] = useState('')
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const { data, isLoading } = useCustomers({ search: search.trim() || undefined, pageSize: 8 })
+  const customers = (search.trim().length >= 2 ? data?.data : []) ?? []
+  const coords = useDropdownCoords(triggerRef, open)
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const t = e.target as Node
+      if (triggerRef.current?.contains(t)) return
+      if (panelRef.current?.contains(t)) return
+      setOpen(false)
+    }
+    if (open) document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [open])
+
+  const panel = open && coords ? createPortal(
+    <div
+      ref={panelRef}
+      style={{
+        position: 'fixed',
+        left: coords.left,
+        top: coords.openUp ? undefined : coords.top + 4,
+        bottom: coords.openUp ? window.innerHeight - coords.top + 4 : undefined,
+        width: 320,
+      }}
+      className="z-[100] bg-white border border-border rounded-lg shadow-lg overflow-hidden"
+    >
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+        <Search className="h-3.5 w-3.5 text-text-muted" />
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search name / phone / email..."
+          autoFocus
+          className="flex-1 text-sm bg-transparent outline-none placeholder:text-text-muted"
+        />
+        {isLoading && <Loader2 className="h-3.5 w-3.5 text-text-muted animate-spin" />}
+      </div>
+      <div className="max-h-72 overflow-y-auto py-1">
+        {customers.length === 0 && (
+          <p className="px-3 py-3 text-xs text-text-muted text-center">
+            {search.trim().length >= 2 ? 'No customers found' : 'Type at least 2 characters'}
+          </p>
+        )}
+        {customers.map(c => {
+          const picked = customerFieldValue(c, field)
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => { onChange(picked); setSearch(''); setOpen(false) }}
+              className={cn('w-full px-3 py-2 text-left hover:bg-surface transition-colors', picked === value && 'bg-accent/5')}
+            >
+              <div className="text-sm text-text-primary truncate">{c.name || c.email || c.phone || 'Customer'}</div>
+              <div className="text-[11px] text-text-muted truncate">{[c.phone, c.email].filter(Boolean).join(' · ')}</div>
+            </button>
+          )
+        })}
+      </div>
+    </div>,
+    document.body,
+  ) : null
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={cn(inputClass, 'w-full sm:w-52 flex items-center justify-between gap-1 text-left truncate', !value && 'text-text-muted')}
+      >
+        <span className="truncate">{value || `Search ${field}...`}</span>
         <ChevronDown className="h-3.5 w-3.5 text-text-muted flex-shrink-0" />
       </button>
       {panel}
@@ -392,6 +492,12 @@ function RuleRow({
             value={rule.value as string}
             onChange={e => onChange({ value: e.target.value })}
             className={cn(inputClass, 'w-40')}
+          />
+        ) : CUSTOMER_IDENTIFIER_FIELDS.has(rule.field) ? (
+          <CustomerSearchDropdown
+            field={rule.field}
+            value={rule.value as string}
+            onChange={val => onChange({ value: val })}
           />
         ) : (
           <input
