@@ -80,9 +80,21 @@ BullMQ 'events' queue
 ### Condition Node
 1. Check `config.check`:
    - If `event_occurred`: Query events table for `event_name = config.event` WHERE `customer_id = trip.customer_id` AND `timestamp > trip.entered_at`
-   - If `attribute_check`: Evaluate `config.field` + `config.operator` + `config.value` against the customer's current profile
+   - If `attribute_filter`: Evaluate `config.attributeFilter` (a segment-style `FilterConfig`) against the customer via the segments engine's `filterToSql` — same semantics as the segment builder. Supports multiple attributes with AND/OR.
+   - If `in_segment`: TRUE when the customer is a current member of `config.segmentId` (`customer_segments` lookup).
+   - If `attribute_check` (**legacy**): Evaluate `config.field` + `config.operator` + `config.value` with **strict `===`** against the customer's profile.
 2. If condition is TRUE → advance to `config.branches.yes` node
 3. If condition is FALSE → advance to `config.branches.no` node
+
+> ⚠️ **Prefer `in_segment` or `attribute_filter` over legacy `attribute_check`.**
+> `attribute_check` does an exact `===` on a free-text field+value, so any format
+> mismatch silently sends every trip down the **No** branch (e.g. a `phone` stored
+> as `+919944608585` never equals the typed `9944608585` — the flow looks "not
+> triggering" when really the condition rejected everyone). Build attribute rules
+> with the segment filter UI (autosuggested fields, normalized matching) or target
+> a **segment** so membership is computed by the segmentation engine, not a literal
+> string compare. Symptom to recognise: in flow Analytics, trips are created (>0
+> total) but the funnel shows all of them at **End** with 0 reaching the action.
 
 ### Action Node
 1. Check `config.actionType`:
