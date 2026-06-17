@@ -54,8 +54,24 @@ Content-Type: application/json
 Project ID:  <your-project-uuid>
 API Key:     strs_pub_xxxx     (public — safe for frontend SDK)
 API Secret:  strs_sec_xxxx     (secret — backend only, never expose in client code)
-Base URL:    https://api.storees.io
+Base URL:    https://<your-deployment-api-base>   ← see warning below
 ```
+
+> ### ⚠️ The API base URL is **per deployment** — do not assume `api.storees.io`
+> `api.storees.io` is the **shared Storees cloud**. **Dedicated / self-hosted instances
+> have their own API base and their own database**, and API keys are scoped to that
+> instance. If you point a dedicated customer's integration at `api.storees.io`, the
+> data lands in the **wrong instance** (different DB) and never appears in their
+> dashboard — a silent, hard-to-spot mistake.
+>
+> **Always use the API base shown for *that* project/deployment**, with *that*
+> instance's API keys. Examples:
+> - Shared cloud → `https://api.storees.io` (dashboard.storees.io)
+> - A dedicated deployment → its own host, e.g. `https://api.<customer-domain>` (matches its dashboard)
+>
+> Find it from the deployment's frontend env (`NEXT_PUBLIC_API_URL`) or the project's
+> Settings. The curl/SDK examples below use `https://api.storees.io` as a placeholder —
+> **replace it with your deployment's base URL.**
 
 ---
 
