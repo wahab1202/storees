@@ -264,46 +264,19 @@ async function checkConsent(
     ))
     .limit(1)
 
-  // No consent record: check customer subscription flags as fallback
-  let allowed: boolean
-  if (record) {
-    allowed = record.status === 'opted_in'
-  } else if (messageType === 'transactional') {
-    allowed = true // transactional always allowed
-  } else if (channel === 'push') {
-    // Push is gated by the OS notification permission, which is implied by the
-    // presence of a device (FCM) token. So treat "has a token OR push_subscribed"
-    // as consent — explicit opt-out is the `consents` row handled above. This
-    // lets push work when a third-party app only relays the token (and not a
-    // separate consent flag), while dead-token pruning removes the token on
-    // uninstall, which correctly revokes consent here.
-    const [cust] = await db
-      .select({
-        sub: customers.pushSubscribed,
-        token: sql<string | null>`${customers.customAttributes}->>'fcm_token'`,
-      })
-      .from(customers).where(eq(customers.id, customerId)).limit(1)
-    allowed = cust?.sub === true || !!(cust?.token && cust.token.trim())
-  } else if (channel === 'whatsapp') {
-    // Opt-out model for WhatsApp (product decision): marketing is allowed by
-    // default and is only blocked by an explicit opt-out. Explicit opt-outs
-    // (e.g. an inbound STOP) always write an `opted_out` row to `consents`,
-    // which is checked above — so the absence of a record implies consent.
-    // NOTE: This is more permissive than Meta's opt-in policy. The number's
-    // quality rating now depends on prompt STOP handling + dead-number pruning.
-    allowed = true
-  } else {
-    // Fallback: check customer.{channel}_subscribed flag. Email/SMS stay opt-in
-    // because their opt-out state is synced from Shopify into these flags.
-    const subField: Record<string, string> = { email: 'email_subscribed', sms: 'sms_subscribed' }
-    const col = subField[channel]
-    if (col) {
-      const [cust] = await db.select({ subscribed: sql<boolean>`${sql.raw(col)}` }).from(customers).where(eq(customers.id, customerId)).limit(1)
-      allowed = cust?.subscribed ?? false
-    } else {
-      allowed = false
-    }
-  }
+  // Opt-out consent model (product decision): with no explicit consent record,
+  // marketing is allowed by default on EVERY channel. The only thing that blocks
+  // is an explicit `opted_out` consents row (handled above) — written by an
+  // inbound STOP, a push uninstall, or the unsubscribe API. Transactional was
+  // always allowed. Deliverability (email/phone present, FCM token, etc.) is
+  // enforced separately in checkReachability, so defaulting to allowed here never
+  // results in a send to a customer we cannot actually reach.
+  // NOTE: this is more permissive than Meta's WhatsApp opt-in policy and than a
+  // strict email/SMS double-opt-in. For email/SMS, Shopify-synced unsubscribes
+  // live in the *_subscribed flags and are NOT honored here unless mirrored to an
+  // `opted_out` consents row; email hard-suppressions (bounces/complaints) are
+  // still enforced separately in campaignService.
+  const allowed = record ? record.status === 'opted_in' : true
 
   await redis.set(cacheKey, allowed ? '1' : '0', 'EX', 300) // 5 min TTL
   return allowed
@@ -396,6 +369,7 @@ async function checkReachability(
       email: customers.email,
       phone: customers.phone,
       pushSubscribed: customers.pushSubscribed,
+      fcmToken: sql<string | null>`${customers.customAttributes}->>'fcm_token'`,
     })
     .from(customers)
     .where(and(eq(customers.id, customerId), eq(customers.projectId, projectId)))
@@ -410,7 +384,9 @@ async function checkReachability(
     case 'whatsapp':
       return !!customer.phone
     case 'push':
-      return customer.pushSubscribed
+      // Reachable if subscribed OR we hold a device token (fcmProvider sends to
+      // customAttributes.fcm_token). Mirrors campaignService's push reachability.
+      return customer.pushSubscribed || !!(customer.fcmToken && customer.fcmToken.trim())
     case 'inapp':
       return true // always reachable
     default:
