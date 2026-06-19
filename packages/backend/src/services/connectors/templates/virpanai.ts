@@ -1,23 +1,24 @@
 import type { ConnectorTemplate } from '../genericHttpConnector.js'
 
-// VirpanAI (GWM and similar Medusa v2-backed stores). The Admin API returns
-// records in raw Medusa shape:
-//   - customers: `id`, `email`, `phone`, `first_name`, `last_name`, ...
-//   - products: `id`, `title`, `variants[*].prices[*].amount` (cents),
-//                `collections[*].title`, `thumbnail`, `type.value`, ...
-//   - orders: `id`, `customer.id`, `created_at`, `total` (cents),
-//              `currency_code`, `items[*]` with nested product
+// VirpanAI (GWM and similar Medusa v2-backed stores). Pulls from the dedicated
+// /storees-cdp/export/* endpoints, which emit Storees-CANONICAL FLAT shape
+// (NOT raw Medusa — that was the old /admin/* path):
+//   - customers: `customer_id`, `email`, `phone`, `name`, `region`, `city`,
+//                `created_at`, top-level `fcm_token` + `push_subscribed`,
+//                `custom_attributes.dealer_id`
+//   - products:  `product_id`, `title`, `base_price`, `currency`, `image_url`,
+//                `status` (already 'active'/...), `collections` (string[])
+//   - orders:    `customer_id`, `order_id`, `timestamp`, `total`, `currency`,
+//                `canceled_at`, `line_items[*]` (flat product_name/price/qty)
 //
-// All money values are integer cents — divideBy: 100 to get major-unit
-// rupees/dollars. If GWM (or a future client) eventually wraps these
-// endpoints to return Storees-canonical flat shape, switch to the Custom
-// template and supply the flat mapping there instead.
+// Money is ALREADY in major currency units (₹) — no divideBy. There is no
+// fulfillment_status; importOrderBatch treats a null canceled_at as revenue.
 
 export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
   id: 'virpanai',
   label: 'VirpanAI',
   description:
-    'For VirpanAI / Medusa v2-backed stores (GWM and similar). Hits /admin/customers, /admin/products, /admin/orders on the Admin API and maps raw Medusa shape — nested customer.id, items[] with prices in cents — to Storees canonical fields. Use the Custom template if the source already returns canonical flat shape.',
+    'For VirpanAI / Medusa v2-backed stores (GWM and similar). Pulls /storees-cdp/export/{customers,products,orders,dealers}, which return Storees-canonical flat shape (flat ids, major-unit money, top-level fcm_token/push_subscribed). Maps near-identity. Use the Custom template for a differently-shaped source.',
 
   auth: {
     type: 'bearer',
@@ -75,88 +76,70 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
   },
 
   fieldMap: {
+    // The /storees-cdp/export/* endpoints emit Storees-canonical FLAT shape
+    // (verified against live GWM payloads), NOT raw Medusa. Money is already in
+    // major currency units (₹) — e.g. an iPhone order total of 56490 — so NO
+    // divideBy. ids are `customer_id` / `product_id` / `order_id` (not `id`),
+    // `name` is pre-concatenated, and fcm_token / push_subscribed are top-level.
     customers: {
-      external_id: 'id',
+      external_id: 'customer_id',
       email: 'email',
       phone: 'phone',
-      name: { concat: ['first_name', 'last_name'], separator: ' ' },
-      email_subscribed: 'has_account',
-      // Medusa customer.created_at — used by resolveCustomer to set
-      // first_seen accurately. Without this, every customer ingested by a
-      // resync looks like a brand-new acquisition even when they were
-      // created years ago in Medusa.
+      name: 'name',
+      region: 'region',
+      city: 'city',
+      // CDP export already ships push consent + device token at the top level.
+      push_subscribed: 'push_subscribed',
+      // source created_at — lets resolveCustomer set first_seen accurately so a
+      // resync doesn't relabel historical customers as new.
       source_created_at: 'created_at',
-      // GWM B2B: dealer_id is stamped on Medusa customer.metadata. Surface it
-      // at top level so dataSyncService's customer importer can wire it into
-      // resolveCustomer's agentExternalDealerId param (which stamps
-      // customers.agent_id when the agent row exists, and stores the dealer
-      // id in custom_attributes for deferred backlinking when it doesn't).
-      dealer_id: 'metadata.dealer_id',
+      // B2B: dealer_id is nested under custom_attributes in the export. Surfaced
+      // at top level so the customer importer wires it into resolveCustomer's
+      // agentExternalDealerId (stamps customers.agent_id / stores for backlink).
+      dealer_id: 'custom_attributes.dealer_id',
       custom_attributes: {
-        billing_city: 'billing_address.city',
-        billing_region: 'billing_address.province',
-        metadata: 'metadata',
+        // fcm_token MUST land at custom_attributes.fcm_token — push delivery
+        // reads custom_attributes->>'fcm_token'. Source has it at the top level.
+        fcm_token: 'fcm_token',
+        shop_name: 'custom_attributes.shop_name',
       },
     },
 
     products: {
-      product_id: 'id',
+      product_id: 'product_id',
       title: 'title',
-      product_type: 'type.value',
-      vendor: 'collection.title',
-      base_price: { from: 'variants[0].prices[0].amount', divideBy: 100 },
-      currency: 'variants[0].prices[0].currency_code',
-      image_url: 'thumbnail',
-      // Medusa product.status is 'draft' | 'proposed' | 'published' | 'rejected'.
-      // Storees products column accepts 'active'/'archived'/'draft' — letting
-      // 'published' through means the row will fail the constraint check.
-      // The aggregator catches that and skips; for now we just pass the raw
-      // value and let onboarding edit the connector config to remap if needed.
-      status: 'status',
-      collections: { fromArray: 'collections', field: 'title' },
+      product_type: 'product_type',
+      base_price: 'base_price',   // already major-unit ₹, NOT cents
+      currency: 'currency',
+      image_url: 'image_url',
+      status: 'status',           // export already emits 'active'/'archived'/'draft'
+      collections: 'collections', // already a flat string array
+      attributes: 'attributes',
     },
 
-    // Medusa v2 order shape (verified from a real GWM payload):
-    //   - customer_id is flat at the root (also nested in customer.id; either works)
-    //   - id is the order id
-    //   - There is NO flat `total` at the root — totals live inside `summary`
-    //     as `current_order_total` (net), `original_order_total` (gross),
-    //     `paid_total`, `accounting_total`. Reading from `summary.current_order_total`
-    //     gives the right number for active orders AND yields 0 for
-    //     canceled/refunded orders — which our zero-total guard then skips,
-    //     so cancellations don't inflate revenue.
-    //   - line item `unit_price` is a FLAT number in major currency units
-    //     (₹), NOT cents. Same for `quantity`. The `raw_*` BigNumber versions
-    //     are also present but we ignore them.
-    //   - line item also has flat `product_type` and `product_collection`
-    //     (typically nullable) — no need to crawl into nested product.
+    // CDP-export order shape (verified from live GWM payloads):
+    //   - flat customer_id / order_id (NOT `id`)
+    //   - flat `total` and `currency` in major units (₹) — no `summary`
+    //   - `timestamp` is the order date; `canceled_at` null = active order
+    //   - NO fulfillment_status field — importOrderBatch falls back to
+    //     canceled_at (null → revenue) when fulfillment_status is absent
+    //   - line items under `line_items` with flat product_name / price / qty
     orders: {
       customer_id: 'customer_id',
-      order_id: 'id',
-      // Medusa lifecycle fields. GWM's canonical signal is fulfillment_status
-      // (delivered = revenue, canceled = not revenue, anything else =
-      // pending/processing). status and canceled_at are also captured as
-      // fallbacks — some Medusa versions only set one of them on cancellation.
-      order_status: 'status',
-      fulfillment_status: 'fulfillment_status',
+      order_id: 'order_id',
       canceled_at: 'canceled_at',
-      timestamp: 'created_at',
-      total: 'summary.current_order_total',
-      // Medusa doesn't ship a flat discount field. summary.original_order_total
-      // is gross (before discount), current_order_total is net (after) — the
-      // delta IS the discount applied to the order. Negative shouldn't happen
-      // in practice; if it does we treat it as 0 downstream.
-      discount: { subtract: ['summary.original_order_total', 'summary.current_order_total'] },
-      currency: 'currency_code',
+      timestamp: 'timestamp',
+      total: 'total',
+      currency: 'currency',
       line_items: {
-        sourcePath: 'items',
+        sourcePath: 'line_items',
         fields: {
           product_id: 'product_id',
-          product_name: 'title',
+          product_name: 'product_name',
           product_type: 'product_type',
           product_collection: 'product_collection',
           quantity: 'quantity',
-          price: 'unit_price',
+          price: 'price',
         },
       },
     },

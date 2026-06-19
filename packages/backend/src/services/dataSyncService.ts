@@ -128,8 +128,13 @@ async function importCustomerBatch(
             name: (mapped.name as string | undefined) ?? null,
             emailSubscribed: (mapped.email_subscribed as boolean | undefined) ?? false,
             smsSubscribed: (mapped.sms_subscribed as boolean | undefined) ?? false,
+            pushSubscribed: (mapped.push_subscribed as boolean | undefined),
             region: (mapped.region as string | undefined) ?? null,
             city: (mapped.city as string | undefined) ?? null,
+            // Connector-mapped custom attributes (e.g. fcm_token for push).
+            // Merged into customers.custom_attributes; push delivery reads
+            // custom_attributes->>'fcm_token'.
+            customAttributes: (mapped.custom_attributes as Record<string, unknown> | undefined),
             // B2B: stamp customers.agent_id when the dealer exists and store
             // dealer_id in custom_attributes for deferred backlinking.
             agentExternalDealerId: (mapped.dealer_id as string | undefined) ?? null,
@@ -257,7 +262,13 @@ async function importOrderBatch(
     const status = mapped.order_status as string | undefined
     const fulfillmentStatus = mapped.fulfillment_status as string | undefined
     const canceledAt = mapped.canceled_at as string | null | undefined
-    const isDelivered = fulfillmentStatus === 'delivered'
+    // Revenue signal. Medusa exposes fulfillment_status (delivered = revenue);
+    // the CDP-export shape has NO fulfillment_status, so fall back to
+    // canceled_at (null/absent → active order → revenue). Without this fallback
+    // every export order looks non-delivered and gets compensated/skipped.
+    const isDelivered = fulfillmentStatus !== undefined
+      ? fulfillmentStatus === 'delivered'
+      : !canceledAt
 
     if (!isDelivered) {
       // Non-delivered (canceled OR pending/processing). Compensate if a
@@ -278,7 +289,7 @@ async function importOrderBatch(
     }
     // Explicitly mark void to silence unused-var lint on the fallback signals.
     // They're still validated above as part of the lifecycle comment.
-    void status; void canceledAt
+    void status
 
     const total = mapped.total
     if (typeof total !== 'number' || total <= 0) {
