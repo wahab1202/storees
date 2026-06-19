@@ -322,9 +322,18 @@ async function checkConsent(
       })
       .from(customers).where(eq(customers.id, customerId)).limit(1)
     allowed = cust?.sub === true || !!(cust?.token && cust.token.trim())
+  } else if (channel === 'whatsapp') {
+    // Opt-out model for WhatsApp (product decision): marketing is allowed by
+    // default and is only blocked by an explicit opt-out. Explicit opt-outs
+    // (e.g. an inbound STOP) always write an `opted_out` row to `consents`,
+    // which is checked above — so the absence of a record implies consent.
+    // NOTE: This is more permissive than Meta's opt-in policy. The number's
+    // quality rating now depends on prompt STOP handling + dead-number pruning.
+    allowed = true
   } else {
-    // Fallback: check customer.{channel}_subscribed flag
-    const subField: Record<string, string> = { email: 'email_subscribed', sms: 'sms_subscribed', whatsapp: 'whatsapp_subscribed' }
+    // Fallback: check customer.{channel}_subscribed flag. Email/SMS stay opt-in
+    // because their opt-out state is synced from Shopify into these flags.
+    const subField: Record<string, string> = { email: 'email_subscribed', sms: 'sms_subscribed' }
     const col = subField[channel]
     if (col) {
       const [cust] = await db.select({ subscribed: sql<boolean>`${sql.raw(col)}` }).from(customers).where(eq(customers.id, customerId)).limit(1)
