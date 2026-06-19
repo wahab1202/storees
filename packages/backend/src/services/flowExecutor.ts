@@ -17,7 +17,30 @@ import type {
   TemplateVariable,
 } from '@storees/shared'
 
-const DEMO_DELAY_MINUTES = Number(process.env.DEMO_DELAY_MINUTES ?? 2)
+// Demo override: when DEMO_DELAY_MINUTES is *explicitly* set, every delay node
+// collapses to that many minutes (handy for live demos). When it is unset, each
+// delay node honors its own configured value + unit. Previously this defaulted to
+// 2, which silently squashed all configured delays even in production.
+const DEMO_DELAY_OVERRIDE_MIN =
+  process.env.DEMO_DELAY_MINUTES != null && process.env.DEMO_DELAY_MINUTES !== ''
+    ? Number(process.env.DEMO_DELAY_MINUTES)
+    : null
+
+const DELAY_UNIT_MS: Record<DelayNode['config']['unit'], number> = {
+  minutes: 60 * 1000,
+  hours: 60 * 60 * 1000,
+  days: 24 * 60 * 60 * 1000,
+}
+
+/** Resolve a delay node's wait in ms — the demo override wins when set, else the
+ *  node's own value + unit. */
+function resolveDelayMs(node: DelayNode): number {
+  if (DEMO_DELAY_OVERRIDE_MIN != null && Number.isFinite(DEMO_DELAY_OVERRIDE_MIN)) {
+    return Math.max(0, DEMO_DELAY_OVERRIDE_MIN) * 60 * 1000
+  }
+  const { value, unit } = node.config
+  return Math.max(0, Number(value) || 0) * (DELAY_UNIT_MS[unit] ?? DELAY_UNIT_MS.minutes)
+}
 
 /**
  * Advance a flow trip through its nodes.
@@ -77,8 +100,7 @@ export async function advanceTrip(tripId: string): Promise<void> {
 
       case 'delay': {
         const delayNode = currentNode as DelayNode
-        // Use demo delay override
-        const delayMs = DEMO_DELAY_MINUTES * 60 * 1000
+        const delayMs = resolveDelayMs(delayNode)
 
         const nextNode = getNextNode(nodes, currentNode.id)
         if (!nextNode) {
@@ -109,7 +131,7 @@ export async function advanceTrip(tripId: string): Promise<void> {
           currentNodeId: currentNode.id,
         }).where(eq(flowTrips.id, tripId))
 
-        console.log(`Trip ${tripId}: waiting ${DEMO_DELAY_MINUTES}min at delay node`)
+        console.log(`Trip ${tripId}: waiting ${Math.round(delayMs / 60000)}min at delay node`)
         return // Stop processing — will resume after delay
       }
 
