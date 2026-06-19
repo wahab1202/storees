@@ -187,6 +187,10 @@ type ResolveParams = {
    *  customers.agent_id when the agent row already exists AND the customer
    *  has no agent assigned yet. Silently skipped if dealer not found. */
   agentExternalDealerId?: string | null
+  /** Extra keys to merge into customers.custom_attributes (jsonb || merge,
+   *  incoming keys win, untouched keys preserved). Used by connector sync to
+   *  carry source-only fields like fcm_token through to push delivery. */
+  customAttributes?: Record<string, unknown> | null
   /** When true, last_seen is NOT bumped on resolution. Set by batch sync /
    *  bulk-import paths so that pipeline activity doesn't masquerade as
    *  customer activity. Live event ingestion leaves this false — an event
@@ -233,6 +237,19 @@ export async function resolveCustomer(params: ResolveParams): Promise<string> {
         agent_id   = COALESCE(c.agent_id, (SELECT id FROM agent_match)),
         updated_at = NOW()
       WHERE c.id = ${customerId}
+    `)
+  }
+
+  // Merge connector-supplied custom attributes (e.g. fcm_token) without
+  // clobbering existing keys (dealer_id above, anything event-set). Incoming
+  // keys win on collision. Runs after the dealer merge so both compose.
+  if (params.customAttributes && Object.keys(params.customAttributes).length > 0) {
+    await db.execute(sql`
+      UPDATE customers
+      SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb)
+                            || ${JSON.stringify(params.customAttributes)}::jsonb,
+          updated_at = NOW()
+      WHERE id = ${customerId}
     `)
   }
 
