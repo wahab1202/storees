@@ -35,6 +35,12 @@ const ecommerceFields: DomainFieldDef[] = [
   { field: 'product_name', label: 'Product', type: 'product', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased', 'has_viewed', 'has_not_viewed', 'has_wishlisted', 'has_not_wishlisted'] as FilterOperator[] },
   { field: 'collection_name', label: 'Collection', type: 'collection', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased'] as FilterOperator[] },
   { field: 'product_category', label: 'Product Category', type: 'product_category', category: 'Product Filters', operators: ['has_purchased', 'has_not_purchased', 'has_viewed', 'has_not_viewed'] as FilterOperator[] },
+
+  // Order Details — per-order fields. Most useful inside a "within the same
+  // order" group, where they combine with a product/collection filter so the
+  // value/date apply to the SAME order (e.g. "≥ ₹10,000 in Brand X between A–B").
+  { field: 'order_total', label: 'Order Total', type: 'number', category: 'Order Details', operators: ['greater_than', 'less_than', 'between', 'is'] as FilterOperator[] },
+  { field: 'order_date', label: 'Order Date', type: 'date', category: 'Order Details', operators: ['between_dates', 'before_date', 'after_date'] as FilterOperator[] },
 ]
 
 const ecommerceDomain: DomainConfig = {
