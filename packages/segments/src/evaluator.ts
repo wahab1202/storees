@@ -55,12 +55,122 @@ function ruleOrGroupToSql(item: FilterRule | FilterGroup): SQL {
 }
 
 function groupToSql(group: FilterGroup): SQL {
+  // 'same_order' groups correlate all their order predicates onto ONE order,
+  // rather than each rule matching independently across the whole history.
+  if (group.scope === 'same_order') return sameOrderGroupToSql(group)
+
   // Groups can contain rules OR nested groups. Recurse through
   // ruleOrGroupToSql so arbitrary depth works.
   const clauses = group.rules.map(ruleOrGroupToSql)
   if (clauses.length === 0) return sql`TRUE`
   if (clauses.length === 1) return clauses[0]
   return group.logic === 'AND' ? and(...clauses)! : or(...clauses)!
+}
+
+// ============ SAME-ORDER (CORRELATED) SCOPE ============
+
+/**
+ * Compile a single order predicate as it applies WITHIN one order row — either
+ * the `orders` table (alias `o`, Shopify-direct) or an `order_placed`/
+ * `order_completed` event (alias `e`, event-driven tenants like GWM/VirpanAI).
+ * The two sources hold the same facts under different column/JSON shapes, so
+ * each rule is rendered twice (once per source) by the caller.
+ */
+function orderScopedPredicate(rule: FilterRule, source: 'orders' | 'events'): SQL {
+  const value = rule.value
+  const lineItems = source === 'orders' ? sql`o.line_items::jsonb` : sql`e.properties->'line_items'`
+  const total = source === 'orders' ? sql`o.total` : sql`(e.properties->>'total')::numeric`
+  const dateCol = source === 'orders' ? sql`o.created_at` : sql`e.timestamp`
+
+  switch (rule.field) {
+    case 'product_category': {
+      // Orders: category lives on products.product_type, joined via line-item
+      // product id. Events: the connector keeps product_type/product_collection
+      // flat on each line item, so match either (brand often = collection).
+      const pred = source === 'orders'
+        ? sql`EXISTS (
+            SELECT 1 FROM products p
+            WHERE p.project_id = o.project_id
+            AND p.product_type = ${value}
+            AND EXISTS (
+              SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
+              WHERE COALESCE(item->>'product_id', item->>'productId') = p.shopify_product_id
+            )
+          )`
+        : sql`EXISTS (
+            SELECT 1 FROM jsonb_array_elements(e.properties->'line_items') item
+            WHERE item->>'product_type' = ${value} OR item->>'product_collection' = ${value}
+          )`
+      return rule.operator === 'has_not_purchased' ? sql`NOT (${pred})` : pred
+    }
+    case 'product_name':
+    case 'collection_name': {
+      const isCollection = rule.field === 'collection_name'
+      const snakeKey = isCollection ? 'product_collection' : 'product_name'
+      const camelKey = isCollection ? 'productCollection' : 'productName'
+      const pred = sql`EXISTS (
+        SELECT 1 FROM jsonb_array_elements(${lineItems}) item
+        WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
+      )`
+      return rule.operator === 'has_not_purchased' ? sql`NOT (${pred})` : pred
+    }
+    case 'order_total': {
+      switch (rule.operator) {
+        case 'greater_than': return sql`${total} > ${value}`
+        case 'less_than':    return sql`${total} < ${value}`
+        case 'is':           return sql`${total} = ${value}`
+        case 'between': {
+          const [min, max] = value as [number, number]
+          return sql`${total} BETWEEN ${min} AND ${max}`
+        }
+        default: return sql`TRUE`
+      }
+    }
+    case 'order_date': {
+      switch (rule.operator) {
+        case 'between_dates': {
+          const [from, to] = value as [string, string]
+          return sql`${dateCol} BETWEEN ${new Date(from)}::timestamptz AND ${new Date(to)}::timestamptz`
+        }
+        case 'before_date': return sql`${dateCol} < ${new Date(String(value))}::timestamptz`
+        case 'after_date':  return sql`${dateCol} > ${new Date(String(value))}::timestamptz`
+        default: return sql`TRUE`
+      }
+    }
+    default:
+      // Field not order-scoped — neutral element (the builder restricts the
+      // field list inside a same-order group, this is just defensive).
+      return sql`TRUE`
+  }
+}
+
+/**
+ * Correlated "within the same order" group → a single EXISTS where ALL the
+ * group's predicates must hold for ONE order (or one order event). Dual-source
+ * (orders OR events) so it works on both Shopify-direct and event-driven stacks.
+ */
+function sameOrderGroupToSql(group: FilterGroup): SQL {
+  const rules = group.rules.filter((r): r is FilterRule => !('type' in r))
+  if (rules.length === 0) return sql`TRUE`
+
+  const combine = (clauses: SQL[]): SQL =>
+    clauses.length === 1 ? clauses[0] : (group.logic === 'OR' ? or(...clauses)! : and(...clauses)!)
+
+  const ordersWhere = combine(rules.map(r => orderScopedPredicate(r, 'orders')))
+  const eventsWhere = combine(rules.map(r => orderScopedPredicate(r, 'events')))
+
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_id = customers.id
+      AND ${ordersWhere}
+    ) OR EXISTS (
+      SELECT 1 FROM events e
+      WHERE e.project_id = customers.project_id AND e.customer_id = customers.id
+      AND e.event_name IN ('order_placed', 'order_completed')
+      AND ${eventsWhere}
+    )
+  )`
 }
 
 function ruleToSql(rule: FilterRule): SQL {
@@ -96,6 +206,24 @@ function ruleToSql(rule: FilterRule): SQL {
       SELECT 1 FROM agents a
       WHERE a.id = customers.agent_id
       AND ${predicate}
+    )`
+  }
+
+  // Order-scoped fields used standalone (not inside a same-order group) →
+  // independent EXISTS: ANY single order satisfying the one predicate matches.
+  // Dual-source (orders table OR order events) like the rest of the engine.
+  if (rule.field === 'order_total' || rule.field === 'order_date') {
+    return sql`(
+      EXISTS (
+        SELECT 1 FROM orders o
+        WHERE o.customer_id = customers.id
+        AND ${orderScopedPredicate(rule, 'orders')}
+      ) OR EXISTS (
+        SELECT 1 FROM events e
+        WHERE e.project_id = customers.project_id AND e.customer_id = customers.id
+        AND e.event_name IN ('order_placed', 'order_completed')
+        AND ${orderScopedPredicate(rule, 'events')}
+      )
     )`
   }
 
@@ -248,6 +376,13 @@ function ruleToSql(rule: FilterRule): SQL {
     case 'after_date': {
       const column = fieldToSqlExpression(rule.field)
       return sql`${column} > ${new Date(String(value))}::timestamptz`
+    }
+    case 'between_dates': {
+      // value = [fromISO, toISO]; inclusive range on a date field (e.g.
+      // first_order_date). order_date is handled above via the order-scoped path.
+      const [from, to] = value as [string, string]
+      const column = fieldToSqlExpression(rule.field)
+      return sql`${column} BETWEEN ${new Date(from)}::timestamptz AND ${new Date(to)}::timestamptz`
     }
     case 'within_last': {
       // value = N, optional unit on the rule. Default unit is 'days'. Translates
@@ -633,6 +768,11 @@ function evaluateRule(rule: FilterRule, customer: Customer): boolean {
   }
   // Dealer-attribute fields require JOIN against agents — SQL path only
   if (rule.field === 'dealer_name' || rule.field === 'dealer_city' || rule.field === 'dealer_region') {
+    return false
+  }
+  // Order-scoped fields + the date-range operator need order/event data — SQL
+  // path is authoritative (same-order correlation can't be evaluated in-memory).
+  if (rule.field === 'order_total' || rule.field === 'order_date' || rule.operator === 'between_dates') {
     return false
   }
 

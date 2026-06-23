@@ -445,6 +445,14 @@ export type FilterConfig = {
 export type FilterGroup = {
   type: 'group'
   logic: 'AND' | 'OR'
+  /** Correlation scope for the group's order predicates.
+   *  - undefined / 'default': each rule is an independent check — predicates
+   *    may be satisfied by *different* orders (the original behaviour).
+   *  - 'same_order': all order predicates inside the group must be satisfied by
+   *    ONE single order — compiled to a single correlated EXISTS over orders /
+   *    order_placed events. Lets a marketer express "≥ ₹10,000 *in* category X,
+   *    *between* two dates" without false matches across separate orders. */
+  scope?: 'default' | 'same_order'
   rules: (FilterRule | FilterGroup)[]
 }
 
@@ -460,6 +468,7 @@ export type FilterOperator =
   | 'contains' | 'begins_with' | 'ends_with'
   | 'is_true' | 'is_false'
   | 'in_month' | 'in_year' | 'before_date' | 'after_date'
+  | 'between_dates' // value = [fromISO, toISO] — inclusive date range on a date field (e.g. order_date)
   | 'within_last'   // value = N, unit = 'days'|'hours'|'weeks'|'months' — used for relative date windows
   | 'has_purchased' | 'has_not_purchased'
   | 'has_viewed' | 'has_not_viewed'

@@ -40,6 +40,7 @@ const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }
     { value: 'is_false', label: 'is false' },
   ],
   date: [
+    { value: 'between_dates', label: 'is between' },
     { value: 'before_date', label: 'is before' },
     { value: 'after_date', label: 'is after' },
   ],
@@ -388,22 +389,24 @@ function RuleRow({
     const newType = getFieldType(newField)
     const ops = getOperators(newField)
     const newDef = getFieldDef(newField)
-    const defaultValue = newType === 'number' ? 0
+    const firstOp = ops[0]?.value as FilterOperator
+    const defaultValue = firstOp === 'between' ? [0, 100]
+      : firstOp === 'between_dates' ? ['', '']
+      : newType === 'number' ? 0
       : newType === 'boolean' ? true
       : newType === 'select' ? (newDef?.optionPairs?.[0]?.value ?? newDef?.options?.[0] ?? '')
       : ''
-    onChange({
-      field: newField,
-      operator: ops[0]?.value as FilterOperator,
-      value: defaultValue,
-    })
+    onChange({ field: newField, operator: firstOp, value: defaultValue })
   }
 
   const handleOperatorChange = (op: FilterOperator) => {
     const updates: Partial<FilterRule> = { operator: op }
-    // Switching to/from 'between' requires array vs scalar value shape
+    // Array-shaped value for range operators; scalar otherwise.
     if (op === 'between' && !Array.isArray(rule.value)) updates.value = [0, 100]
-    if (op !== 'between' && Array.isArray(rule.value)) updates.value = 0
+    if (op === 'between_dates' && !Array.isArray(rule.value)) updates.value = ['', '']
+    if (op !== 'between' && op !== 'between_dates' && Array.isArray(rule.value)) {
+      updates.value = fieldType === 'date' ? '' : 0
+    }
     onChange(updates)
   }
 
@@ -480,6 +483,22 @@ function RuleRow({
               className={cn(inputClass, 'w-24')}
             />
           </div>
+        ) : rule.operator === 'between_dates' ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={Array.isArray(rule.value) ? (rule.value[0] as string) ?? '' : ''}
+              onChange={e => onChange({ value: [e.target.value, Array.isArray(rule.value) ? rule.value[1] : ''] })}
+              className={cn(inputClass, 'w-40')}
+            />
+            <span className="text-xs font-medium text-text-muted">and</span>
+            <input
+              type="date"
+              value={Array.isArray(rule.value) ? (rule.value[1] as string) ?? '' : ''}
+              onChange={e => onChange({ value: [Array.isArray(rule.value) ? rule.value[0] : '', e.target.value] })}
+              className={cn(inputClass, 'w-40')}
+            />
+          </div>
         ) : fieldType === 'number' ? (
           <NumberInput
             value={typeof rule.value === 'number' ? rule.value : undefined}
@@ -530,7 +549,7 @@ function RuleRow({
 
 // ============ GroupBuilder — recursive, renders a FilterConfig or FilterGroup ============
 
-type GroupModel = { logic: 'AND' | 'OR'; rules: RuleOrGroup[] }
+type GroupModel = { logic: 'AND' | 'OR'; scope?: 'default' | 'same_order'; rules: RuleOrGroup[] }
 
 function GroupBuilder({
   group,
@@ -574,6 +593,11 @@ function GroupBuilder({
     onChange({ ...group, logic: group.logic === 'AND' ? 'OR' : 'AND' })
   }
 
+  const sameOrder = group.scope === 'same_order'
+  const toggleSameOrder = () => {
+    onChange({ ...group, scope: sameOrder ? 'default' : 'same_order' })
+  }
+
   const isRoot = depth === 0
   const canNest = depth + 1 < MAX_NESTING_DEPTH
 
@@ -582,27 +606,48 @@ function GroupBuilder({
       className={cn(
         'relative',
         !isRoot && 'rounded-xl border bg-surface/30 p-3',
-        !isRoot && (group.logic === 'AND' ? 'border-accent/30' : 'border-blue-300/60'),
+        !isRoot && (sameOrder ? 'border-emerald-400/60' : group.logic === 'AND' ? 'border-accent/30' : 'border-blue-300/60'),
       )}
     >
       {!isRoot && (
-        <div className="flex items-center justify-between mb-2 px-1">
-          <span className={cn(
-            'text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded',
-            group.logic === 'AND' ? 'bg-accent/10 text-accent' : 'bg-blue-100 text-blue-700',
-          )}>
-            Group · match {group.logic}
-          </span>
-          {onRemove && (
-            <button
-              onClick={onRemove}
-              className="p-1 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 transition-colors"
-              aria-label="Remove group"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
+        <>
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className={cn(
+              'text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded',
+              group.logic === 'AND' ? 'bg-accent/10 text-accent' : 'bg-blue-100 text-blue-700',
+            )}>
+              Group · match {group.logic}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={toggleSameOrder}
+                className={cn(
+                  'text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-colors',
+                  sameOrder
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                    : 'bg-white text-text-muted border-border hover:border-text-muted/40',
+                )}
+                title="When on, every condition in this group must be satisfied by the SAME order (e.g. ₹10,000 spent IN this category, in one order)."
+              >
+                {sameOrder ? '✓ Within the same order' : 'Within the same order'}
+              </button>
+              {onRemove && (
+                <button
+                  onClick={onRemove}
+                  className="p-1 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 transition-colors"
+                  aria-label="Remove group"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+          {sameOrder && (
+            <p className="mb-2 px-1 text-[11px] text-emerald-700/80">
+              All conditions below must match one single order. Use Order Total, Order Date, Product, Collection or Product Category here.
+            </p>
           )}
-        </div>
+        </>
       )}
 
       <div className="space-y-0">
