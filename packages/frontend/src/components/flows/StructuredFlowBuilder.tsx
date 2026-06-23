@@ -11,6 +11,7 @@ import { NumberInput } from '@/components/ui/NumberInput'
 import { EVENTS_BY_DOMAIN } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
 import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
+import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
 import { useProducts } from '@/hooks/useProducts'
 import { useSegments } from '@/hooks/useSegments'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
@@ -907,8 +908,21 @@ function ActionBlock({
 }) {
   const cfg = node.config
   const channel = ACTION_CHANNEL_BY_TYPE[cfg.actionType] ?? 'email'
-  const { data: templatesData, isLoading } = useTemplates()
-  const templates = (templatesData?.data ?? []).filter(t => t.channel === channel)
+  const isWhatsapp = channel === 'whatsapp'
+  const { data: templatesData, isLoading: generalLoading } = useTemplates()
+  const { data: waData, isLoading: waLoading } = useWhatsappTemplates()
+  const isLoading = isWhatsapp ? waLoading : generalLoading
+  // WhatsApp must use the synced, APPROVED provider templates (the send path
+  // resolves templateId against whatsapp_templates WHERE status='APPROVED'); a
+  // generic/demo template id falls back to a free-form send → Meta #131047.
+  // Other channels keep the generic template source filtered by channel.
+  const templates = isWhatsapp
+    ? (waData?.data ?? [])
+        .filter(t => t.status === 'approved' || t.status === 'APPROVED')
+        .map(t => ({ id: t.id, name: `${t.name}${t.language ? ` · ${t.language}` : ''}` }))
+    : (templatesData?.data ?? [])
+        .filter(t => t.channel === channel)
+        .map(t => ({ id: t.id, name: t.name }))
 
   function patch(next: Partial<typeof cfg>) {
     onUpdate({ ...node, config: { ...cfg, ...next } } as FlowNode)
