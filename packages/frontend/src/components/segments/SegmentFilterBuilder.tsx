@@ -8,16 +8,20 @@ import { NumberInput } from '@/components/ui/NumberInput'
 import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
 import { useCustomers } from '@/hooks/useCustomers'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
-import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef } from '@storees/shared'
+import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef, AggregateRule } from '@storees/shared'
 
 // Recursive nesting depth cap. Past 3 levels the UX is unreadable; almost
 // every real-world segment can be expressed in ≤2 levels anyway.
 const MAX_NESTING_DEPTH = 3
 
-type RuleOrGroup = FilterRule | FilterGroup
+type RuleOrGroup = FilterRule | FilterGroup | AggregateRule
 
 function isGroup(item: RuleOrGroup): item is FilterGroup {
   return 'type' in item && item.type === 'group'
+}
+
+function isAggregate(item: RuleOrGroup): item is AggregateRule {
+  return 'type' in item && item.type === 'aggregate'
 }
 
 const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }[]> = {
@@ -547,6 +551,46 @@ function RuleRow({
   )
 }
 
+// ============ Aggregate condition (scoped SUM/COUNT) ============
+// P1 ships the engine; the editor card is P2. Until then, render any existing
+// aggregate leaf as a read-only sentence so it's visible and removable.
+
+const AGG_FN_LABEL: Record<string, string> = {
+  SUM: 'Sum', COUNT: 'Count of', COUNT_DISTINCT: 'Distinct count of', AVG: 'Average', MIN: 'Min', MAX: 'Max',
+}
+const AGG_OP_LABEL: Record<string, string> = {
+  is: 'is', gt: 'is greater than', gte: 'is at least', lt: 'is less than', lte: 'is at most', between: 'is between',
+}
+
+function aggregateSummary(rule: AggregateRule): string {
+  const fn = AGG_FN_LABEL[rule.aggregate.fn] ?? rule.aggregate.fn
+  const field = rule.aggregate.field ? ` ${rule.aggregate.field.replace(/_/g, ' ')}` : ' rows'
+  const scope = (rule.scope?.filters ?? [])
+    .map(f => `${f.field.replace(/_/g, ' ')} ${f.operator.replace(/_/g, ' ')} ${Array.isArray(f.value) ? f.value.join(', ') : f.value}`)
+    .join(' and ')
+  const tf = rule.timeframe?.type === 'between' ? `, between ${rule.timeframe.start} and ${rule.timeframe.end}`
+    : rule.timeframe?.type === 'last_n_days' ? `, in the last ${rule.timeframe.n} days` : ''
+  const val = Array.isArray(rule.value) ? `${rule.value[0]} and ${rule.value[1]}` : rule.value
+  return `${fn}${field} for orders${scope ? ` where ${scope}` : ''}${tf} ${AGG_OP_LABEL[rule.operator] ?? rule.operator} ${val}`
+}
+
+function AggregateRow({ rule, onRemove }: { rule: AggregateRule; onRemove: () => void }) {
+  return (
+    <div className="group flex flex-wrap items-center gap-2 p-3 rounded-lg border border-violet-300/60 bg-violet-50/40">
+      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-violet-100 text-violet-700">Aggregate</span>
+      <span className="text-sm text-text-primary">{aggregateSummary(rule)}</span>
+      <div className="flex-1" />
+      <button
+        onClick={onRemove}
+        className="p-1.5 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-colors"
+        aria-label="Remove aggregate condition"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
 // ============ GroupBuilder — recursive, renders a FilterConfig or FilterGroup ============
 
 type GroupModel = { logic: 'AND' | 'OR'; scope?: 'default' | 'same_order'; rules: RuleOrGroup[] }
@@ -676,6 +720,8 @@ function GroupBuilder({
                 onRemove={() => removeItem(index)}
                 depth={depth + 1}
               />
+            ) : isAggregate(item) ? (
+              <AggregateRow rule={item} onRemove={() => removeItem(index)} />
             ) : (
               <RuleRow
                 rule={item}
@@ -783,6 +829,9 @@ function summariseRules(items: RuleOrGroup[], logic: 'AND' | 'OR'): string {
   const parts = items.slice(0, 3).map(item => {
     if (isGroup(item)) {
       return `(${summariseRules(item.rules, item.logic)})`
+    }
+    if (isAggregate(item)) {
+      return aggregateSummary(item)
     }
     const field = item.field.replace(/_/g, ' ')
     const opLabel = item.operator.replace(/_/g, ' ')

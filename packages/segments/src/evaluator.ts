@@ -1,6 +1,9 @@
 import { sql, and, or } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
-import type { FilterConfig, FilterRule, FilterGroup, Customer } from '@storees/shared'
+import type {
+  FilterConfig, FilterRule, FilterGroup, Customer,
+  AggregateRule, AggregateField, AggregateTimeframe, AggregateCompareOp,
+} from '@storees/shared'
 
 // ============ AGENT SCOPE INJECTION ============
 
@@ -47,9 +50,12 @@ export function filterToSql(filters: FilterConfig): SQL {
   return filters.logic === 'AND' ? and(...clauses)! : or(...clauses)!
 }
 
-function ruleOrGroupToSql(item: FilterRule | FilterGroup): SQL {
+function ruleOrGroupToSql(item: FilterRule | FilterGroup | AggregateRule): SQL {
   if ('type' in item && item.type === 'group') {
     return groupToSql(item)
+  }
+  if ('type' in item && item.type === 'aggregate') {
+    return compileAggregateRule(item)
   }
   return ruleToSql(item as FilterRule)
 }
@@ -171,6 +177,137 @@ function sameOrderGroupToSql(group: FilterGroup): SQL {
       AND ${eventsWhere}
     )
   )`
+}
+
+// ============ SCOPED-AGGREGATE LEAF ============
+// Filter behavioural line-item rows by timeframe + scope FIRST, aggregate over
+// the survivors (GROUP BY customer), then HAVING-compare. Dual-source so it runs
+// on Shopify-direct (orders table) AND event-driven tenants (order_placed events).
+
+// scope/aggregate field → [snake_case, camelCase] keys on a JSONB line item.
+const LI_TEXT_FIELDS: Record<string, [string, string]> = {
+  product_id:       ['product_id', 'productId'],
+  product_name:     ['product_name', 'productName'],
+  collection:       ['product_collection', 'productCollection'],
+  product_category: ['product_type', 'productType'],
+}
+
+/** Numeric per-line value the aggregate runs on. line_value = price × quantity. */
+function aggValueExpr(field?: AggregateField): SQL {
+  switch (field) {
+    case 'quantity': return sql`COALESCE((li->>'quantity')::numeric, 0)`
+    case 'price':    return sql`COALESCE((li->>'price')::numeric, 0)`
+    case 'line_value':
+    default:         return sql`COALESCE((li->>'price')::numeric, 0) * COALESCE((li->>'quantity')::numeric, 1)`
+  }
+}
+
+/** One scope filter (attribute test on a line-item row) → predicate on `li`. */
+function scopeFilterPredicate(filter: FilterRule): SQL {
+  const f = filter.field
+  if (f === 'price' || f === 'quantity') {
+    const col = sql`COALESCE((li->>${f})::numeric, 0)`
+    const v = filter.value
+    switch (filter.operator) {
+      case 'is':           return sql`${col} = ${Number(v)}`
+      case 'greater_than': return sql`${col} > ${Number(v)}`
+      case 'less_than':    return sql`${col} < ${Number(v)}`
+      case 'between': { const [lo, hi] = v as [number, number]; return sql`${col} BETWEEN ${lo} AND ${hi}` }
+      default:             return sql`TRUE`
+    }
+  }
+  const keys = LI_TEXT_FIELDS[f]
+  if (!keys) return sql`TRUE` // unknown scope field — neutral, never silently excludes
+  const col = sql`COALESCE(li->>${keys[0]}, li->>${keys[1]})`
+  const v = filter.value
+  if (Array.isArray(v)) { // multi-select id field: is → IN, is_not → NOT IN
+    const vals = (v as unknown[]).map(String)
+    if (vals.length === 0) return filter.operator === 'is_not' ? sql`TRUE` : sql`FALSE`
+    const list = vals.reduce<SQL | null>((acc, x) => (acc ? sql`${acc}, ${x}` : sql`${x}`), null)!
+    return filter.operator === 'is_not' ? sql`${col} NOT IN (${list})` : sql`${col} IN (${list})`
+  }
+  const s = String(v ?? '')
+  switch (filter.operator) {
+    case 'is':          return sql`${col} = ${s}`
+    case 'is_not':      return sql`${col} IS DISTINCT FROM ${s}`
+    case 'contains':    return sql`${col} ILIKE ${'%' + s + '%'}`
+    case 'begins_with': return sql`${col} ILIKE ${s + '%'}`
+    case 'ends_with':   return sql`${col} ILIKE ${'%' + s}`
+    default:            return sql`${col} = ${s}`
+  }
+}
+
+/** Date-window predicate on the source's date column. UI dates are inclusive of
+ *  both ends → translated to a half-open [start, end+1day) range. */
+function aggTimeframePredicate(tf: AggregateTimeframe | undefined, dateCol: SQL): SQL | null {
+  if (!tf || tf.type === 'all_time') return null
+  if (tf.type === 'last_n_days') return sql`${dateCol} >= NOW() - (${tf.n}::int * INTERVAL '1 day')`
+  return sql`${dateCol} >= ${tf.start}::date AND ${dateCol} < (${tf.end}::date + INTERVAL '1 day')`
+}
+
+function aggMetricExpr(rule: AggregateRule, orderIdCol: SQL): SQL {
+  const fn = rule.aggregate.fn
+  if (fn === 'COUNT') return sql`COUNT(*)`
+  if (fn === 'COUNT_DISTINCT') return sql`COUNT(DISTINCT ${orderIdCol})`
+  const v = aggValueExpr(rule.aggregate.field)
+  switch (fn) {
+    case 'AVG': return sql`AVG(${v})`
+    case 'MIN': return sql`MIN(${v})`
+    case 'MAX': return sql`MAX(${v})`
+    case 'SUM':
+    default:    return sql`SUM(${v})`
+  }
+}
+
+function aggHavingCompare(metric: SQL, op: AggregateCompareOp, value: number | [number, number]): SQL {
+  switch (op) {
+    case 'is':  return sql`${metric} = ${Number(value)}`
+    case 'gt':  return sql`${metric} > ${Number(value)}`
+    case 'gte': return sql`${metric} >= ${Number(value)}`
+    case 'lt':  return sql`${metric} < ${Number(value)}`
+    case 'lte': return sql`${metric} <= ${Number(value)}`
+    case 'between': { const [lo, hi] = value as [number, number]; return sql`${metric} BETWEEN ${lo} AND ${hi}` }
+    default:    return sql`${metric} > ${Number(value)}`
+  }
+}
+
+/** Build one source's correlated EXISTS(… GROUP BY … HAVING …). */
+function aggSourceExists(rule: AggregateRule, source: 'events' | 'orders'): SQL {
+  const scopePreds = (rule.scope?.filters ?? []).map(scopeFilterPredicate)
+  if (source === 'events') {
+    const where: SQL[] = [
+      sql`e.project_id = customers.project_id`,
+      sql`e.customer_id = customers.id`,
+      sql`e.event_name IN ('order_placed', 'order_completed')`,
+    ]
+    const tf = aggTimeframePredicate(rule.timeframe, sql`e.timestamp`)
+    if (tf) where.push(tf)
+    where.push(...scopePreds)
+    return sql`EXISTS (
+      SELECT 1
+      FROM events e, jsonb_array_elements(COALESCE(e.properties->'line_items', '[]'::jsonb)) li
+      WHERE ${and(...where)!}
+      GROUP BY e.customer_id
+      HAVING ${aggHavingCompare(aggMetricExpr(rule, sql`e.id`), rule.operator, rule.value)}
+    )`
+  }
+  const where: SQL[] = [sql`o.customer_id = customers.id`]
+  const tf = aggTimeframePredicate(rule.timeframe, sql`o.created_at`)
+  if (tf) where.push(tf)
+  where.push(...scopePreds)
+  return sql`EXISTS (
+    SELECT 1
+    FROM orders o, jsonb_array_elements(COALESCE(o.line_items::jsonb, '[]'::jsonb)) li
+    WHERE ${and(...where)!}
+    GROUP BY o.customer_id
+    HAVING ${aggHavingCompare(aggMetricExpr(rule, sql`o.id`), rule.operator, rule.value)}
+  )`
+}
+
+/** Compile a scoped-aggregate leaf to a boolean expression (dual-source OR — each
+ *  tenant populates one source, so OR yields that source's verdict). */
+export function compileAggregateRule(rule: AggregateRule): SQL {
+  return sql`(${aggSourceExists(rule, 'events')} OR ${aggSourceExists(rule, 'orders')})`
 }
 
 function ruleToSql(rule: FilterRule): SQL {
@@ -735,27 +872,24 @@ function fieldToSqlExpression(field: string): SQL {
  * Supports nested groups. Product/month filters fall back to false (use SQL path).
  */
 export function evaluateFilter(filters: FilterConfig, customer: Customer): boolean {
-  const results = filters.rules.map(item => {
-    if ('type' in item && item.type === 'group') {
-      return evaluateGroup(item, customer)
-    }
-    return evaluateRule(item as FilterRule, customer)
-  })
-
+  const results = filters.rules.map(item => evaluateItem(item, customer))
   return filters.logic === 'AND'
     ? results.every(Boolean)
     : results.some(Boolean)
 }
 
+function evaluateItem(item: FilterRule | FilterGroup | AggregateRule, customer: Customer): boolean {
+  if ('type' in item && item.type === 'group') return evaluateGroup(item, customer)
+  // Scoped aggregates need order/event rows — not in a single Customer object.
+  // SQL path is authoritative for membership; mirror has_purchased → false here.
+  if ('type' in item && item.type === 'aggregate') return false
+  return evaluateRule(item as FilterRule, customer)
+}
+
 function evaluateGroup(group: FilterGroup, customer: Customer): boolean {
   // Recurse through nested groups — mirrors groupToSql so the SQL and in-memory
   // paths produce identical results.
-  const results = group.rules.map(item => {
-    if ('type' in item && item.type === 'group') {
-      return evaluateGroup(item, customer)
-    }
-    return evaluateRule(item as FilterRule, customer)
-  })
+  const results = group.rules.map(item => evaluateItem(item, customer))
   return group.logic === 'AND'
     ? results.every(Boolean)
     : results.some(Boolean)
@@ -933,4 +1067,112 @@ function getFieldValue(field: string, customer: Customer): unknown {
 
 function daysSince(date: Date): number {
   return Math.floor((Date.now() - new Date(date).getTime()) / (1000 * 60 * 60 * 24))
+}
+
+// ============ SCOPED-AGGREGATE: PURE EVALUATOR ============
+// A row-level mirror of the SQL compiler, used by unit tests and any future
+// single-customer evaluation. The ORDER is the contract: timeframe → scope →
+// aggregate → compare. It must produce the same verdicts as compileAggregateRule.
+
+/** One behavioural row (a line item with its order date). */
+export type AggregateSourceRow = {
+  date: string | Date
+  product_id?: string
+  product_name?: string
+  product_collection?: string
+  product_type?: string
+  price?: number
+  quantity?: number
+  order_id?: string
+}
+
+const SCOPE_ROW_KEY: Record<string, keyof AggregateSourceRow> = {
+  product_id: 'product_id',
+  product_name: 'product_name',
+  collection: 'product_collection',
+  product_category: 'product_type',
+}
+
+function rowValue(r: AggregateSourceRow, field?: AggregateField): number {
+  if (field === 'quantity') return Number(r.quantity ?? 0)
+  if (field === 'price') return Number(r.price ?? 0)
+  return Number(r.price ?? 0) * Number(r.quantity ?? 1) // line_value = price × quantity
+}
+
+function withinTimeframe(r: AggregateSourceRow, tf: AggregateTimeframe | undefined): boolean {
+  if (!tf || tf.type === 'all_time') return true
+  const t = new Date(r.date).getTime()
+  if (Number.isNaN(t)) return false
+  if (tf.type === 'last_n_days') return t >= Date.now() - tf.n * 86_400_000
+  const start = new Date(tf.start).getTime()
+  const endExclusive = new Date(tf.end).getTime() + 86_400_000 // inclusive end → half-open
+  return t >= start && t < endExclusive
+}
+
+function rowMatchesScope(r: AggregateSourceRow, filter: FilterRule): boolean {
+  const f = filter.field
+  if (f === 'price' || f === 'quantity') {
+    const col = Number(r[f] ?? 0)
+    const v = filter.value
+    switch (filter.operator) {
+      case 'is':           return col === Number(v)
+      case 'greater_than': return col > Number(v)
+      case 'less_than':    return col < Number(v)
+      case 'between':      { const [lo, hi] = v as [number, number]; return col >= lo && col <= hi }
+      default:             return true
+    }
+  }
+  const key = SCOPE_ROW_KEY[f]
+  if (!key) return true
+  const col = String(r[key] ?? '')
+  const v = filter.value
+  if (Array.isArray(v)) {
+    const vals = (v as unknown[]).map(String)
+    return filter.operator === 'is_not' ? !vals.includes(col) : vals.includes(col)
+  }
+  const s = String(v ?? '')
+  switch (filter.operator) {
+    case 'is':          return col === s
+    case 'is_not':      return col !== s
+    case 'contains':    return col.toLowerCase().includes(s.toLowerCase())
+    case 'begins_with': return col.toLowerCase().startsWith(s.toLowerCase())
+    case 'ends_with':   return col.toLowerCase().endsWith(s.toLowerCase())
+    default:            return col === s
+  }
+}
+
+function runAggregateRows(rows: AggregateSourceRow[], agg: AggregateRule['aggregate']): number {
+  if (agg.fn === 'COUNT') return rows.length
+  if (agg.fn === 'COUNT_DISTINCT') return new Set(rows.map(r => r.order_id ?? '')).size
+  const vals = rows.map(r => rowValue(r, agg.field))
+  if (vals.length === 0) return 0
+  switch (agg.fn) {
+    case 'AVG': return vals.reduce((a, b) => a + b, 0) / vals.length
+    case 'MIN': return Math.min(...vals)
+    case 'MAX': return Math.max(...vals)
+    case 'SUM':
+    default:    return vals.reduce((a, b) => a + b, 0)
+  }
+}
+
+function compareMetric(metric: number, op: AggregateCompareOp, value: number | [number, number]): boolean {
+  switch (op) {
+    case 'is':  return metric === Number(value)
+    case 'gt':  return metric > Number(value)
+    case 'gte': return metric >= Number(value)
+    case 'lt':  return metric < Number(value)
+    case 'lte': return metric <= Number(value)
+    case 'between': { const [lo, hi] = value as [number, number]; return metric >= lo && metric <= hi }
+    default:    return false
+  }
+}
+
+/** Evaluate one scoped-aggregate leaf against a customer's behavioural rows.
+ *  timeframe → scope → aggregate → compare. Zero surviving rows = no GROUP-BY
+ *  group in SQL = not matched (for every operator), so we return false. */
+export function evaluateAggregateRows(rule: AggregateRule, rows: AggregateSourceRow[]): boolean {
+  let kept = rows.filter(r => withinTimeframe(r, rule.timeframe))
+  for (const f of rule.scope?.filters ?? []) kept = kept.filter(r => rowMatchesScope(r, f))
+  if (kept.length === 0) return false
+  return compareMetric(runAggregateRows(kept, rule.aggregate), rule.operator, rule.value)
 }
