@@ -435,7 +435,7 @@ export type CustomerSegment = {
 
 export type FilterConfig = {
   logic: 'AND' | 'OR'
-  rules: (FilterRule | FilterGroup)[]
+  rules: (FilterRule | FilterGroup | AggregateRule)[]
 }
 
 /** Nested group — allows AND within OR and vice versa.
@@ -453,13 +453,50 @@ export type FilterGroup = {
    *    order_placed events. Lets a marketer express "≥ ₹10,000 *in* category X,
    *    *between* two dates" without false matches across separate orders. */
   scope?: 'default' | 'same_order'
-  rules: (FilterRule | FilterGroup)[]
+  rules: (FilterRule | FilterGroup | AggregateRule)[]
 }
 
 export type FilterRule = {
   field: string
   operator: FilterOperator
   value: unknown
+}
+
+// ============ SCOPED-AGGREGATE CONDITION (segment builder v2) ============
+// Boolean AND/OR can only combine separate true/false facts. A scoped aggregate
+// is a different primitive: filter a slice of behavioural rows (line items) by
+// scope + timeframe, run SUM/COUNT/… over the SURVIVORS, then compare to a
+// threshold. CONTRACT: timeframe + scope select rows FIRST, then the aggregate
+// runs, then the comparison. Never aggregate the whole history then filter — that
+// wrongly matches a customer who spent 1,500 on Product 4 and 25,000 elsewhere.
+
+export type AggregateFn = 'SUM' | 'COUNT' | 'COUNT_DISTINCT' | 'AVG' | 'MIN' | 'MAX'
+/** Numeric per-line-item value the function runs on. line_value = price × quantity. */
+export type AggregateField = 'line_value' | 'quantity' | 'price'
+export type AggregateCompareOp = 'is' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
+
+export type AggregateTimeframe =
+  | { type: 'all_time' }
+  | { type: 'last_n_days'; n: number }
+  | { type: 'between'; start: string; end: string } // ISO yyyy-mm-dd, inclusive of both ends in the UI
+
+/** A scoped-aggregate condition leaf. Sits beside attribute rules / groups in a
+ *  group's `rules`. Its scope filters are plain attribute tests on the SOURCE
+ *  ROWS (line items), AND-joined only — a group never lives inside a scope. */
+export type AggregateRule = {
+  type: 'aggregate'
+  /** Behavioural source whose rows are filtered + aggregated. Extensible later
+   *  (product_viewed, added_to_cart, review_submitted); P1 ships order_fulfilled. */
+  source: 'order_fulfilled'
+  /** Attribute tests on the source rows (line items). AND-only by contract. */
+  scope?: { operator: 'AND'; filters: FilterRule[] }
+  /** Row date window, applied BEFORE the aggregate. Omit = all time. */
+  timeframe?: AggregateTimeframe
+  /** What to compute over the surviving rows. `field` omitted for COUNT (row count). */
+  aggregate: { fn: AggregateFn; field?: AggregateField }
+  /** Comparison of the metric to the threshold. */
+  operator: AggregateCompareOp
+  value: number | [number, number]
 }
 
 export type FilterOperator =
