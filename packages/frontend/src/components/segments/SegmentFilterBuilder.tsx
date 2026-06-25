@@ -1056,3 +1056,92 @@ function summariseRules(items: RuleOrGroup[], logic: 'AND' | 'OR'): string {
   const joined = parts.join(` ${logic} `)
   return items.length > 3 ? `${joined} (+${items.length - 3} more)` : joined
 }
+
+// ============ Validation (spec §6) ============
+
+export type FilterValidation = { errors: string[]; warnings: string[] }
+
+function asLowHigh(v: unknown): [number, number] | null {
+  return Array.isArray(v) && v.length === 2 ? [Number(v[0]), Number(v[1])] : null
+}
+
+/** Validate a filter tree before save. Errors block save; warnings are advisory. */
+export function validateFilterConfig(filters: FilterConfig): FilterValidation {
+  const errors: string[] = []
+  const warnings: string[] = []
+
+  const visitRule = (r: FilterRule) => {
+    const name = r.field.replace(/_/g, ' ')
+    if (r.operator === 'between') {
+      const lh = asLowHigh(r.value)
+      if (lh && lh[0] > lh[1]) errors.push(`"${name}" range is reversed — the low value must not exceed the high value.`)
+    }
+    if (r.operator === 'between_dates') {
+      const v = Array.isArray(r.value) ? (r.value as string[]) : []
+      if (!v[0] || !v[1]) errors.push(`"${name}" needs both a from and a to date.`)
+      else if (v[0] > v[1]) errors.push(`"${name}" date range is reversed — the from date must not be after the to date.`)
+    }
+  }
+
+  const visitAggregate = (a: AggregateRule) => {
+    if (a.operator === 'between') {
+      const lh = asLowHigh(a.value)
+      if (lh && lh[0] > lh[1]) errors.push('Aggregate comparison is reversed — the low value must not exceed the high value.')
+    }
+    if (a.timeframe?.type === 'between') {
+      if (!a.timeframe.start || !a.timeframe.end) errors.push('Aggregate date range needs both a from and a to date.')
+      else if (a.timeframe.start > a.timeframe.end) errors.push('Aggregate date range is reversed — the from date must not be after the to date.')
+    }
+    if (a.timeframe?.type === 'last_n_days' && (!a.timeframe.n || a.timeframe.n <= 0)) {
+      errors.push('Aggregate "last N days" needs a positive number of days.')
+    }
+    for (const f of a.scope?.filters ?? []) {
+      const name = f.field.replace(/_/g, ' ')
+      if (f.operator === 'between') {
+        const lh = asLowHigh(f.value)
+        if (lh && lh[0] > lh[1]) errors.push(`Aggregate filter "${name}" range is reversed.`)
+      } else if (!Array.isArray(f.value) && (f.value === '' || f.value == null)) {
+        warnings.push(`Aggregate filter "${name}" has no value yet — it will be ignored.`)
+      }
+    }
+    const noScope = (a.scope?.filters ?? []).length === 0
+    const noTime = !a.timeframe || a.timeframe.type === 'all_time'
+    if (noScope && noTime) {
+      warnings.push('An aggregate with no scope filter and no timeframe is the customer total across all history — add a product filter if you meant spend on a specific product.')
+    }
+  }
+
+  const walk = (items: (FilterRule | FilterGroup | AggregateRule)[], isRoot: boolean) => {
+    if (items.length === 0) {
+      errors.push(isRoot ? 'Add at least one condition.' : 'A group has no conditions — add one or remove the group.')
+      return
+    }
+    for (const item of items) {
+      if (isGroup(item)) walk(item.rules, false)
+      else if (isAggregate(item)) visitAggregate(item)
+      else visitRule(item)
+    }
+  }
+
+  walk(filters.rules, true)
+  return { errors: [...new Set(errors)], warnings: [...new Set(warnings)] }
+}
+
+/** Inline list of validation errors (blocking) and warnings (advisory). */
+export function FilterValidationMessages({ validation }: { validation: FilterValidation }) {
+  if (validation.errors.length === 0 && validation.warnings.length === 0) return null
+  return (
+    <div className="mt-3 space-y-1.5">
+      {validation.errors.map((e, i) => (
+        <p key={`e${i}`} className="text-xs text-red-600 flex items-start gap-1.5">
+          <span aria-hidden>⚠</span><span>{e}</span>
+        </p>
+      ))}
+      {validation.warnings.map((w, i) => (
+        <p key={`w${i}`} className="text-xs text-amber-700 flex items-start gap-1.5">
+          <span aria-hidden>•</span><span>{w}</span>
+        </p>
+      ))}
+    </div>
+  )
+}

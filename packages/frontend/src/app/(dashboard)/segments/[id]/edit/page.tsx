@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
+import { SegmentFilterBuilder, validateFilterConfig, FilterValidationMessages } from '@/components/segments/SegmentFilterBuilder'
 import { SegmentPreviewPanel } from '@/components/segments/SegmentPreviewPanel'
 import { AiChatPanel } from '@/components/segments/AiChatPanel'
 import { useSegmentDetail, useUpdateSegment, useDeleteSegment } from '@/hooks/useSegments'
@@ -33,8 +33,10 @@ export default function EditSegmentPage() {
     }
   }, [data])
 
+  const validation = filters ? validateFilterConfig(filters) : { errors: [], warnings: [] }
+
   const handleSave = () => {
-    if (!name.trim() || !filters) return
+    if (!name.trim() || !filters || validation.errors.length > 0) return
     updateSegment.mutate(
       { id, name, description, filters },
       { onSuccess: () => router.push('/segments') },
@@ -119,7 +121,7 @@ export default function EditSegmentPage() {
           </button>
           <button
             onClick={handleSave}
-            disabled={!name.trim() || !filters || updateSegment.isPending}
+            disabled={!name.trim() || !filters || validation.errors.length > 0 || updateSegment.isPending}
             className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {updateSegment.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -206,6 +208,7 @@ export default function EditSegmentPage() {
               </div>
               <div className="p-5">
                 <SegmentFilterBuilder filters={filters} onChange={setFilters} />
+                <FilterValidationMessages validation={validation} />
               </div>
             </div>
           )}

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
+import { SegmentFilterBuilder, validateFilterConfig, FilterValidationMessages } from '@/components/segments/SegmentFilterBuilder'
 import { SegmentPreviewPanel } from '@/components/segments/SegmentPreviewPanel'
 import { AiChatPanel } from '@/components/segments/AiChatPanel'
 import { useCreateSegment } from '@/hooks/useSegments'
@@ -28,9 +28,11 @@ export default function CreateSegmentPage() {
     }
   }, [schemaData, filters])
 
+  const validation = validateFilterConfig(filters)
+
   const handleCreate = () => {
     if (!name.trim()) return
-    if (filters.rules.length === 0) return
+    if (filters.rules.length === 0 || validation.errors.length > 0) return
 
     createSegment.mutate(
       { name, description, filters },
@@ -42,7 +44,7 @@ export default function CreateSegmentPage() {
     )
   }
 
-  const canCreate = name.trim().length > 0 && filters.rules.length > 0
+  const canCreate = name.trim().length > 0 && filters.rules.length > 0 && validation.errors.length === 0
 
   return (
     <div>
@@ -130,6 +132,7 @@ export default function CreateSegmentPage() {
             </div>
             <div className="p-5">
               <SegmentFilterBuilder filters={filters} onChange={setFilters} />
+              <FilterValidationMessages validation={validation} />
             </div>
           </div>
         </div>
