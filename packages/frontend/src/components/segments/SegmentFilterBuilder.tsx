@@ -574,19 +574,206 @@ function aggregateSummary(rule: AggregateRule): string {
   return `${fn}${field} for orders${scope ? ` where ${scope}` : ''}${tf} ${AGG_OP_LABEL[rule.operator] ?? rule.operator} ${val}`
 }
 
-function AggregateRow({ rule, onRemove }: { rule: AggregateRule; onRemove: () => void }) {
+// Scope-field catalogue (source-row fields per spec §3.7). Reuses the existing
+// product/collection/category pickers; values match line-item JSON keys.
+type ScopeKind = 'product' | 'collection' | 'product_category' | 'number'
+const SCOPE_FIELDS: { field: string; label: string; kind: ScopeKind }[] = [
+  { field: 'product_name', label: 'Product', kind: 'product' },
+  { field: 'collection', label: 'Collection', kind: 'collection' },
+  { field: 'product_category', label: 'Product category', kind: 'product_category' },
+  { field: 'price', label: 'Product price', kind: 'number' },
+  { field: 'quantity', label: 'Quantity', kind: 'number' },
+]
+const SCOPE_OPS: Record<ScopeKind, { value: FilterOperator; label: string }[]> = {
+  product: [{ value: 'is', label: 'is' }, { value: 'is_not', label: 'is not' }],
+  collection: [{ value: 'is', label: 'is' }, { value: 'is_not', label: 'is not' }],
+  product_category: [{ value: 'is', label: 'is' }, { value: 'is_not', label: 'is not' }],
+  number: [{ value: 'is', label: 'is' }, { value: 'greater_than', label: 'greater than' }, { value: 'less_than', label: 'less than' }, { value: 'between', label: 'between' }],
+}
+const scopeKindFor = (field: string): ScopeKind => SCOPE_FIELDS.find(f => f.field === field)?.kind ?? 'product'
+
+const AGG_FNS: { value: AggregateRule['aggregate']['fn']; label: string }[] = [
+  { value: 'SUM', label: 'Sum' }, { value: 'COUNT', label: 'Count of rows' }, { value: 'COUNT_DISTINCT', label: 'Count distinct orders' },
+  { value: 'AVG', label: 'Average' }, { value: 'MIN', label: 'Min' }, { value: 'MAX', label: 'Max' },
+]
+const AGG_FIELDS: { value: NonNullable<AggregateRule['aggregate']['field']>; label: string }[] = [
+  { value: 'line_value', label: 'line value' }, { value: 'quantity', label: 'quantity' }, { value: 'price', label: 'price' },
+]
+const AGG_COMPARE: { value: AggregateRule['operator']; label: string }[] = [
+  { value: 'is', label: 'is' }, { value: 'gt', label: 'greater than' }, { value: 'gte', label: 'at least' },
+  { value: 'lt', label: 'less than' }, { value: 'lte', label: 'at most' }, { value: 'between', label: 'between' },
+]
+
+function defaultAggregateRule(): AggregateRule {
+  return {
+    type: 'aggregate', source: 'order_fulfilled',
+    scope: { operator: 'AND', filters: [] },
+    timeframe: { type: 'all_time' },
+    aggregate: { fn: 'SUM', field: 'line_value' },
+    operator: 'gt', value: 0,
+  }
+}
+
+function ScopeFilterRow({ filter, onChange, onRemove }: { filter: FilterRule; onChange: (f: FilterRule) => void; onRemove: () => void }) {
+  const kind = scopeKindFor(filter.field)
+  const setField = (field: string) => {
+    const k = scopeKindFor(field)
+    onChange({ field, operator: SCOPE_OPS[k][0].value, value: k === 'number' ? 0 : '' })
+  }
+  const setOp = (operator: FilterOperator) => {
+    let value = filter.value
+    if (operator === 'between' && !Array.isArray(value)) value = [0, 100]
+    if (operator !== 'between' && Array.isArray(value)) value = 0
+    onChange({ ...filter, operator, value })
+  }
   return (
-    <div className="group flex flex-wrap items-center gap-2 p-3 rounded-lg border border-violet-300/60 bg-violet-50/40">
-      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-violet-100 text-violet-700">Aggregate</span>
-      <span className="text-sm text-text-primary">{aggregateSummary(rule)}</span>
-      <div className="flex-1" />
-      <button
-        onClick={onRemove}
-        className="p-1.5 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-colors"
-        aria-label="Remove aggregate condition"
-      >
+    <div className="flex flex-wrap items-center gap-2">
+      <select value={filter.field} onChange={e => setField(e.target.value)} className={cn(selectClass, 'min-w-[150px]')}>
+        {SCOPE_FIELDS.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
+      </select>
+      <select value={filter.operator} onChange={e => setOp(e.target.value as FilterOperator)} className={cn(selectClass, 'min-w-[110px]')}>
+        {SCOPE_OPS[kind].map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      {kind === 'product' ? (
+        <ProductSearchDropdown value={filter.value as string} onChange={v => onChange({ ...filter, value: v })} />
+      ) : kind === 'collection' ? (
+        <CollectionDropdown value={filter.value as string} onChange={v => onChange({ ...filter, value: v })} />
+      ) : kind === 'product_category' ? (
+        <ProductCategoryDropdown value={filter.value as string} onChange={v => onChange({ ...filter, value: v })} />
+      ) : filter.operator === 'between' ? (
+        <div className="flex items-center gap-2">
+          <NumberInput value={Array.isArray(filter.value) ? filter.value[0] : undefined} onChange={n => onChange({ ...filter, value: [n ?? 0, Array.isArray(filter.value) ? filter.value[1] : 0] })} className={cn(inputClass, 'w-24')} />
+          <span className="text-xs text-text-muted">and</span>
+          <NumberInput value={Array.isArray(filter.value) ? filter.value[1] : undefined} onChange={n => onChange({ ...filter, value: [Array.isArray(filter.value) ? filter.value[0] : 0, n ?? 0] })} className={cn(inputClass, 'w-24')} />
+        </div>
+      ) : (
+        <NumberInput value={typeof filter.value === 'number' ? filter.value : undefined} onChange={n => onChange({ ...filter, value: n ?? 0 })} className={cn(inputClass, 'w-28')} />
+      )}
+      <button onClick={onRemove} className="p-1.5 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 transition-colors" aria-label="Remove filter">
         <Trash2 className="h-4 w-4" />
       </button>
+    </div>
+  )
+}
+
+/** The §3.5 aggregate condition card — reads as one sentence, owns its own scope
+ *  and timeframe. CONTRACT echoed in the engine: scope + timeframe filter rows,
+ *  then the aggregate runs, then the comparison. */
+function AggregateCard({ rule, onChange, onRemove }: { rule: AggregateRule; onChange: (r: AggregateRule) => void; onRemove: () => void }) {
+  const patch = (next: Partial<AggregateRule>) => onChange({ ...rule, ...next })
+  const filters = rule.scope?.filters ?? []
+  const setFilters = (f: FilterRule[]) => patch({ scope: { operator: 'AND', filters: f } })
+  const showField = rule.aggregate.fn !== 'COUNT' && rule.aggregate.fn !== 'COUNT_DISTINCT'
+  const tf = rule.timeframe ?? { type: 'all_time' }
+
+  return (
+    <div className="rounded-xl border border-violet-300/60 bg-violet-50/30 p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-violet-100 text-violet-700">Behaviour · aggregate</span>
+        <button onClick={onRemove} className="p-1 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50" aria-label="Remove condition"><Trash2 className="h-3.5 w-3.5" /></button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+        <span>Customers who</span>
+        <select
+          value={rule.aggregate.fn}
+          onChange={e => {
+            const fn = e.target.value as AggregateRule['aggregate']['fn']
+            const field = fn === 'COUNT' || fn === 'COUNT_DISTINCT' ? undefined : (rule.aggregate.field ?? 'line_value')
+            patch({ aggregate: { fn, field } })
+          }}
+          className={cn(selectClass, 'min-w-[160px]')}
+        >
+          {AGG_FNS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+        </select>
+        {showField && (
+          <>
+            <span>of</span>
+            <select value={rule.aggregate.field ?? 'line_value'} onChange={e => patch({ aggregate: { ...rule.aggregate, field: e.target.value as NonNullable<AggregateRule['aggregate']['field']> } })} className={cn(selectClass, 'min-w-[120px]')}>
+              {AGG_FIELDS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+            </select>
+          </>
+        )}
+        <span>for</span>
+        <select value={rule.source} onChange={e => patch({ source: e.target.value as 'order_fulfilled' })} className={cn(selectClass, 'min-w-[150px]')}>
+          <option value="order_fulfilled">Order fulfilled</option>
+        </select>
+      </div>
+
+      <div className="pl-3 border-l-2 border-violet-200 space-y-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">where</div>
+        {filters.length === 0 && (
+          <p className="text-[11px] text-text-muted">No scope filter — this aggregates the whole source. Add a Product filter to scope it (otherwise this is the customer total).</p>
+        )}
+        {filters.map((f, i) => (
+          <ScopeFilterRow
+            key={i}
+            filter={f}
+            onChange={nf => setFilters(filters.map((x, xi) => (xi === i ? nf : x)))}
+            onRemove={() => setFilters(filters.filter((_, xi) => xi !== i))}
+          />
+        ))}
+        <button onClick={() => setFilters([...filters, { field: 'product_name', operator: 'is', value: '' }])} className="inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-hover">
+          <Plus className="h-3 w-3" /> Add filter
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+        <span>in the</span>
+        <select
+          value={tf.type}
+          onChange={e => {
+            const t = e.target.value
+            patch({ timeframe: t === 'between' ? { type: 'between', start: '', end: '' } : t === 'last_n_days' ? { type: 'last_n_days', n: 30 } : { type: 'all_time' } })
+          }}
+          className={cn(selectClass, 'min-w-[140px]')}
+        >
+          <option value="all_time">all time</option>
+          <option value="last_n_days">last N days</option>
+          <option value="between">between dates</option>
+        </select>
+        {tf.type === 'last_n_days' && (
+          <>
+            <NumberInput value={tf.n} onChange={n => patch({ timeframe: { type: 'last_n_days', n: n ?? 0 } })} className={cn(inputClass, 'w-20')} />
+            <span>days</span>
+          </>
+        )}
+        {tf.type === 'between' && (
+          <>
+            <input type="date" value={tf.start} onChange={e => patch({ timeframe: { type: 'between', start: e.target.value, end: tf.end } })} className={cn(inputClass, 'w-40')} />
+            <span>to</span>
+            <input type="date" value={tf.end} onChange={e => patch({ timeframe: { type: 'between', start: tf.start, end: e.target.value } })} className={cn(inputClass, 'w-40')} />
+          </>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+        <span>is</span>
+        <select
+          value={rule.operator}
+          onChange={e => {
+            const op = e.target.value as AggregateRule['operator']
+            let value = rule.value
+            if (op === 'between' && !Array.isArray(value)) value = [0, 0]
+            if (op !== 'between' && Array.isArray(value)) value = 0
+            patch({ operator: op, value })
+          }}
+          className={cn(selectClass, 'min-w-[130px]')}
+        >
+          {AGG_COMPARE.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {rule.operator === 'between' ? (
+          <div className="flex items-center gap-2">
+            <NumberInput value={Array.isArray(rule.value) ? rule.value[0] : undefined} onChange={n => patch({ value: [n ?? 0, Array.isArray(rule.value) ? rule.value[1] : 0] })} className={cn(inputClass, 'w-28')} />
+            <span className="text-xs text-text-muted">and</span>
+            <NumberInput value={Array.isArray(rule.value) ? rule.value[1] : undefined} onChange={n => patch({ value: [Array.isArray(rule.value) ? rule.value[0] : 0, n ?? 0] })} className={cn(inputClass, 'w-28')} />
+          </div>
+        ) : (
+          <NumberInput value={typeof rule.value === 'number' ? rule.value : undefined} onChange={n => patch({ value: n ?? 0 })} className={cn(inputClass, 'w-32')} />
+        )}
+      </div>
+
+      <p className="text-[11px] text-violet-700/90 border-t border-violet-200 pt-2">{aggregateSummary(rule)}</p>
     </div>
   )
 }
@@ -632,6 +819,13 @@ function GroupBuilder({
     }
     onChange({ ...group, rules: [...rules, newGroup] })
   }
+
+  const addAggregate = () => {
+    onChange({ ...group, rules: [...rules, defaultAggregateRule()] })
+  }
+
+  // Condition-type fork (spec §3.3): Attribute vs Behaviour, chosen before any form.
+  const [picking, setPicking] = useState(false)
 
   const toggleLogic = () => {
     onChange({ ...group, logic: group.logic === 'AND' ? 'OR' : 'AND' })
@@ -721,7 +915,7 @@ function GroupBuilder({
                 depth={depth + 1}
               />
             ) : isAggregate(item) ? (
-              <AggregateRow rule={item} onRemove={() => removeItem(index)} />
+              <AggregateCard rule={item} onChange={u => updateItem(index, u)} onRemove={() => removeItem(index)} />
             ) : (
               <RuleRow
                 rule={item}
@@ -735,13 +929,32 @@ function GroupBuilder({
       </div>
 
       <div className="mt-3 pl-3 flex flex-wrap items-center gap-2">
-        <button
-          onClick={addRule}
-          className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-accent hover:text-accent-hover border border-dashed border-accent/30 hover:border-accent/60 rounded-lg transition-colors hover:bg-accent/5"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add condition
-        </button>
+        {picking ? (
+          <>
+            <span className="text-xs font-medium text-text-muted">Add:</span>
+            <button
+              onClick={() => { addRule(); setPicking(false) }}
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-accent border border-dashed border-accent/40 rounded-lg hover:bg-accent/5 transition-colors"
+            >
+              Attribute about the customer
+            </button>
+            <button
+              onClick={() => { addAggregate(); setPicking(false) }}
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-violet-700 border border-dashed border-violet-400/50 rounded-lg hover:bg-violet-50 transition-colors"
+            >
+              Behaviour the customer performed
+            </button>
+            <button onClick={() => setPicking(false)} className="text-xs text-text-muted hover:text-text-primary px-1.5">Cancel</button>
+          </>
+        ) : (
+          <button
+            onClick={() => setPicking(true)}
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-accent hover:text-accent-hover border border-dashed border-accent/30 hover:border-accent/60 rounded-lg transition-colors hover:bg-accent/5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add condition
+          </button>
+        )}
         {canNest && (
           <button
             onClick={addGroup}
