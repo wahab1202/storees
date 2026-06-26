@@ -17,6 +17,7 @@ import {
 import { encrypt } from '../services/encryption.js'
 import { redis } from '../services/redis.js'
 import { generateJwt, jwtPayloadFrom } from '../services/authService.js'
+import { requireAuth } from '../middleware/requireAuth.js'
 import { instantiateDefaultSegments } from '../services/segmentService.js'
 import { instantiateDefaultFlows } from '../services/flowService.js'
 
@@ -156,7 +157,7 @@ router.get('/shopify/callback', async (req, res) => {
 
 // POST /api/integrations/shopify/sync?projectId=...
 // Manually trigger a re-sync of Shopify data
-router.post('/shopify/sync', async (req, res) => {
+router.post('/shopify/sync', requireAuth, async (req, res) => {
   const projectId = req.query.projectId as string
   if (!projectId) {
     res.status(400).json({ success: false, error: 'projectId is required' })
@@ -189,7 +190,7 @@ router.post('/shopify/sync', async (req, res) => {
 
 // GET /api/integrations/shopify/sync-status?projectId=...
 // Check progress of the most recent sync job
-router.get('/shopify/sync-status', async (req, res) => {
+router.get('/shopify/sync-status', requireAuth, async (req, res) => {
   const projectId = req.query.projectId as string
   if (!projectId) {
     res.status(400).json({ success: false, error: 'projectId is required' })
@@ -229,7 +230,7 @@ router.get('/shopify/sync-status', async (req, res) => {
 })
 
 // GET /api/integrations/shopify/status?projectId=...
-router.get('/shopify/status', async (req, res) => {
+router.get('/shopify/status', requireAuth, async (req, res) => {
   const projectId = req.query.projectId as string
   if (!projectId) {
     res.status(400).json({ success: false, error: 'projectId is required' })

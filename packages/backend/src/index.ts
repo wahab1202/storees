@@ -142,8 +142,12 @@ app.use('/api/t', urlTrackerRoutes)
 // Unsubscribe — public, mounted short for List-Unsubscribe header brevity
 app.use('/u', unsubscribeRoutes)
 
-// Admin panel routes — protected by requireAuth middleware
-app.use('/api/integrations', requireAuth, integrationRoutes)
+// Admin panel routes — protected by requireAuth middleware.
+// NOTE: integrations is mounted WITHOUT a blanket requireAuth — the Shopify
+// OAuth install + callback are browser/Shopify redirects that can't carry an
+// Authorization header. The router applies requireAuth per-route to the
+// authenticated endpoints (status/sync) instead.
+app.use('/api/integrations', integrationRoutes)
 app.use('/api/customers', requireAuth, customerRoutes)
 app.use('/api/segments', requireAuth, segmentRoutes)
 app.use('/api/dashboard', requireAuth, dashboardRoutes)
