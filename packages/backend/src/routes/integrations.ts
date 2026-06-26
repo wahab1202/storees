@@ -221,6 +221,30 @@ router.post('/shopify/connect', requireAuth, async (req, res) => {
   }
 })
 
+// POST /api/integrations/shopify/disconnect?projectId=...
+// Clears the Shopify connection from the active project so the store can be
+// connected to a different project (the domain is unique per project).
+router.post('/shopify/disconnect', requireAuth, async (req, res) => {
+  try {
+    const projectId = req.query.projectId as string | undefined
+    if (!projectId) return res.status(400).json({ success: false, error: 'No active project' })
+    const [p] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, projectId)).limit(1)
+    const settings = { ...((p?.settings ?? {}) as Record<string, unknown>) }
+    delete settings.shopifyCustomApp
+    await db.update(projects).set({
+      shopifyDomain: null,
+      shopifyAccessToken: null,
+      webhookSecret: null,
+      settings,
+      updatedAt: new Date(),
+    }).where(eq(projects.id, projectId))
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Shopify disconnect error:', err)
+    res.status(500).json({ success: false, error: 'Failed to disconnect' })
+  }
+})
+
 // POST /api/integrations/shopify/sync?projectId=...
 // Manually trigger a re-sync of Shopify data
 router.post('/shopify/sync', requireAuth, async (req, res) => {

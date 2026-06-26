@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { useShopifyStatus } from '@/hooks/useIntegrations'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
+import { useProjectContext } from '@/lib/projectContext'
 import { Loader2, CheckCircle2, Store, ExternalLink } from 'lucide-react'
 
 function normalizeDomain(input: string): string {
@@ -15,6 +16,7 @@ function normalizeDomain(input: string): string {
 export default function IntegrationsPage() {
   const { data, isLoading } = useShopifyStatus()
   const queryClient = useQueryClient()
+  const { projectName } = useProjectContext()
   const [shopDomain, setShopDomain] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
@@ -52,9 +54,26 @@ export default function IntegrationsPage() {
     }
   }
 
+  async function handleDisconnect() {
+    if (!confirm('Disconnect this Shopify store from the current project?')) return
+    setSubmitting(true)
+    try {
+      await api.post(withProject('/api/integrations/shopify/disconnect'), {})
+      await queryClient.invalidateQueries({ queryKey: ['shopify-status'] })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div>
       <PageHeader title="Connected Stores" />
+
+      <div className="max-w-lg mb-4 text-xs text-text-muted bg-surface border border-border rounded-lg px-4 py-3">
+        A store connects to your <span className="font-medium text-text-secondary">active project{projectName ? `: ${projectName}` : ''}</span>. To keep each client separate, create a <span className="font-medium">New Project</span> and switch to it before connecting.
+      </div>
 
       <div className="max-w-lg">
         {/* Shopify connection card */}
@@ -82,15 +101,24 @@ export default function IntegrationsPage() {
                   <p className="text-xs text-green-600">{domain}</p>
                 </div>
               </div>
-              <a
-                href={`https://${domain}/admin`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-sm text-accent hover:text-accent-hover transition-colors"
-              >
-                Open Shopify Admin
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
+              <div className="flex items-center justify-between">
+                <a
+                  href={`https://${domain}/admin`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-accent hover:text-accent-hover transition-colors"
+                >
+                  Open Shopify Admin
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                <button
+                  onClick={handleDisconnect}
+                  disabled={submitting}
+                  className="text-sm text-text-muted hover:text-red-600 transition-colors disabled:opacity-50"
+                >
+                  Disconnect
+                </button>
+              </div>
             </div>
           ) : (
             <form onSubmit={handleConnect} className="space-y-3">
