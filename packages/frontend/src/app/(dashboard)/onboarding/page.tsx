@@ -193,6 +193,15 @@ export default function OnboardingPage() {
     )
   }
 
+  // Once the project is created + configured, make it the ACTIVE project so the
+  // dashboard, Connected Stores, etc. reflect the NEW project — not the old one.
+  useEffect(() => {
+    if (launchResult && projectData?.project) {
+      localStorage.setItem('storees-active-project', projectData.project.id)
+      localStorage.setItem('storees-active-project-name', projectData.project.name)
+    }
+  }, [launchResult, projectData])
+
   const handleLaunch = async () => {
     if (!selectedPack || !projectName.trim()) return
     setIsLaunching(true)
@@ -728,19 +737,29 @@ export default function OnboardingPage() {
           </div>
 
           {/* CTA */}
-          <div className="flex items-center justify-center gap-3 pt-2">
-            <a
-              href={`/dashboard`}
-              className="px-6 py-2.5 bg-accent text-white rounded-lg font-medium text-sm hover:bg-accent-hover"
-            >
-              Go to Dashboard
-            </a>
-            <a
-              href={`/segments`}
-              className="px-6 py-2.5 border border-border rounded-lg text-sm font-medium text-heading hover:bg-surface"
-            >
-              View Segments
-            </a>
+          <div className="flex flex-col items-center gap-3 pt-2">
+            {selectedPack === 'ecommerce' && (
+              <a
+                href="/integrations"
+                className="w-full max-w-sm text-center px-6 py-2.5 bg-[#96bf48] text-white rounded-lg font-medium text-sm hover:opacity-90"
+              >
+                Connect your Shopify store →
+              </a>
+            )}
+            <div className="flex items-center justify-center gap-3">
+              <a
+                href={`/dashboard`}
+                className="px-6 py-2.5 bg-accent text-white rounded-lg font-medium text-sm hover:bg-accent-hover"
+              >
+                Go to Dashboard
+              </a>
+              <a
+                href={`/segments`}
+                className="px-6 py-2.5 border border-border rounded-lg text-sm font-medium text-heading hover:bg-surface"
+              >
+                View Segments
+              </a>
+            </div>
           </div>
         </div>
       )}
