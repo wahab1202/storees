@@ -320,7 +320,28 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       }
     })
 
-    res.json({ success: true, data })
+    // Dedupe by order id. The connector emits one event per sync / status
+    // change, so the same order recurs (e.g. a pending sync, then a delivered
+    // one). Rows are DESC by timestamp, so the first time we see an order id is
+    // its latest event — keep that, and promote the status to 'delivered' if any
+    // of the order's events was delivered (delivered wins over pending).
+    type OrderRow = (typeof data)[number]
+    const seen = new Map<string, OrderRow>()
+    const deduped: OrderRow[] = []
+    for (const order of data) {
+      const key = order.externalOrderId ?? order.id
+      const existing = seen.get(key)
+      if (!existing) {
+        const entry = { ...order }
+        seen.set(key, entry)
+        deduped.push(entry)
+      } else if (order.status === 'delivered' && existing.status !== 'delivered') {
+        existing.status = 'delivered'
+        existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
+      }
+    }
+
+    res.json({ success: true, data: deduped })
   } catch (err) {
     console.error('Customer orders error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch orders' })
