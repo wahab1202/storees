@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useProjects, useProjectApiKeys, useArchiveProject, useUnarchiveProject, useDeleteProject } from '@/hooks/useProjects'
 import { CardSkeleton } from '@/components/ui/Skeleton'
@@ -158,12 +159,18 @@ export default function ProjectsPage() {
 
   const handleArchive = (id: string) => {
     if (confirm('Archive this project? It will be hidden from the list, but its data is kept and you can restore it.')) {
-      archiveProject.mutate(id)
+      archiveProject.mutate(id, {
+        onSuccess: () => toast.success('Project archived'),
+        onError: e => toast.error(e instanceof Error ? e.message : 'Failed to archive'),
+      })
     }
   }
   const handleDelete = (id: string, name: string) => {
-    if (confirm(`Permanently delete “${name}”? This cannot be undone. (Only works if the project has no synced data — otherwise archive it.)`)) {
-      deleteProject.mutate(id, { onError: e => alert(e instanceof Error ? e.message : 'Failed to delete') })
+    if (confirm(`Permanently delete “${name}” and ALL its data — customers, orders, events, segments, flows? This cannot be undone.`)) {
+      deleteProject.mutate(id, {
+        onSuccess: () => toast.success('Project deleted'),
+        onError: e => toast.error(e instanceof Error ? e.message : 'Failed to delete'),
+      })
     }
   }
 
@@ -343,7 +350,7 @@ export default function ProjectsPage() {
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button
-                      onClick={() => unarchiveProject.mutate(p.id)}
+                      onClick={() => unarchiveProject.mutate(p.id, { onSuccess: () => toast.success('Project restored') })}
                       disabled={unarchiveProject.isPending}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
                     >

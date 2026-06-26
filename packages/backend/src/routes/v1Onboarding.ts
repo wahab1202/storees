@@ -928,16 +928,45 @@ router.delete('/projects/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Project not found' })
     }
 
-    await db.delete(projects).where(eq(projects.id, projectId))
+    // Cascade purge: delete the project's rows from every project-scoped table,
+    // then the project itself. Tables are auto-discovered (every table has a
+    // project_id column, per the multi-tenant convention). Each table delete
+    // runs in a savepoint so an FK-blocked delete (a child not yet cleared) can
+    // be retried on a later pass — this converges for any DAG of project FKs.
+    // If something genuinely can't be cleared, the whole tx rolls back (no
+    // partial wipe) and we return an error.
+    await db.transaction(async (tx) => {
+      const discovered = await tx.execute(sql`
+        SELECT table_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND column_name = 'project_id' AND table_name <> 'projects'
+      `)
+      let remaining = (discovered.rows as Array<{ table_name: string }>).map(r => r.table_name)
+      let progress = true
+      while (remaining.length > 0 && progress) {
+        progress = false
+        const failed: string[] = []
+        for (const table of remaining) {
+          try {
+            await tx.transaction(async (sp) => {
+              await sp.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE project_id = ${projectId}`)
+            })
+            progress = true
+          } catch {
+            failed.push(table)
+          }
+        }
+        remaining = failed
+      }
+      if (remaining.length > 0) {
+        throw new Error(`Could not clear dependent data in: ${remaining.join(', ')}`)
+      }
+      await tx.delete(projects).where(eq(projects.id, projectId))
+    })
 
     res.json({ success: true, data: { deleted: projectId, name: project.name } })
   } catch (err) {
     console.error('Delete project error:', err)
-    // 23503 = FK violation: the project still has customers/orders/events/etc.
-    const msg = (err as { code?: string }).code === '23503'
-      ? 'This project has data (customers, orders, events) and can’t be permanently deleted. Archive it instead.'
-      : 'Failed to delete project'
-    res.status(400).json({ success: false, error: msg })
+    res.status(400).json({ success: false, error: (err as Error).message || 'Failed to delete project' })
   }
 })
 
