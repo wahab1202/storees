@@ -3,7 +3,7 @@ import { projects } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { getDomainFields } from './domainRegistry.js'
 import { getProjectFieldDefs } from './agentFieldDefs.js'
-import type { DomainType, DomainFieldDef } from '@storees/shared'
+import type { DomainType, DomainFieldDef, FilterConfig, FilterRule, FilterGroup, AggregateRule } from '@storees/shared'
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 const GROQ_MODEL = 'llama-3.3-70b-versatile'
@@ -14,10 +14,7 @@ type ChatMessage = {
 }
 
 type AiSegmentResult = {
-  filters: {
-    logic: 'AND' | 'OR'
-    rules: Array<{ field: string; operator: string; value: unknown }>
-  }
+  filters: FilterConfig
   summary: string
 }
 
@@ -72,6 +69,39 @@ ${fieldDocs}
 7. For select fields, value must be one of the listed options exactly.
 8. Output ONLY the FilterConfig JSON. No explanations, no markdown, no code fences.
 
+## Behavioural AGGREGATE conditions (scoped sum/count over orders)
+
+Some segments cannot be expressed with the customer fields above — they need to
+SUM or COUNT a customer's ORDER LINE ITEMS, filtered by product/collection/
+category and a date window, then compare to a threshold. Phrases like "spent
+over X on <product/brand>", "bought more than N units of <X>", "ordered over X
+worth in the last 30 days" are aggregates. For these, put an "aggregate" leaf in
+the "rules" array (it may sit alongside normal rules):
+
+{
+  "type": "aggregate",
+  "source": "order_fulfilled",
+  "scope": { "operator": "AND", "filters": [ { "field": "<scope_field>", "operator": "<op>", "value": <value> } ] },
+  "timeframe": { "type": "all_time" } | { "type": "last_n_days", "n": <int> } | { "type": "between", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD" },
+  "aggregate": { "fn": "SUM"|"COUNT"|"COUNT_DISTINCT"|"AVG"|"MIN"|"MAX", "field": "line_value"|"quantity"|"price" },
+  "operator": "gt"|"gte"|"lt"|"lte"|"is"|"between",
+  "value": <number, or [min,max] for between>
+}
+
+Scope filter fields (these filter the LINE ITEMS before aggregating — NOT the same as the customer fields above):
+- product_name (is, is_not): a product title
+- collection (is, is_not): a collection / brand name
+- product_category (is, is_not): a category
+- price (is, greater_than, less_than, between): unit price
+- quantity (is, greater_than, less_than, between)
+
+Aggregate field: line_value (= price × quantity — use for "spent"/"worth"), quantity (use for "units"), price. COUNT omits "field". "count units" = SUM of quantity.
+
+AGGREGATE CRITICAL RULES:
+- Scope + timeframe select the rows FIRST, then aggregate, then compare. "spent 20000 on Brand X" = SUM line_value WHERE collection=Brand X > 20000. Do NOT use total_spent for product/brand-scoped spend.
+- line_value / price are in MAJOR currency units (rupees), NOT paise. "20000" stays 20000. (This is the OPPOSITE of total_spent, which is paise.)
+- Omit "timeframe" or use {"type":"all_time"} when no date window is mentioned.
+
 ## Field-mapping guidance
 
 DEALER VS CUSTOMER GEOGRAPHY — the most common confusion:
@@ -121,7 +151,16 @@ Input: "Customers in Chennai"
 Output: {"logic":"AND","rules":[{"field":"city","operator":"is","value":"Chennai"}]}
 
 Input: "Customers from Tamil Nadu who spent over 10000"
-Output: {"logic":"AND","rules":[{"field":"region","operator":"is","value":"Tamil Nadu"},{"field":"total_spent","operator":"greater_than","value":1000000}]}`
+Output: {"logic":"AND","rules":[{"field":"region","operator":"is","value":"Tamil Nadu"},{"field":"total_spent","operator":"greater_than","value":1000000}]}
+
+Input: "Customers who spent over 20000 on Factory Price Gadgets between 20 May 2026 and 20 July 2026"
+Output: {"logic":"AND","rules":[{"type":"aggregate","source":"order_fulfilled","scope":{"operator":"AND","filters":[{"field":"collection","operator":"is","value":"Factory Price Gadgets"}]},"timeframe":{"type":"between","start":"2026-05-20","end":"2026-07-20"},"aggregate":{"fn":"SUM","field":"line_value"},"operator":"gt","value":20000}]}
+
+Input: "Customers who bought more than 10 units of GOWELL-1234 in the last 90 days"
+Output: {"logic":"AND","rules":[{"type":"aggregate","source":"order_fulfilled","scope":{"operator":"AND","filters":[{"field":"product_name","operator":"is","value":"GOWELL-1234"}]},"timeframe":{"type":"last_n_days","n":90},"aggregate":{"fn":"SUM","field":"quantity"},"operator":"gt","value":10}]}
+
+Input: "Customers in Chennai who have spent more than 5000 in the Mattress collection"
+Output: {"logic":"AND","rules":[{"field":"city","operator":"is","value":"Chennai"},{"type":"aggregate","source":"order_fulfilled","scope":{"operator":"AND","filters":[{"field":"collection","operator":"is","value":"Mattress"}]},"aggregate":{"fn":"SUM","field":"line_value"},"operator":"gt","value":5000}]}`
 }
 
 // ---- Summary generator ----
@@ -156,10 +195,27 @@ function generateSummary(filters: AiSegmentResult['filters'], fields: DomainFiel
     return String(value)
   }
 
-  const parts = filters.rules.map(rule => {
+  const AGG_FN_LABEL: Record<string, string> = { SUM: 'sum of', COUNT: 'count of', COUNT_DISTINCT: 'distinct count of', AVG: 'average', MIN: 'min', MAX: 'max' }
+  const AGG_OP_LABEL: Record<string, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤', is: '=', between: 'between' }
+
+  const describe = (item: FilterRule | FilterGroup | AggregateRule): string => {
+    if ('type' in item && item.type === 'group') {
+      return `(${item.rules.map(describe).join(item.logic === 'OR' ? ' or ' : ' and ')})`
+    }
+    if ('type' in item && item.type === 'aggregate') {
+      const fn = AGG_FN_LABEL[item.aggregate.fn] ?? item.aggregate.fn
+      const fld = item.aggregate.field ? ` ${item.aggregate.field.replace(/_/g, ' ')}` : ''
+      const scope = (item.scope?.filters ?? [])
+        .map(f => `${f.field.replace(/_/g, ' ')} ${f.operator.replace(/_/g, ' ')} ${Array.isArray(f.value) ? f.value.join('–') : String(f.value)}`)
+        .join(' and ')
+      const tf = item.timeframe?.type === 'between' ? `, ${item.timeframe.start}–${item.timeframe.end}`
+        : item.timeframe?.type === 'last_n_days' ? `, last ${item.timeframe.n}d` : ''
+      const val = Array.isArray(item.value) ? `${item.value[0]}–${item.value[1]}` : item.value
+      return `${fn}${fld} on orders${scope ? ` where ${scope}` : ''}${tf} ${AGG_OP_LABEL[item.operator] ?? item.operator} ${val}`
+    }
+    const rule = item
     const fieldLabel = labelMap[rule.field] ?? rule.field
     const opLabel = OPERATOR_LABELS[rule.operator] ?? rule.operator
-
     if (rule.operator === 'is_true') return `${fieldLabel}`
     if (rule.operator === 'is_false') return `not ${fieldLabel}`
     if (rule.operator === 'between' && Array.isArray(rule.value)) {
@@ -167,12 +223,10 @@ function generateSummary(filters: AiSegmentResult['filters'], fields: DomainFiel
     }
     if (rule.operator === 'has_purchased') return `purchased "${rule.value}"`
     if (rule.operator === 'has_not_purchased') return `not purchased "${rule.value}"`
-
     return `${fieldLabel} ${opLabel} ${formatValue(rule.field, rule.value)}`
-  })
+  }
 
-  const joiner = filters.logic === 'AND' ? ' and ' : ' or '
-  return parts.join(joiner)
+  return filters.rules.map(describe).join(filters.logic === 'AND' ? ' and ' : ' or ')
 }
 
 // ---- Main export ----
@@ -257,14 +311,40 @@ export async function generateSegmentFilter(
     throw new Error("Couldn't generate valid filters. Try being more specific.")
   }
 
-  for (const rule of filters.rules) {
-    if (!rule.field || !rule.operator) {
+  // Recursive, node-type-aware validation: attribute rules check field/operator
+  // against the domain schema; groups recurse; aggregate leaves validate their
+  // own shape (and their scope-filter fields against the line-item field set).
+  const AGG_SCOPE_FIELDS = new Set(['product_name', 'collection', 'product_category', 'price', 'quantity'])
+  const validateNode = (item: unknown): void => {
+    const node = (item ?? {}) as Record<string, unknown>
+    if (node.type === 'group') {
+      if (!Array.isArray(node.rules) || node.rules.length === 0) {
+        throw new Error("Couldn't generate valid filters. Try being more specific.")
+      }
+      for (const r of node.rules) validateNode(r)
+      return
+    }
+    if (node.type === 'aggregate') {
+      const agg = node.aggregate as Record<string, unknown> | undefined
+      if (!agg?.fn || !node.operator) {
+        throw new Error("Couldn't build the behavioural condition. Try rephrasing.")
+      }
+      const scope = node.scope as { filters?: Array<Record<string, unknown>> } | undefined
+      for (const f of scope?.filters ?? []) {
+        if (!f?.field || !AGG_SCOPE_FIELDS.has(f.field as string)) {
+          throw new Error("Couldn't map the behavioural filter. Try rephrasing.")
+        }
+      }
+      return
+    }
+    if (!node.field || !node.operator) {
       throw new Error("Couldn't map all conditions to filter fields. Try rephrasing.")
     }
-    if (!validFields.has(rule.field)) {
-      throw new Error(`Unknown field "${rule.field}". Try rephrasing your request.`)
+    if (!validFields.has(node.field as string)) {
+      throw new Error(`Unknown field "${String(node.field)}". Try rephrasing your request.`)
     }
   }
+  for (const item of filters.rules) validateNode(item)
 
   const summary = generateSummary(filters, fields)
   console.log(`[AI] [${domainType}] Segment query: "${input}" → ${filters.rules.length} rules`)
