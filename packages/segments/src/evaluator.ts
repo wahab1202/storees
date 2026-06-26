@@ -233,7 +233,7 @@ function scopeFilterPredicate(filter: FilterRule): SQL {
           JOIN collections c ON c.id = pc.collection_id
           WHERE p.project_id = customers.project_id
             AND p.shopify_product_id = ${liProductId}
-            AND c.name = ${v}
+            AND c.title = ${v}
         )`
       : sql`EXISTS (
           SELECT 1 FROM products p
