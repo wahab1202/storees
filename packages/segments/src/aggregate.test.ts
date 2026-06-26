@@ -39,7 +39,7 @@ const SEED: Record<string, AggregateSourceRow[]> = {
 
 const baseScope = {
   source: 'order_fulfilled' as const,
-  scope: { operator: 'AND' as const, filters: [{ field: 'product_id', operator: 'is', value: [P4] }] },
+  scope: { operator: 'AND' as const, filters: [{ field: 'product_id', operator: 'is' as const, value: [P4] }] },
   timeframe: { type: 'between' as const, start: '2026-05-20', end: '2026-07-20' },
 }
 
