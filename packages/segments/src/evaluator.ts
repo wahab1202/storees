@@ -216,6 +216,35 @@ function scopeFilterPredicate(filter: FilterRule): SQL {
       default:             return sql`TRUE`
     }
   }
+  // Collection / category live on the PRODUCT (normalized into products /
+  // product_collections), and are sparse-or-null on the order line item for
+  // event-driven tenants. Resolve via the catalogue (line-item product id →
+  // products), OR the line-item field if it happens to be populated.
+  if (f === 'collection' || f === 'product_category') {
+    const v = String(filter.value ?? '')
+    const liProductId = sql`COALESCE(li->>'product_id', li->>'productId')`
+    const liField = f === 'collection'
+      ? sql`COALESCE(li->>'product_collection', li->>'productCollection')`
+      : sql`COALESCE(li->>'product_type', li->>'productType')`
+    const catalogue = f === 'collection'
+      ? sql`EXISTS (
+          SELECT 1 FROM products p
+          JOIN product_collections pc ON pc.product_id = p.id
+          JOIN collections c ON c.id = pc.collection_id
+          WHERE p.project_id = customers.project_id
+            AND p.shopify_product_id = ${liProductId}
+            AND c.name = ${v}
+        )`
+      : sql`EXISTS (
+          SELECT 1 FROM products p
+          WHERE p.project_id = customers.project_id
+            AND p.shopify_product_id = ${liProductId}
+            AND p.product_type = ${v}
+        )`
+    const match = sql`(${liField} = ${v} OR ${catalogue})`
+    return filter.operator === 'is_not' ? sql`(NOT ${match})` : match
+  }
+
   const keys = LI_TEXT_FIELDS[f]
   if (!keys) return sql`TRUE` // unknown scope field — neutral, never silently excludes
   const col = sql`COALESCE(li->>${keys[0]}, li->>${keys[1]})`
