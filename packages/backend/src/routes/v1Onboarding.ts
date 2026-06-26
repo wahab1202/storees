@@ -485,11 +485,18 @@ router.get('/projects', async (_req: Request, res: Response) => {
         integrationType: projects.integrationType,
         features: projects.features,
         createdAt: projects.createdAt,
+        settings: projects.settings,
       })
       .from(projects)
       .orderBy(projects.createdAt)
 
-    res.json({ success: true, data: rows })
+    // Expose `archived` from settings; don't leak the rest of settings (it can
+    // hold encrypted Shopify creds) to the client.
+    const data = rows.map(({ settings, ...r }) => ({
+      ...r,
+      archived: (settings as Record<string, unknown> | null)?.archived === true,
+    }))
+    res.json({ success: true, data })
   } catch (err) {
     console.error('List projects error:', err)
     res.status(500).json({ success: false, error: 'Failed to list projects' })
@@ -873,6 +880,40 @@ router.get('/projects/:id/consent-export', requireRole('admin'), async (req: Req
  * Used by the resetToFintech script to clear the demo before re-seeding.
  * Relies on ON DELETE CASCADE in the DB schema.
  */
+// POST /projects/:id/archive — soft-remove (reversible). Hides the project from
+// the active list without touching its data. Preferred over delete, which FK-
+// fails on projects that have synced customers/orders/events.
+router.post('/projects/:id/archive', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string
+    const [p] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, id)).limit(1)
+    if (!p) return res.status(404).json({ success: false, error: 'Project not found' })
+    const settings = { ...((p.settings ?? {}) as Record<string, unknown>), archived: true, archivedAt: new Date().toISOString() }
+    await db.update(projects).set({ settings, updatedAt: new Date() }).where(eq(projects.id, id))
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Archive project error:', err)
+    res.status(500).json({ success: false, error: 'Failed to archive project' })
+  }
+})
+
+// POST /projects/:id/unarchive — restore an archived project.
+router.post('/projects/:id/unarchive', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string
+    const [p] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, id)).limit(1)
+    if (!p) return res.status(404).json({ success: false, error: 'Project not found' })
+    const settings = { ...((p.settings ?? {}) as Record<string, unknown>) }
+    delete settings.archived
+    delete settings.archivedAt
+    await db.update(projects).set({ settings, updatedAt: new Date() }).where(eq(projects.id, id))
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Unarchive project error:', err)
+    res.status(500).json({ success: false, error: 'Failed to restore project' })
+  }
+})
+
 router.delete('/projects/:id', async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
@@ -892,7 +933,11 @@ router.delete('/projects/:id', async (req: Request, res: Response) => {
     res.json({ success: true, data: { deleted: projectId, name: project.name } })
   } catch (err) {
     console.error('Delete project error:', err)
-    res.status(500).json({ success: false, error: 'Failed to delete project' })
+    // 23503 = FK violation: the project still has customers/orders/events/etc.
+    const msg = (err as { code?: string }).code === '23503'
+      ? 'This project has data (customers, orders, events) and can’t be permanently deleted. Archive it instead.'
+      : 'Failed to delete project'
+    res.status(400).json({ success: false, error: msg })
   }
 })
 

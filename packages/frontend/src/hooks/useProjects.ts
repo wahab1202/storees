@@ -8,6 +8,7 @@ type Project = {
   integrationType: string
   features?: { agentScopedAccess?: boolean; [key: string]: unknown } | null
   createdAt: string
+  archived?: boolean
 }
 
 type ProjectFeatures = { agentScopedAccess?: boolean }
@@ -39,6 +40,33 @@ export function useProjects() {
   return useQuery({
     queryKey: ['projects'],
     queryFn: () => api.get<Project[]>('/api/onboarding/projects'),
+  })
+}
+
+/** Soft-remove a project (reversible). Hides it from the active list. */
+export function useArchiveProject() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (projectId: string) => api.post(`/api/onboarding/projects/${projectId}/archive`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  })
+}
+
+/** Restore an archived project. */
+export function useUnarchiveProject() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (projectId: string) => api.post(`/api/onboarding/projects/${projectId}/unarchive`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  })
+}
+
+/** Permanently delete a project (only works on projects with no synced data). */
+export function useDeleteProject() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (projectId: string) => api.delete(`/api/onboarding/projects/${projectId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
   })
 }
 

@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useProjects, useProjectApiKeys } from '@/hooks/useProjects'
+import { useProjects, useProjectApiKeys, useArchiveProject, useUnarchiveProject, useDeleteProject } from '@/hooks/useProjects'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { useSwitchProject } from '@/lib/projectContext'
@@ -26,6 +26,9 @@ import {
   Shield,
   Activity,
   Database,
+  Archive,
+  RotateCcw,
+  Trash2,
 } from 'lucide-react'
 import { ConnectorsSection } from '@/components/data-sources/ConnectorsSection'
 import type { DomainType } from '@storees/shared'
@@ -144,9 +147,25 @@ export default function ProjectsPage() {
   const { data, isLoading, isError } = useProjects()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const switchProject = useSwitchProject()
+  const archiveProject = useArchiveProject()
+  const unarchiveProject = useUnarchiveProject()
+  const deleteProject = useDeleteProject()
   const currentProjectId = typeof window !== 'undefined' ? localStorage.getItem('storees-active-project') : null
 
   const projects = data?.data ?? []
+  const activeProjects = projects.filter(p => !p.archived)
+  const archivedProjects = projects.filter(p => p.archived)
+
+  const handleArchive = (id: string) => {
+    if (confirm('Archive this project? It will be hidden from the list, but its data is kept and you can restore it.')) {
+      archiveProject.mutate(id)
+    }
+  }
+  const handleDelete = (id: string, name: string) => {
+    if (confirm(`Permanently delete “${name}”? This cannot be undone. (Only works if the project has no synced data — otherwise archive it.)`)) {
+      deleteProject.mutate(id, { onError: e => alert(e instanceof Error ? e.message : 'Failed to delete') })
+    }
+  }
 
   return (
     <div>
@@ -187,8 +206,12 @@ export default function ProjectsPage() {
           </button>
         </div>
       ) : (
+        <>
         <div className="space-y-3">
-          {projects.map(project => {
+          {activeProjects.length === 0 && (
+            <p className="text-sm text-text-muted px-1">No active projects — restore one below or create a new one.</p>
+          )}
+          {activeProjects.map(project => {
             const domain = DOMAIN_CONFIG[project.domainType] || DOMAIN_CONFIG.custom
             const DomainIcon = domain.icon
             const isExpanded = expandedId === project.id
@@ -244,7 +267,7 @@ export default function ProjectsPage() {
                 {/* Expanded: Project ID + API Keys */}
                 {isExpanded && (
                   <div className="border-t border-border">
-                    {/* Switch to project button */}
+                    {/* Switch to project + archive */}
                     <div className="px-4 py-3 bg-surface/30 flex items-center justify-between">
                       {currentProjectId === project.id ? (
                         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-600">
@@ -260,6 +283,14 @@ export default function ProjectsPage() {
                           Switch to this Project
                         </button>
                       )}
+                      <button
+                        onClick={() => handleArchive(project.id)}
+                        disabled={archiveProject.isPending}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text-primary border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+                      >
+                        <Archive size={12} />
+                        Archive
+                      </button>
                     </div>
 
                     {/* Full Project ID */}
@@ -299,6 +330,39 @@ export default function ProjectsPage() {
             )
           })}
         </div>
+
+        {archivedProjects.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-text-muted mb-2 px-1">Archived</h2>
+            <div className="space-y-2">
+              {archivedProjects.map(p => (
+                <div key={p.id} className="flex items-center justify-between bg-surface-elevated border border-border rounded-xl p-4 opacity-80">
+                  <div className="min-w-0">
+                    <span className="text-sm font-medium text-text-primary">{p.name}</span>
+                    <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-surface text-text-muted">Archived</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      onClick={() => unarchiveProject.mutate(p.id)}
+                      disabled={unarchiveProject.isPending}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent border border-border rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+                    >
+                      <RotateCcw size={12} /> Restore
+                    </button>
+                    <button
+                      onClick={() => handleDelete(p.id, p.name)}
+                      disabled={deleteProject.isPending}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 size={12} /> Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   )
