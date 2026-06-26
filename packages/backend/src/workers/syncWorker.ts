@@ -3,8 +3,7 @@ import { eq } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { projects, orders, products, collections, productCollections } from '../db/schema.js'
-import { fetchShopifyApi, fetchShopifyPage } from '../services/shopifyService.js'
-import { decrypt } from '../services/encryption.js'
+import { fetchShopifyApi, fetchShopifyPage, getValidShopifyToken } from '../services/shopifyService.js'
 import { resolveCustomer, updateCustomerAggregates } from '../services/customerService.js'
 import { processHistoricalEvent } from '../services/eventProcessor.js'
 import { SHOPIFY_API_DELAY_MS } from '@storees/shared'
@@ -83,7 +82,9 @@ export function startSyncWorker(): Worker {
       }
 
       const shop = project.shopifyDomain
-      const token = decrypt(project.shopifyAccessToken)
+      // Re-mints a fresh Admin API token for custom-app connections (the
+      // client_credentials token is ~24h); returns the stored token for legacy OAuth.
+      const { token } = await getValidShopifyToken(projectId)
 
       // Fetch customers — paginate through all pages via Link header
       let customerUrl: string | null = '/customers.json?limit=250&order=created_at+desc'

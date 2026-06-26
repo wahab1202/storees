@@ -1,25 +1,55 @@
 'use client'
 
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useShopifyStatus } from '@/hooks/useIntegrations'
+import { api } from '@/lib/api'
+import { withProject } from '@/lib/project'
 import { Loader2, CheckCircle2, Store, ExternalLink } from 'lucide-react'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+function normalizeDomain(input: string): string {
+  return input.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+}
 
 export default function IntegrationsPage() {
   const { data, isLoading } = useShopifyStatus()
+  const queryClient = useQueryClient()
   const [shopDomain, setShopDomain] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const connected = data?.data.connected ?? false
   const domain = data?.data.shopifyDomain
 
-  function handleInstall(e: React.FormEvent) {
+  async function handleConnect(e: React.FormEvent) {
     e.preventDefault()
-    const shop = shopDomain.includes('.myshopify.com')
-      ? shopDomain
-      : `${shopDomain}.myshopify.com`
-    window.location.href = `${API_URL}/api/integrations/shopify/install?shop=${encodeURIComponent(shop)}`
+    setError(null)
+    const shop = normalizeDomain(shopDomain)
+    if (!shop.endsWith('.myshopify.com')) {
+      setError('Enter the store’s *.myshopify.com domain')
+      return
+    }
+    if (!clientId.trim() || !clientSecret.trim()) {
+      setError('Client ID and client secret are required')
+      return
+    }
+    setSubmitting(true)
+    try {
+      await api.post(withProject('/api/integrations/shopify/connect'), {
+        shop,
+        client_id: clientId.trim(),
+        client_secret: clientSecret.trim(),
+      })
+      setClientSecret('')
+      await queryClient.invalidateQueries({ queryKey: ['shopify-status'] })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Connection failed — check the credentials')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -63,34 +93,64 @@ export default function IntegrationsPage() {
               </a>
             </div>
           ) : (
-            <form onSubmit={handleInstall} className="space-y-3">
+            <form onSubmit={handleConnect} className="space-y-3">
               <div>
                 <label htmlFor="shop" className="block text-sm font-medium text-text-primary mb-1">
                   Store domain
                 </label>
-                <div className="flex gap-2">
-                  <input
-                    id="shop"
-                    type="text"
-                    placeholder="mystore"
-                    value={shopDomain}
-                    onChange={e => setShopDomain(e.target.value)}
-                    className="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-white
-                               focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
-                  />
-                  <span className="flex items-center text-sm text-text-muted">.myshopify.com</span>
-                </div>
+                <input
+                  id="shop"
+                  type="text"
+                  placeholder="mystore.myshopify.com"
+                  value={shopDomain}
+                  onChange={e => setShopDomain(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white
+                             focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
+                />
               </div>
+              <div>
+                <label htmlFor="clientId" className="block text-sm font-medium text-text-primary mb-1">
+                  Client ID
+                </label>
+                <input
+                  id="clientId"
+                  type="text"
+                  placeholder="from the Shopify app → Settings → Credentials"
+                  value={clientId}
+                  onChange={e => setClientId(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white
+                             focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
+                />
+              </div>
+              <div>
+                <label htmlFor="clientSecret" className="block text-sm font-medium text-text-primary mb-1">
+                  Client secret
+                </label>
+                <input
+                  id="clientSecret"
+                  type="password"
+                  placeholder="shpss_…"
+                  value={clientSecret}
+                  onChange={e => setClientSecret(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white
+                             focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
+                />
+              </div>
+              {error && <p className="text-xs text-red-600">{error}</p>}
               <button
                 type="submit"
-                disabled={!shopDomain.trim()}
+                disabled={submitting || !shopDomain.trim() || !clientId.trim() || !clientSecret.trim()}
                 className="w-full px-4 py-2.5 text-sm font-medium bg-accent text-white rounded-lg
-                           hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                           hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed
+                           inline-flex items-center justify-center gap-2"
               >
-                Connect Store
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                {submitting ? 'Connecting…' : 'Connect Store'}
               </button>
               <p className="text-xs text-text-muted">
-                You&apos;ll be redirected to Shopify to authorize the connection.
+                Create a custom-distribution app in your Shopify admin (Settings → Apps → Develop apps),
+                install it, then paste its Client ID + secret here. We sync customers, orders and products,
+                and keep your store live.
               </p>
             </form>
           )}

@@ -1,5 +1,9 @@
 import crypto from 'node:crypto'
+import { eq } from 'drizzle-orm'
 import { SHOPIFY_API_VERSION, SHOPIFY_WEBHOOK_TOPICS, SHOPIFY_API_DELAY_MS } from '@storees/shared'
+import { db } from '../db/connection.js'
+import { projects } from '../db/schema.js'
+import { encrypt, decrypt } from './encryption.js'
 
 // Support both old (SHOPIFY_API_KEY) and new (SHOPIFY_CLIENT_ID) env var names
 const SHOPIFY_API_KEY = process.env.SHOPIFY_CLIENT_ID ?? process.env.SHOPIFY_API_KEY!
@@ -201,4 +205,70 @@ export function generateNonce(): string {
 
 export function generateWebhookSecret(): string {
   return crypto.randomBytes(32).toString('hex')
+}
+
+// ============ CUSTOM-DISTRIBUTION APP (client_credentials grant) ============
+// Live stores can't use OAuth (it only installs on dev / published apps). A
+// Dev-Dashboard custom-distribution app exposes a Client ID + secret and mints a
+// short-lived (~24h) Admin API token via the client_credentials grant. There is
+// no refresh token — re-mint on demand.
+
+/** Mint an Admin API token. Throws on bad creds / app-not-installed (non-200). */
+export async function mintShopifyToken(
+  shop: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<{ accessToken: string; scope: string; expiresInSec: number }> {
+  const resp = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' }),
+  })
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '')
+    throw new Error(`Shopify rejected the credentials (HTTP ${resp.status})${text ? ` — ${text.slice(0, 200)}` : ''}. Check the client id/secret and that the app is installed on this store.`)
+  }
+  const data = (await resp.json()) as { access_token?: string; scope?: string; expires_in?: number }
+  if (!data.access_token) throw new Error('Shopify grant returned no access token')
+  return { accessToken: data.access_token, scope: data.scope ?? '', expiresInSec: data.expires_in ?? 86400 }
+}
+
+type ShopifyCustomAppCfg = { clientId: string; clientSecret: string; tokenExpiresAt?: string }
+
+/**
+ * A valid Admin API token for the project. Custom-app connections (creds in
+ * settings.shopifyCustomApp) re-mint via client_credentials when the stored
+ * token is missing or within 5 min of expiry, persisting the new token. Legacy
+ * OAuth connections (no creds) return the stored static token as-is.
+ */
+export async function getValidShopifyToken(projectId: string): Promise<{ shop: string; token: string }> {
+  const [p] = await db
+    .select({ shopifyDomain: projects.shopifyDomain, shopifyAccessToken: projects.shopifyAccessToken, settings: projects.settings })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+  if (!p?.shopifyDomain) throw new Error('Project has no Shopify store connected')
+  const shop = p.shopifyDomain
+  const settings = (p.settings ?? {}) as Record<string, unknown>
+  const cfg = (settings.shopifyCustomApp ?? null) as ShopifyCustomAppCfg | null
+
+  // Legacy OAuth path — static token, no creds to re-mint with.
+  if (!cfg?.clientId || !cfg?.clientSecret) {
+    if (!p.shopifyAccessToken) throw new Error('No Shopify credentials configured for this project')
+    return { shop, token: decrypt(p.shopifyAccessToken) }
+  }
+
+  const expiresAtMs = cfg.tokenExpiresAt ? new Date(cfg.tokenExpiresAt).getTime() : 0
+  if (p.shopifyAccessToken && expiresAtMs > Date.now() + 5 * 60 * 1000) {
+    return { shop, token: decrypt(p.shopifyAccessToken) }
+  }
+
+  const minted = await mintShopifyToken(shop, cfg.clientId, decrypt(cfg.clientSecret))
+  const tokenExpiresAt = new Date(Date.now() + minted.expiresInSec * 1000).toISOString()
+  await db.update(projects).set({
+    shopifyAccessToken: encrypt(minted.accessToken),
+    settings: { ...settings, shopifyCustomApp: { ...cfg, tokenExpiresAt } },
+    updatedAt: new Date(),
+  }).where(eq(projects.id, projectId))
+  return { shop, token: minted.accessToken }
 }

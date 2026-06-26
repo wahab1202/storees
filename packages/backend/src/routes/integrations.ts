@@ -13,6 +13,7 @@ import {
   getCallbackRedirectUrl,
   getCallbackErrorUrl,
   fetchShopInfo,
+  mintShopifyToken,
 } from '../services/shopifyService.js'
 import { encrypt } from '../services/encryption.js'
 import { redis } from '../services/redis.js'
@@ -152,6 +153,71 @@ router.get('/shopify/callback', async (req, res) => {
   } catch (err) {
     console.error('OAuth callback error:', err)
     res.redirect(getCallbackErrorUrl('Connection failed — please try again'))
+  }
+})
+
+/** Normalize a pasted store domain → bare `*.myshopify.com` (strip scheme/path). */
+function normalizeShopDomain(input: string): string {
+  return input.trim().toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/.*$/, '')
+}
+
+// POST /api/integrations/shopify/connect — custom-distribution app (client_credentials).
+// The LIVE-store path: no OAuth redirect. The body carries the app's client_id +
+// secret; we mint a token (which validates the creds + that the app is installed),
+// store them encrypted on the project, register webhooks, and kick off the sync.
+router.post('/shopify/connect', requireAuth, async (req, res) => {
+  try {
+    const { shop: rawShop, client_id, client_secret } = req.body as { shop?: string; client_id?: string; client_secret?: string }
+    const shop = normalizeShopDomain(rawShop ?? '')
+    if (!shop.endsWith('.myshopify.com')) {
+      return res.status(400).json({ success: false, error: 'Enter a valid *.myshopify.com store domain' })
+    }
+    if (!client_id?.trim() || !client_secret?.trim()) {
+      return res.status(400).json({ success: false, error: 'Client ID and client secret are required' })
+    }
+
+    // Mint a token — validates the credentials AND that the app is installed.
+    const minted = await mintShopifyToken(shop, client_id.trim(), client_secret.trim())
+    const tokenExpiresAt = new Date(Date.now() + minted.expiresInSec * 1000).toISOString()
+
+    // Target project: an existing one already bound to this shop (re-connect),
+    // else the caller's current workspace. shopify_domain is unique.
+    // requireAuth populates req.query.projectId from the caller's JWT.
+    const callerProjectId = req.query.projectId as string | undefined
+    const [bound] = await db.select({ id: projects.id }).from(projects).where(eq(projects.shopifyDomain, shop)).limit(1)
+    const projectId = bound?.id ?? callerProjectId
+    if (!projectId) {
+      return res.status(400).json({ success: false, error: 'No workspace to attach the store to' })
+    }
+
+    const [target] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, projectId)).limit(1)
+    const baseSettings = (target?.settings ?? {}) as Record<string, unknown>
+
+    await db.update(projects).set({
+      shopifyDomain: shop,
+      shopifyAccessToken: encrypt(minted.accessToken),
+      integrationType: 'shopify',
+      // Webhooks registered via the Admin API are signed with the app secret, so
+      // the webhook receiver verifies HMAC against it.
+      webhookSecret: client_secret.trim(),
+      settings: { ...baseSettings, shopifyCustomApp: { clientId: client_id.trim(), clientSecret: encrypt(client_secret.trim()), tokenExpiresAt } },
+      updatedAt: new Date(),
+    }).where(eq(projects.id, projectId))
+
+    // Register webhooks (non-fatal — historical sync still proceeds without them).
+    try { await registerWebhooks(shop, minted.accessToken, projectId) } catch (e) {
+      console.warn('[shopify/connect] webhook registration failed:', (e as Error).message)
+    }
+
+    // Kick off the historical sync (reuses the existing Shopify sync worker).
+    await shopifySyncQueue.add('sync', { projectId })
+
+    res.json({ success: true, data: { projectId, shop, status: 'connected' } })
+  } catch (err) {
+    console.error('Shopify connect error:', err)
+    res.status(400).json({ success: false, error: (err as Error).message || 'Connection failed' })
   }
 })
 
