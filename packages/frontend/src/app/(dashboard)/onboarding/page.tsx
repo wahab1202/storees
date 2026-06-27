@@ -34,6 +34,10 @@ import {
   MessageSquare,
   Users,
   Rocket,
+  Store,
+  Plug,
+  ShoppingBag,
+  Globe,
 } from 'lucide-react'
 
 // ============ TYPES ============
@@ -54,15 +58,43 @@ type WizardQuestions = {
 
 // ============ CONSTANTS ============
 
-const STEPS = [
-  { label: 'Industry', icon: Building2 },
-  { label: 'Products', icon: Package },
-  { label: 'Journey', icon: Route },
-  { label: 'Priorities', icon: Target },
-  { label: 'Channels', icon: MessageSquare },
-  { label: 'Volume', icon: Users },
-  { label: 'Launch', icon: Rocket },
-]
+// Steps are keyed (not positional) so the ecommerce-only "Connect" step can be
+// inserted without renumbering every render branch. The active flow is computed
+// from the chosen pack — see `stepKeys` below.
+type StepKey =
+  | 'industry'
+  | 'connect'
+  | 'products'
+  | 'journey'
+  | 'priorities'
+  | 'channels'
+  | 'volume'
+  | 'launch'
+
+const STEP_META: Record<StepKey, { label: string; icon: typeof Building2 }> = {
+  industry: { label: 'Industry', icon: Building2 },
+  connect: { label: 'Connect', icon: Store },
+  products: { label: 'Products', icon: Package },
+  journey: { label: 'Journey', icon: Route },
+  priorities: { label: 'Priorities', icon: Target },
+  channels: { label: 'Channels', icon: MessageSquare },
+  volume: { label: 'Volume', icon: Users },
+  launch: { label: 'Launch', icon: Rocket },
+}
+
+// Store platforms shown on the Connect step (ecommerce only). Only Shopify has an
+// inline connect flow today; the rest are selectable and deferred to Connected Stores.
+const PLATFORM_OPTIONS = [
+  { id: 'shopify', label: 'Shopify', description: 'Connect a live store via a custom app', icon: ShoppingBag },
+  { id: 'virpanai', label: 'VirpanAI', description: 'Sync through a VirpanAI connector', icon: Plug },
+  { id: 'woocommerce', label: 'WooCommerce', description: 'WordPress / WooCommerce store', icon: Store },
+  { id: 'other', label: 'Other / Manual', description: 'Send events directly via our API', icon: Globe },
+] as const
+
+/** Strip protocol/path so "https://store.myshopify.com/admin" → "store.myshopify.com". */
+function normalizeDomain(input: string): string {
+  return input.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+}
 
 const PACK_ICONS: Record<string, typeof Building2> = {
   ecommerce: Building2,
@@ -98,6 +130,13 @@ export default function OnboardingPage() {
   const [packs, setPacks] = useState<PackSummary[]>([])
   const [selectedPack, setSelectedPack] = useState<string | null>(null)
   const [wizardQuestions, setWizardQuestions] = useState<WizardQuestions | null>(null)
+
+  // Connect step (ecommerce only)
+  const [platform, setPlatform] = useState<string | null>(null)
+  const [shopDomain, setShopDomain] = useState('')
+  const [shopClientId, setShopClientId] = useState('')
+  const [shopClientSecret, setShopClientSecret] = useState('')
+  const [connectResult, setConnectResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   // Step 1: Products
   const [selectedProducts, setSelectedProducts] = useState<string[]>([])
@@ -161,20 +200,29 @@ export default function OnboardingPage() {
     }).catch(() => {})
   }, [selectedPack])
 
+  // Active step flow — the Connect step only exists for ecommerce projects.
+  const isEcom = selectedPack === 'ecommerce'
+  const stepKeys: StepKey[] = isEcom
+    ? ['industry', 'connect', 'products', 'journey', 'priorities', 'channels', 'volume', 'launch']
+    : ['industry', 'products', 'journey', 'priorities', 'channels', 'volume', 'launch']
+  const currentStep: StepKey = stepKeys[step] ?? 'industry'
+  const lastIndex = stepKeys.length - 1
+
   const canProceed = (): boolean => {
-    switch (step) {
-      case 0: return !!projectName.trim() && !!selectedPack
-      case 1: return selectedProducts.length > 0
-      case 2: return selectedJourney.length > 0
-      case 3: return rankedPriorities.length > 0
-      case 4: return selectedChannels.length > 0
-      case 5: return !!selectedVolume
+    switch (currentStep) {
+      case 'industry': return !!projectName.trim() && !!selectedPack
+      case 'connect': return true // optional — a store can be connected later
+      case 'products': return selectedProducts.length > 0
+      case 'journey': return selectedJourney.length > 0
+      case 'priorities': return rankedPriorities.length > 0
+      case 'channels': return selectedChannels.length > 0
+      case 'volume': return !!selectedVolume
       default: return false
     }
   }
 
   const handleNext = () => {
-    if (step < 6 && canProceed()) setStep(step + 1)
+    if (step < lastIndex && canProceed()) setStep(step + 1)
   }
 
   const handleBack = () => {
@@ -228,6 +276,30 @@ export default function OnboardingPage() {
       if (wizardRes.success) {
         setLaunchResult(wizardRes.data)
         toast.success('Project configured successfully!')
+
+        // 3. Attach the Shopify store to the freshly-created project, if one was
+        // configured on the Connect step. Pass projectId explicitly — the connect
+        // route reads it from the query (requireAuth does NOT populate it).
+        if (
+          platform === 'shopify' &&
+          shopDomain.trim() && shopClientId.trim() && shopClientSecret.trim()
+        ) {
+          const shop = normalizeDomain(shopDomain)
+          try {
+            await api.post(
+              `/api/integrations/shopify/connect?projectId=${projectRes.data.project.id}`,
+              { shop, client_id: shopClientId.trim(), client_secret: shopClientSecret.trim() },
+            )
+            setConnectResult({ ok: true, message: `${shop} connected — syncing now` })
+            toast.success('Shopify store connected')
+          } catch (err) {
+            setConnectResult({
+              ok: false,
+              message: err instanceof Error ? err.message : 'Store connection failed',
+            })
+            toast.error('Project created, but the store connection failed')
+          }
+        }
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to create project')
@@ -258,10 +330,11 @@ export default function OnboardingPage() {
 
       {/* Step indicator */}
       <div className="flex items-center mb-10 overflow-x-auto pb-2">
-        {STEPS.map((s, i) => {
-          const Icon = s.icon
+        {stepKeys.map((key, i) => {
+          const meta = STEP_META[key]
+          const Icon = meta.icon
           return (
-            <div key={s.label} className="flex items-center flex-shrink-0">
+            <div key={key} className="flex items-center flex-shrink-0">
               <div className="flex items-center gap-1.5">
                 <div
                   className={cn(
@@ -277,10 +350,10 @@ export default function OnboardingPage() {
                   'text-xs font-medium hidden sm:inline',
                   i <= step ? 'text-heading' : 'text-text-muted',
                 )}>
-                  {s.label}
+                  {meta.label}
                 </span>
               </div>
-              {i < STEPS.length - 1 && (
+              {i < stepKeys.length - 1 && (
                 <div className={cn('w-8 h-px mx-2', i < step ? 'bg-green-500' : 'bg-border')} />
               )}
             </div>
@@ -288,8 +361,8 @@ export default function OnboardingPage() {
         })}
       </div>
 
-      {/* ============ STEP 0: INDUSTRY ============ */}
-      {step === 0 && (
+      {/* ============ STEP: INDUSTRY ============ */}
+      {currentStep === 'industry' && (
         <div className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-heading mb-2">Project Name</label>
@@ -344,8 +417,98 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 1: PRODUCTS ============ */}
-      {step === 1 && wizardQuestions && (
+      {/* ============ STEP: CONNECT (ecommerce only) ============ */}
+      {currentStep === 'connect' && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-heading mb-1">Connect your store</h2>
+            <p className="text-sm text-text-secondary mb-4">
+              Where do your customers and orders live? We'll sync them automatically. You can skip this and connect later from Connected Stores.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {PLATFORM_OPTIONS.map((p) => {
+                const Icon = p.icon
+                const selected = platform === p.id
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => setPlatform(selected ? null : p.id)}
+                    className={cn(
+                      'flex items-start gap-3 p-4 rounded-lg border text-left transition-all',
+                      selected
+                        ? 'border-accent bg-accent/5 ring-1 ring-accent'
+                        : 'border-border hover:border-text-muted'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0',
+                      selected ? 'bg-accent/10' : 'bg-surface',
+                    )}>
+                      <Icon className={cn('w-5 h-5', selected ? 'text-accent' : 'text-text-secondary')} />
+                    </div>
+                    <div>
+                      <p className={cn('font-medium text-sm', selected ? 'text-accent' : 'text-heading')}>{p.label}</p>
+                      <p className="text-xs text-text-secondary mt-0.5">{p.description}</p>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Shopify inline credentials — connected at Launch */}
+          {platform === 'shopify' && (
+            <div className="space-y-3 rounded-lg border border-border bg-surface/50 p-4">
+              <div>
+                <label htmlFor="ob-shop" className="block text-sm font-medium text-heading mb-1">Store domain</label>
+                <input
+                  id="ob-shop"
+                  type="text"
+                  placeholder="mystore.myshopify.com"
+                  value={shopDomain}
+                  onChange={(e) => setShopDomain(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div>
+                <label htmlFor="ob-cid" className="block text-sm font-medium text-heading mb-1">Client ID</label>
+                <input
+                  id="ob-cid"
+                  type="text"
+                  placeholder="from the Shopify app → Settings → Credentials"
+                  value={shopClientId}
+                  onChange={(e) => setShopClientId(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div>
+                <label htmlFor="ob-secret" className="block text-sm font-medium text-heading mb-1">Client secret</label>
+                <input
+                  id="ob-secret"
+                  type="password"
+                  placeholder="shpss_…"
+                  value={shopClientSecret}
+                  onChange={(e) => setShopClientSecret(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-accent"
+                />
+              </div>
+              <p className="text-xs text-text-muted">
+                Create a custom-distribution app in Shopify (Settings → Apps → Develop apps), install it, then paste its Client ID + secret. We'll connect it when you launch.
+              </p>
+            </div>
+          )}
+
+          {/* Non-Shopify platforms — deferred to Connected Stores */}
+          {platform && platform !== 'shopify' && (
+            <div className="rounded-lg border border-border bg-surface px-4 py-3 text-xs text-text-secondary">
+              We'll help you connect <span className="font-medium text-heading">{PLATFORM_OPTIONS.find(p => p.id === platform)?.label}</span> from <span className="font-medium">Connected Stores</span> right after your workspace is set up.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============ STEP: PRODUCTS ============ */}
+      {currentStep === 'products' && wizardQuestions && (
         <div className="space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-heading mb-1">{wizardQuestions.products_label}</h2>
@@ -381,8 +544,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 2: JOURNEY ============ */}
-      {step === 2 && wizardQuestions && (
+      {/* ============ STEP: JOURNEY ============ */}
+      {currentStep === 'journey' && wizardQuestions && (
         <div className="space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-heading mb-1">Map your customer journey</h2>
@@ -426,8 +589,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 3: PRIORITIES ============ */}
-      {step === 3 && (
+      {/* ============ STEP: PRIORITIES ============ */}
+      {currentStep === 'priorities' && (
         <div className="space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-heading mb-1">What are your business priorities?</h2>
@@ -504,8 +667,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 4: CHANNELS ============ */}
-      {step === 4 && (
+      {/* ============ STEP: CHANNELS ============ */}
+      {currentStep === 'channels' && (
         <div className="space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-heading mb-1">Communication channels</h2>
@@ -546,8 +709,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 5: VOLUME ============ */}
-      {step === 5 && (
+      {/* ============ STEP: VOLUME ============ */}
+      {currentStep === 'volume' && (
         <div className="space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-heading mb-1">Customer volume</h2>
@@ -588,8 +751,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 6: LAUNCH ============ */}
-      {step === 6 && !launchResult && (
+      {/* ============ STEP: LAUNCH (review) ============ */}
+      {currentStep === 'launch' && !launchResult && (
         <div className="space-y-6">
           <h2 className="text-lg font-semibold text-heading mb-1">Review & Launch</h2>
           <p className="text-sm text-text-secondary mb-4">
@@ -603,6 +766,18 @@ export default function OnboardingPage() {
             <SummaryRow label="Top priorities" value={rankedPriorities.slice(0, 3).map(p => p.label).join(', ')} />
             <SummaryRow label="Channels" value={selectedChannels.map(c => CHANNEL_OPTIONS.find(o => o.id === c)?.label ?? c).join(', ')} />
             <SummaryRow label="Customer volume" value={VOLUME_OPTIONS.find(v => v.id === selectedVolume)?.label ?? selectedVolume} />
+            {isEcom && (
+              <SummaryRow
+                label="Store"
+                value={
+                  platform === 'shopify' && shopDomain.trim()
+                    ? `Shopify · ${normalizeDomain(shopDomain)}`
+                    : platform && platform !== 'shopify'
+                      ? `${PLATFORM_OPTIONS.find(p => p.id === platform)?.label} · connect later`
+                      : 'Connect later'
+                }
+              />
+            )}
           </div>
 
           <div className="bg-accent/5 border border-accent/20 rounded-lg p-4">
@@ -628,8 +803,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ STEP 6: POST-LAUNCH ============ */}
-      {step === 6 && launchResult && projectData && (
+      {/* ============ STEP: POST-LAUNCH ============ */}
+      {currentStep === 'launch' && launchResult && projectData && (
         <div className="space-y-6">
           {/* Success banner */}
           <div className="text-center py-6">
@@ -738,12 +913,28 @@ export default function OnboardingPage() {
 
           {/* CTA */}
           <div className="flex flex-col items-center gap-3 pt-2">
-            {selectedPack === 'ecommerce' && (
+            {connectResult?.ok && (
+              <div className="w-full max-w-sm flex items-center justify-center gap-2 px-6 py-2.5 bg-green-50 border border-green-200 text-green-800 rounded-lg font-medium text-sm">
+                <CircleCheck className="w-4 h-4 text-green-600" /> {connectResult.message}
+              </div>
+            )}
+            {connectResult && !connectResult.ok && (
+              <div className="w-full max-w-sm text-center">
+                <p className="text-xs text-red-600 mb-2">Store connection failed: {connectResult.message}</p>
+                <a
+                  href="/integrations"
+                  className="inline-block px-6 py-2.5 bg-[#96bf48] text-white rounded-lg font-medium text-sm hover:opacity-90"
+                >
+                  Retry from Connected Stores →
+                </a>
+              </div>
+            )}
+            {selectedPack === 'ecommerce' && !connectResult && (
               <a
                 href="/integrations"
                 className="w-full max-w-sm text-center px-6 py-2.5 bg-[#96bf48] text-white rounded-lg font-medium text-sm hover:opacity-90"
               >
-                Connect your Shopify store →
+                Connect your store →
               </a>
             )}
             <div className="flex items-center justify-center gap-3">
@@ -764,8 +955,8 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* ============ NAVIGATION BUTTONS (Steps 0-5) ============ */}
-      {step < 6 && (
+      {/* ============ NAVIGATION BUTTONS (all steps before Launch) ============ */}
+      {currentStep !== 'launch' && (
         <div className="flex items-center justify-between mt-8 pt-6 border-t border-border">
           <button
             onClick={handleBack}
