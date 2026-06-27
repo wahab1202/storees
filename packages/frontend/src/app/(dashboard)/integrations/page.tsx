@@ -3,11 +3,12 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useShopifyStatus } from '@/hooks/useIntegrations'
+import { useShopifyStatus, useShopifySyncStatus, useTriggerShopifySync } from '@/hooks/useIntegrations'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { useProjectContext } from '@/lib/projectContext'
-import { Loader2, CheckCircle2, Store, ExternalLink } from 'lucide-react'
+import { toast } from 'sonner'
+import { Loader2, CheckCircle2, Store, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react'
 
 function normalizeDomain(input: string): string {
   return input.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
@@ -25,6 +26,23 @@ export default function IntegrationsPage() {
 
   const connected = data?.data.connected ?? false
   const domain = data?.data.shopifyDomain
+
+  const syncStatus = useShopifySyncStatus(connected)
+  const triggerSync = useTriggerShopifySync()
+  const sync = syncStatus.data?.data
+  const syncing = sync?.status === 'waiting' || sync?.status === 'active' || triggerSync.isPending
+
+  async function handleSync() {
+    try {
+      await triggerSync.mutateAsync()
+      toast.success('Sync started — this can take a minute')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not start sync'
+      // 409 = a sync is already running; treat that as informational, not an error
+      if (/in progress/i.test(msg)) toast.info('A sync is already running')
+      else toast.error(msg)
+    }
+  }
 
   async function handleConnect(e: React.FormEvent) {
     e.preventDefault()
@@ -117,6 +135,35 @@ export default function IntegrationsPage() {
                   className="text-sm text-text-muted hover:text-red-600 transition-colors disabled:opacity-50"
                 >
                   Disconnect
+                </button>
+              </div>
+
+              {/* Sync control + last-sync status */}
+              <div className="flex items-center justify-between border-t border-border pt-3">
+                <div className="text-xs text-text-muted">
+                  {syncing ? (
+                    <span className="flex items-center gap-1.5 text-accent">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Syncing customers, orders & products…
+                    </span>
+                  ) : sync?.status === 'completed' ? (
+                    <span className="flex items-center gap-1.5 text-green-600">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Last sync completed
+                    </span>
+                  ) : sync?.status === 'failed' ? (
+                    <span className="flex items-center gap-1.5 text-red-600">
+                      <AlertCircle className="h-3.5 w-3.5" /> Last sync failed: {sync.failedReason ?? 'unknown error'}
+                    </span>
+                  ) : (
+                    <span>No sync has run yet</span>
+                  )}
+                </div>
+                <button
+                  onClick={handleSync}
+                  disabled={syncing}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:text-accent-hover transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                  {syncing ? 'Syncing…' : 'Sync now'}
                 </button>
               </div>
             </div>
