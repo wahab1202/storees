@@ -1198,3 +1198,40 @@ export const adConversionDestinations = pgTable('ad_conversion_destinations', {
   uniqueIndex('idx_ad_conv_dest_unique').on(table.projectId, table.platform, table.pixelId),
   index('idx_ad_conv_dest_project_active').on(table.projectId, table.status),
 ])
+
+// ── Outbound webhooks ────────────────────────────────────────────────────────
+
+export const webhookSubscriptions = pgTable('webhook_subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  url: text('url').notNull(),
+  description: text('description'),
+  authMethod: varchar('auth_method', { length: 10 }).notNull().default('hmac'), // 'hmac' | 'bearer'
+  signingSecret: text('signing_secret').notNull(), // encrypted at rest
+  events: jsonb('events').notNull().default([]),
+  customHeaders: jsonb('custom_headers').notNull().default({}),
+  retryPolicy: jsonb('retry_policy').notNull().default({ max_attempts: 5, schedule_seconds: [1, 4, 16, 64, 256] }),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_webhook_subs_project').on(table.projectId, table.isActive),
+])
+
+export const webhookDeliveries = pgTable('webhook_deliveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  subscriptionId: uuid('subscription_id').notNull().references(() => webhookSubscriptions.id, { onDelete: 'cascade' }),
+  eventId: text('event_id').notNull(),
+  eventData: jsonb('event_data').notNull().default({}),
+  attempt: integer('attempt').notNull().default(1),
+  attemptedAt: timestamp('attempted_at', { withTimezone: true }),
+  statusCode: integer('status_code'),
+  responseBody: text('response_body'),
+  responseHeaders: jsonb('response_headers'),
+  error: text('error'),
+  nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+  final: boolean('final').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_webhook_deliveries_sub').on(table.subscriptionId, table.createdAt),
+])

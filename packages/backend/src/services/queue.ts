@@ -149,3 +149,14 @@ export const dataSyncQueue = new Queue('data-sync', {
     removeOnFail: { count: 200 },
   },
 })
+
+export const webhookDeliveryQueue = new Queue('webhook-delivery', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    // Retries are managed in-worker via retry_policy (per-subscription schedule),
+    // so BullMQ itself only retries on a thrown worker error, not on non-2xx.
+    attempts: 1,
+    removeOnComplete: { count: 200 },
+    removeOnFail: { count: 200 },
+  },
+})
