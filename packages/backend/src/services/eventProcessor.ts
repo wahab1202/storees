@@ -113,14 +113,25 @@ export async function processHistoricalEvent(
   properties: Record<string, unknown>,
   timestamp: Date,
 ): Promise<void> {
+  // Idempotent: re-running a historical sync must NOT duplicate the same event,
+  // otherwise the customer Activity tab shows each order again on every sync.
+  // Key on the order id when present so ON CONFLICT DO NOTHING collapses repeats
+  // (matches the /v1/import/orders key convention so the two paths dedupe too).
+  const orderId = properties.order_id
+  const idempotencyKey =
+    typeof orderId === 'string' || typeof orderId === 'number'
+      ? `${eventName}_historical:${orderId}`
+      : `${eventName}_historical:${customerId}:${timestamp.getTime()}`
+
   await db.insert(events).values({
     projectId,
     customerId,
     eventName,
     properties,
     platform: 'historical_sync',
+    idempotencyKey,
     timestamp,
-  })
+  }).onConflictDoNothing()
 }
 
 // ============ NORMALIZER ============
