@@ -192,3 +192,22 @@ export function useTriggerSync(projectId: string) {
     onError: (err: Error) => toast.error(err.message ?? 'Failed to start sync'),
   })
 }
+
+/**
+ * Connect (or re-connect) a Shopify store as a data source. Shopify is native —
+ * it goes through the Shopify connect endpoint (custom-app credentials), not
+ * POST /connectors. On success the unified 'shopify' source row appears in the
+ * Data Sources list.
+ */
+export function useConnectShopify(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { shop: string; client_id: string; client_secret: string }) =>
+      api.post(`/api/integrations/shopify/connect?projectId=${projectId}`, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connectors', projectId] })
+      toast.success('Shopify store connected — syncing now')
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Failed to connect Shopify'),
+  })
+}

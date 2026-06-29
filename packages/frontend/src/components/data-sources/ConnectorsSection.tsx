@@ -130,6 +130,10 @@ function ConnectorCard({
     await deleteConn.mutateAsync(connector.id)
   }
 
+  // Shopify is a native source — no generic Test, and its sync is always a full
+  // historical pull (so a separate Full Resync button would be redundant).
+  const isShopify = connector.template === 'shopify'
+
   return (
     <div className="border border-border rounded-lg bg-white overflow-hidden">
       <div className="px-3 py-2.5 flex items-center justify-between gap-3">
@@ -148,30 +152,34 @@ function ConnectorCard({
         </button>
 
         <div className="flex items-center gap-1.5 flex-wrap justify-end shrink-0">
+          {!isShopify && (
+            <button
+              onClick={handleTest}
+              disabled={testConn.isPending}
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium border border-border rounded-md hover:bg-surface disabled:opacity-50"
+              title="Fetch one record from each endpoint to validate field mapping"
+            >
+              <FlaskConical className="h-3 w-3" /> Test
+            </button>
+          )}
           <button
-            onClick={handleTest}
-            disabled={testConn.isPending}
-            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium border border-border rounded-md hover:bg-surface disabled:opacity-50"
-            title="Fetch one record from each endpoint to validate field mapping"
-          >
-            <FlaskConical className="h-3 w-3" /> Test
-          </button>
-          <button
-            onClick={() => handleSync('incremental')}
+            onClick={() => handleSync(isShopify ? 'full' : 'incremental')}
             disabled={triggerSync.isPending}
             className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-text-primary text-white rounded-md hover:opacity-90 disabled:opacity-50"
-            title="Pull only records changed since the last successful sync"
+            title={isShopify ? 'Re-sync customers, orders, products & collections from Shopify' : 'Pull only records changed since the last successful sync'}
           >
             <RefreshCw className="h-3 w-3" /> Sync Now
           </button>
-          <button
-            onClick={() => handleSync('full')}
-            disabled={triggerSync.isPending}
-            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium border border-border rounded-md hover:bg-surface disabled:opacity-50"
-            title="Emergency button — pulls every record regardless of last_synced_at"
-          >
-            Full Resync
-          </button>
+          {!isShopify && (
+            <button
+              onClick={() => handleSync('full')}
+              disabled={triggerSync.isPending}
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium border border-border rounded-md hover:bg-surface disabled:opacity-50"
+              title="Emergency button — pulls every record regardless of last_synced_at"
+            >
+              Full Resync
+            </button>
+          )}
           <button
             onClick={onEdit}
             className="p-1 text-text-muted hover:text-text-primary rounded-md hover:bg-surface"
