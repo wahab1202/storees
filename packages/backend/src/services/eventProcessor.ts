@@ -7,6 +7,7 @@ import {
   updateCustomerAggregates,
   recalculateAggregates,
 } from './customerService.js'
+import { stitchOrderToSession } from './anonymousSessionService.js'
 
 type WebhookPayload = Record<string, unknown>
 
@@ -50,6 +51,15 @@ export async function processWebhookEvent(
       region: normalized.region,
       city: normalized.city,
     })
+
+    // 3b. Stitch the anonymous browse session to this order's customer. A 3rd-party
+    // checkout (e.g. Shopflo) means the visitor never identifies on-site, but the
+    // storefront stamps the SDK session id onto the cart as `storees_sid`, which
+    // rides through to order.note_attributes — so the order closes the loop.
+    if (eventName === 'order_placed') {
+      await stitchOrderToSession(projectId, customerId, payload).catch(err =>
+        console.error('[order-stitch] failed:', err))
+    }
 
     // 4. Enrich — handle side effects (create order rows, update aggregates)
     await handleSideEffects(projectId, customerId, eventName, normalized, payload)
