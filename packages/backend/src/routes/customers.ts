@@ -240,28 +240,42 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       return res.status(404).json({ success: false, error: 'Customer not found' })
     }
 
-    // Try orders table first
-    const rows = await db
+    // Orders live in TWO places depending on the ingestion path: the native
+    // Shopify sync writes the `orders` table, while the data-sync connector
+    // writes ONLY `order_placed` events. A customer can have a mix (old orders
+    // in the table + newer connector orders as events). Read BOTH and merge,
+    // deduped by order id — otherwise a connector-only order is invisible
+    // whenever the table already has rows (the bug that hid a freshly-synced
+    // order behind older table rows).
+    const tableRows = await db
       .select()
       .from(orders)
       .where(and(eq(orders.customerId, customerId), eq(orders.projectId, projectId)))
       .orderBy(desc(orders.createdAt))
 
-    if (rows.length > 0) {
-      res.json({
-        success: true,
-        data: rows.map(row => ({
-          ...row,
-          total: Number(row.total),
-          discount: Number(row.discount),
-        })),
-      })
-      return
-    }
+    const tableData = tableRows.map(row => ({
+      id: row.id,
+      projectId,
+      customerId,
+      externalOrderId: row.externalOrderId as string,
+      status: row.status,
+      total: Number(row.total),
+      discount: Number(row.discount),
+      currency: row.currency ?? 'INR',
+      lineItems: (Array.isArray(row.lineItems) ? row.lineItems : []).map((item: Record<string, unknown>) => ({
+        productId: (item.productId as string) ?? (item.product_id as string) ?? '',
+        productName: (item.productName as string) ?? (item.product_name as string) ?? 'Unknown Product',
+        quantity: Number(item.quantity) || 1,
+        price: Number(item.price ?? item.unit_price) || 0,
+        imageUrl: (item.imageUrl as string) ?? (item.image_url as string) ?? undefined,
+      })),
+      createdAt: row.createdAt,
+      fulfilledAt: row.fulfilledAt ?? null,
+    }))
 
-    // Fallback: derive orders from order events. Both event names are
-    // accepted — the data-sync pipeline emits `order_placed`, older bulk
-    // imports / Shopify webhooks emit `order_completed`.
+    // Also derive orders from order events. Both event names are accepted — the
+    // data-sync pipeline emits `order_placed`, older bulk imports / Shopify
+    // webhooks emit `order_completed`.
     const eventRows = await db
       .select({
         id: events.id,
@@ -325,10 +339,14 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
     // one). Rows are DESC by timestamp, so the first time we see an order id is
     // its latest event — keep that, and promote the status to 'delivered' if any
     // of the order's events was delivered (delivered wins over pending).
+    // Merge table rows FIRST (authoritative for sources that write the table),
+    // then event-derived orders fill in any order ids the table doesn't have
+    // (e.g. connector-only orders). Dedup by order id; delivered wins over
+    // pending. Re-sort since two sources were combined.
     type OrderRow = (typeof data)[number]
     const seen = new Map<string, OrderRow>()
     const deduped: OrderRow[] = []
-    for (const order of data) {
+    for (const order of [...tableData, ...data]) {
       const key = order.externalOrderId ?? order.id
       const existing = seen.get(key)
       if (!existing) {
@@ -340,6 +358,7 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
       }
     }
+    deduped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
     res.json({ success: true, data: deduped })
   } catch (err) {
