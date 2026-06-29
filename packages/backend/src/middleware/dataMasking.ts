@@ -59,23 +59,29 @@ function scanAndMask(
     const fieldPath = path ? `${path}.${key}` : key
 
     if (typeof value === 'string') {
+      // Known-safe numeric / identifier fields. A 13-digit product_id, order_id,
+      // variant_id, etc. can pass the Luhn check by coincidence and is NOT a card
+      // — exempt these from card/Aadhaar/account detection so legit ecommerce ids
+      // aren't rejected (the cause of intermittent "card_number" violations on
+      // product_viewed/added_to_cart).
+      const safeNumericFields = ['amount', 'price', 'quantity', 'total', 'balance', 'rate', 'tenure', 'count', 'age', 'days', 'months', 'years', 'id', 'port', 'sku', 'barcode', 'variant', 'timestamp', 'zip', 'pincode', 'postal']
+      const isNumericSafe = safeNumericFields.some(f => key.toLowerCase().includes(f))
+
       // Check for card numbers
-      if (isLikelyCardNumber(value)) {
+      if (!isNumericSafe && isLikelyCardNumber(value)) {
         violations.push({ field: fieldPath, type: 'card_number', action: 'rejected' })
         result[key] = '***REDACTED_CARD***'
         continue
       }
 
       // Check for Aadhaar
-      if (isLikelyAadhaar(value)) {
+      if (!isNumericSafe && isLikelyAadhaar(value)) {
         violations.push({ field: fieldPath, type: 'aadhaar', action: 'rejected' })
         result[key] = '***REDACTED_AADHAAR***'
         continue
       }
 
-      // Check for unmasked account numbers (skip known safe fields)
-      const safeNumericFields = ['amount', 'price', 'quantity', 'total', 'balance', 'rate', 'tenure', 'count', 'age', 'days', 'months', 'years', 'id', 'port']
-      const isNumericSafe = safeNumericFields.some(f => key.toLowerCase().includes(f))
+      // Check for unmasked account numbers
       if (!isNumericSafe && isUnmaskedAccount(value)) {
         // Auto-mask: keep last 4 digits
         const masked = 'XXXX' + value.slice(-4)
