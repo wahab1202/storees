@@ -144,7 +144,7 @@ export async function fetchShopifyPage<T>(
 
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(`Shopify API error: ${response.status} ${text}`)
+    throw new Error(`Shopify API error: ${response.status} on ${pathOrAbsoluteUrl} — ${text}`)
   }
 
   const data = (await response.json()) as T

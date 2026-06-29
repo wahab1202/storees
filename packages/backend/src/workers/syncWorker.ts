@@ -136,13 +136,22 @@ export function startSyncWorker(): Worker {
             city,
           })
 
-          // Fetch orders for this customer
+          // Fetch orders for this customer. A single customer's orders endpoint
+          // can 404 / error (deleted or edge-case customer) — skip just this
+          // customer's orders rather than aborting the entire sync.
           await delay(SHOPIFY_API_DELAY_MS)
-          const orderData = await fetchShopifyApi<{ orders: ShopifyOrder[] }>(
-            shop,
-            token,
-            `/customers/${shopifyCustomer.id}/orders.json?status=any&limit=250`,
-          )
+          let orderData: { orders: ShopifyOrder[] }
+          try {
+            orderData = await fetchShopifyApi<{ orders: ShopifyOrder[] }>(
+              shop,
+              token,
+              `/customers/${shopifyCustomer.id}/orders.json?status=any&limit=250`,
+            )
+          } catch (err) {
+            console.warn(`[shopify-sync] skipping orders for customer ${shopifyCustomer.id}: ${(err as Error).message}`)
+            customersProcessed++
+            continue
+          }
 
           for (const shopifyOrder of orderData.orders) {
             const total = Number(shopifyOrder.total_price)
@@ -206,15 +215,27 @@ export function startSyncWorker(): Worker {
 
       console.log(`Sync complete: ${customersProcessed} customers, ${ordersProcessed} orders`)
 
-      // Sync product catalog
+      // Sync product catalog (resilient — a 404/error here shouldn't abort the
+      // whole run after customers + orders already synced).
       console.log('Syncing product catalog...')
-      const productCount = await syncProducts(projectId, shop, token)
-      console.log(`Synced ${productCount} products`)
+      let productCount = 0
+      try {
+        productCount = await syncProducts(projectId, shop, token)
+        console.log(`Synced ${productCount} products`)
+      } catch (err) {
+        console.warn(`[shopify-sync] product sync failed (continuing): ${(err as Error).message}`)
+      }
 
-      // Sync collections
+      // Sync collections (resilient — some stores/API versions 404 the
+      // custom_collections / smart_collections / collects REST endpoints).
       console.log('Syncing collections...')
-      const collectionCount = await syncCollections(projectId, shop, token)
-      console.log(`Synced ${collectionCount} collections`)
+      let collectionCount = 0
+      try {
+        collectionCount = await syncCollections(projectId, shop, token)
+        console.log(`Synced ${collectionCount} collections`)
+      } catch (err) {
+        console.warn(`[shopify-sync] collection sync failed (continuing): ${(err as Error).message}`)
+      }
 
       // Re-evaluate segments now that customer data is populated
       console.log('Evaluating segments after sync...')
