@@ -1,36 +1,43 @@
-# Inbound Order Push — VirpanAI / GoWelmart → Storees (real-time)
+# Inbound Order Push — VirpanAI / GoWelmart → Storees (OPTIONAL, future)
 
-How to push orders to Storees the instant they happen, instead of waiting for the
-scheduled pull connector. This is the "event way" — the same canonical ingestion
-path the SDK and Shopify webhooks use.
-
-> **Audience:** VirpanAI / GoWelmart backend (Praveen). Storees side needs **no new
-> code** — this uses the existing live events endpoint, which already writes the
-> orders table, updates customer aggregates, **triggers flows**, and is idempotent.
-
----
-
-## Why push (vs. the pull connector)
-
-| | Pull connector (today) | Push (this doc) |
-|---|---|---|
-| Trigger | Storees polls every 3h + nightly full | You POST the moment an order happens |
-| Lag | up to 3h | seconds |
-| Cursor gap | backdated orders can be missed until the nightly full | none — every order is sent explicitly |
-| Flows (abandoned-cart etc.) | fire on next pull | fire in real-time |
-
-Best practice is **both**: push for real-time + keep the scheduled full resync as a
-reconciliation backstop (pushes can be dropped on outages).
+> **Read this first.** Orders already sync into Storees via the **pull connector**
+> (`/storees-cdp/export/orders`), now bug-fixed and on an **automatic scheduler**
+> (incremental every 3h + nightly full resync). **That is the order-sync
+> mechanism, and it is sufficient.** This document describes an *optional* future
+> enhancement — having GWM **push** each order in real-time — that you do **not**
+> need today and that is **not** a replacement for the pull connector.
 
 ---
 
-## The contract
+## TL;DR — do you need this? Almost certainly not (yet)
+
+| Question | Answer |
+|---|---|
+| How do GWM orders get into Storees today? | The **pull connector** — Storees pulls `/storees-cdp/export/orders` on a schedule. |
+| Is that enough for segments / analytics / reporting? | **Yes.** It's the correct and sufficient mechanism. |
+| Why was M S Mobile's Jun 11 order missing then? | A **bug in the pull** (pagination stopped at 77) + **no scheduler** (stale 10 days). Both are now **fixed** — not a reason to add push. |
+| What would push add? | Only **real-time latency** (orders arriving in seconds, triggering flows instantly) and immunity to polling-gap failure modes. |
+| Does push replace the pull connector? | **No.** Even with push you keep pull for history + reconciliation (pushes get dropped on outages). Push sits *alongside* pull. |
+| When should we build it? | Only if/when **real-time flow triggering** (e.g. abandoned-cart firing the instant an order/cart changes) becomes a concrete requirement. |
+
+**Bottom line:** orders = pull connector + scheduler. Leave push on the shelf
+until there's a real-time need; it's additive, not a redo. The webhook work that
+*is* required is the **outbound segment sync** (Storees → GWM), a different
+direction — see `STOREES_WEBHOOK_SPEC.md`.
+
+---
+
+## If/when you do want real-time order push — the contract
+
+This uses the **existing** `/api/v1/events` endpoint. No new Storees code is
+needed; it already writes the orders table, updates aggregates, **triggers
+flows**, and dedupes via `idempotency_key`. The only change is on VirpanAI's
+side: POST each order as it happens.
 
 **Endpoint**
 ```
 POST https://<storees-api-host>/api/v1/events
 ```
-Use the same API host the connector already talks to for this project.
 
 **Auth** — the project's API key (Settings → API Keys, the `sk_live_…` key):
 ```
@@ -62,56 +69,42 @@ Content-Type: application/json
 
 ### Field notes
 - **`external_id`** — the customer's id on *your* system (Medusa customer id). Storees
-  resolves/creates the customer from this (plus email/phone if given). Required so the
-  order links to a customer.
-- **`idempotency_key`** — set it to `order:<order_id>`. Storees dedupes on
-  `(project_id, idempotency_key)`, so **safe to retry** — re-sending the same order is a
-  no-op, never a duplicate. (Storees also dedupes the orders table on `order_id`.)
-- **`timestamp`** — when the order actually happened (ISO 8601). Drives time-series
-  analytics; don't send "now" for backfilled orders.
-- **`total` / `price`** — numeric in the order's currency (major units, e.g. `26090`
-  for ₹26,090). Same convention as the VirpanAI export.
+  resolves/creates the customer from this (+ email/phone). Required.
+- **`idempotency_key`** — set to `order:<order_id>`. Storees dedupes on
+  `(project_id, idempotency_key)`, so **retries are safe** — re-sending an order is a
+  no-op, never a duplicate. (The orders table also dedupes on `order_id`.)
+- **`timestamp`** — when the order happened (ISO 8601). Don't send "now" for backfills.
+- **`total` / `price`** — numeric, major units (`26090` = ₹26,090), same as the export.
 - **`line_items`** — canonical names: `product_id`, `product_name`, `quantity`, `price`.
-  (Storees also accepts Shopify-style `title`/`unit_price`, but prefer the canonical set.)
 
 ### What Storees does on receipt
-1. Resolves/creates the customer from `external_id` (+ email/phone).
-2. Inserts the order into the `orders` table (idempotent on `order_id`).
-3. Updates the customer's aggregates (total spend, order count, last order).
-4. Emits a **live** `order_placed` event → **triggers flows** (abandoned-cart recovery,
-   win-back, etc.) and segment re-evaluation.
+1. Resolves/creates the customer from `external_id`.
+2. Inserts the order (idempotent on `order_id`).
+3. Updates the customer's aggregates.
+4. Emits a **live** `order_placed` event → triggers flows + segment re-evaluation.
 
 ### Response
-- `2xx` → accepted (queued for processing). Treat as success.
-- `401` → bad/missing API key headers.
-- `4xx` → malformed payload (see the body for the reason).
-
-Retry on `5xx`/network/timeout; the `idempotency_key` makes retries safe.
+- `2xx` → accepted. `401` → bad API key. `4xx` → malformed (see body). Retry `5xx`/network — the `idempotency_key` makes retries safe.
 
 ---
 
-## Order updates (fulfilled / cancelled)
+## Why you still keep the pull connector even with push
 
-To reflect fulfillment or cancellation, send a follow-up event with the **same**
-`order_id`:
-- `event_name: "order_completed"` → marks the order fulfilled.
-- include a cancel flag/timestamp in `properties` for cancellations (coordinate the
-  exact field with the Storees team if you need cancel semantics).
+Push is not a silver bullet — webhooks get dropped (downtime, network blips,
+source bugs). Every serious CDP pairs real-time push with a **periodic
+reconciliation sweep**. For Storees that sweep is the **nightly full resync**
+the scheduler already runs. So even in the push end-state:
 
----
+- **Push** → real-time freshness.
+- **Pull (scheduler)** → historical backfill + the safety net that catches
+  anything push dropped.
 
-## Suggested rollout
-
-1. Start by **also** pushing (keep the pull connector on). Pushes give real-time; the
-   nightly full resync reconciles anything a push missed.
-2. Verify in Storees: the order appears on the customer's **Orders** tab within seconds,
-   and the customer's spend aggregate updates.
-3. Once push is proven reliable, the pull connector can drop to a daily reconciliation
-   pass instead of every 3h.
+Neither replaces the other. Today we run pull-only, and that's correct.
 
 ---
 
 ## Reference (Storees side)
-- Ingestion endpoint: [v1Events.ts](../../packages/backend/src/routes/v1Events.ts)
+- Pull connector + scheduler (the actual order-sync path): [dataSyncWorker.ts](../../packages/backend/src/workers/dataSyncWorker.ts), [dataSyncService.ts](../../packages/backend/src/services/dataSyncService.ts)
+- Ingestion endpoint (used only if push is later adopted): [v1Events.ts](../../packages/backend/src/routes/v1Events.ts)
 - Order persistence + aggregates + dedupe: [eventProcessor.ts](../../packages/backend/src/services/eventProcessor.ts) (`order_placed` case)
-- Scheduled pull + nightly full resync backstop: [dataSyncWorker.ts](../../packages/backend/src/workers/dataSyncWorker.ts)
+- Outbound segment webhook (the webhook that IS required): `STOREES_WEBHOOK_SPEC.md`
