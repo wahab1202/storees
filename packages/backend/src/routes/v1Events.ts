@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import crypto from 'node:crypto'
 import { db } from '../db/connection.js'
 import { events, customers, entities, identities, anonymousSessions } from '../db/schema.js'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, inArray } from 'drizzle-orm'
 import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { dataMaskingMiddleware } from '../middleware/dataMasking.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
@@ -213,7 +213,7 @@ router.post('/events/batch', async (req: Request, res: Response) => {
         .from(events)
         .where(and(
           eq(events.projectId, projectId),
-          sql`idempotency_key = ANY(${idempotencyKeys})`,
+          inArray(events.idempotencyKey, idempotencyKeys),
         ))
       for (const row of existing) {
         if (row.idempotencyKey) {
