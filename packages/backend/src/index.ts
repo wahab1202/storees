@@ -99,13 +99,24 @@ const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:3000,http:
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
-app.use(cors({
+const restrictiveCors = cors({
   origin: (origin, cb) => {
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true)
     cb(new Error(`CORS: origin ${origin} not allowed`))
   },
   credentials: true,
-}))
+})
+// Apply the restrictive (dashboard) CORS to everything EXCEPT the public SDK /
+// ingestion paths. Those are called from arbitrary merchant storefronts and set
+// their own permissive `origin: '*'` CORS above (/api/v1) or below (/sdk,
+// /uploads). Without this skip, the global allowlist re-runs on /api/v1 and
+// rejects every storefront origin (e.g. finewine-cosmetics.com).
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/v1') || req.path.startsWith('/sdk') || req.path.startsWith('/uploads')) {
+    return next()
+  }
+  restrictiveCors(req, res, next)
+})
 
 // Serve SDK static files at /sdk/ (e.g., /sdk/storees.min.js) — CORS enabled for all origins
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
