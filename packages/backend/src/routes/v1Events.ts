@@ -262,24 +262,32 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       const withIdemKey = chunk.filter(e => e.payload.idempotency_key)
       const withoutIdemKey = chunk.filter(e => !e.payload.idempotency_key)
 
-      // Bulk insert events WITH idempotency keys (ON CONFLICT DO NOTHING)
+      // Bulk insert events WITH idempotency keys (ON CONFLICT DO NOTHING).
+      // Use the Drizzle ORM bulk insert (correct multi-row parameter binding) —
+      // the previous raw sql.join(...) VALUES construction mis-bound parameters
+      // and failed with "malformed array literal".
       if (withIdemKey.length > 0) {
-        const insertValues = withIdemKey.map(({ payload, customerId }) => {
-          const ts = payload.timestamp ? new Date(payload.timestamp) : new Date()
-          return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, ${payload.idempotency_key}, ${ts})`
-        })
+        const rows = withIdemKey.map(({ payload, customerId }) => ({
+          projectId,
+          customerId,
+          eventName: payload.event_name.trim(),
+          properties: payload.properties ?? {},
+          platform: payload.platform ?? 'api',
+          source: payload.source ?? 'api',
+          sessionId: payload.session_id ?? null,
+          idempotencyKey: payload.idempotency_key!,
+          timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+        }))
 
         // RETURNING id + idempotency_key so we can match results correctly
         // (PG does not guarantee RETURNING order matches VALUES order with ON CONFLICT DO NOTHING)
-        const insertResult = await db.execute(sql`
-          INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
-          VALUES ${sql.join(insertValues, sql`, `)}
-          ON CONFLICT (project_id, idempotency_key) DO NOTHING
-          RETURNING id, idempotency_key
-        `)
+        const insertedRows = await db
+          .insert(events)
+          .values(rows)
+          .onConflictDoNothing({ target: [events.projectId, events.idempotencyKey] })
+          .returning({ id: events.id, idempotencyKey: events.idempotencyKey })
 
-        const insertedRows = insertResult.rows as { id: string; idempotency_key: string }[]
-        const insertedByKey = new Map(insertedRows.map(r => [r.idempotency_key, r.id]))
+        const insertedByKey = new Map(insertedRows.map(r => [r.idempotencyKey, r.id]))
 
         for (const entry of withIdemKey) {
           const eventId = insertedByKey.get(entry.payload.idempotency_key!)
@@ -295,18 +303,18 @@ router.post('/events/batch', async (req: Request, res: Response) => {
 
       // Bulk insert events WITHOUT idempotency keys (always insert)
       if (withoutIdemKey.length > 0) {
-        const insertValues = withoutIdemKey.map(({ payload, customerId }) => {
-          const ts = payload.timestamp ? new Date(payload.timestamp) : new Date()
-          return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, NULL, ${ts})`
-        })
+        const rows = withoutIdemKey.map(({ payload, customerId }) => ({
+          projectId,
+          customerId,
+          eventName: payload.event_name.trim(),
+          properties: payload.properties ?? {},
+          platform: payload.platform ?? 'api',
+          source: payload.source ?? 'api',
+          sessionId: payload.session_id ?? null,
+          timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+        }))
 
-        const insertResult = await db.execute(sql`
-          INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
-          VALUES ${sql.join(insertValues, sql`, `)}
-          RETURNING id
-        `)
-
-        const insertedIds = insertResult.rows as { id: string }[]
+        const insertedIds = await db.insert(events).values(rows).returning({ id: events.id })
         for (let j = 0; j < insertedIds.length; j++) {
           insertedEvents.push({ ...withoutIdemKey[j], id: insertedIds[j].id })
           results.push({ index: withoutIdemKey[j].index, id: insertedIds[j].id })
