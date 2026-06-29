@@ -653,7 +653,7 @@ async function syncEntity(
     // MAX_PAGES_PER_ENTITY. Empty + !hasMore = genuinely done.
     if (pageResult.records.length === 0) {
       if (pageResult.hasMore && i < MAX_PAGES_PER_ENTITY - 1) {
-        offset += cfg.template.pagination.pageSize
+        offset = pageResult.nextOffset ?? offset + cfg.template.pagination.pageSize
         page += 1
         continue
       }
@@ -671,7 +671,7 @@ async function syncEntity(
       break
     }
 
-    offset += cfg.template.pagination.pageSize
+    offset = pageResult.nextOffset ?? offset + cfg.template.pagination.pageSize
     page += 1
     if (cfg.template.pagination.type === 'cursor') cursor = pageResult.nextCursor
 

@@ -17,6 +17,14 @@ export type EndpointSpec = {
   responseDataPath?: string   // dot-path to the array in the response body
   responseCountPath?: string  // dot-path to a numeric total (for progress)
   responseNextCursorPath?: string  // dot-path to next-page cursor (cursor pagination only)
+  // For offset/page pagination against an API that filters rows server-side
+  // (so a page can return fewer rows than `limit`): read the API's own
+  // termination + next-offset fields instead of inferring from row count.
+  // Inferring "done" from `records.length < pageSize` STOPS EARLY on a filtered
+  // first page — e.g. GWM orders drop guest/zero-total rows, so page 1 returns
+  // far fewer than `limit` and the connector would quit after one page.
+  responseHasMorePath?: string     // dot-path to a boolean "more pages" flag
+  responseNextOffsetPath?: string  // dot-path to the offset to request next
 }
 
 export type PaginationSpec = {
@@ -180,6 +188,7 @@ export type FetchPageResult = {
   records: unknown[]
   hasMore: boolean
   nextCursor: string | null
+  nextOffset: number | null   // explicit next offset from the response, when provided
   totalCount: number | null
 }
 
@@ -271,16 +280,29 @@ export async function fetchPage(
     ? Number(getByPath(json, endpoint.responseCountPath)) || null
     : null
 
+  // Default: infer "more" from a full page. Correct only for unfiltered APIs.
   let hasMore = records.length === pagination.pageSize
   let nextCursor: string | null = null
+  let nextOffset: number | null = null
   if (pagination.type === 'cursor') {
     nextCursor = endpoint.responseNextCursorPath
       ? (getByPath(json, endpoint.responseNextCursorPath) as string | null)
       : null
     hasMore = !!nextCursor
+  } else {
+    // Offset/page: when the API exposes its own termination + next-offset
+    // fields, trust those — required for server-side-filtered endpoints where a
+    // page legitimately returns fewer rows than `limit` yet more pages remain.
+    if (endpoint.responseHasMorePath) {
+      hasMore = Boolean(getByPath(json, endpoint.responseHasMorePath))
+    }
+    if (endpoint.responseNextOffsetPath) {
+      const raw = getByPath(json, endpoint.responseNextOffsetPath)
+      nextOffset = raw == null ? null : Number(raw)
+    }
   }
 
-  return { records, hasMore, nextCursor, totalCount }
+  return { records, hasMore, nextCursor, nextOffset, totalCount }
 }
 
 // Retry wrapper for transient errors. A flaky source-side API or a brief

@@ -29,30 +29,44 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
   // All four now live under the dedicated /storees-cdp/export/* namespace
   // (bypasses Medusa's admin permission chain — see STOREES_CDP_AUTH_UPDATE.md).
   // Auth is a static Bearer pull_token set per-connector-row, NOT in code.
+  // Every export endpoint returns the same envelope: { <resource>: [...], count,
+  // limit, offset, next_offset, has_more }. The orders endpoint FILTERS rows
+  // server-side (drops guest / zero-total), so a page can return far fewer rows
+  // than `limit` while more pages remain — we MUST page off `has_more` +
+  // `next_offset`, never `records.length === pageSize` (which quits after the
+  // thin first page → the "only 77 orders synced" bug). See STOREES_CDP_PULL_API §6/§7.
   endpoints: {
     customers: {
       path: '/storees-cdp/export/customers',
       method: 'GET',
       responseDataPath: 'customers',
       responseCountPath: 'count',
+      responseHasMorePath: 'has_more',
+      responseNextOffsetPath: 'next_offset',
     },
     products: {
       path: '/storees-cdp/export/products',
       method: 'GET',
       responseDataPath: 'products',
       responseCountPath: 'count',
+      responseHasMorePath: 'has_more',
+      responseNextOffsetPath: 'next_offset',
     },
     orders: {
       path: '/storees-cdp/export/orders',
       method: 'GET',
       responseDataPath: 'orders',
       responseCountPath: 'count',
+      responseHasMorePath: 'has_more',
+      responseNextOffsetPath: 'next_offset',
     },
     dealers: {
       path: '/storees-cdp/export/dealers',
       method: 'GET',
       responseDataPath: 'dealers',
       responseCountPath: 'count',
+      responseHasMorePath: 'has_more',
+      responseNextOffsetPath: 'next_offset',
     },
   },
 
@@ -60,7 +74,7 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
     type: 'offset',
     limitParam: 'limit',
     offsetParam: 'offset',
-    pageSize: 100,
+    pageSize: 500, // doc-recommended connector page size (max 1000)
   },
 
   interBatchDelayMs: 100,
