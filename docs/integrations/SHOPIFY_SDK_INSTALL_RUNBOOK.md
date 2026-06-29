@@ -1,9 +1,13 @@
-# Shopify SDK + Customer Events — Install Runbook (AK)
+# Shopify Store — SDK + Customer Events Install Runbook
 
-Goal: get browse + checkout behavioral events flowing from the **Fine Wine** storefront
-(`finewinecosmetics.myshopify.com`) into Storees, so segments/flows (cart abandonment,
-viewed-not-bought, discount intent) work. **This is all Shopify-admin / theme work — no
-Storees deploys needed.**
+**Reusable for *every* Shopify store you onboard, not just one.** Each store is its own
+Storees project with its own **public API key** — only the credentials in §0 change; every
+snippet below is identical for every store. (Fine Wine was the first; this is the template
+for all future ones.)
+
+Goal: get browse + checkout behavioral events flowing from a Shopify storefront into
+Storees, so segments/flows (cart abandonment, viewed-not-bought, discount intent) work.
+**This is all Shopify-admin / theme work — no Storees deploys needed.**
 
 Two layers:
 1. **Theme snippet** — on-store browse events (page views, product views, add-to-cart, collections).
@@ -15,7 +19,7 @@ Verify each step in the Storees **Event Debugger** before moving on — don't ba
 
 ## 0. Before you start (5 min)
 
-1. **Get the credentials.** Storees → make sure active project is **Finewine** → **Settings → SDK & Integration → Script Tag** tab. Note:
+1. **Get the credentials.** Storees → switch the active project to **the store you're onboarding** → **Settings → SDK & Integration → Script Tag** tab. Note:
    - `apiKey` (this is the **public** key — safe in the browser; do NOT use the secret)
    - `apiUrl` (e.g. `https://api.storees.io`)
    Keep the **Copy** snippet handy — it has both baked in.
