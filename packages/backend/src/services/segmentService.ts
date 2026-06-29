@@ -3,6 +3,7 @@ import { db } from '../db/connection.js'
 import { segments, customers, customerSegments } from '../db/schema.js'
 import { SEGMENT_TEMPLATE_DEFINITIONS, filterToSql } from '@storees/segments'
 import { eventsQueue } from './queue.js'
+import { emitWebhookEvent } from './webhookService.js'
 import type { FilterConfig } from '@storees/shared'
 
 /**
@@ -143,6 +144,35 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
       platform: 'system',
       timestamp: new Date().toISOString(),
     })
+  }
+
+  // Mirror membership changes to outbound webhooks (customer.segment.entered /
+  // .exited). No-op unless the project has a matching subscription. Uses the
+  // customer's external_id (the id on the customer's own system) so receivers
+  // like Gowelmart can link the event back to their records.
+  const affected = [...toAdd, ...toRemove]
+  if (affected.length > 0) {
+    const rows = await db
+      .select({ id: customers.id, externalId: customers.externalId, email: customers.email, phone: customers.phone })
+      .from(customers)
+      .where(inArray(customers.id, affected))
+    const byId = new Map(rows.map(r => [r.id, r]))
+    const segmentRef = { id: segmentId, name: segment.name }
+    const emit = (customerId: string, eventType: 'customer.segment.entered' | 'customer.segment.exited') => {
+      const c = byId.get(customerId)
+      return emitWebhookEvent({
+        projectId: segment.projectId,
+        eventType,
+        data: {
+          customer_id: c?.externalId ?? customerId,
+          customer_email: c?.email ?? null,
+          customer_phone: c?.phone ?? null,
+          segment: segmentRef,
+        },
+      })
+    }
+    for (const customerId of toAdd) await emit(customerId, 'customer.segment.entered')
+    for (const customerId of toRemove) await emit(customerId, 'customer.segment.exited')
   }
 
   // Update member + reachable counts
