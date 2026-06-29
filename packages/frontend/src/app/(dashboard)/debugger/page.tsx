@@ -1,20 +1,35 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useEvents } from '@/hooks/useEvents'
-import { Loader2, ChevronDown, ChevronRight, Radio } from 'lucide-react'
+import { useEvents, useEventNames } from '@/hooks/useEvents'
+import { Loader2, ChevronDown, ChevronRight, Radio, Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export default function DebuggerPage() {
-  const { data, isLoading, isError, dataUpdatedAt } = useEvents(200)
+  // Filter state. `customerInput` is what the user types; `customer` is the
+  // debounced value actually sent to the server (avoids a query per keystroke).
+  const [customerInput, setCustomerInput] = useState('')
+  const [customer, setCustomer] = useState('')
+  const [eventName, setEventName] = useState('')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [filter, setFilter] = useState('')
 
+  useEffect(() => {
+    const t = setTimeout(() => setCustomer(customerInput), 400)
+    return () => clearTimeout(t)
+  }, [customerInput])
+
+  const { data, isLoading, isError, dataUpdatedAt } = useEvents(200, { customer, eventName, from, to })
+  const { data: namesData } = useEventNames()
   const events = data?.data ?? []
-  const filtered = filter
-    ? events.filter(e => e.eventName.includes(filter) || e.customerName?.toLowerCase().includes(filter.toLowerCase()))
-    : events
+  const eventNames = namesData?.data ?? []
+
+  const hasFilters = !!(customerInput || eventName || from || to)
+  const clearAll = () => { setCustomerInput(''); setCustomer(''); setEventName(''); setFrom(''); setTo('') }
+
+  const inputCls = 'px-3 py-2 text-sm border border-border rounded-lg bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-accent/20'
 
   return (
     <div>
@@ -30,15 +45,36 @@ export default function DebuggerPage() {
         }
       />
 
-      {/* Filter */}
-      <input
-        type="text"
-        placeholder="Filter by event name or customer..."
-        value={filter}
-        onChange={e => setFilter(e.target.value)}
-        className="w-full max-w-md mb-4 px-4 py-2 text-sm border border-border rounded-lg bg-surface-elevated
-                   focus:outline-none focus:ring-2 focus:ring-accent/20 placeholder:text-text-muted"
-      />
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-end gap-2 mb-4">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-muted" />
+          <input
+            type="text"
+            placeholder="Customer name, email, phone, or ID…"
+            value={customerInput}
+            onChange={e => setCustomerInput(e.target.value)}
+            className={cn(inputCls, 'pl-8 w-72 placeholder:text-text-muted')}
+          />
+        </div>
+        <select value={eventName} onChange={e => setEventName(e.target.value)} className={inputCls}>
+          <option value="">All events</option>
+          {eventNames.map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <label className="flex flex-col text-[10px] uppercase tracking-wide text-text-muted gap-0.5">
+          From
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)} className={inputCls} />
+        </label>
+        <label className="flex flex-col text-[10px] uppercase tracking-wide text-text-muted gap-0.5">
+          To
+          <input type="date" value={to} onChange={e => setTo(e.target.value)} className={inputCls} />
+        </label>
+        {hasFilters && (
+          <button onClick={clearAll} className="inline-flex items-center gap-1 px-3 py-2 text-sm text-text-muted hover:text-text-primary">
+            <X className="h-3.5 w-3.5" /> Clear
+          </button>
+        )}
+      </div>
 
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
@@ -48,15 +84,15 @@ export default function DebuggerPage() {
         <div className="text-center py-20">
           <p className="text-red-600 text-sm">Failed to load events.</p>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : events.length === 0 ? (
         <div className="text-center py-20">
           <p className="text-text-secondary text-sm">
-            {filter ? 'No events match your filter.' : 'No events yet.'}
+            {hasFilters ? 'No events match these filters.' : 'No events yet.'}
           </p>
         </div>
       ) : (
         <div className="bg-surface-elevated border border-border rounded-lg divide-y divide-border font-mono text-sm">
-          {filtered.map(event => {
+          {events.map(event => {
             const isExpanded = expandedId === event.id
 
             return (
@@ -70,8 +106,8 @@ export default function DebuggerPage() {
                   ) : (
                     <ChevronRight className="h-3.5 w-3.5 text-text-muted shrink-0" />
                   )}
-                  <span className="text-xs text-text-muted w-[140px] shrink-0">
-                    {new Date(event.timestamp).toLocaleTimeString()}
+                  <span className="text-xs text-text-muted w-[150px] shrink-0">
+                    {new Date(event.timestamp).toLocaleString()}
                   </span>
                   <span className={cn(
                     'px-2 py-0.5 rounded text-xs font-medium shrink-0',
@@ -85,9 +121,9 @@ export default function DebuggerPage() {
                       {eventPreview(event.properties)}
                     </span>
                   )}
-                  {event.customerName && (
+                  {(event.customerName || event.customerEmail) && (
                     <span className="text-text-muted ml-auto truncate">
-                      {event.customerName}
+                      {event.customerName ?? event.customerEmail}
                     </span>
                   )}
                 </div>
