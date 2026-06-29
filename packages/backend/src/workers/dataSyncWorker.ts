@@ -3,7 +3,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { dataSourceConnectors, dataSourceSyncs, dataSourceSyncLogs } from '../db/schema.js'
-import { dataSyncQueue } from '../services/queue.js'
+import { dataSyncQueue, shopifySyncQueue } from '../services/queue.js'
 import { runSync } from '../services/dataSyncService.js'
 
 // Data sync worker — pulls customers/products/orders from a configured
@@ -34,7 +34,12 @@ const FULL_RESYNC_CRON = '0 3 * * *'            // nightly at 03:00 server time
  */
 async function fanOutScheduledSyncs(kind: 'incremental' | 'full'): Promise<{ enqueued: number; skipped: number }> {
   const connectors = await db
-    .select({ id: dataSourceConnectors.id, lastSyncedAt: dataSourceConnectors.lastSyncedAt })
+    .select({
+      id: dataSourceConnectors.id,
+      projectId: dataSourceConnectors.projectId,
+      template: dataSourceConnectors.template,
+      lastSyncedAt: dataSourceConnectors.lastSyncedAt,
+    })
     .from(dataSourceConnectors)
     .where(eq(dataSourceConnectors.status, 'active'))
 
@@ -54,6 +59,22 @@ async function fanOutScheduledSyncs(kind: 'incremental' | 'full'): Promise<{ enq
       skipped++
       continue
     }
+
+    // Shopify is a native source — route it to the shopify-sync worker, NOT the
+    // generic queue (which would throw "Unknown template: shopify"). Its live
+    // updates come via webhooks, so only the nightly FULL tick does a
+    // reconciliation re-pull — skip Shopify on the frequent incremental tick.
+    if (conn.template === 'shopify') {
+      if (kind !== 'full') { skipped++; continue }
+      const [sync] = await db
+        .insert(dataSourceSyncs)
+        .values({ connectorId: conn.id, kind: 'full', status: 'queued' })
+        .returning({ id: dataSourceSyncs.id })
+      await shopifySyncQueue.add('sync', { projectId: conn.projectId, syncId: sync.id })
+      enqueued++
+      continue
+    }
+
     const lastSynced = (conn.lastSyncedAt as Record<string, string | undefined>) ?? {}
     const hasEverSynced = Object.keys(lastSynced).length > 0
     const effectiveKind = !hasEverSynced ? 'full' : kind
