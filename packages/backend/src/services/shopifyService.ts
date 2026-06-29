@@ -131,9 +131,16 @@ export async function fetchShopifyPage<T>(
   accessToken: string,
   pathOrAbsoluteUrl: string,
 ): Promise<{ data: T; nextPath: string | null }> {
+  // The Link-header "next" path (from parseNextLink) already includes the
+  // /admin/api/<version> prefix, while first-page calls pass a bare path like
+  // "/products.json". Don't double-prepend the API base — that produces
+  // /admin/api/2024-01/admin/api/2024-01/... → 404 and breaks all pagination
+  // past page 1.
   const url = pathOrAbsoluteUrl.startsWith('http')
     ? pathOrAbsoluteUrl
-    : `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${pathOrAbsoluteUrl}`
+    : pathOrAbsoluteUrl.startsWith('/admin/')
+      ? `https://${shop}${pathOrAbsoluteUrl}`
+      : `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${pathOrAbsoluteUrl}`
 
   const response = await fetch(url, {
     headers: {
