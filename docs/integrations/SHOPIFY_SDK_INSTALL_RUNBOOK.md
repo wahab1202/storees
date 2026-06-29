@@ -181,3 +181,66 @@ If any event is missing or shows null fields, note **which event** + **which fie
 | `added_to_wishlist` | theme/app (if present) | engagement |
 
 Keys: use the **public** API key everywhere here. Never put the secret in the theme or pixel.
+
+---
+
+## 7. Anonymous → known stitching (browse anonymously, identify at checkout / Shopflo)
+
+Most visitors browse anonymously and only become known at checkout — often on a
+3rd-party checkout (e.g. **Shopflo**) where they never identify on the store. To
+attribute their browse history (`product_viewed`, `added_to_cart`) to the customer
+who eventually orders, we carry **one stable session id** from browse → cart → order.
+
+The backend side is already built: when an `order_placed` webhook arrives, Storees
+reads `note_attributes.storees_sid` and back-attributes that anonymous session to the
+order's customer. You just need the storefront to (a) mint the id, (b) stamp it on the
+cart, and (c) send it on pixel events.
+
+### 7a. Theme — mint a stable session id + stamp it on the cart (`theme.liquid`)
+Add right after the SDK `init` snippet:
+```html
+<script>
+(function () {
+  var KEY = 'storees_sid';
+  var m = document.cookie.split('; ').find(function (r) { return r.indexOf(KEY + '=') === 0; });
+  var sid = m ? m.split('=')[1]
+            : 'sdk_' + (window.crypto && crypto.randomUUID ? crypto.randomUUID()
+                        : Date.now() + '_' + Math.random().toString(36).slice(2));
+  document.cookie = KEY + '=' + sid + '; path=/; max-age=' + (60 * 60 * 24 * 365) + '; SameSite=Lax';
+  window.__storees_sid = sid;
+  // Stamp it on the Shopify cart so it rides into the order's note_attributes
+  // (and through Shopflo, which preserves cart attributes).
+  fetch('/cart/update.js', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attributes: { storees_sid: sid } })
+  }).catch(function () {});
+})();
+</script>
+```
+
+### 7b. Pixel — send that SAME id as `session_id`
+In the Customer Events pixel, read the cookie and include `session_id` on every event
+(replaces relying on Shopify's `clientId`, so theme + pixel share one identity). Change
+`send` to:
+```js
+const send = async (event_name, properties, e) => {
+  const sid = await browser.cookie.get('storees_sid').catch(() => null);
+  fetch(URL, { method:'POST', keepalive:true,
+    headers:{ 'Content-Type':'application/json', 'X-API-Key': KEY },
+    body: JSON.stringify({ event_name, session_id: sid || undefined, ...idOf(e), properties }) }).catch(()=>{});
+};
+```
+
+### 7c. (Optional, highest-yield) identify early on-site
+Any time you capture email/phone before checkout — discount/newsletter popup, account
+login — POST it so the stitch happens immediately:
+```js
+fetch('<API_URL>/api/v1/identify', { method:'POST',
+  headers:{ 'Content-Type':'application/json', 'X-API-Key':'<PUBLIC_API_KEY>' },
+  body: JSON.stringify({ customer_email: <captured email>, session_id: window.__storees_sid }) });
+```
+
+### Verify the stitch
+1. In one incognito session: browse a product (anonymous `product_viewed`), add to cart, complete a checkout through Shopflo with a test email.
+2. After the order lands, open that customer in Storees → their **Activity** should now include the earlier `product_viewed` / `added_to_cart` (back-attributed), not just the order.
+3. If they're NOT attributed: check the order's `note_attributes` in Shopify admin contains `storees_sid`. If it's missing, **Shopflo is stripping cart attributes** — coordinate with Shopflo to pass `note_attributes` through (or set the attribute via Shopflo's own cart API).
