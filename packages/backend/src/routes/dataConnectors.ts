@@ -11,7 +11,7 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { encrypt, decrypt } from '../services/encryption.js'
 import { listTemplates, getTemplate, cloneTemplate } from '../services/connectorRegistry.js'
 import { testConnection, type RuntimeConfig } from '../services/connectors/genericHttpConnector.js'
-import { dataSyncQueue } from '../services/queue.js'
+import { dataSyncQueue, shopifySyncQueue } from '../services/queue.js'
 import { agentRbacEnabled } from '../config/features.js'
 
 // Admin endpoints for managing data-source connectors. Onboarding team uses
@@ -189,9 +189,27 @@ router.patch('/connectors/:id', requireProjectId, async (req, res) => {
 })
 
 router.delete('/connectors/:id', requireProjectId, async (req, res) => {
+  const id = req.params.id as string
+  const [conn] = await db
+    .select({ template: dataSourceConnectors.template })
+    .from(dataSourceConnectors)
+    .where(and(eq(dataSourceConnectors.id, id), eq(dataSourceConnectors.projectId, req.projectId!)))
+    .limit(1)
+
+  // Disconnecting a Shopify source also clears the store creds + token from the
+  // project (the worker reads them from there).
+  if (conn?.template === 'shopify') {
+    const [p] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, req.projectId!)).limit(1)
+    const settings = { ...((p?.settings ?? {}) as Record<string, unknown>) }
+    delete settings.shopifyCustomApp
+    await db.update(projects).set({
+      shopifyDomain: null, shopifyAccessToken: null, webhookSecret: null, settings, updatedAt: new Date(),
+    }).where(eq(projects.id, req.projectId!))
+  }
+
   await db
     .delete(dataSourceConnectors)
-    .where(and(eq(dataSourceConnectors.id, (req.params.id as string)), eq(dataSourceConnectors.projectId, req.projectId!)))
+    .where(and(eq(dataSourceConnectors.id, id), eq(dataSourceConnectors.projectId, req.projectId!)))
   res.json({ success: true })
 })
 
@@ -258,6 +276,17 @@ router.post('/connectors/:id/sync', requireProjectId, async (req, res) => {
       .where(and(eq(dataSourceConnectors.id, (req.params.id as string)), eq(dataSourceConnectors.projectId, req.projectId!)))
       .limit(1)
     if (!conn) return res.status(404).json({ success: false, error: 'Connector not found' })
+
+    // Shopify is a native source — its run goes through the shopify-sync worker,
+    // which writes counts back into this same sync row for the unified history.
+    // (Shopify always does a full historical sync, so kind is always 'full'.)
+    if (conn.template === 'shopify') {
+      const [sync] = await db.insert(dataSourceSyncs)
+        .values({ connectorId: conn.id, kind: 'full', status: 'queued' })
+        .returning({ id: dataSourceSyncs.id })
+      await shopifySyncQueue.add('sync', { projectId: req.projectId!, syncId: sync.id })
+      return res.json({ success: true, data: { syncId: sync.id, kind: 'full' } })
+    }
 
     // First sync forces full regardless — there's no last_synced_at to filter by
     const lastSynced = conn.lastSyncedAt as Record<string, string | undefined>

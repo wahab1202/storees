@@ -1,7 +1,7 @@
 import { Router } from 'express'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { projects, adminUsers, oauthAccounts } from '../db/schema.js'
+import { projects, adminUsers, oauthAccounts, dataSourceConnectors } from '../db/schema.js'
 import { shopifySyncQueue } from '../services/queue.js'
 import {
   getInstallUrl,
@@ -206,12 +206,33 @@ router.post('/shopify/connect', requireAuth, async (req, res) => {
       updatedAt: new Date(),
     }).where(eq(projects.id, projectId))
 
+    // Surface this connection in the project's Data Sources panel (unified with
+    // connectors). Upsert one 'shopify' source row per project — same shell
+    // VirpanAI uses, so status / sync-history / metrics / resync all render for
+    // it. Creds stay on the projects row above; this is the display/history row.
+    const [existingSrc] = await db.select({ id: dataSourceConnectors.id })
+      .from(dataSourceConnectors)
+      .where(and(eq(dataSourceConnectors.projectId, projectId), eq(dataSourceConnectors.template, 'shopify')))
+      .limit(1)
+    if (existingSrc) {
+      await db.update(dataSourceConnectors).set({
+        name: `Shopify · ${shop}`, baseUrl: `https://${shop}`,
+        config: { shopifyDomain: shop }, status: 'active', updatedAt: new Date(),
+      }).where(eq(dataSourceConnectors.id, existingSrc.id))
+    } else {
+      await db.insert(dataSourceConnectors).values({
+        projectId, template: 'shopify', name: `Shopify · ${shop}`,
+        baseUrl: `https://${shop}`, authConfig: '', config: { shopifyDomain: shop }, status: 'active',
+      })
+    }
+
     // Register webhooks (non-fatal — historical sync still proceeds without them).
     try { await registerWebhooks(shop, minted.accessToken, projectId) } catch (e) {
       console.warn('[shopify/connect] webhook registration failed:', (e as Error).message)
     }
 
-    // Kick off the historical sync (reuses the existing Shopify sync worker).
+    // Kick off the historical sync (reuses the existing Shopify sync worker,
+    // which records the run into the unified sync history).
     await shopifySyncQueue.add('sync', { projectId })
 
     res.json({ success: true, data: { projectId, shop, status: 'connected' } })
@@ -238,6 +259,9 @@ router.post('/shopify/disconnect', requireAuth, async (req, res) => {
       settings,
       updatedAt: new Date(),
     }).where(eq(projects.id, projectId))
+    // Remove the unified Data Sources row for this store.
+    await db.delete(dataSourceConnectors)
+      .where(and(eq(dataSourceConnectors.projectId, projectId), eq(dataSourceConnectors.template, 'shopify')))
     res.json({ success: true })
   } catch (err) {
     console.error('Shopify disconnect error:', err)

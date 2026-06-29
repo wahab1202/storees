@@ -13,11 +13,23 @@ const TEMPLATES: Record<string, ConnectorTemplate> = {
 }
 
 export function listTemplates(): Array<{ id: string; label: string; description: string }> {
-  return Object.values(TEMPLATES).map((t) => ({
-    id: t.id,
-    label: t.label,
-    description: t.description,
-  }))
+  return [
+    ...Object.values(TEMPLATES).map((t) => ({
+      id: t.id,
+      label: t.label,
+      description: t.description,
+    })),
+    // Shopify is a NATIVE source, not a generic-HTTP template — surfaced in the
+    // picker so it can be added from the Data Sources panel, but the Add flow
+    // routes it to the Shopify connect endpoint (custom-app credentials), not
+    // POST /connectors. No entry in TEMPLATES, so getTemplate() stays undefined
+    // for it and the generic sync path never handles it.
+    {
+      id: 'shopify',
+      label: 'Shopify',
+      description: 'Connect a Shopify store via a custom app (store domain + Client ID + secret). Syncs customers, orders, products & collections, kept live via webhooks.',
+    },
+  ]
 }
 
 export function getTemplate(id: string): ConnectorTemplate | undefined {

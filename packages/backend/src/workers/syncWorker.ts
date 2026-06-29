@@ -1,8 +1,8 @@
 import { Worker } from 'bullmq'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { projects, orders, products, collections, productCollections } from '../db/schema.js'
+import { projects, orders, products, collections, productCollections, dataSourceConnectors, dataSourceSyncs } from '../db/schema.js'
 import { fetchShopifyApi, fetchShopifyPage, getValidShopifyToken } from '../services/shopifyService.js'
 import { resolveCustomer, updateCustomerAggregates } from '../services/customerService.js'
 import { processHistoricalEvent } from '../services/eventProcessor.js'
@@ -67,7 +67,7 @@ export function startSyncWorker(): Worker {
   const worker = new Worker(
     'shopify-sync',
     async (job) => {
-      const { projectId } = job.data as { projectId: string }
+      const { projectId, syncId: providedSyncId } = job.data as { projectId: string; syncId?: string }
 
       console.log(`Starting historical sync for project ${projectId}`)
 
@@ -86,6 +86,26 @@ export function startSyncWorker(): Worker {
       // client_credentials token is ~24h); returns the stored token for legacy OAuth.
       const { token } = await getValidShopifyToken(projectId)
 
+      // Resolve the unified Data Sources sync-history row so this run shows in
+      // the project's Data Sources panel (status, counts, duration) — same shell
+      // connectors use. Use the caller-provided syncId (panel-triggered Sync Now)
+      // or create one (connect-time auto-sync).
+      const [shopConn] = await db.select({ id: dataSourceConnectors.id })
+        .from(dataSourceConnectors)
+        .where(and(eq(dataSourceConnectors.projectId, projectId), eq(dataSourceConnectors.template, 'shopify')))
+        .limit(1)
+      const connectorId = shopConn?.id ?? null
+      let historySyncId = providedSyncId ?? null
+      if (connectorId) {
+        if (historySyncId) {
+          await db.update(dataSourceSyncs).set({ status: 'running', startedAt: new Date(), updatedAt: new Date() }).where(eq(dataSourceSyncs.id, historySyncId))
+        } else {
+          const [row] = await db.insert(dataSourceSyncs).values({ connectorId, kind: 'full', status: 'running', startedAt: new Date() }).returning({ id: dataSourceSyncs.id })
+          historySyncId = row.id
+        }
+      }
+
+      try {
       // Fetch customers — paginate through all pages via Link header
       let customerUrl: string | null = '/customers.json?limit=250&order=created_at+desc'
       let customersProcessed = 0
@@ -200,7 +220,31 @@ export function startSyncWorker(): Worker {
       console.log('Evaluating segments after sync...')
       await evaluateAllSegments(projectId)
 
+      // Record success in the unified Data Sources history.
+      if (historySyncId && connectorId) {
+        const stats = {
+          customers: { fetched: customersProcessed, imported: customersProcessed, failed: 0 },
+          products: { fetched: productCount, imported: productCount, failed: 0 },
+          orders: { fetched: ordersProcessed, imported: ordersProcessed, failed: 0 },
+        }
+        const nowIso = new Date().toISOString()
+        await db.update(dataSourceSyncs)
+          .set({ status: 'success', finishedAt: new Date(), stats, updatedAt: new Date() })
+          .where(eq(dataSourceSyncs.id, historySyncId))
+        await db.update(dataSourceConnectors)
+          .set({ lastSyncedAt: { customers: nowIso, products: nowIso, orders: nowIso }, updatedAt: new Date() })
+          .where(eq(dataSourceConnectors.id, connectorId))
+      }
+
       return { customersProcessed, ordersProcessed, productCount, collectionCount, status: 'complete' }
+      } catch (err) {
+        if (historySyncId) {
+          await db.update(dataSourceSyncs)
+            .set({ status: 'failed', finishedAt: new Date(), errorSummary: (err as Error).message.slice(0, 500), updatedAt: new Date() })
+            .where(eq(dataSourceSyncs.id, historySyncId))
+        }
+        throw err
+      }
     },
     {
       connection: redisConnection,
