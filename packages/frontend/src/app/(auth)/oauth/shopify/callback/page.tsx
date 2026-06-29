@@ -95,7 +95,7 @@ export default function ShopifyCallbackPage() {
               <h1 className="text-xl font-semibold text-slate-900">Connection failed</h1>
               <p className="text-sm text-red-600 mt-2">{error}</p>
               <button
-                onClick={() => router.push('/integrations')}
+                onClick={() => router.push('/projects')}
                 className="mt-6 px-4 py-2.5 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
               >
                 Try again

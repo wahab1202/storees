@@ -13,7 +13,6 @@ import {
   Radio,
   ScrollText,
   Settings,
-  Store,
   Plus,
   FileText,
   FolderOpen,
@@ -61,7 +60,8 @@ const bottomItems: NavItem[] = [
   { href: '/projects', label: 'Projects', icon: FolderOpen, adminOnly: true },
   { href: '/onboarding', label: 'New Project', icon: Plus, adminOnly: true },
   { href: '/settings', label: 'Settings', icon: Settings },
-  { href: '/integrations', label: 'Connected Stores', icon: Store, adminOnly: true },
+  // Connected Stores retired — store connections now live per-project in the
+  // Projects → Data Sources panel (unified with all data connectors).
 ]
 
 function visibleFor(role: AdminRole | undefined, items: NavItem[]): NavItem[] {

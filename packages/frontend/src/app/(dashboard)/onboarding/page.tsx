@@ -423,7 +423,7 @@ export default function OnboardingPage() {
           <div>
             <h2 className="text-lg font-semibold text-heading mb-1">Connect your store</h2>
             <p className="text-sm text-text-secondary mb-4">
-              Where do your customers and orders live? We'll sync them automatically. You can skip this and connect later from Connected Stores.
+              Where do your customers and orders live? We'll sync them automatically. You can skip this and connect later from the project's Data Sources panel.
             </p>
             <div className="grid grid-cols-2 gap-3">
               {PLATFORM_OPTIONS.map((p) => {
@@ -501,7 +501,7 @@ export default function OnboardingPage() {
           {/* Non-Shopify platforms — deferred to Connected Stores */}
           {platform && platform !== 'shopify' && (
             <div className="rounded-lg border border-border bg-surface px-4 py-3 text-xs text-text-secondary">
-              We'll help you connect <span className="font-medium text-heading">{PLATFORM_OPTIONS.find(p => p.id === platform)?.label}</span> from <span className="font-medium">Connected Stores</span> right after your workspace is set up.
+              We'll help you connect <span className="font-medium text-heading">{PLATFORM_OPTIONS.find(p => p.id === platform)?.label}</span> from the project's <span className="font-medium">Data Sources</span> panel right after your workspace is set up.
             </div>
           )}
         </div>
@@ -922,16 +922,16 @@ export default function OnboardingPage() {
               <div className="w-full max-w-sm text-center">
                 <p className="text-xs text-red-600 mb-2">Store connection failed: {connectResult.message}</p>
                 <a
-                  href="/integrations"
+                  href="/projects"
                   className="inline-block px-6 py-2.5 bg-[#96bf48] text-white rounded-lg font-medium text-sm hover:opacity-90"
                 >
-                  Retry from Connected Stores →
+                  Retry from Data Sources →
                 </a>
               </div>
             )}
             {selectedPack === 'ecommerce' && !connectResult && (
               <a
-                href="/integrations"
+                href="/projects"
                 className="w-full max-w-sm text-center px-6 py-2.5 bg-[#96bf48] text-white rounded-lg font-medium text-sm hover:opacity-90"
               >
                 Connect your store →
