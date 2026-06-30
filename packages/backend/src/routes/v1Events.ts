@@ -376,13 +376,14 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       ])
     }
 
-    // Phase 7: Bulk update lastSeen for affected customers
+    // Phase 7: Bulk update lastSeen for affected customers. Use inArray (not raw
+    // `id = ANY(${customerIds})`, which Drizzle mis-binds as a scalar → "malformed
+    // array literal").
     const customerIds = [...new Set(insertedEvents.map(e => e.customerId))]
     if (customerIds.length > 0) {
-      await db.execute(sql`
-        UPDATE customers SET last_seen = NOW(), updated_at = NOW()
-        WHERE id = ANY(${customerIds})
-      `)
+      await db.update(customers)
+        .set({ lastSeen: new Date(), updatedAt: new Date() })
+        .where(inArray(customers.id, customerIds))
     }
 
     const succeeded = results.filter(r => r.id).length
