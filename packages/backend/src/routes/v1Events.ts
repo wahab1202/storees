@@ -597,6 +597,17 @@ async function handleSdkEvent(
   const eventName = payload.event_name?.trim()
   if (!eventName) return
 
+  // Stitch a prior anonymous browse session to this customer whenever an event
+  // carries BOTH a session id AND a real identifier (email/phone). e.g. the
+  // pixel's checkout_started brings the visitor's email + their browse session,
+  // so the earlier anonymous product_viewed/added_to_cart events back-attribute
+  // to the real customer — no dependence on the order arriving or on the
+  // 3rd-party checkout preserving cart attributes. Idempotent + non-fatal.
+  if (payload.session_id && (payload.customer_email || payload.customer_phone)) {
+    await linkAnonymousSession(projectId, payload.session_id, customerId).catch(err =>
+      console.error('[events] session link failed:', (err as Error).message))
+  }
+
   if (eventName === 'customer_identified') {
     await handleCustomerIdentified(projectId, customerId, payload.properties ?? {})
   } else if (eventName === 'user_properties_updated') {
