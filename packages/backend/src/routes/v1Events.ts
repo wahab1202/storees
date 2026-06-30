@@ -56,6 +56,10 @@ router.post('/events', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'event_name is required' })
     }
 
+    // An anonymous client id (SDK `anon_…`, pixel UUID clientId) is a session, not
+    // a customer — reclassify before deciding identity.
+    normalizeAnonymousId(payload)
+
     // Anonymous events (only a session id, no real identifier) are stored against
     // the session with customer_id = NULL — NO customer record is created, so
     // browsing visitors don't pollute the customer base / skew funnels. They
@@ -200,6 +204,8 @@ router.post('/events/batch', async (req: Request, res: Response) => {
         results.push({ index: i, error: 'event_name is required' })
         continue
       }
+      // Reclassify anonymous client ids (SDK `anon_…`, pixel UUID) as sessions.
+      normalizeAnonymousId(payload)
       if (!payload.customer_id && !payload.customer_email && !payload.customer_phone && !payload.session_id) {
         results.push({ index: i, error: 'customer identifier or session_id required' })
         continue
@@ -535,6 +541,36 @@ router.post('/customers', async (req: Request, res: Response) => {
 })
 
 // ============ HELPERS ============
+
+/**
+ * An anonymous client id, not a real customer. The SDK sends `anon_<uuid>` for
+ * un-identified visitors (identity.ts getCustomerId), the Customer Events pixel
+ * sends Shopify's `clientId` (a bare UUID), and `storees_sid` is `sdk_<uuid>`.
+ * Real Shopify external customer ids are numeric, so none of these are customers.
+ */
+function isAnonymousCustomerId(id: string): boolean {
+  return /^(anon_|sdk_)/i.test(id) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+}
+
+/**
+ * If `customer_id` is an anonymous client id (with no real email/phone alongside),
+ * move it to `session_id` and clear it — so the event is stored anonymously
+ * (customer_id = NULL) and back-attributes on identify, instead of spawning a
+ * ghost customer per visitor. Store-agnostic: works regardless of whether the
+ * deployed SDK/pixel snippet has been updated to stop sending the client id.
+ */
+function normalizeAnonymousId(payload: EventIngestionPayload): void {
+  if (
+    payload.customer_id &&
+    !payload.customer_email &&
+    !payload.customer_phone &&
+    isAnonymousCustomerId(payload.customer_id)
+  ) {
+    payload.session_id = payload.session_id || payload.customer_id
+    payload.customer_id = undefined
+  }
+}
 
 /** Resolve customer by external_id, email, or phone. Create if not found. */
 async function resolveCustomer(
