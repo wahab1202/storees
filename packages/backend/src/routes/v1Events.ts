@@ -56,10 +56,16 @@ router.post('/events', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'event_name is required' })
     }
 
-    if (!payload.customer_id && !payload.customer_email && !payload.customer_phone) {
+    // Anonymous events (only a session id, no real identifier) are stored against
+    // the session with customer_id = NULL — NO customer record is created, so
+    // browsing visitors don't pollute the customer base / skew funnels. They
+    // back-attribute to a real customer when one identifies on the same session
+    // (handleSdkEvent / order stitch).
+    const hasIdentity = !!(payload.customer_id || payload.customer_email || payload.customer_phone)
+    if (!hasIdentity && !payload.session_id) {
       return res.status(400).json({
         success: false,
-        error: 'At least one of customer_id, customer_email, or customer_phone is required',
+        error: 'At least one of customer_id, customer_email, customer_phone, or session_id is required',
       })
     }
 
@@ -73,8 +79,9 @@ router.post('/events', async (req: Request, res: Response) => {
       })
     }
 
-    // Resolve or create customer
-    const customerId = await resolveCustomer(projectId, payload)
+    // Resolve the customer only when a real identifier is present; anonymous
+    // (session-only) events have customer_id = NULL.
+    const customerId = hasIdentity ? await resolveCustomer(projectId, payload) : null
 
     // Insert event — idempotency handled atomically via ON CONFLICT
     let eventId: string
@@ -92,7 +99,7 @@ router.post('/events', async (req: Request, res: Response) => {
     // legitimately return to an earlier state later without being dropped.
     const effectiveKey = payload.idempotency_key
       ? payload.idempotency_key
-      : deriveIdempotencyKey(payload.event_name.trim(), customerId, payload.properties, eventTimestamp)
+      : deriveIdempotencyKey(payload.event_name.trim(), customerId ?? eventSessionId ?? 'anon', payload.properties, eventTimestamp)
 
     const result = await db.execute(sql`
       INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
@@ -114,43 +121,48 @@ router.post('/events', async (req: Request, res: Response) => {
     }
     eventId = (result.rows[0] as { id: string }).id
 
-    // Upsert entities if provided
-    if (payload.entities && payload.entities.length > 0) {
-      for (const entity of payload.entities) {
-        await upsertEntity(projectId, customerId, entity)
+    // Customer side-effects only run for identified events. Anonymous
+    // (customer_id = NULL) events are just stored against the session; the
+    // back-attribution worker handles aggregates/flows once they're stitched.
+    if (customerId) {
+      // Upsert entities if provided
+      if (payload.entities && payload.entities.length > 0) {
+        for (const entity of payload.entities) {
+          await upsertEntity(projectId, customerId, entity)
+        }
       }
+
+      // Update customer lastSeen
+      await db.update(customers)
+        .set({ lastSeen: eventTimestamp, updatedAt: new Date() })
+        .where(eq(customers.id, customerId))
+
+      // Handle SDK-specific events (incl. the session→customer stitch)
+      await handleSdkEvent(projectId, customerId, payload)
+
+      // Publish to BullMQ for flow triggers + metrics recomputation
+      const jobPayload = {
+        projectId,
+        customerId,
+        eventName: payload.event_name.trim(),
+        properties: payload.properties ?? {},
+        platform: eventPlatform,
+        source: eventSource,
+        timestamp: eventTimestamp.toISOString(),
+      }
+      await eventsQueue.add(payload.event_name, jobPayload)
+      await metricsQueue.add('recompute', jobPayload)
+      // Customer-aggregate worker — folds the event into total_orders /
+      // total_spent / last_order_date / etc. Replaces the FDW federation cron.
+      await customerAggregateQueue.add(payload.event_name, {
+        eventId,
+        projectId,
+        customerId,
+        eventName: payload.event_name.trim(),
+        properties: payload.properties ?? {},
+        timestamp: eventTimestamp.toISOString(),
+      })
     }
-
-    // Update customer lastSeen
-    await db.update(customers)
-      .set({ lastSeen: eventTimestamp, updatedAt: new Date() })
-      .where(eq(customers.id, customerId))
-
-    // Handle SDK-specific events
-    await handleSdkEvent(projectId, customerId, payload)
-
-    // Publish to BullMQ for flow triggers + metrics recomputation
-    const jobPayload = {
-      projectId,
-      customerId,
-      eventName: payload.event_name.trim(),
-      properties: payload.properties ?? {},
-      platform: eventPlatform,
-      source: eventSource,
-      timestamp: eventTimestamp.toISOString(),
-    }
-    await eventsQueue.add(payload.event_name, jobPayload)
-    await metricsQueue.add('recompute', jobPayload)
-    // Customer-aggregate worker — folds the event into total_orders /
-    // total_spent / last_order_date / etc. Replaces the FDW federation cron.
-    await customerAggregateQueue.add(payload.event_name, {
-      eventId,
-      projectId,
-      customerId,
-      eventName: payload.event_name.trim(),
-      properties: payload.properties ?? {},
-      timestamp: eventTimestamp.toISOString(),
-    })
 
     res.status(201).json({ success: true, data: { id: eventId } })
   } catch (err) {
@@ -188,8 +200,8 @@ router.post('/events/batch', async (req: Request, res: Response) => {
         results.push({ index: i, error: 'event_name is required' })
         continue
       }
-      if (!payload.customer_id && !payload.customer_email && !payload.customer_phone) {
-        results.push({ index: i, error: 'customer identifier required' })
+      if (!payload.customer_id && !payload.customer_email && !payload.customer_phone && !payload.session_id) {
+        results.push({ index: i, error: 'customer identifier or session_id required' })
         continue
       }
       validEvents.push({ index: i, payload })
@@ -223,8 +235,9 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       }
     }
 
-    // Phase 3: Resolve customers in parallel (batch of 20 concurrent)
-    const eventsToInsert: { index: number; payload: EventIngestionPayload; customerId: string }[] = []
+    // Phase 3: Resolve customers in parallel (batch of 20 concurrent). Anonymous
+    // (session-only) events resolve to customerId = null — no customer created.
+    const eventsToInsert: { index: number; payload: EventIngestionPayload; customerId: string | null }[] = []
     const RESOLVE_BATCH_SIZE = 20
 
     for (let i = 0; i < validEvents.length; i += RESOLVE_BATCH_SIZE) {
@@ -236,7 +249,8 @@ router.post('/events/batch', async (req: Request, res: Response) => {
             results.push({ index, id: existingIdempotencyMap.get(payload.idempotency_key) })
             return null
           }
-          const customerId = await resolveCustomer(projectId, payload)
+          const hasIdentity = !!(payload.customer_id || payload.customer_email || payload.customer_phone)
+          const customerId = hasIdentity ? await resolveCustomer(projectId, payload) : null
           return { index, payload, customerId }
         }),
       )
@@ -253,7 +267,7 @@ router.post('/events/batch', async (req: Request, res: Response) => {
 
     // Phase 4: Bulk insert events (chunks of 500 to stay within PG param limits)
     const INSERT_BATCH_SIZE = 500
-    const insertedEvents: { index: number; id: string; payload: EventIngestionPayload; customerId: string }[] = []
+    const insertedEvents: { index: number; id: string; payload: EventIngestionPayload; customerId: string | null }[] = []
 
     for (let i = 0; i < eventsToInsert.length; i += INSERT_BATCH_SIZE) {
       const chunk = eventsToInsert.slice(i, i + INSERT_BATCH_SIZE)
@@ -322,8 +336,14 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       }
     }
 
+    // Anonymous (customer_id = null) events are stored only — no customer
+    // side-effects. Everything below runs for identified events.
+    const customerEvents = insertedEvents.filter(
+      (e): e is typeof e & { customerId: string } => !!e.customerId,
+    )
+
     // Phase 5: Handle entities for events that have them (parallel)
-    const entityPromises = insertedEvents
+    const entityPromises = customerEvents
       .filter(e => e.payload.entities && e.payload.entities.length > 0)
       .flatMap(e =>
         e.payload.entities!.map(entity => upsertEntity(projectId, e.customerId, entity)),
@@ -332,15 +352,16 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       await Promise.allSettled(entityPromises)
     }
 
-    // Phase 5.5: Handle SDK-specific events (identity merge, property updates)
-    for (const e of insertedEvents) {
+    // Phase 5.5: Handle SDK-specific events (identity merge, property updates,
+    // and the session→customer stitch)
+    for (const e of customerEvents) {
       await handleSdkEvent(projectId, e.customerId, e.payload).catch(err =>
         console.error('SDK event handler error (non-fatal):', (err as Error).message)
       )
     }
 
-    // Phase 6: Bulk publish to BullMQ queues
-    const jobPayloads = insertedEvents.map(e => ({
+    // Phase 6: Bulk publish to BullMQ queues (identified events only)
+    const jobPayloads = customerEvents.map(e => ({
       name: e.payload.event_name,
       data: {
         projectId,
@@ -356,7 +377,7 @@ router.post('/events/batch', async (req: Request, res: Response) => {
     // Customer-aggregate jobs need the event id (so the worker can stamp
     // processed_at). Build that list separately from the trigger/metrics
     // payloads which don't.
-    const aggregateJobs = insertedEvents.map(e => ({
+    const aggregateJobs = customerEvents.map(e => ({
       name: e.payload.event_name,
       data: {
         eventId: e.id,
@@ -376,10 +397,8 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       ])
     }
 
-    // Phase 7: Bulk update lastSeen for affected customers. Use inArray (not raw
-    // `id = ANY(${customerIds})`, which Drizzle mis-binds as a scalar → "malformed
-    // array literal").
-    const customerIds = [...new Set(insertedEvents.map(e => e.customerId))]
+    // Phase 7: Bulk update lastSeen for affected (identified) customers.
+    const customerIds = [...new Set(customerEvents.map(e => e.customerId))]
     if (customerIds.length > 0) {
       await db.update(customers)
         .set({ lastSeen: new Date(), updatedAt: new Date() })
