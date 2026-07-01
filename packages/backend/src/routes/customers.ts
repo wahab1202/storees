@@ -67,40 +67,53 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       )
     }
 
-    // RFM bucket filter: recency (recent/medium/lapsed) × value (low/medium/high)
+    // RFM bucket filter: recency (recent/medium/lapsed) × value (low/medium/high).
+    // MUST mirror getLifecycleChart (packages/segments/src/lifecycle.ts) exactly,
+    // else clicking a chart cell returns a different — usually empty — set. The
+    // chart is buyers-only; recency uses last PURCHASE (fallback last_seen); value
+    // is a Frequency+Monetary composite with per-project P50/P90 thresholds
+    // (NOT lastSeen recency + NTILE(3) on spend, which is what this used before
+    // and why "Potential Loyalists" etc. showed no members).
     if (rfm) {
       const [recency, value] = rfm.split('_')
-      // Recency filter
-      if (recency === 'recent') {
-        conditions.push(sql`EXTRACT(DAY FROM NOW() - ${customers.lastSeen}) <= 30`)
-      } else if (recency === 'medium') {
-        conditions.push(sql`EXTRACT(DAY FROM NOW() - ${customers.lastSeen}) > 30`)
-        conditions.push(sql`EXTRACT(DAY FROM NOW() - ${customers.lastSeen}) <= 90`)
-      } else if (recency === 'lapsed') {
-        conditions.push(sql`EXTRACT(DAY FROM NOW() - ${customers.lastSeen}) > 90`)
-      }
-      // Value filter using NTILE(3) among buyers
+
+      // All lifecycle charts are computed over buyers only.
       conditions.push(sql`${customers.totalOrders} > 0`)
-      if (value === 'low') {
+
+      // Recency = days since last purchase (fallback last_seen), matching the chart.
+      const daysSince = sql`EXTRACT(EPOCH FROM (NOW() - COALESCE(last_order_date, last_seen))) / 86400.0`
+      if (recency === 'recent') {
+        conditions.push(sql`${daysSince} <= 30`)
+      } else if (recency === 'medium') {
+        conditions.push(sql`${daysSince} > 30 AND ${daysSince} <= 90`)
+      } else if (recency === 'lapsed') {
+        conditions.push(sql`${daysSince} > 90`)
+      }
+
+      // Value = composite of Frequency (order count: 6+=high, 2–5=medium, 1=low)
+      // and Monetary (total_spent vs project P50/P90), averaged — identical to the
+      // chart's value axis.
+      if (value === 'low' || value === 'medium' || value === 'high') {
         conditions.push(sql`${customers.id} IN (
-          SELECT id FROM (
-            SELECT id, NTILE(3) OVER (ORDER BY total_spent::numeric) AS tile
-            FROM customers WHERE project_id = ${projectId} AND total_orders > 0
-          ) t WHERE tile = 1
-        )`)
-      } else if (value === 'medium') {
-        conditions.push(sql`${customers.id} IN (
-          SELECT id FROM (
-            SELECT id, NTILE(3) OVER (ORDER BY total_spent::numeric) AS tile
-            FROM customers WHERE project_id = ${projectId} AND total_orders > 0
-          ) t WHERE tile = 2
-        )`)
-      } else if (value === 'high') {
-        conditions.push(sql`${customers.id} IN (
-          SELECT id FROM (
-            SELECT id, NTILE(3) OVER (ORDER BY total_spent::numeric) AS tile
-            FROM customers WHERE project_id = ${projectId} AND total_orders > 0
-          ) t WHERE tile = 3
+          SELECT v.id FROM (
+            SELECT b.id,
+              CASE
+                WHEN ((CASE WHEN b.total_orders >= 6 THEN 3 WHEN b.total_orders >= 2 THEN 2 ELSE 1 END)
+                    + (CASE WHEN t.p90 > 0 AND b.total_spent::numeric >= t.p90 THEN 3
+                            WHEN t.p50 > 0 AND b.total_spent::numeric >= t.p50 THEN 2 ELSE 1 END)) / 2.0 >= 2.5 THEN 'high'
+                WHEN ((CASE WHEN b.total_orders >= 6 THEN 3 WHEN b.total_orders >= 2 THEN 2 ELSE 1 END)
+                    + (CASE WHEN t.p90 > 0 AND b.total_spent::numeric >= t.p90 THEN 3
+                            WHEN t.p50 > 0 AND b.total_spent::numeric >= t.p50 THEN 2 ELSE 1 END)) / 2.0 >= 1.5 THEN 'medium'
+                ELSE 'low'
+              END AS value_bucket
+            FROM customers b
+            CROSS JOIN (
+              SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_spent::numeric), 0) AS p50,
+                     COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY total_spent::numeric), 0) AS p90
+              FROM customers WHERE project_id = ${projectId} AND total_orders > 0
+            ) t
+            WHERE b.project_id = ${projectId} AND b.total_orders > 0
+          ) v WHERE v.value_bucket = ${value}
         )`)
       }
     }
