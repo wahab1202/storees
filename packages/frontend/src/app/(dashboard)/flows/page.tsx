@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow, useCloneFlow } from '@/hooks/useFlows'
 import { Zap, Pause, FileEdit, Play, Square, ExternalLink, Plus, X, Workflow, Loader2, Trash2, LayoutTemplate, TrendingUp, Users, Copy } from 'lucide-react'
@@ -53,6 +53,7 @@ function formatEventLabel(evt: string): string {
 
 export default function FlowsPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { data, isLoading, isError } = useFlows()
   const { data: statsData } = useDashboardStats()
   const updateStatus = useUpdateFlowStatus()
@@ -63,10 +64,12 @@ export default function FlowsPage() {
   const domain = statsData?.data.domainType ?? 'ecommerce'
   const domainConfig = DOMAIN_EVENTS[domain] ?? DOMAIN_EVENTS.ecommerce
 
-  const [showCreate, setShowCreate] = useState(false)
+  // Pre-open + prefill the create modal when arriving from a customer's Next
+  // Best Action (?nbaName=…).
+  const [showCreate, setShowCreate] = useState(!!searchParams.get('nbaName'))
   const [showTemplates, setShowTemplates] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
-  const [newName, setNewName] = useState('')
+  const [newName, setNewName] = useState(searchParams.get('nbaName') ?? '')
   const [newDescription, setNewDescription] = useState('')
   const [newTrigger, setNewTrigger] = useState(domainConfig.defaultTrigger)
 
