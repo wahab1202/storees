@@ -266,6 +266,8 @@ export async function computeTimeSeries(
 ): Promise<TimeSeriesResult> {
   const { metric, startDate, endDate, granularity } = opts
   const truncFn = granularity
+  // Postgres interval literal for stepping buckets ('1 day' | '1 week' | '1 month')
+  const bucketInterval = `1 ${granularity}`
 
   // Build the metric query based on type
   let metricQuery: string
@@ -301,17 +303,31 @@ export async function computeTimeSeries(
     : table === 'orders' ? 'created_at'
     : 'timestamp'
 
-  // Current period
+  // Current period. Zero-fill every bucket in range (LEFT JOIN a generated
+  // series) so the series shows true time progression — empty periods were
+  // previously omitted, compressing the line into a misleading flat-then-spike.
   const currentResult = await db.execute(sql`
-    SELECT
-      date_trunc(${truncFn}, ${sql.raw(dateCol)})::date AS date,
-      ${sql.raw(metricQuery)} AS value
-    FROM ${sql.raw(table)}
-    WHERE project_id = ${projectId}
-      AND ${sql.raw(dateCol)} >= ${startDate}
-      AND ${sql.raw(dateCol)} <= ${endDate}
-    GROUP BY date
-    ORDER BY date
+    WITH buckets AS (
+      SELECT generate_series(
+        date_trunc(${truncFn}, ${startDate}::timestamptz),
+        date_trunc(${truncFn}, ${endDate}::timestamptz),
+        ${bucketInterval}::interval
+      )::date AS date
+    ),
+    data AS (
+      SELECT
+        date_trunc(${truncFn}, ${sql.raw(dateCol)})::date AS date,
+        ${sql.raw(metricQuery)} AS value
+      FROM ${sql.raw(table)}
+      WHERE project_id = ${projectId}
+        AND ${sql.raw(dateCol)} >= ${startDate}
+        AND ${sql.raw(dateCol)} <= ${endDate}
+      GROUP BY 1
+    )
+    SELECT b.date AS date, COALESCE(d.value, 0) AS value
+    FROM buckets b
+    LEFT JOIN data d ON d.date = b.date
+    ORDER BY b.date
   `)
 
   const points: { date: string; value: number; compareValue?: number }[] =
@@ -328,15 +344,27 @@ export async function computeTimeSeries(
 
   if (opts.compareStartDate && opts.compareEndDate) {
     const compareResult = await db.execute(sql`
-      SELECT
-        date_trunc(${truncFn}, ${sql.raw(dateCol)})::date AS date,
-        ${sql.raw(metricQuery)} AS value
-      FROM ${sql.raw(table)}
-      WHERE project_id = ${projectId}
-        AND ${sql.raw(dateCol)} >= ${opts.compareStartDate}
-        AND ${sql.raw(dateCol)} <= ${opts.compareEndDate}
-      GROUP BY date
-      ORDER BY date
+      WITH buckets AS (
+        SELECT generate_series(
+          date_trunc(${truncFn}, ${opts.compareStartDate}::timestamptz),
+          date_trunc(${truncFn}, ${opts.compareEndDate}::timestamptz),
+          ${bucketInterval}::interval
+        )::date AS date
+      ),
+      data AS (
+        SELECT
+          date_trunc(${truncFn}, ${sql.raw(dateCol)})::date AS date,
+          ${sql.raw(metricQuery)} AS value
+        FROM ${sql.raw(table)}
+        WHERE project_id = ${projectId}
+          AND ${sql.raw(dateCol)} >= ${opts.compareStartDate}
+          AND ${sql.raw(dateCol)} <= ${opts.compareEndDate}
+        GROUP BY 1
+      )
+      SELECT b.date AS date, COALESCE(d.value, 0) AS value
+      FROM buckets b
+      LEFT JOIN data d ON d.date = b.date
+      ORDER BY b.date
     `)
 
     const comparePoints = (compareResult.rows as { date: string; value: string }[])
