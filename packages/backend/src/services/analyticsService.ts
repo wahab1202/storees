@@ -584,34 +584,67 @@ export async function computeProductAnalytics(
     : opts.sort === 'conversion_rate' ? 'conversion_rate'
     : 'views'
 
+  // Aggregate product performance directly from the data the store produces:
+  //   views       ← product_viewed events (SDK/pixel)
+  //   abandonment ← added_to_cart events minus purchases of that product
+  //   conversions ← order line-items
+  //   revenue     ← SUM(line price × qty) — line prices are in MAJOR units
+  //   name/type   ← the synced products table (Shopify sync / VirpanAI catalog)
+  // product_id is normalized (strip any Shopify GID prefix, accept product_id
+  // OR productId) so events, line-items and the catalog key on the same id.
   const result = await db.execute(sql`
-    WITH item_stats AS (
-      SELECT
-        i.item_id::text,
-        COALESCE(it.name, i.item_id::text) AS name,
-        it.attributes->>'category' AS category,
-        COUNT(*) FILTER (WHERE i.interaction_type = 'view') AS views,
-        COUNT(*) FILTER (WHERE i.interaction_type IN ('conversion', 'strong_intent')) AS conversions,
-        COUNT(*) FILTER (WHERE i.interaction_type = 'intent') -
-          COUNT(*) FILTER (WHERE i.interaction_type IN ('conversion', 'strong_intent')) AS abandonment,
-        COALESCE(SUM(i.weight::numeric) FILTER (WHERE i.interaction_type IN ('conversion', 'strong_intent')), 0) AS revenue
-      FROM interactions i
-      LEFT JOIN items it ON it.id = i.item_id AND it.project_id = ${projectId}
-      WHERE i.project_id = ${projectId}
-        AND i.created_at >= ${startDate}
-        AND i.created_at <= ${endDate}
-      GROUP BY i.item_id, it.name, it.attributes->>'category'
+    WITH product_views AS (
+      SELECT regexp_replace(COALESCE(properties->>'product_id', properties->>'productId', ''), '^.*/', '') AS pid,
+             COUNT(*) AS views
+      FROM events
+      WHERE project_id = ${projectId} AND event_name = 'product_viewed'
+        AND timestamp >= ${startDate} AND timestamp <= ${endDate}
+        AND COALESCE(properties->>'product_id', properties->>'productId', '') <> ''
+      GROUP BY 1
+    ),
+    product_carts AS (
+      SELECT regexp_replace(COALESCE(properties->>'product_id', properties->>'productId', ''), '^.*/', '') AS pid,
+             COUNT(*) AS carts
+      FROM events
+      WHERE project_id = ${projectId} AND event_name = 'added_to_cart'
+        AND timestamp >= ${startDate} AND timestamp <= ${endDate}
+        AND COALESCE(properties->>'product_id', properties->>'productId', '') <> ''
+      GROUP BY 1
+    ),
+    product_purchases AS (
+      SELECT regexp_replace(COALESCE(li->>'product_id', li->>'productId', ''), '^.*/', '') AS pid,
+             COUNT(*) AS conversions,
+             COALESCE(SUM(NULLIF(li->>'price', '')::numeric * COALESCE(NULLIF(li->>'quantity', '')::numeric, 1)), 0) AS revenue
+      FROM orders o
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(o.line_items) = 'array' THEN o.line_items ELSE '[]'::jsonb END
+      ) AS li
+      WHERE o.project_id = ${projectId}
+        AND o.created_at >= ${startDate} AND o.created_at <= ${endDate}
+        AND COALESCE(li->>'product_id', li->>'productId', '') <> ''
+      GROUP BY 1
+    ),
+    all_pids AS (
+      SELECT pid FROM product_views
+      UNION SELECT pid FROM product_carts
+      UNION SELECT pid FROM product_purchases
     )
     SELECT
-      item_id,
-      name,
-      category,
-      views,
-      conversions,
-      CASE WHEN views > 0 THEN ROUND(conversions::numeric / views * 100, 1) ELSE 0 END AS conversion_rate,
-      revenue,
-      GREATEST(abandonment, 0) AS abandonment
-    FROM item_stats
+      ap.pid AS item_id,
+      COALESCE(NULLIF(pr.title, ''), ap.pid) AS name,
+      NULLIF(pr.product_type, '') AS category,
+      COALESCE(v.views, 0) AS views,
+      COALESCE(pu.conversions, 0) AS conversions,
+      CASE WHEN COALESCE(v.views, 0) > 0
+           THEN ROUND(COALESCE(pu.conversions, 0)::numeric / v.views * 100, 1) ELSE 0 END AS conversion_rate,
+      COALESCE(pu.revenue, 0) AS revenue,
+      GREATEST(COALESCE(c.carts, 0) - COALESCE(pu.conversions, 0), 0) AS abandonment
+    FROM all_pids ap
+    LEFT JOIN product_views v ON v.pid = ap.pid
+    LEFT JOIN product_carts c ON c.pid = ap.pid
+    LEFT JOIN product_purchases pu ON pu.pid = ap.pid
+    LEFT JOIN products pr ON pr.project_id = ${projectId}
+      AND regexp_replace(pr.shopify_product_id, '^.*/', '') = ap.pid
     ORDER BY ${sql.raw(sortCol)} DESC
     LIMIT ${limit}
   `)
