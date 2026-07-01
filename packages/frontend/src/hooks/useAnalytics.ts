@@ -46,6 +46,25 @@ export function useFunnel() {
   })
 }
 
+export type FunnelMember = { customerId: string; name: string | null; email: string | null; phone: string | null }
+export type FunnelMembersResult = { members: FunnelMember[]; total: number; stageIndex: number; mode: 'reached' | 'dropped' }
+
+/** Drill-down: the customers who reached / dropped at a funnel stage. */
+export function useFunnelMembers() {
+  return useMutation({
+    mutationFn: (data: {
+      steps: FunnelStep[]
+      stageIndex: number
+      mode: 'reached' | 'dropped'
+      startDate?: string
+      endDate?: string
+      page?: number
+      pageSize?: number
+    }) =>
+      api.post<FunnelMembersResult>(withProject('/api/analytics/funnel/members'), data),
+  })
+}
+
 export function useCohorts(opts: {
   granularity?: 'week' | 'month'
   periods?: number

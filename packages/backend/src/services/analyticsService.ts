@@ -110,6 +110,94 @@ export async function computeFunnel(
   }
 }
 
+// ============ FUNNEL STAGE MEMBERS (drill-down) ============
+
+export type FunnelMember = {
+  customerId: string
+  name: string | null
+  email: string | null
+  phone: string | null
+}
+
+export type FunnelMembersResult = {
+  members: FunnelMember[]
+  total: number
+  stageIndex: number
+  mode: 'reached' | 'dropped'
+}
+
+/**
+ * The customers behind a funnel stage — either those who REACHED it (did events
+ * 0..stageIndex) or those who DROPPED at it (reached the previous stage but never
+ * did event[stageIndex]) — within the same window as the funnel. Answers "who did
+ * I lose at this step". Paginated.
+ */
+export async function getFunnelStageMembers(
+  projectId: string,
+  steps: FunnelStep[],
+  stageIndex: number,
+  mode: 'reached' | 'dropped',
+  opts: { startDate?: Date; endDate?: Date; page?: number; pageSize?: number } = {},
+): Promise<FunnelMembersResult> {
+  const startDate = opts.startDate ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+  const endDate = opts.endDate ?? new Date()
+  const page = Math.max(1, opts.page ?? 1)
+  const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 25))
+  const offset = (page - 1) * pageSize
+
+  // Guards: valid stage; a "drop" only exists from stage 1 onward (entry can't drop).
+  if (stageIndex < 0 || stageIndex >= steps.length || (mode === 'dropped' && stageIndex < 1)) {
+    return { members: [], total: 0, stageIndex, mode }
+  }
+
+  const inWindow = sql`timestamp >= ${startDate} AND timestamp <= ${endDate} AND customer_id IS NOT NULL`
+
+  let idSet
+  if (mode === 'reached') {
+    const required = steps.slice(0, stageIndex + 1).map(s => s.eventName)
+    idSet = sql`
+      SELECT customer_id FROM events
+      WHERE project_id = ${projectId}
+        AND event_name IN (${sql.join(required.map(e => sql`${e}`), sql`, `)})
+        AND ${inWindow}
+      GROUP BY customer_id
+      HAVING COUNT(DISTINCT event_name) >= ${required.length}
+    `
+  } else {
+    const prior = steps.slice(0, stageIndex).map(s => s.eventName) // events 0..stageIndex-1
+    const dropEvent = steps[stageIndex].eventName
+    idSet = sql`
+      SELECT customer_id FROM events
+      WHERE project_id = ${projectId}
+        AND event_name IN (${sql.join(prior.map(e => sql`${e}`), sql`, `)})
+        AND ${inWindow}
+      GROUP BY customer_id
+      HAVING COUNT(DISTINCT event_name) >= ${prior.length}
+      EXCEPT
+      SELECT DISTINCT customer_id FROM events
+      WHERE project_id = ${projectId}
+        AND event_name = ${dropEvent}
+        AND ${inWindow}
+    `
+  }
+
+  const totalResult = await db.execute(sql`SELECT COUNT(*) AS c FROM (${idSet}) ids`)
+  const total = Number((totalResult.rows[0] as { c: string })?.c ?? 0)
+
+  const rows = await db.execute(sql`
+    SELECT c.id AS customer_id, c.name, c.email, c.phone
+    FROM customers c
+    JOIN (${idSet}) ids ON ids.customer_id = c.id
+    ORDER BY c.last_seen DESC NULLS LAST
+    LIMIT ${pageSize} OFFSET ${offset}
+  `)
+
+  const members = (rows.rows as { customer_id: string; name: string | null; email: string | null; phone: string | null }[])
+    .map(r => ({ customerId: r.customer_id, name: r.name, email: r.email, phone: r.phone }))
+
+  return { members, total, stageIndex, mode }
+}
+
 // ============ COHORT ANALYTICS ============
 
 export type CohortResult = {
