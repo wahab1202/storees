@@ -439,14 +439,23 @@ function CreateCampaignContent() {
 
   const [step, setStep] = useState<Step>(1)
 
-  // Step 1
-  const [name, setName] = useState('')
+  // Step 1. When launched from a customer's Next Best Action, pre-seed the name
+  // and target that single customer via an email filter (campaigns have no
+  // single-recipient mode — 'filter' on email is the precise equivalent).
+  const [name, setName] = useState(searchParams.get('nbaName') ?? '')
   const [contentType, setContentType] = useState<CampaignContentType>('promotional')
   const [subscriptionCategoryIds, setSubscriptionCategoryIds] = useState<string[]>([])
   const [tags, setTags] = useState<string[]>([])
   const [segmentId, setSegmentId] = useState('')
-  const [audienceMode, setAudienceMode] = useState<'all' | 'segment' | 'filter'>('segment')
-  const [audienceFilter, setAudienceFilter] = useState<FilterConfig>({ logic: 'AND', rules: [] })
+  const [audienceMode, setAudienceMode] = useState<'all' | 'segment' | 'filter'>(
+    searchParams.get('nbaEmail') ? 'filter' : 'segment',
+  )
+  const [audienceFilter, setAudienceFilter] = useState<FilterConfig>(() => {
+    const nbaEmail = searchParams.get('nbaEmail')
+    return nbaEmail
+      ? { logic: 'AND', rules: [{ field: 'email', operator: 'is', value: nbaEmail }] }
+      : { logic: 'AND', rules: [] }
+  })
   const [excludeAudienceEnabled, setExcludeAudienceEnabled] = useState(false)
   const [excludeAudienceFilter, setExcludeAudienceFilter] = useState<FilterConfig>({ logic: 'AND', rules: [] })
   const [audienceCapEnabled, setAudienceCapEnabled] = useState(false)

@@ -158,7 +158,7 @@ export default function CustomerProfilePage() {
       {activeTab === 'User Info' && (
         <div className="space-y-6">
           <UserInfoTab customer={customer} domain={domain} />
-          <NextBestActionCard customerId={id} />
+          <NextBestActionCard customerId={id} customerEmail={customer.email ?? undefined} customerName={customer.name ?? undefined} />
         </div>
       )}
       {activeTab === 'Journey' && (
