@@ -32,11 +32,24 @@ export default function CohortsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-2">
         <div>
           <h1 className="text-xl font-semibold text-heading">Cohort Retention</h1>
-          <p className="text-sm text-text-secondary mt-1">Track how customers come back over time</p>
+          <p className="text-sm text-text-secondary mt-1">
+            Group customers by when they first appeared, then track what % come back over time.
+          </p>
         </div>
+      </div>
+
+      {/* How to read */}
+      <div className="bg-surface border border-border rounded-xl p-4 mb-6 text-xs text-text-secondary leading-relaxed">
+        <p className="font-semibold text-text-primary mb-1.5">How to read this</p>
+        <ul className="space-y-1">
+          <li>• Each <span className="font-medium text-text-primary">row</span> is a cohort — customers grouped by the {granularity} they were first seen.</li>
+          <li>• <span className="font-medium text-text-primary">{granularity === 'week' ? 'W0' : 'M0'}</span> is the cohort&apos;s first {granularity} — always 100% by definition.</li>
+          <li>• <span className="font-medium text-text-primary">{granularity === 'week' ? 'W1, W2…' : 'M1, M2…'}</span> = the % of that cohort still active (triggered the return event) that many {granularity}s later.</li>
+          <li>• Retention naturally falls left → right; darker cells = higher retention. Compare rows to see whether newer cohorts retain better.</li>
+        </ul>
       </div>
 
       {/* Controls */}
@@ -89,7 +102,22 @@ export default function CohortsPage() {
             <ChevronDown className="w-3 h-3 text-text-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
           </div>
         </div>
+
+        <p className="w-full text-[11px] text-text-muted mt-1">
+          <span className="font-medium text-text-secondary">Return event</span> defines what counts as &ldquo;retained&rdquo; — a customer is retained in a period if they trigger it (leave as <span className="font-medium text-text-secondary">Any event</span> for any activity). Retention&nbsp;% = returning customers ÷ cohort size.
+        </p>
       </div>
+
+      {/* Legend */}
+      {cohorts.length > 0 && !isLoading && (
+        <div className="flex items-center gap-2 mb-3 text-[11px] text-text-muted">
+          <span>Lower retention</span>
+          {['bg-accent/10', 'bg-accent/20', 'bg-accent/40', 'bg-accent/60', 'bg-accent/80', 'bg-accent'].map((c, i) => (
+            <span key={i} className={cn('inline-block h-3 w-5 rounded-sm border border-border/50', c)} />
+          ))}
+          <span>Higher retention</span>
+        </div>
+      )}
 
       {/* Heatmap */}
       {isLoading ? (
@@ -100,7 +128,7 @@ export default function CohortsPage() {
       ) : cohorts.length === 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <Users className="w-10 h-10 text-text-muted mx-auto mb-3" />
-          <p className="text-sm text-text-secondary">No cohort data yet. Events need to span multiple {granularity}s.</p>
+          <p className="text-sm text-text-secondary">No cohort data yet — customers need activity spanning at least two {granularity}s for retention to appear.</p>
         </div>
       ) : (
         <div className="bg-white border border-border rounded-xl overflow-x-auto">
@@ -114,7 +142,13 @@ export default function CohortsPage() {
                   Users
                 </th>
                 {Array.from({ length: periods }, (_, i) => (
-                  <th key={i} className="text-center px-2 py-3 font-semibold text-text-secondary min-w-[56px]">
+                  <th
+                    key={i}
+                    title={i === 0
+                      ? `${granularity === 'week' ? 'Week' : 'Month'} 0 — the cohort's first ${granularity} (always 100%)`
+                      : `${granularity === 'week' ? 'Week' : 'Month'} ${i} — % of the cohort still active ${i} ${granularity}${i > 1 ? 's' : ''} after first seen`}
+                    className="text-center px-2 py-3 font-semibold text-text-secondary min-w-[56px] cursor-help"
+                  >
                     {granularity === 'week' ? `W${i}` : `M${i}`}
                   </th>
                 ))}
