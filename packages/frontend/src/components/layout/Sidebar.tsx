@@ -4,31 +4,33 @@ import { useState, useEffect, useRef } from 'react'
 import { usePathname } from 'next/navigation'
 import { useSession, signOut } from 'next-auth/react'
 import Link from 'next/link'
+// Phosphor icons, aliased to the previous lucide names so usages below are
+// unchanged. Prototype for the app-wide icon refresh.
 import {
-  LayoutDashboard,
+  SquaresFour as LayoutDashboard,
   Users,
-  PieChart,
+  ChartPie as PieChart,
   Megaphone,
-  Workflow,
-  Radio,
-  ScrollText,
-  Settings,
+  FlowArrow as Workflow,
+  Broadcast as Radio,
+  Scroll as ScrollText,
+  GearSix as Settings,
   Plus,
   FileText,
   FolderOpen,
-  Menu,
+  List as Menu,
   X,
-  ChevronDown,
+  CaretDown as ChevronDown,
   Check,
-  Landmark,
+  Bank as Landmark,
   ShoppingBag,
   Monitor,
   Globe,
-  BarChart3,
-  LogOut,
+  ChartBar as BarChart3,
+  SignOut as LogOut,
   ShieldCheck,
   UserCircle,
-} from 'lucide-react'
+} from '@phosphor-icons/react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
 import { useProjects } from '@/hooks/useProjects'

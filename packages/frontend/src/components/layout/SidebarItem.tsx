@@ -2,13 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import type { LucideIcon } from 'lucide-react'
+import type { Icon } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 
 type SidebarItemProps = {
   href: string
   label: string
-  icon: LucideIcon
+  icon: Icon
   count?: number
 }
 
@@ -27,7 +27,8 @@ export function SidebarItem({ href, label, icon: Icon, count }: SidebarItemProps
       )}
     >
       <Icon
-        size={16}
+        size={18}
+        weight={isActive ? 'fill' : 'regular'}
         className={cn(isActive ? 'text-sidebar-active' : 'text-sidebar-muted')}
       />
       <span className="flex-1">{label}</span>
