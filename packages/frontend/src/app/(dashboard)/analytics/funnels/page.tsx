@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { cn } from '@/lib/utils'
-import { useFunnel, useEventNames, useSavedAnalyses, useSaveAnalysis } from '@/hooks/useAnalytics'
+import { useFunnel, useFunnelMembers, useEventNames, useSavedAnalyses, useSaveAnalysis } from '@/hooks/useAnalytics'
 import type { FunnelResult } from '@/hooks/useAnalytics'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
@@ -12,11 +13,13 @@ import {
   Play,
   Loader2,
   ChevronDown,
+  ChevronRight,
   ArrowDown,
   GitBranch,
   Save,
   FolderOpen,
   Clock,
+  X,
 } from 'lucide-react'
 
 type StepInput = {
@@ -35,6 +38,8 @@ export default function FunnelsPage() {
   const [showSaved, setShowSaved] = useState(false)
 
   const funnel = useFunnel()
+  const members = useFunnelMembers()
+  const [drill, setDrill] = useState<{ stageIndex: number; mode: 'reached' | 'dropped'; label: string } | null>(null)
   const { data: eventNamesData } = useEventNames()
   const eventNames = eventNamesData?.data ?? []
   const { data: savedData } = useSavedAnalyses('funnel')
@@ -70,6 +75,20 @@ export default function FunnelsPage() {
     if (mins < 60) return `${mins} min`
     if (mins < 1440) return `${Math.round(mins / 60)}h`
     return `${Math.round(mins / 1440)}d`
+  }
+
+  const openDrill = (stageIndex: number, mode: 'reached' | 'dropped', label: string) => {
+    setDrill({ stageIndex, mode, label })
+    const endDate = new Date()
+    const startDate = new Date(Date.now() - Number(dateRange) * 24 * 60 * 60 * 1000)
+    members.mutate({
+      steps: steps.map(s => ({ eventName: s.eventName, label: s.label || s.eventName })),
+      stageIndex,
+      mode,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      pageSize: 50,
+    })
   }
 
   const runFunnel = async () => {
@@ -268,7 +287,13 @@ export default function FunnelsPage() {
                     <span className="text-sm font-medium text-heading">{step.label}</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-semibold text-heading">{step.count.toLocaleString()}</span>
+                    <button
+                      onClick={() => openDrill(i, 'reached', step.label)}
+                      className="text-sm font-semibold text-heading hover:text-accent hover:underline"
+                      title="View the customers who reached this step"
+                    >
+                      {step.count.toLocaleString()}
+                    </button>
                     <span className="text-xs text-text-muted">{step.percentage}%</span>
                   </div>
                 </div>
@@ -283,9 +308,14 @@ export default function FunnelsPage() {
                 </div>
                 {i > 0 && step.dropoff > 0 && (
                   <div className="flex items-center gap-3 mt-1 ml-7">
-                    <p className="text-xs text-red-500">
+                    <button
+                      onClick={() => openDrill(i, 'dropped', step.label)}
+                      className="text-xs text-red-500 hover:underline inline-flex items-center gap-0.5"
+                      title="View the customers who dropped here"
+                    >
                       -{step.dropoff.toLocaleString()} dropped ({step.dropoffPercentage}% drop-off)
-                    </p>
+                      <ChevronRight className="w-3 h-3" />
+                    </button>
                     {i > 0 && (
                       <span className="inline-flex items-center gap-1 text-xs text-text-muted">
                         <Clock className="w-3 h-3" />
@@ -305,6 +335,65 @@ export default function FunnelsPage() {
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <GitBranch className="w-10 h-10 text-text-muted mx-auto mb-3" />
           <p className="text-sm text-text-secondary">Select events for each step and click <span className="font-medium text-heading">Run Funnel</span> to see results</p>
+        </div>
+      )}
+
+      {/* Drill-down: members who reached / dropped at a stage */}
+      {drill && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setDrill(null)}
+        >
+          <div
+            className="bg-white rounded-xl border border-border w-full max-w-lg max-h-[80vh] flex flex-col shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-heading truncate">
+                  {drill.mode === 'dropped' ? 'Dropped at' : 'Reached'} &ldquo;{drill.label}&rdquo;
+                </h3>
+                <p className="text-xs text-text-muted mt-0.5">
+                  {members.isPending
+                    ? 'Loading…'
+                    : `${(members.data?.data.total ?? 0).toLocaleString()} customer${(members.data?.data.total ?? 0) === 1 ? '' : 's'}`}
+                </p>
+              </div>
+              <button onClick={() => setDrill(null)} className="p-1 text-text-muted hover:text-text-primary flex-shrink-0">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1">
+              {members.isPending ? (
+                <div className="p-10 text-center"><Loader2 className="w-5 h-5 animate-spin text-accent mx-auto" /></div>
+              ) : (members.data?.data.members.length ?? 0) === 0 ? (
+                <div className="p-10 text-center text-sm text-text-secondary">No customers in this group.</div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {members.data!.data.members.map((m) => (
+                    <Link
+                      key={m.customerId}
+                      href={`/customers/${m.customerId}`}
+                      className="flex items-center justify-between px-5 py-3 hover:bg-surface"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-text-primary truncate">{m.name || 'Unknown Customer'}</p>
+                        <p className="text-xs text-text-muted truncate">{m.email || m.phone || m.customerId}</p>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-text-muted flex-shrink-0" />
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {(members.data?.data.total ?? 0) > (members.data?.data.members.length ?? 0) && (
+              <div className="px-5 py-3 border-t border-border text-xs text-text-muted">
+                Showing the first {members.data?.data.members.length} — narrow the date range to see the rest.
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

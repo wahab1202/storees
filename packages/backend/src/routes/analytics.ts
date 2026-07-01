@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { requireProjectId } from '../middleware/projectId.js'
 import {
   computeFunnel,
+  getFunnelStageMembers,
   computeCohorts,
   getDistinctEventNames,
   computeTimeSeries,
@@ -40,6 +41,34 @@ router.post('/funnel', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('Funnel computation error:', err)
     res.status(500).json({ success: false, error: 'Failed to compute funnel' })
+  }
+})
+
+// POST /api/analytics/funnel/members?projectId=...
+// Body: { steps, stageIndex, mode: 'reached'|'dropped', startDate?, endDate?, page?, pageSize? }
+// Drill-down: the customers who reached / dropped at a funnel stage.
+router.post('/funnel/members', requireProjectId, async (req, res) => {
+  try {
+    const { steps, stageIndex, mode, startDate, endDate, page, pageSize } = req.body
+
+    if (!Array.isArray(steps) || steps.length < 2) {
+      return res.status(400).json({ success: false, error: 'At least 2 funnel steps required' })
+    }
+    if (typeof stageIndex !== 'number' || (mode !== 'reached' && mode !== 'dropped')) {
+      return res.status(400).json({ success: false, error: 'stageIndex (number) and mode (reached|dropped) are required' })
+    }
+
+    const result = await getFunnelStageMembers(req.projectId!, steps, stageIndex, mode, {
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    })
+
+    res.json({ success: true, data: result })
+  } catch (err) {
+    console.error('Funnel members error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch funnel members' })
   }
 })
 
