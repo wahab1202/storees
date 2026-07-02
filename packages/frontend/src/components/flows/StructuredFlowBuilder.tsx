@@ -12,7 +12,7 @@ import { EVENTS_BY_DOMAIN, getEventProperties } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
 import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
-import { useProducts } from '@/hooks/useProducts'
+import { useProducts, useCollections } from '@/hooks/useProducts'
 import { useSegments } from '@/hooks/useSegments'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 
@@ -592,6 +592,41 @@ function ProductPicker({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
+function SegmentPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { data } = useSegments()
+  const segments = data?.data ?? []
+  const known = !!segments.find(s => s.id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+    >
+      <option value="">Pick a segment…</option>
+      {value && !known && <option value={value}>{value} (current)</option>}
+      {segments.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+    </select>
+  )
+}
+
+function CollectionPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { data, isLoading } = useCollections()
+  const collections = data?.data ?? []
+  const idOf = (c: { shopifyCollectionId?: string; id: string }) => c.shopifyCollectionId ?? c.id
+  const known = !!collections.find(c => idOf(c) === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+    >
+      <option value="">{isLoading ? 'Loading…' : 'Pick a collection…'}</option>
+      {value && !known && <option value={value}>{value} (current)</option>}
+      {collections.map(c => <option key={c.id} value={idOf(c)}>{c.title}</option>)}
+    </select>
+  )
+}
+
 export function TriggerFiltersBlock({
   event, filters, onChange,
 }: {
@@ -661,7 +696,15 @@ export function TriggerFiltersBlock({
       )}
 
       {rules.map((rule, idx) => {
-        const isProductField = rule.field === 'product_id' || rule.field === 'product_external_id'
+        // Which rich picker (if any) this field needs — from the declared schema,
+        // with a name-based fallback. IDs (segment/product/collection) must be
+        // chosen from a list, never hand-typed.
+        const fieldDef = getEventProperties(event).find(p => p.name === rule.field)
+        const picker = fieldDef?.picker
+          ?? (rule.field === 'product_id' || rule.field === 'product_external_id' ? 'product' as const
+            : rule.field === 'segment_id' ? 'segment' as const
+            : rule.field === 'collection_id' ? 'collection' as const
+            : undefined)
         const unary = isUnaryOperator(rule.operator)
         return (
           <div key={idx} className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1.5">
@@ -699,11 +742,12 @@ export function TriggerFiltersBlock({
                 ))}
               </select>
               {!unary && (
-                isProductField ? (
-                  <ProductPicker
-                    value={String(rule.value ?? '')}
-                    onChange={(v) => updateRule(idx, { value: v })}
-                  />
+                picker === 'product' ? (
+                  <ProductPicker value={String(rule.value ?? '')} onChange={(v) => updateRule(idx, { value: v })} />
+                ) : picker === 'segment' ? (
+                  <SegmentPicker value={String(rule.value ?? '')} onChange={(v) => updateRule(idx, { value: v })} />
+                ) : picker === 'collection' ? (
+                  <CollectionPicker value={String(rule.value ?? '')} onChange={(v) => updateRule(idx, { value: v })} />
                 ) : (
                   <input
                     type="text"
