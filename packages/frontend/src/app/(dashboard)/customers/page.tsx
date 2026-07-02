@@ -46,7 +46,6 @@ function CustomersContent() {
   }, [urlSegmentId, urlRfm])
 
   const [searchInput, setSearchInput] = useState('')
-  const [expandedId, setExpandedId] = useState<string | null>(null)
   const { data: segmentsData } = useSegments()
   const { data: statsData } = useDashboardStats()
   const domain = statsData?.data.domainType
@@ -267,8 +266,6 @@ function CustomersContent() {
             sortBy={params.sortBy}
             sortOrder={params.sortOrder}
             onSort={handleSort}
-            expandedId={expandedId}
-            onToggleExpand={id => setExpandedId(expandedId === id ? null : id)}
             domain={domain}
           />
           <Pagination
