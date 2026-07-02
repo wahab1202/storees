@@ -1,10 +1,10 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@storees/shared'
-import { CustomerDetail } from './CustomerDetail'
 import type { Customer, CustomerListParams } from '@storees/shared'
 
 type CustomerWithSegments = Customer & {
@@ -16,8 +16,6 @@ type Props = {
   sortBy?: CustomerListParams['sortBy']
   sortOrder?: CustomerListParams['sortOrder']
   onSort: (field: CustomerListParams['sortBy']) => void
-  expandedId: string | null
-  onToggleExpand: (id: string) => void
   domain?: string
 }
 
@@ -110,9 +108,9 @@ function formatDate(date: Date | string | null | undefined): string {
   })
 }
 
-export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId, onToggleExpand, domain }: Props) {
+export function CustomerTable({ customers, sortBy, sortOrder, onSort, domain }: Props) {
+  const router = useRouter()
   const cfg = getDomainColumns(domain)
-  const colCount = cfg.columns.length + 2 // +Segments +Activity
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-surface-elevated overflow-x-auto">
@@ -140,14 +138,10 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
         </thead>
         <tbody>
           {customers.map(customer => (
-            <>
               <tr
                 key={customer.id}
-                className={cn(
-                  'border-b border-border cursor-pointer transition-colors',
-                  expandedId === customer.id ? 'bg-surface' : 'hover:bg-surface',
-                )}
-                onClick={() => onToggleExpand(customer.id)}
+                className="border-b border-border cursor-pointer transition-colors hover:bg-surface"
+                onClick={() => router.push(`/customers/${customer.id}`)}
               >
                 {/* Customer name + email */}
                 <td className="px-4 py-3">
@@ -201,16 +195,6 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, expandedId
                   {cfg.getActivityCount(customer)}
                 </td>
               </tr>
-
-              {/* Expanded detail row */}
-              {expandedId === customer.id && (
-                <tr key={`${customer.id}-detail`}>
-                  <td colSpan={colCount} className="p-0">
-                    <CustomerDetail customerId={customer.id} />
-                  </td>
-                </tr>
-              )}
-            </>
           ))}
         </tbody>
       </table>

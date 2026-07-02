@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow, useCloneFlow } from '@/hooks/useFlows'
@@ -275,17 +274,18 @@ export default function FlowsPage() {
             return (
               <div
                 key={flow.id}
-                className="bg-white border border-border rounded-xl p-5 hover:border-border-focus/30 transition-colors"
+                onClick={() => router.push(`/flows/${flow.id}`)}
+                className="bg-white border border-border rounded-xl p-5 hover:border-border-focus/30 transition-colors cursor-pointer"
               >
                 <div className="flex items-start justify-between">
                   <div>
-                    <Link href={`/flows/${flow.id}`} className="group inline-flex items-center gap-1.5">
+                    <div className="group inline-flex items-center gap-1.5">
                       <h3 className="font-semibold text-text-primary group-hover:text-accent transition-colors">{flow.name}</h3>
                       <ExternalLink className="h-3.5 w-3.5 text-text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </Link>
+                    </div>
                     <p className="text-sm text-text-secondary mt-1">{flow.description}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                     {flow.status === 'draft' && (
                       <button
                         onClick={() => updateStatus.mutate({ id: flow.id, status: 'active' })}
@@ -361,7 +361,7 @@ export default function FlowsPage() {
 
                 {/* Delete confirmation */}
                 {deleteConfirm === flow.id && (
-                  <div className="flex items-center gap-3 mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <div className="flex items-center gap-3 mt-3 p-3 bg-red-50 border border-red-200 rounded-lg" onClick={e => e.stopPropagation()}>
                     <p className="text-sm text-red-700 flex-1">Delete this flow and all its trip data?</p>
                     <button
                       onClick={() => setDeleteConfirm(null)}
