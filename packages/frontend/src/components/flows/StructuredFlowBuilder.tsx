@@ -600,7 +600,7 @@ function SegmentPicker({ value, onChange }: { value: string; onChange: (v: strin
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+      className="flex-1 min-w-0 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
     >
       <option value="">Pick a segment…</option>
       {value && !known && <option value={value}>{value} (current)</option>}
@@ -618,7 +618,7 @@ function CollectionPicker({ value, onChange }: { value: string; onChange: (v: st
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+      className="flex-1 min-w-0 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
     >
       <option value="">{isLoading ? 'Loading…' : 'Pick a collection…'}</option>
       {value && !known && <option value={value}>{value} (current)</option>}
@@ -712,7 +712,7 @@ export function TriggerFiltersBlock({
               <select
                 value={rule.field}
                 onChange={(e) => updateRule(idx, { field: e.target.value })}
-                className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                className="flex-1 min-w-0 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
               >
                 {propertyOptions.length === 0 && <option value="">No properties yet</option>}
                 {propertyOptions.map(prop => (
@@ -754,7 +754,7 @@ export function TriggerFiltersBlock({
                     value={String(rule.value ?? '')}
                     onChange={(e) => updateRule(idx, { value: e.target.value })}
                     placeholder="value"
-                    className="flex-1 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    className="flex-1 min-w-0 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
                   />
                 )
               )}
