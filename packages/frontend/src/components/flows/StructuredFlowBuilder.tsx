@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { NumberInput } from '@/components/ui/NumberInput'
-import { EVENTS_BY_DOMAIN } from '@storees/shared'
+import { EVENTS_BY_DOMAIN, getEventProperties } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
 import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
@@ -601,9 +601,12 @@ function TriggerFiltersBlock({
 }) {
   const { data: catalog } = useVariableSources()
   const observedProperties = catalog?.data.events.find(e => e.name === event)?.properties ?? []
+  const schemaProperties = getEventProperties(event).map(p => p.name)
   const hintedProperties = EVENT_PROPERTY_HINTS[event] ?? []
-  // Merge — observed first (real data), then hints not already covered.
-  const propertyOptions = Array.from(new Set([...observedProperties, ...hintedProperties]))
+  // Merge — observed first (real data), then the declared shared schema (covers
+  // events with no observed rows yet, e.g. enters_segment → segment_id), then
+  // the local hints. Dedup preserves first-seen order.
+  const propertyOptions = Array.from(new Set([...observedProperties, ...schemaProperties, ...hintedProperties]))
 
   const rules = (filters?.rules ?? []).filter((r): r is FilterRule => !('type' in r))
   const logic = filters?.logic ?? 'AND'

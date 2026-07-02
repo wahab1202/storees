@@ -22,29 +22,102 @@ export type EventPropertyDef = {
 }
 
 export const EVENT_PROPERTIES: Record<string, EventPropertyDef[]> = {
+  // ---- Browse ----
   product_viewed: [
     { name: 'product_id', label: 'Product', type: 'string', picker: 'product', placeholder: 'product id' },
     { name: 'product_collection', label: 'Collection', type: 'string', placeholder: 'collection slug or name' },
     { name: 'product_type', label: 'Product Type', type: 'string' },
-  ],
-  added_to_cart: [
-    { name: 'product_id', label: 'Product', type: 'string', picker: 'product' },
-    { name: 'product_collection', label: 'Collection', type: 'string' },
-    { name: 'quantity', label: 'Quantity', type: 'number' },
+    { name: 'vendor', label: 'Vendor / Brand', type: 'string' },
+    { name: 'price', label: 'Price', type: 'number' },
   ],
   collection_viewed: [
     { name: 'collection_id', label: 'Collection', type: 'string', picker: 'collection' },
     { name: 'collection_name', label: 'Collection Name', type: 'string' },
   ],
+  product_searched: [
+    { name: 'query', label: 'Search Query', type: 'string' },
+    { name: 'results_count', label: 'Results Count', type: 'number' },
+  ],
+  added_to_wishlist: [
+    { name: 'product_id', label: 'Product', type: 'string', picker: 'product' },
+    { name: 'price', label: 'Price', type: 'number' },
+  ],
+  page_viewed: [
+    { name: 'url', label: 'URL', type: 'string' },
+    { name: 'page_type', label: 'Page Type', type: 'string' },
+    { name: 'referrer', label: 'Referrer', type: 'string' },
+  ],
+  session_started: [
+    { name: 'referrer', label: 'Referrer', type: 'string' },
+    { name: 'landing_page', label: 'Landing Page', type: 'string' },
+    { name: 'utm_source', label: 'UTM Source', type: 'string' },
+    { name: 'utm_campaign', label: 'UTM Campaign', type: 'string' },
+  ],
+  // ---- Cart / checkout ----
+  added_to_cart: [
+    { name: 'product_id', label: 'Product', type: 'string', picker: 'product' },
+    { name: 'product_collection', label: 'Collection', type: 'string' },
+    { name: 'quantity', label: 'Quantity', type: 'number' },
+    { name: 'price', label: 'Price', type: 'number' },
+  ],
+  cart_created: [
+    { name: 'cart_id', label: 'Cart ID', type: 'string' },
+    { name: 'item_count', label: 'Item Count', type: 'number' },
+    { name: 'total', label: 'Cart Value', type: 'number' },
+    { name: 'currency', label: 'Currency', type: 'string', placeholder: 'INR / USD' },
+  ],
+  cart_updated: [
+    { name: 'cart_id', label: 'Cart ID', type: 'string' },
+    { name: 'item_count', label: 'Item Count', type: 'number' },
+    { name: 'total', label: 'Cart Value', type: 'number' },
+  ],
+  checkout_started: [
+    { name: 'total', label: 'Cart Total', type: 'number' },
+    { name: 'currency', label: 'Currency', type: 'string', placeholder: 'INR / USD' },
+    { name: 'item_count', label: 'Item Count', type: 'number' },
+  ],
+  discount_applied: [
+    { name: 'code', label: 'Discount Code', type: 'string' },
+    { name: 'type', label: 'Discount Type', type: 'string' },
+    { name: 'amount', label: 'Amount', type: 'number' },
+  ],
+  checkout_completed: [
+    { name: 'order_id', label: 'Order ID', type: 'string' },
+    { name: 'total', label: 'Order Total', type: 'number' },
+    { name: 'currency', label: 'Currency', type: 'string' },
+  ],
+  // ---- Orders ----
+  order_placed: [
+    { name: 'order_id', label: 'Order ID', type: 'string' },
+    { name: 'total', label: 'Order Total', type: 'number' },
+    { name: 'currency', label: 'Currency', type: 'string', placeholder: 'INR / USD' },
+    { name: 'item_count', label: 'Item Count', type: 'number' },
+    { name: 'payment_method', label: 'Payment Method', type: 'string' },
+  ],
+  order_fulfilled: [
+    { name: 'order_id', label: 'Order ID', type: 'string' },
+    { name: 'total', label: 'Order Total', type: 'number' },
+    { name: 'currency', label: 'Currency', type: 'string' },
+  ],
+  order_cancelled: [
+    { name: 'order_id', label: 'Order ID', type: 'string' },
+    { name: 'total', label: 'Order Total', type: 'number' },
+    { name: 'reason', label: 'Reason', type: 'string' },
+  ],
+  // ---- Lifecycle / CRM ----
   enters_segment: [
     { name: 'segment_id', label: 'Segment', type: 'string', picker: 'segment' },
   ],
   exits_segment: [
     { name: 'segment_id', label: 'Segment', type: 'string', picker: 'segment' },
   ],
-  order_placed: [
-    { name: 'currency', label: 'Currency', type: 'string', placeholder: 'INR / USD' },
-    { name: 'total', label: 'Order Total', type: 'number' },
+  customer_created: [
+    { name: 'email', label: 'Email', type: 'string' },
+    { name: 'phone', label: 'Phone', type: 'string' },
+  ],
+  customer_updated: [
+    { name: 'email', label: 'Email', type: 'string' },
+    { name: 'phone', label: 'Phone', type: 'string' },
   ],
 }
 
