@@ -103,14 +103,20 @@ router.get('/:id', requireProjectId, async (req, res) => {
 router.post('/', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
-    const { name, description, triggerEvent } = req.body
+    const { name, description, triggerEvent, triggerFilters } = req.body
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ success: false, error: 'Name is required' })
     }
 
+    // Persist the event + any property filters set in the create dialog. The
+    // builder reads config.filters on the trigger node, so they carry straight
+    // through when the flow opens.
     const triggerConfig = {
       event: triggerEvent || 'cart_created',
+      ...(triggerFilters && Array.isArray(triggerFilters.rules) && triggerFilters.rules.length > 0
+        ? { filters: triggerFilters }
+        : {}),
     }
 
     const defaultNodes = [

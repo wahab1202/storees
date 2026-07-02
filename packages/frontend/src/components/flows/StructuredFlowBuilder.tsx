@@ -592,7 +592,7 @@ function ProductPicker({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
-function TriggerFiltersBlock({
+export function TriggerFiltersBlock({
   event, filters, onChange,
 }: {
   event: string

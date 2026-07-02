@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
-import type { Flow } from '@storees/shared'
+import type { Flow, FilterConfig } from '@storees/shared'
 
 export type FlowWithCounts = Flow & {
   tripCounts: {
@@ -34,7 +34,7 @@ export function useFlowDetail(id: string) {
 export function useCreateFlow() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: { name: string; description?: string; triggerEvent?: string }) =>
+    mutationFn: (data: { name: string; description?: string; triggerEvent?: string; triggerFilters?: FilterConfig }) =>
       api.post<Flow>(withProject('/api/flows'), data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['flows'] })

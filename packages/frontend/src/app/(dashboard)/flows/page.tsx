@@ -9,6 +9,8 @@ import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { useDashboardStats } from '@/hooks/useDashboard'
 import { FlowTemplateGallery } from '@/components/flows/FlowTemplateGallery'
+import { TriggerFiltersBlock } from '@/components/flows/StructuredFlowBuilder'
+import type { FilterConfig } from '@storees/shared'
 
 const STATUS_CONFIG = {
   active: { label: 'Active', color: 'bg-emerald-50 text-emerald-700', icon: Zap },
@@ -71,17 +73,19 @@ export default function FlowsPage() {
   const [newName, setNewName] = useState(searchParams.get('nbaName') ?? '')
   const [newDescription, setNewDescription] = useState('')
   const [newTrigger, setNewTrigger] = useState(domainConfig.defaultTrigger)
+  const [triggerFilters, setTriggerFilters] = useState<FilterConfig | undefined>(undefined)
 
   const handleCreate = () => {
     if (!newName.trim()) return
     createFlow.mutate(
-      { name: newName, description: newDescription, triggerEvent: newTrigger },
+      { name: newName, description: newDescription, triggerEvent: newTrigger, triggerFilters },
       {
         onSuccess: (result) => {
           setShowCreate(false)
           setNewName('')
           setNewDescription('')
           setNewTrigger(domainConfig.defaultTrigger)
+          setTriggerFilters(undefined)
           if (result.data?.id) {
             router.push(`/flows/${result.data.id}`)
           }
@@ -95,6 +99,7 @@ export default function FlowsPage() {
     setNewName('')
     setNewDescription('')
     setNewTrigger(domainConfig.defaultTrigger)
+    setTriggerFilters(undefined)
   }
 
   return (
@@ -204,7 +209,7 @@ export default function FlowsPage() {
                   {domainConfig.events.map((evt: string) => (
                     <button
                       key={evt}
-                      onClick={() => setNewTrigger(evt)}
+                      onClick={() => { setNewTrigger(evt); setTriggerFilters(undefined) }}
                       className={cn(
                         'px-3 py-2 text-sm text-left rounded-lg border transition-colors',
                         newTrigger === evt
@@ -217,6 +222,21 @@ export default function FlowsPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Optional trigger conditions — same event-property filters as the
+                  builder; persisted into the trigger node on create. */}
+              {newTrigger && (
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-0.5">
+                    Trigger conditions
+                    <span className="text-text-muted font-normal ml-1">(optional)</span>
+                  </label>
+                  <p className="text-xs text-text-muted mb-1">
+                    Narrow the trigger to specific event properties — e.g. only high-value orders.
+                  </p>
+                  <TriggerFiltersBlock event={newTrigger} filters={triggerFilters} onChange={setTriggerFilters} />
+                </div>
+              )}
             </div>
 
             {/* Modal footer */}
