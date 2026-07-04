@@ -164,6 +164,59 @@ function countSubtree(chain: TreeNode[] | undefined): number {
   return chain.reduce((sum, tn) => sum + 1 + countSubtree(tn.yesBranch) + countSubtree(tn.noBranch), 0)
 }
 
+/**
+ * The chain REMAINDER after `afterId` (the steps that visually hang below the
+ * + button that was clicked). undefined = afterId not in this tree.
+ */
+function chainRemainderAfter(chains: TreeNode[], afterId: string): TreeNode[] | undefined {
+  for (let i = 0; i < chains.length; i++) {
+    const tn = chains[i]
+    if (tn.node.id === afterId) return chains.slice(i + 1)
+    if (tn.yesBranch) {
+      const r = chainRemainderAfter(tn.yesBranch, afterId)
+      if (r !== undefined) return r
+    }
+    if (tn.noBranch) {
+      const r = chainRemainderAfter(tn.noBranch, afterId)
+      if (r !== undefined) return r
+    }
+  }
+  return undefined
+}
+
+/**
+ * Repair flows corrupted by the old mid-chain split-insert bug: a split was
+ * spliced in with EMPTY branches, orphaning everything after it in the array
+ * (unreachable → invisible on the canvas → silently dropped by the next tree
+ * rebuild). Reattach each such orphaned successor chain to the split's first
+ * empty branch. Runs once when the builder loads a flow.
+ */
+function repairDisconnectedNodes(nodes: FlowNode[]): FlowNode[] {
+  if (nodes.length === 0) return nodes
+  const reachable = new Set(flattenTree(buildTree(nodes)).map(n => n.id))
+  if (reachable.size >= nodes.length) return nodes
+
+  const copy = [...nodes]
+  let changed = false
+  for (let i = 0; i < copy.length; i++) {
+    const n = copy[i]
+    const targets = splitTargets(n)
+    if (!targets || !reachable.has(n.id)) continue
+    const next = copy[i + 1]
+    if (!next || reachable.has(next.id)) continue
+    if (!targets[0]) {
+      copy[i] = withSplitTargets(n, [next.id, targets[1]])
+      changed = true
+      break // reattach one chain per pass; recurse for the rest
+    } else if (!targets[1]) {
+      copy[i] = withSplitTargets(n, [targets[0], next.id])
+      changed = true
+      break
+    }
+  }
+  return changed ? repairDisconnectedNodes(copy) : copy
+}
+
 // ─── Helpers ────────────────────────────────────────────
 
 let idCounter = 0
@@ -1401,12 +1454,19 @@ function validateNodes(nodes: FlowNode[]): Map<string, string[]> {
 // ─── Main ───────────────────────────────────────────────
 
 export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig, goalConfig: initialGoalConfig, onSave, saving, domainType = 'ecommerce' }: Props) {
-  const [nodes, setNodes] = useState<FlowNode[]>(flowNodes)
+  // Repair flows the old mid-chain-insert bug orphaned (see repairDisconnectedNodes)
+  const [nodes, setNodes] = useState<FlowNode[]>(() => repairDisconnectedNodes(flowNodes))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // Action nodes configure in the stepped modal, not the drawer
   const [actionNodeId, setActionNodeId] = useState<string | null>(null)
   // Condition delete needs a decision (keep a path vs delete subtree)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  // Inserting a split ABOVE existing steps needs a decision: which path do
+  // those steps continue on? (CleverSend parity — previously they were
+  // silently orphaned and vanished from the canvas.)
+  const [pendingSplitInsert, setPendingSplitInsert] = useState<{
+    afterId: string; optionType: string; successorId: string; downstreamCount: number
+  } | null>(null)
   // Goal & exits — legacy single exit normalizes to a one-element array
   const [exits, setExits] = useState<ExitConfig[]>(() =>
     Array.isArray(initialExitConfig) ? initialExitConfig : initialExitConfig ? [initialExitConfig] : [])
@@ -1505,13 +1565,33 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   const tree = useMemo(() => buildTree(nodes), [nodes])
   const selectedNode = nodes.find(n => n.id === selectedId) ?? null
 
-  const handleAddNode = useCallback((afterId: string, optionType: string, branch?: 'yes' | 'no') => {
+  const handleAddNode = useCallback((afterId: string, optionType: string, branch?: 'yes' | 'no', attachSuccessorTo?: 'yes' | 'no') => {
     const baseType = optionType.startsWith('condition') ? 'condition' : optionType
     const preset = CONDITION_PRESETS[optionType]
+
+    // Inserting a split ABOVE existing steps: chains stop at splits, so the
+    // downstream must hang off one of the new branches or it becomes
+    // unreachable. Ask the user which path it continues on.
+    if ((baseType === 'condition' || baseType === 'ab_split') && !branch && attachSuccessorTo === undefined) {
+      const remainder = chainRemainderAfter(buildTree(nodes), afterId) ?? []
+      if (remainder.length > 0) {
+        setPendingSplitInsert({
+          afterId,
+          optionType,
+          successorId: remainder[0].node.id,
+          downstreamCount: countSubtree(remainder),
+        })
+        return
+      }
+    }
+    // When inserting above existing steps, the successor chain's head id is
+    // pre-wired into the chosen branch (resolved via pendingSplitInsert).
+    const succYes = attachSuccessorTo === 'yes' ? (pendingSplitInsert?.successorId ?? '') : ''
+    const succNo = attachSuccessorTo === 'no' ? (pendingSplitInsert?.successorId ?? '') : ''
     const newNode: FlowNode = baseType === 'condition'
-      ? { id: nextId('condition'), type: 'condition', config: { check: preset?.check ?? 'event_occurred', event: preset?.event, since: 'trip_start', branches: { yes: '', no: '' } } }
+      ? { id: nextId('condition'), type: 'condition', config: { check: preset?.check ?? 'event_occurred', event: preset?.event, since: 'trip_start', branches: { yes: succYes, no: succNo } } }
       : baseType === 'ab_split'
-        ? { id: nextId('ab'), type: 'ab_split', config: { branches: [{ label: 'A', target: '', weight: 50 }, { label: 'B', target: '', weight: 50 }] } }
+        ? { id: nextId('ab'), type: 'ab_split', config: { branches: [{ label: 'A', target: succYes, weight: 50 }, { label: 'B', target: succNo, weight: 50 }] } }
         : baseType === 'http_request'
           ? { id: nextId('http'), type: 'http_request', config: { url: '', method: 'POST' } }
           : baseType === 'delay'
@@ -1546,7 +1626,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
     } else {
       setSelectedId(newNode.id)
     }
-  }, [])
+  }, [nodes, pendingSplitInsert])
 
   // Simple delete for non-branching nodes: drop the node, null any branch
   // pointer that referenced it (its children re-chain by array order).
@@ -1736,6 +1816,19 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
         />
       )}
 
+      {/* Split-insert path decision dialog */}
+      {pendingSplitInsert && (
+        <InsertSplitDialog
+          isAb={pendingSplitInsert.optionType === 'ab_split'}
+          downstreamCount={pendingSplitInsert.downstreamCount}
+          onConfirm={path => {
+            handleAddNode(pendingSplitInsert.afterId, pendingSplitInsert.optionType, undefined, path)
+            setPendingSplitInsert(null)
+          }}
+          onCancel={() => setPendingSplitInsert(null)}
+        />
+      )}
+
       {/* Condition-delete decision dialog */}
       {(() => {
         const cond = nodes.find(n => n.id === pendingDeleteId)
@@ -1750,6 +1843,71 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
         )
       })()}
     </div>
+  )
+}
+
+// ─── Insert Split Dialog ────────────────────────────────
+// Inserting a split ABOVE existing steps: the user picks which path those
+// steps continue on (the other path starts empty). Without this, the
+// downstream chain was silently orphaned and vanished from the canvas.
+
+function InsertSplitDialog({
+  isAb, downstreamCount, onConfirm, onCancel,
+}: {
+  isAb: boolean
+  downstreamCount: number
+  onConfirm: (path: 'yes' | 'no') => void
+  onCancel: () => void
+}) {
+  const [path, setPath] = useState<'yes' | 'no'>('yes')
+  const leftLabel = isAb ? 'A path' : 'Yes path (condition met)'
+  const rightLabel = isAb ? 'B path' : 'No path (condition not met)'
+
+  return (
+    <Dialog
+      open
+      onClose={onCancel}
+      title={isAb ? 'Insert A/B split' : 'Insert condition split'}
+      size="sm"
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-4 py-2 text-xs font-medium text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(path)}
+            className="px-5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+          >
+            Insert split
+          </button>
+        </div>
+      }
+    >
+      <div className="p-5 space-y-3">
+        <p className="text-xs text-gray-600 leading-relaxed">
+          There {downstreamCount === 1 ? 'is 1 existing step' : `are ${downstreamCount} existing steps`} below this point.
+          Which path should {downstreamCount === 1 ? 'it' : 'they'} continue on?
+        </p>
+        {([['yes', leftLabel], ['no', rightLabel]] as Array<['yes' | 'no', string]>).map(([value, label]) => (
+          <label key={value} className="flex items-center gap-2.5 rounded-lg border border-gray-200 p-3 cursor-pointer hover:bg-gray-50 transition-colors">
+            <input
+              type="radio"
+              name="insert-split-path"
+              checked={path === value}
+              onChange={() => setPath(value)}
+              className="accent-indigo-600"
+            />
+            <span className="text-xs font-semibold text-gray-900">{label}</span>
+          </label>
+        ))}
+        <p className="text-[11px] text-gray-500">The other path starts empty — add steps to it from the canvas.</p>
+      </div>
+    </Dialog>
   )
 }
 
