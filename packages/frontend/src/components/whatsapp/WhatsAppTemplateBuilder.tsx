@@ -183,6 +183,14 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
   const pending = submit.isPending || saveDraft.isPending || editDraft.isPending || submitApproval.isPending
   const nameValid = /^[a-z0-9_]+$/.test(s.name)
   const incomplete = !s.name || !nameValid || (!isAuth && !s.bodyText) || (isAuth && !s.otpButtonText.trim())
+  // Meta requires sample media on media headers / carousel cards at SUBMISSION
+  // (rejects with "HEADER is missing expected field(s) (example)" otherwise).
+  // Drafts save fine without it, so this gates only the submit button.
+  const missingMediaSample = !isAuth && (
+    isCarousel
+      ? s.carousel.some(c => !(c.headerExample ?? '').trim())
+      : (s.headerType === 'IMAGE' || s.headerType === 'VIDEO' || s.headerType === 'DOCUMENT') && !s.headerExample.trim()
+  )
 
   // Apply an AI-generated draft into builder state.
   const applyDraft = (draft: WhatsappCopilotDraft) => {
@@ -553,8 +561,10 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
           <button
             type="button"
             onClick={handleSubmitForApproval}
-            disabled={pending || blocking || incomplete || !canSubmit}
-            title={!canSubmit ? 'Connect a WhatsApp provider that supports submission' : undefined}
+            disabled={pending || blocking || incomplete || !canSubmit || missingMediaSample}
+            title={!canSubmit ? 'Connect a WhatsApp provider that supports submission'
+              : missingMediaSample ? 'Upload sample media for the header (Meta requires it for review)'
+              : undefined}
             className="inline-flex h-10 items-center gap-2 rounded-lg bg-accent px-5 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {(submit.isPending || submitApproval.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -563,6 +573,13 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
         </div>
         {!nameValid && s.name && <p className="text-xs text-red-600">Name must be lowercase letters, numbers and underscores only.</p>}
         {!canSubmit && <p className="text-xs text-amber-700">Saving a draft works without a provider; submitting for approval needs a connected WhatsApp provider.</p>}
+        {canSubmit && missingMediaSample && (
+          <p className="text-xs text-amber-700">
+            {isCarousel
+              ? 'Every carousel card needs sample media before submission — Meta requires it for review. You can still save as draft.'
+              : `Your ${s.headerType.toLowerCase()} header needs sample media before submission — upload a file or paste a URL above. You can still save as draft.`}
+          </p>
+        )}
       </div>
 
       {/* ---------- Right rail: variables + preview ---------- */}
