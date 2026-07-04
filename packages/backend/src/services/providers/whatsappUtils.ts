@@ -61,10 +61,12 @@ export function buildTemplateComponents(command: SendTemplateCommand): Array<Rec
     ? [{ type: 'body', parameters: command.templateParams.map(p => ({ type: 'text', text: p })) }]
     : []
 
-  // Media header — only when the template declares a media header AND a link is supplied
-  const header = command.templateHeader as { type?: string; format?: string } | null | undefined
+  // Media header — Meta REQUIRES a media parameter at send time for templates
+  // approved with a media header. Fall back to the approved sample URL when no
+  // per-send binding is mapped, so unmapped sends don't get rejected outright.
+  const header = command.templateHeader as { type?: string; format?: string; example?: string } | null | undefined
   const headerFormat = (header?.format ?? header?.type ?? '').toUpperCase()
-  const mediaUrl = command.variables.wa_header_media_url || command.variables.header_media_url
+  const mediaUrl = command.variables.wa_header_media_url || command.variables.header_media_url || header?.example
   if (mediaUrl && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormat)) {
     const mediaType = headerFormat === 'DOCUMENT' ? 'document' : headerFormat.toLowerCase()
     components.push({

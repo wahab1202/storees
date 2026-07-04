@@ -45,6 +45,64 @@ function sourceToken(v: TemplateVariable): string {
   }
 }
 
+type WaSpecialRow = { key: string; label: string; hint: string; defaultLiteral: string }
+type WaInfoRow = { label: string; hint: string }
+
+/**
+ * Header/button bindings the send path reads from the variables map:
+ *   wa_header_media_url — media-header link (falls back to the approved sample)
+ *   wa_button_url_N     — Nth URL button's dynamic {{1}} suffix
+ *   wa_copy_code        — coupon code for COPY_CODE buttons
+ * Tracked/static/call/quick-reply buttons need nothing — shown as info rows.
+ */
+function waSpecialRows(tpl: WhatsappTemplate | undefined): { editable: WaSpecialRow[]; info: WaInfoRow[] } {
+  if (!tpl) return { editable: [], info: [] }
+  const editable: WaSpecialRow[] = []
+  const info: WaInfoRow[] = []
+
+  const headerType = (tpl.header?.type ?? tpl.header?.format ?? '').toUpperCase()
+  if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerType)) {
+    editable.push({
+      key: 'wa_header_media_url',
+      label: `${headerType.charAt(0)}${headerType.slice(1).toLowerCase()} header`,
+      hint: 'URL of the media sent with this message — bind a payload/product image, or keep the approved sample.',
+      defaultLiteral: tpl.header?.example ?? '',
+    })
+  }
+
+  let urlPos = 0
+  for (const b of tpl.buttons ?? []) {
+    const type = (b.type ?? '').toUpperCase()
+    if (type === 'URL') {
+      urlPos += 1
+      if (b.track) {
+        info.push({ label: `Button “${b.text}”`, hint: 'Tracked — a per-recipient short link is generated automatically at send time (UTM from step ③ rides on it).' })
+      } else if ((b.url ?? '').includes('{{1}}')) {
+        editable.push({
+          key: `wa_button_url_${urlPos}`,
+          label: `Button “${b.text}” URL suffix`,
+          hint: `Appended to ${(b.url ?? '').replace('{{1}}', '…')} — bind a payload field or type a value.`,
+          defaultLiteral: '',
+        })
+      } else {
+        info.push({ label: `Button “${b.text}”`, hint: `Fixed URL, baked in at Meta approval: ${b.url ?? ''}` })
+      }
+    } else if (type === 'COPY_CODE' || type === 'OTP') {
+      editable.push({
+        key: 'wa_copy_code',
+        label: `Copy-code button “${b.text}”`,
+        hint: 'The coupon/code this recipient gets — bind a payload field or use a fixed code.',
+        defaultLiteral: b.example ?? '',
+      })
+    } else if (type === 'PHONE_NUMBER') {
+      info.push({ label: `Button “${b.text}”`, hint: 'Call button — dials a fixed number; nothing to bind (taps are not observable).' })
+    } else {
+      info.push({ label: `Button “${b.text}”`, hint: 'Quick reply — static; nothing to bind.' })
+    }
+  }
+  return { editable, info }
+}
+
 /** Seed positional rows 1..N from node override → template defaults → heuristic. */
 function seedWaVariables(count: number, nodeVars: TemplateVariable[] | undefined, tplVars: TemplateVariable[] | null | undefined): TemplateVariable[] {
   const byKey = new Map<string, TemplateVariable>()
@@ -138,12 +196,13 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
   }
 
   function handleSave() {
+    const finalVariables = isWhatsapp && selectedWa ? fullWaVariables() : variables
     onSave({
       ...initial,
       actionType,
       templateId,
       templateName,
-      variables: variables.length > 0 ? variables : undefined,
+      variables: finalVariables.length > 0 ? finalVariables : undefined,
       utmParameters: utm,
     })
   }
@@ -151,6 +210,20 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
   const waSamples = isWhatsapp && selectedWa
     ? seedWaVariables(selectedWa.parameterCount ?? 0, variables, selectedWa.variables).map(sourceToken)
     : undefined
+
+  // WhatsApp rows = positional {{1}}..{{N}} + header/button bindings. Kept as
+  // ONE variables array so per-node overrides save/restore uniformly.
+  const waSpecials = isWhatsapp ? waSpecialRows(selectedWa) : { editable: [], info: [] }
+  const fullWaVariables = (): TemplateVariable[] => {
+    const positional = seedWaVariables(selectedWa?.parameterCount ?? 0, variables, selectedWa?.variables)
+    const specials = waSpecials.editable.map(rowMeta =>
+      variables.find(v => v.key === rowMeta.key)
+      ?? { key: rowMeta.key, source: { kind: 'literal', value: rowMeta.defaultLiteral } as TemplateVariableSource })
+    return [...positional, ...specials]
+  }
+  const setWaVar = (key: string, patch: Partial<TemplateVariable>) => {
+    setVariables(fullWaVariables().map(v => v.key === key ? { ...v, ...patch } : v))
+  }
 
   const stepper = (
     <div className="flex items-center gap-1">
@@ -312,40 +385,29 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
               </p>
             </div>
             {isWhatsapp ? (
-              (selectedWa?.parameterCount ?? 0) === 0 ? (
-                <p className="py-6 text-center text-xs text-text-muted">This template has no variables — nothing to map.</p>
-              ) : (
-                seedWaVariables(selectedWa?.parameterCount ?? 0, variables, selectedWa?.variables).map((v, i) => (
+              <>
+                {(selectedWa?.parameterCount ?? 0) === 0 && waSpecials.editable.length === 0 && waSpecials.info.length === 0 && (
+                  <p className="py-6 text-center text-xs text-text-muted">This template has no variables — nothing to map.</p>
+                )}
+                {fullWaVariables().filter(v => /^\d+$/.test(v.key)).map(v => (
                   <div key={v.key} className="rounded-lg border border-border p-3 space-y-2">
                     <code className="inline-block rounded bg-surface px-1.5 py-0.5 font-mono text-xs">{`{{${v.key}}}`}</code>
                     <SourcePicker
                       catalog={catalog}
                       source={v.source}
-                      onChange={src => {
-                        const next = seedWaVariables(selectedWa?.parameterCount ?? 0, variables, selectedWa?.variables)
-                        next[i] = { ...next[i], source: src }
-                        setVariables(next)
-                      }}
+                      onChange={src => setWaVar(v.key, { source: src })}
                     />
                     <div className="grid grid-cols-2 gap-2">
                       <input
                         type="text"
                         value={v.defaultValue ?? ''}
-                        onChange={e => {
-                          const next = seedWaVariables(selectedWa?.parameterCount ?? 0, variables, selectedWa?.variables)
-                          next[i] = { ...next[i], defaultValue: e.target.value || undefined }
-                          setVariables(next)
-                        }}
+                        onChange={e => setWaVar(v.key, { defaultValue: e.target.value || undefined })}
                         placeholder="Fallback value"
                         className={INPUT}
                       />
                       <select
                         value={v.format ?? ''}
-                        onChange={e => {
-                          const next = seedWaVariables(selectedWa?.parameterCount ?? 0, variables, selectedWa?.variables)
-                          next[i] = { ...next[i], format: (e.target.value || undefined) as TemplateVariableFormat | undefined }
-                          setVariables(next)
-                        }}
+                        onChange={e => setWaVar(v.key, { format: (e.target.value || undefined) as TemplateVariableFormat | undefined })}
                         className={INPUT}
                       >
                         <option value="">No format</option>
@@ -359,8 +421,48 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
                       </select>
                     </div>
                   </div>
-                ))
-              )
+                ))}
+
+                {(waSpecials.editable.length > 0 || waSpecials.info.length > 0) && (
+                  <div className="pt-2 space-y-2">
+                    <div>
+                      <h4 className="text-xs font-bold text-text-primary uppercase tracking-wide">Header &amp; buttons</h4>
+                      <p className="mt-0.5 text-[11px] text-text-muted">Dynamic pieces of this template beyond the body text.</p>
+                    </div>
+                    {waSpecials.editable.map(rowMeta => {
+                      const v = fullWaVariables().find(x => x.key === rowMeta.key)!
+                      return (
+                        <div key={rowMeta.key} className="rounded-lg border border-border p-3 space-y-2">
+                          <div>
+                            <span className="text-xs font-semibold text-text-primary">{rowMeta.label}</span>
+                            <p className="text-[11px] text-text-muted leading-relaxed">{rowMeta.hint}</p>
+                          </div>
+                          <SourcePicker
+                            catalog={catalog}
+                            source={v.source}
+                            onChange={src => setWaVar(rowMeta.key, { source: src })}
+                          />
+                          {v.source.kind === 'literal' && (
+                            <input
+                              type="text"
+                              value={v.source.value}
+                              onChange={e => setWaVar(rowMeta.key, { source: { kind: 'literal', value: e.target.value } })}
+                              placeholder={rowMeta.defaultLiteral || 'value'}
+                              className={cn(INPUT, 'font-mono')}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
+                    {waSpecials.info.map((rowMeta, i) => (
+                      <div key={i} className="rounded-lg border border-dashed border-border bg-surface/40 p-3">
+                        <span className="text-xs font-semibold text-text-secondary">{rowMeta.label}</span>
+                        <p className="text-[11px] text-text-muted leading-relaxed">{rowMeta.hint}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
               <VariablePanel
                 variables={variables}
