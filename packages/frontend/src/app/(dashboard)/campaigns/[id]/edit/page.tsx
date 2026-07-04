@@ -17,6 +17,7 @@ import {
   useWhatsappTemplates,
   type SubmitInput,
 } from '@/hooks/useWhatsappTemplates'
+import { WhatsAppBubblePreview } from '@/components/whatsapp/WhatsAppBubblePreview'
 import { CampaignAiCopywriter } from '@/components/campaigns/CampaignAiCopywriter'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
 import { VariablePanel } from '@/components/templates/VariablePanel'
@@ -1229,12 +1230,22 @@ export default function EditCampaignPage() {
                     </div>
                   )}
                 </div>
-                <div className="rounded-xl bg-[#e5ddd5] p-5">
-                  <div className="ml-auto max-w-[320px] rounded-lg bg-[#dcf8c6] px-3 py-2 shadow-sm">
-                    <p className="whitespace-pre-wrap text-sm text-slate-900">{previewBody || 'Select an approved template to preview it.'}</p>
-                    <p className="mt-1 text-right text-[10px] text-slate-500">12:45</p>
+                {selectedWhatsappTemplate ? (
+                  <WhatsAppBubblePreview
+                    bodyText={previewBody || selectedWhatsappTemplate.bodyText}
+                    header={selectedWhatsappTemplate.header}
+                    footer={selectedWhatsappTemplate.footer}
+                    buttons={selectedWhatsappTemplate.buttons}
+                    carousel={selectedWhatsappTemplate.carousel}
+                    className="rounded-xl overflow-hidden"
+                  />
+                ) : (
+                  <div className="rounded-xl bg-[#e5ddd5] p-5">
+                    <div className="ml-auto max-w-[320px] rounded-lg bg-white px-3 py-2 shadow-sm">
+                      <p className="whitespace-pre-wrap text-sm text-slate-500">Select an approved template to preview it.</p>
+                    </div>
                   </div>
-                </div>
+                )}
                 {(selectedWhatsappMediaHeader || selectedWhatsappUrlButtons.length > 0) && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
                     {selectedWhatsappMediaHeader && <p>Map <code>wa_header_media_url</code> for the {selectedWhatsappHeaderType.toLowerCase()} header.</p>}
