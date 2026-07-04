@@ -83,36 +83,57 @@ async function pullAttributeKeys(projectId: string): Promise<Array<{ key: string
 }
 
 /**
- * Top events for the project + their distinct property keys. Lets flow-step
- * pickers offer "{{order_number}}" etc. when the trigger event has that
- * property. Bounded scan to stay cheap.
+ * Top events for the project + their observed property paths — including
+ * NESTED dot-paths (line_items.0.image) flattened from recent real payloads,
+ * so pickers can offer deep fields without hand-typing. Bounded sample per
+ * event to stay cheap; the resolver reads any path via readPath either way.
  */
 async function pullEventKeys(projectId: string): Promise<Array<{ name: string; properties: string[] }>> {
   const rows = await db.execute(sql`
-    WITH recent AS (
-      SELECT event_name, properties
+    WITH ranked AS (
+      SELECT event_name, properties,
+             ROW_NUMBER() OVER (PARTITION BY event_name ORDER BY received_at DESC) AS rn
       FROM events
       WHERE project_id = ${projectId}
         AND received_at > NOW() - INTERVAL '30 days'
-      ORDER BY received_at DESC
-      LIMIT 5000
-    ),
-    by_event AS (
-      SELECT event_name, jsonb_object_keys(properties) AS prop_key
-      FROM recent
-      WHERE properties IS NOT NULL
+        AND properties IS NOT NULL AND properties <> '{}'::jsonb
     )
-    SELECT event_name, array_agg(DISTINCT prop_key) AS prop_keys
-    FROM by_event
-    GROUP BY event_name
+    SELECT event_name, properties FROM ranked WHERE rn <= 5
     ORDER BY event_name
-    LIMIT 30
+    LIMIT 200
   `)
 
-  return (rows.rows as Array<{ event_name: string; prop_keys: string[] | null }>).map(r => ({
-    name: r.event_name,
-    properties: (r.prop_keys ?? []).filter(k => k != null && !k.startsWith('_')),
+  const byEvent = new Map<string, Map<string, unknown>>()
+  for (const r of rows.rows as Array<{ event_name: string; properties: Record<string, unknown> }>) {
+    let paths = byEvent.get(r.event_name)
+    if (!paths) { paths = new Map(); byEvent.set(r.event_name, paths) }
+    if (paths.size >= 40) continue
+    collectPaths(r.properties, '', 0, paths)
+  }
+
+  return [...byEvent.entries()].slice(0, 30).map(([name, paths]) => ({
+    name,
+    properties: [...paths.keys()].filter(k => !k.startsWith('_')).sort().slice(0, 40),
   }))
+}
+
+/** Flatten one properties object into dot-paths (arrays sampled at index 0). */
+function collectPaths(value: unknown, prefix: string, depth: number, out: Map<string, unknown>): void {
+  if (out.size >= 40 || depth > 3) return
+  if (Array.isArray(value)) {
+    if (value[0] !== undefined) collectPaths(value[0], `${prefix}.0`, depth + 1, out)
+    return
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const path = prefix ? `${prefix}.${k}` : k
+      if (v !== null && typeof v === 'object') collectPaths(v, path, depth + 1, out)
+      else if (!out.has(path)) out.set(path, v)
+      if (out.size >= 40) break
+    }
+    return
+  }
+  if (prefix && !out.has(prefix)) out.set(prefix, value)
 }
 
 function truncateSample(raw: string): string {

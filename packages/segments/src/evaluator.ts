@@ -3,6 +3,7 @@ import type { SQL } from 'drizzle-orm'
 import type {
   FilterConfig, FilterRule, FilterGroup, Customer,
   AggregateRule, AggregateField, AggregateTimeframe, AggregateCompareOp,
+  EventOccurrenceRule,
 } from '@storees/shared'
 
 // ============ AGENT SCOPE INJECTION ============
@@ -50,14 +51,68 @@ export function filterToSql(filters: FilterConfig): SQL {
   return filters.logic === 'AND' ? and(...clauses)! : or(...clauses)!
 }
 
-function ruleOrGroupToSql(item: FilterRule | FilterGroup | AggregateRule): SQL {
+function ruleOrGroupToSql(item: FilterRule | FilterGroup | AggregateRule | EventOccurrenceRule): SQL {
   if ('type' in item && item.type === 'group') {
     return groupToSql(item)
   }
   if ('type' in item && item.type === 'aggregate') {
     return compileAggregateRule(item)
   }
+  if ('type' in item && item.type === 'event') {
+    return compileEventOccurrenceRule(item)
+  }
   return ruleToSql(item as FilterRule)
+}
+
+// ============ PERFORMED-EVENT RULE (CleverSend parity) ============
+// "performed <event> <countOp> <N> times in <timeframe> where <props>" —
+// makes ARBITRARY custom events segmentable (the fixed product/email
+// subqueries below only cover the built-in event names).
+
+/** properties dot-path → `e.properties #>> '{a,b,0,c}'` (segments sanitized). */
+function eventJsonPathExpr(field: string): SQL | null {
+  const segs = field.replace(/^properties\./, '').split('.')
+  if (segs.length === 0 || segs.some(sg => !/^[\w-]+$/.test(sg))) return null
+  const pathLiteral = `{${segs.join(',')}}`
+  return sql`(e.properties #>> ${pathLiteral}::text[])`
+}
+
+/** Same operator set the flow trigger filters support. */
+function eventPropertyPredicate(f: FilterRule): SQL {
+  const expr = eventJsonPathExpr(f.field)
+  if (!expr) return sql`FALSE`
+  const v = String(f.value ?? '')
+  switch (f.operator) {
+    case 'is':           return sql`${expr} = ${v}`
+    case 'is_not':       return sql`${expr} IS DISTINCT FROM ${v}`
+    case 'contains':     return sql`${expr} ILIKE ${'%' + v + '%'}`
+    case 'greater_than': return sql`(CASE WHEN ${expr} ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${expr})::numeric END) > ${Number(f.value) || 0}`
+    case 'less_than':    return sql`(CASE WHEN ${expr} ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${expr})::numeric END) < ${Number(f.value) || 0}`
+    case 'is_true':      return sql`${expr} = 'true'`
+    case 'is_false':     return sql`${expr} = 'false'`
+    default:             return sql`FALSE`
+  }
+}
+
+export function compileEventOccurrenceRule(rule: EventOccurrenceRule): SQL {
+  const where: SQL[] = [
+    sql`e.project_id = customers.project_id`,
+    sql`e.customer_id = customers.id`,
+    sql`e.event_name = ${rule.event}`,
+  ]
+  if (rule.timeframeDays && rule.timeframeDays > 0) {
+    where.push(sql`e.timestamp > NOW() - make_interval(days => ${Math.floor(rule.timeframeDays)})`)
+  }
+  for (const f of rule.where ?? []) {
+    where.push(eventPropertyPredicate(f))
+  }
+  const count = Math.max(0, Number(rule.count) || 0)
+  const sub = sql`(SELECT COUNT(*) FROM events e WHERE ${and(...where)!})`
+  switch (rule.countOp) {
+    case 'at_most': return sql`${sub} <= ${count}`
+    case 'exactly': return sql`${sub} = ${count}`
+    default:        return sql`${sub} >= ${count}`
+  }
 }
 
 function groupToSql(group: FilterGroup): SQL {
@@ -911,8 +966,11 @@ export function evaluateFilter(filters: FilterConfig, customer: Customer): boole
     : results.some(Boolean)
 }
 
-function evaluateItem(item: FilterRule | FilterGroup | AggregateRule, customer: Customer): boolean {
+function evaluateItem(item: FilterRule | FilterGroup | AggregateRule | EventOccurrenceRule, customer: Customer): boolean {
   if ('type' in item && item.type === 'group') return evaluateGroup(item, customer)
+  // Performed-event rules need the events table — SQL path only (same
+  // contract as aggregate rules below).
+  if ('type' in item && item.type === 'event') return false
   // Scoped aggregates need order/event rows — not in a single Customer object.
   // SQL path is authoritative for membership; mirror has_purchased → false here.
   if ('type' in item && item.type === 'aggregate') return false

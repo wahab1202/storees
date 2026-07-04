@@ -1241,3 +1241,52 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
 }, (table) => [
   index('idx_webhook_deliveries_sub').on(table.subscriptionId, table.createdAt),
 ])
+
+// ============ INBOUND WEBHOOKS (CleverSend-parity data sources) ============
+// User-created named endpoints: POST /api/hooks/<token> receives arbitrary
+// JSON. Event definitions extract named events + profile mappings from the
+// payloads and feed the existing event pipeline.
+
+export const inboundWebhooks = pgTable('inbound_webhooks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  // URL-embedded secret — the whole auth story for the public receiver
+  token: varchar('token', { length: 64 }).notNull().unique(),
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  lastReceivedAt: timestamp('last_received_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_inbound_webhooks_project').on(table.projectId),
+])
+
+export const inboundWebhookEvents = pgTable('inbound_webhook_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull(),
+  webhookId: uuid('webhook_id').notNull().references(() => inboundWebhooks.id, { onDelete: 'cascade' }),
+  headers: jsonb('headers').default({}),
+  payload: jsonb('payload').notNull(),
+  matchedDefinitions: jsonb('matched_definitions').notNull().default([]),
+  status: varchar('status', { length: 20 }).notNull().default('received'),
+  error: text('error'),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_inbound_events_webhook').on(table.webhookId, table.receivedAt),
+])
+
+export const eventDefinitions = pgTable('event_definitions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  webhookId: uuid('webhook_id').notNull().references(() => inboundWebhooks.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 100 }).notNull(),
+  filters: jsonb('filters'),
+  propertyMappings: jsonb('property_mappings').notNull().default([]),
+  attributeMappings: jsonb('attribute_mappings').notNull().default([]),
+  identityPaths: jsonb('identity_paths'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_event_definitions_webhook').on(table.webhookId),
+])

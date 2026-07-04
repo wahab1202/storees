@@ -29,6 +29,7 @@ import {
   LogOut,
   ShieldCheck,
   UserCircle,
+  Webhook,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,7 @@ const navItems: NavItem[] = [
   // Dealers (agent/manager) build and run their own flows, scoped to their
   // customers — so Flows is visible to them. Backend enforces ownership + audience scope.
   { href: '/flows', label: 'Flows', icon: Workflow },
+  { href: '/event-sources', label: 'Event Sources', icon: Webhook, adminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
   { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]
