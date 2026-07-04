@@ -590,6 +590,7 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
             <Connector color={leftBar} h="h-3" />
             {yes.length > 0 ? (
               <>
+                <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'yes')} />
                 <BranchRenderer chain={yes} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
                 {yes[yes.length - 1].node.type !== 'end' && !isSplit(yes[yes.length - 1].node) && <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />}
               </>
@@ -604,6 +605,7 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
             <Connector color={rightBar} h="h-3" />
             {no.length > 0 ? (
               <>
+                <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'no')} />
                 <BranchRenderer chain={no} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
                 {no[no.length - 1].node.type !== 'end' && !isSplit(no[no.length - 1].node) && <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />}
               </>
@@ -1465,7 +1467,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   // those steps continue on? (CleverSend parity — previously they were
   // silently orphaned and vanished from the canvas.)
   const [pendingSplitInsert, setPendingSplitInsert] = useState<{
-    afterId: string; optionType: string; successorId: string; downstreamCount: number
+    afterId: string; optionType: string; successorId: string; downstreamCount: number; branch?: 'yes' | 'no'
   } | null>(null)
   // Goal & exits — legacy single exit normalizes to a one-element array
   const [exits, setExits] = useState<ExitConfig[]>(() =>
@@ -1571,17 +1573,36 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
 
     // Inserting a split ABOVE existing steps: chains stop at splits, so the
     // downstream must hang off one of the new branches or it becomes
-    // unreachable. Ask the user which path it continues on.
-    if ((baseType === 'condition' || baseType === 'ab_split') && !branch && attachSuccessorTo === undefined) {
-      const remainder = chainRemainderAfter(buildTree(nodes), afterId) ?? []
-      if (remainder.length > 0) {
-        setPendingSplitInsert({
-          afterId,
-          optionType,
-          successorId: remainder[0].node.id,
-          downstreamCount: countSubtree(remainder),
-        })
-        return
+    // unreachable. Ask the user which path it continues on. Applies both
+    // mid-chain (no branch param) and at a non-empty branch HEAD.
+    if ((baseType === 'condition' || baseType === 'ab_split') && attachSuccessorTo === undefined) {
+      if (!branch) {
+        const remainder = chainRemainderAfter(buildTree(nodes), afterId) ?? []
+        if (remainder.length > 0) {
+          setPendingSplitInsert({
+            afterId,
+            optionType,
+            successorId: remainder[0].node.id,
+            downstreamCount: countSubtree(remainder),
+          })
+          return
+        }
+      } else {
+        const split = nodes.find(n => n.id === afterId && isSplit(n))
+        const targets = split ? splitTargets(split) : null
+        const existingHead = targets ? (branch === 'yes' ? targets[0] : targets[1]) : ''
+        if (existingHead) {
+          const tn = findTreeNode(buildTree(nodes), afterId)
+          const branchChain = branch === 'yes' ? tn?.yesBranch : tn?.noBranch
+          setPendingSplitInsert({
+            afterId,
+            optionType,
+            successorId: existingHead,
+            downstreamCount: countSubtree(branchChain),
+            branch,
+          })
+          return
+        }
       }
     }
     // When inserting above existing steps, the successor chain's head id is
@@ -1606,10 +1627,14 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
         if (splitIdx >= 0) {
           const split = prev[splitIdx]
           const targets = splitTargets(split) ?? ['', '']
+          const oldHead = branch === 'yes' ? targets[0] : targets[1]
           const nextTargets: [string, string] = branch === 'yes' ? [newNode.id, targets[1]] : [targets[0], newNode.id]
           const copy = [...prev]
           copy[splitIdx] = withSplitTargets(split, nextTargets)
-          copy.splice(splitIdx + 1, 0, newNode)
+          // Prepend BEFORE the displaced head so the chain continues into it
+          // by array order; empty branch → right after the split.
+          const headIdx = oldHead ? copy.findIndex(n => n.id === oldHead) : -1
+          copy.splice(headIdx >= 0 ? headIdx : splitIdx + 1, 0, newNode)
           return copy
         }
       }
@@ -1632,11 +1657,15 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   // pointer that referenced it (its children re-chain by array order).
   const deleteSimpleNode = useCallback((id: string) => {
     setNodes(prev => {
+      // If the deleted node heads a branch, re-point the split at its chain
+      // successor — otherwise the rest of the branch is silently orphaned.
+      const remainder = chainRemainderAfter(buildTree(prev), id) ?? []
+      const successorId = remainder[0]?.node.id ?? ''
       const copy = prev.map(n => {
         const targets = splitTargets(n)
         if (!targets) return n
         if (targets[0] !== id && targets[1] !== id) return n
-        return withSplitTargets(n, [targets[0] === id ? '' : targets[0], targets[1] === id ? '' : targets[1]])
+        return withSplitTargets(n, [targets[0] === id ? successorId : targets[0], targets[1] === id ? successorId : targets[1]])
       })
       return copy.filter(n => n.id !== id)
     })
@@ -1822,7 +1851,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
           isAb={pendingSplitInsert.optionType === 'ab_split'}
           downstreamCount={pendingSplitInsert.downstreamCount}
           onConfirm={path => {
-            handleAddNode(pendingSplitInsert.afterId, pendingSplitInsert.optionType, undefined, path)
+            handleAddNode(pendingSplitInsert.afterId, pendingSplitInsert.optionType, pendingSplitInsert.branch, path)
             setPendingSplitInsert(null)
           }}
           onCancel={() => setPendingSplitInsert(null)}

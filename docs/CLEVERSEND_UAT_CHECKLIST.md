@@ -525,6 +525,19 @@ split's Yes path. Save the flow to persist the repair.
 Nothing about the template is invisible anymore. Bindings persist across
 Save → reload like scenario 9.
 
+## Scenario 52 — Insert / delete at the head of a branch
+1. Build: Trigger → Condition → Yes: WhatsApp → End, No: Email → End (like a real flow).
+2. Hover between the **Yes pill** and the WhatsApp node → a **+** button is there now.
+3. Click it → add a **Wait** node.
+4. Also try: + at the head of the No branch → **Conditional Split**.
+5. Delete the WhatsApp node (a branch head with steps below it).
+
+**Outcome:** step 3 → Wait lands ABOVE WhatsApp inside the Yes branch; nothing vanishes.
+Step 4 → the "which path do the existing steps continue on?" dialog appears (same as
+scenario 50), and the Email chain hangs off the chosen sub-path. Step 5 → the End node
+(everything below the deleted head) re-chains directly under the Yes pill instead of
+disappearing. Save + reload → structure intact.
+
 ---
 
 **Feedback format:** scenario number + the step where it broke + what you saw instead
