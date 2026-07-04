@@ -31,6 +31,7 @@ export async function syncWhatsappTemplatesForProject(projectId: string): Promis
       footer: t.footer,
       buttons: t.buttons as object | null,
       parameterCount: t.parameterCount,
+      qualityScore: t.qualityScore ?? null,
       rawPayload: t.rawPayload as object | null,
     }).onConflictDoUpdate({
       target: [whatsappTemplates.projectId, whatsappTemplates.provider, whatsappTemplates.name, whatsappTemplates.language],
@@ -43,6 +44,7 @@ export async function syncWhatsappTemplatesForProject(projectId: string): Promis
         footer: t.footer,
         buttons: t.buttons as object | null,
         parameterCount: t.parameterCount,
+        ...(t.qualityScore !== undefined ? { qualityScore: t.qualityScore } : {}),
         rawPayload: t.rawPayload as object | null,
         syncedAt: new Date(),
         updatedAt: new Date(),

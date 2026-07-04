@@ -81,12 +81,14 @@ export function startTemplateStatusWorker(): Worker {
           const categoryChanged = !!tmpl.category && !!newCategory && tmpl.category !== newCategory
           const statusChanged = status.status !== tmpl.status
 
-          if (statusChanged || categoryChanged || status.rejectionReason !== tmpl.rejectionReason) {
+          const qualityChanged = status.qualityScore !== undefined && status.qualityScore !== (tmpl as { qualityScore?: string | null }).qualityScore
+          if (statusChanged || categoryChanged || qualityChanged || status.rejectionReason !== tmpl.rejectionReason) {
             await db.update(whatsappTemplates).set({
               status: status.status,
               category: newCategory,
               previousCategory: categoryChanged ? tmpl.category : tmpl.previousCategory,
               rejectionReason: status.rejectionReason ?? null,
+              ...(status.qualityScore !== undefined ? { qualityScore: status.qualityScore } : {}),
               lastStatusCheckAt: new Date(),
               updatedAt: new Date(),
             }).where(eq(whatsappTemplates.id, tmpl.id))

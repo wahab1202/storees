@@ -516,6 +516,7 @@ router.post('/templates/:id/refresh-status', requireProjectId, async (req, res) 
       category: status.category ?? tmpl.category,
       previousCategory,
       rejectionReason: status.rejectionReason ?? null,
+      ...(status.qualityScore !== undefined ? { qualityScore: status.qualityScore } : {}),
       lastStatusCheckAt: new Date(),
       updatedAt: new Date(),
     }).where(eq(whatsappTemplates.id, id)).returning()

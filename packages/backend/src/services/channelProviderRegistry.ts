@@ -17,6 +17,7 @@ export type ProviderTemplate = {
   footer?: string
   buttons?: unknown
   parameterCount: number
+  qualityScore?: string | null
   rawPayload?: unknown
 }
 
@@ -95,6 +96,8 @@ export type TemplateStatusResult = {
   status: string
   category?: string
   rejectionReason?: string | null
+  /** Meta quality rating (GREEN/YELLOW/RED/UNKNOWN) when the provider exposes it. */
+  qualityScore?: string | null
 }
 
 export type ChannelProvider = {

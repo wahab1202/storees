@@ -10,7 +10,7 @@ import type {
 import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
-import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient } from './whatsappUtils.js'
+import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient, normalizeQualityScore } from './whatsappUtils.js'
 
 // Subset of Meta's message_templates response we care about
 type MetaComponent =
@@ -23,6 +23,7 @@ export type MetaTemplate = {
   language: string
   status: string
   category?: string
+  quality_score?: unknown
   components?: MetaComponent[]
 }
 
@@ -138,6 +139,7 @@ export function parseMetaTemplate(t: MetaTemplate): ProviderTemplate {
     footer,
     buttons,
     parameterCount: countParameters(bodyText),
+    qualityScore: normalizeQualityScore(t.quality_score),
     rawPayload: t,
   }
 }
@@ -360,9 +362,8 @@ export const metaWhatsappProvider: ChannelProvider = {
       throw new Error(`Meta getTemplateStatus failed: ${err.error?.message ?? `HTTP ${resp.status}`}`)
     }
 
-    const data = await resp.json() as
-      | { name: string; status?: string; category?: string; reason?: string }                       // single
-      | { data: Array<{ name: string; status?: string; category?: string; reason?: string }> }     // list
+    type TplStatus = { name: string; status?: string; category?: string; reason?: string; quality_score?: unknown }
+    const data = await resp.json() as TplStatus | { data: TplStatus[] }
 
     const t = 'data' in data ? data.data?.[0] : data
     if (!t) throw new Error(`Meta getTemplateStatus: template "${providerTemplateId}" not found`)
@@ -371,6 +372,7 @@ export const metaWhatsappProvider: ChannelProvider = {
       status: (t.status ?? 'PENDING').toUpperCase(),
       category: t.category,
       rejectionReason: t.reason ?? null,
+      qualityScore: normalizeQualityScore(t.quality_score),
     }
   },
 
@@ -383,7 +385,7 @@ export const metaWhatsappProvider: ChannelProvider = {
     if (!wabaId || !accessToken) throw new Error('Meta syncTemplates: wabaId and accessToken required')
 
     const all: ProviderTemplate[] = []
-    let url = `https://graph.facebook.com/v23.0/${wabaId}/message_templates?limit=100`
+    let url = `https://graph.facebook.com/v23.0/${wabaId}/message_templates?limit=100&fields=name,language,status,category,quality_score,components`
     while (url) {
       const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
       if (!resp.ok) {
