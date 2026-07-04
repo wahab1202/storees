@@ -4,7 +4,7 @@ import { messages, consents, customers, whatsappTemplates, projects } from '../d
 import { deliveryQueue } from './queue.js'
 import { buildBodyParams } from './providers/whatsappUtils.js'
 import { redis } from './redis.js'
-import type { SendCommand, MessageChannel } from '@storees/shared'
+import type { SendCommand, MessageChannel, CampaignUtmParameter } from '@storees/shared'
 
 import { getChannelProvider } from './channelProviderRegistry.js'
 import { mirrorCampaignReceipt } from './messageStatusService.js'
@@ -246,7 +246,10 @@ async function injectTrackedButtonSlugs(
     urlPos += 1 // counts every URL button, matching buildTemplateComponents
     if (!b.track || !b.url) continue
     const { slug } = await createTrackedLink({
-      originalUrl: b.url,
+      // UTM params (pre-interpolated by the caller, e.g. a flow send node)
+      // ride on the destination — the short link 302s to url + UTM, so
+      // attribution works even though the approved button URL is immutable.
+      originalUrl: appendUtmToUrl(b.url, command.utmParameters),
       projectId: command.projectId,
       channel: 'whatsapp',
       messageId,
@@ -256,6 +259,19 @@ async function injectTrackedButtonSlugs(
     variables[`wa_button_url_${urlPos}`] = slug
   }
   return variables
+}
+
+function appendUtmToUrl(rawUrl: string, params?: CampaignUtmParameter[]): string {
+  if (!params || params.length === 0) return rawUrl
+  try {
+    const url = new URL(rawUrl)
+    for (const p of params) {
+      if (p.key && p.value) url.searchParams.set(p.key, p.value)
+    }
+    return url.toString()
+  } catch {
+    return rawUrl // relative/malformed destination — leave untouched
+  }
 }
 
 /**
