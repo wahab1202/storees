@@ -1075,6 +1075,9 @@ export type WhatsappButton = {
   phone?: string         // for PHONE_NUMBER buttons
   example?: string       // for COPY_CODE buttons — sample coupon/code for review
   otpType?: 'COPY_CODE' | 'ONE_TAP'  // for OTP buttons (AUTHENTICATION templates)
+  /** URL buttons: wrap the link for click tracking. Unused on this branch
+   *  (short-link service not ported) — present for main-branch type parity. */
+  track?: boolean
 }
 
 /** Extra metadata for AUTHENTICATION-category (OTP) templates. Stored in rawPayload.otp. */
