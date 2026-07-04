@@ -3,7 +3,7 @@ import { db } from '../db/connection.js'
 import { flowTrips, flows, customers, customerSegments, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
 import { filterToSql } from '@storees/segments'
 import { flowActionsQueue } from './queue.js'
-import { sendEmail, interpolateTemplate } from './emailService.js'
+import { sendEmail, interpolateTemplate, appendUtmParameters } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
 import { createHash } from 'node:crypto'
 import { evaluateEventFilters } from '@storees/shared'
@@ -637,6 +637,13 @@ async function executeAction(
       html = interpolateTemplate(html, templateContext)
     }
 
+    // Per-node UTM tagging — every absolute link in the email body gets the
+    // node's params (values interpolated with the same template context).
+    const utm = node.config.utmParameters
+    if (utm?.enabled && utm.params.length > 0) {
+      html = appendUtmParameters(html, utm.params, templateContext)
+    }
+
     await sendEmail({ to: customer.email, subject, html, projectId, contentType: 'promotional' })
     console.log(`Action executed: sent email to ${customer.email} (template: ${templateId})`)
     return
@@ -670,6 +677,15 @@ async function executeAction(
     eventProperties,
   })
 
+  // Per-node UTM tagging — pre-interpolate values here (the delivery layer
+  // appends them to tracked-link destinations, e.g. WhatsApp URL buttons).
+  const nodeUtm = node.config.utmParameters
+  const utmParameters = nodeUtm?.enabled
+    ? nodeUtm.params
+        .map(p => ({ key: p.key.trim(), value: interpolateTemplate(p.value, variables).trim() }))
+        .filter(p => p.key && p.value)
+    : undefined
+
   const messageId = await send({
     projectId,
     userId: customerId,
@@ -678,6 +694,7 @@ async function executeAction(
     variables,
     messageType: 'promotional',
     flowTripId: trip.id as string,
+    utmParameters,
   })
 
   console.log(`Action executed: ${actionType} for customer ${customerId} (message: ${messageId ?? 'blocked'})`)

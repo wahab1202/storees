@@ -610,8 +610,20 @@ export type ActionNode = {
   config: {
     actionType: 'send_email' | 'send_push' | 'send_sms' | 'send_whatsapp'
     templateId: string
+    /** Denormalized display label — node cards show the name, not the id. */
+    templateName?: string
     subjectOverride?: string
     dynamicData?: string[]
+    /**
+     * Per-node variable mapping. Overrides the template's own default
+     * mapping (whatsapp_templates.variables / email_templates.variables) so
+     * the same template can bind differently per flow. Keys are '1','2',…
+     * for WhatsApp positional params, named keys for other channels.
+     * flowExecutor already prefers this over the template row.
+     */
+    variables?: TemplateVariable[]
+    /** Per-node UTM tagging — same shape campaigns use. */
+    utmParameters?: CampaignUtmParameters
   }
 }
 
@@ -859,6 +871,12 @@ export type SendCommand = {
   projectId: string
   ignoreFrequencyCap?: boolean
   countForFrequencyCap?: boolean
+  /**
+   * UTM params appended to outbound link destinations (currently: tracked
+   * WhatsApp URL-button targets — the short link 302s to url + UTM). Values
+   * are pre-interpolated by the caller.
+   */
+  utmParameters?: CampaignUtmParameter[]
 }
 
 export type Message = {
