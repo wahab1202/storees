@@ -1,4 +1,5 @@
 import type { FilterConfig, FilterRule } from './types.js'
+import { readPath } from './utils.js'
 
 /**
  * Evaluate trigger/condition filters against an event's `properties` JSON.
@@ -22,7 +23,9 @@ export function evaluateEventFilters(
 
     const rule = item as FilterRule
     const fieldPath = rule.field.replace(/^properties\./, '')
-    const value = properties[fieldPath]
+    // Dot-paths traverse nested objects/arrays (line_items.0.price);
+    // flat keys behave exactly as before.
+    const value = readPath(properties, fieldPath)
 
     switch (rule.operator) {
       case 'is':           return value === rule.value

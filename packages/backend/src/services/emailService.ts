@@ -1,4 +1,5 @@
 import type { CampaignContentType } from '@storees/shared'
+import { readPath } from '@storees/shared'
 import {
   getEmailProviderForProject,
   getRegisteredEmailProvider,
@@ -109,8 +110,12 @@ export function interpolateTemplate(
   template: string,
   context: Record<string, unknown>,
 ): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
-    const value = context[key]
+  // Keys may be dot-paths (line_items.0.image) — flat keys hit the context
+  // map directly, dotted keys traverse nested values.
+  return template.replace(/\{\{([\w.]+)\}\}/g, (_match, key: string) => {
+    const value = key.includes('.') && context[key] === undefined
+      ? readPath(context, key)
+      : context[key]
     return value !== undefined && value !== null ? String(value) : ''
   })
 }
@@ -177,9 +182,4 @@ export function appendUtmParametersToText(
   })
 }
 
-function readPath(obj: Record<string, unknown>, path: string): unknown {
-  return path.split('.').reduce<unknown>((acc, part) => {
-    if (!acc || typeof acc !== 'object') return undefined
-    return (acc as Record<string, unknown>)[part]
-  }, obj)
-}
+// (dotted-path reads use the shared readPath util)

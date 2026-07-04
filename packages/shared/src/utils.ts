@@ -17,3 +17,21 @@ export function formatCurrency(amount: number, currency = 'INR'): string {
     maximumFractionDigits: 2,
   }).format(amount)
 }
+
+/**
+ * Read a nested value by dot-path, with numeric segments indexing arrays —
+ * e.g. `line_items.0.image` → obj.line_items[0].image. A path without dots
+ * is a plain key read. Returns undefined anywhere the path breaks.
+ */
+export function readPath(obj: Record<string, unknown> | null | undefined, path: string): unknown {
+  if (!obj) return undefined
+  if (!path.includes('.')) return obj[path]
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc == null || typeof acc !== 'object') return undefined
+    if (Array.isArray(acc)) {
+      const idx = Number(key)
+      return Number.isInteger(idx) ? acc[idx] : undefined
+    }
+    return (acc as Record<string, unknown>)[key]
+  }, obj)
+}

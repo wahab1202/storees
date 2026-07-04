@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sparkles, Plus, Trash2, Eye, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useVariableSources, usePreviewTemplate, type PreviewResponse } from '@/hooks/useTemplates'
@@ -243,14 +243,30 @@ export function SourcePicker({
 }) {
   // Encode the {kind, field/key/value} as a single combobox value so we can
   // use a native select. Format: `<kind>::<field-or-key-or-value>`.
-  const value = encodeSource(source)
+  // Event keys may be DOT-PATHS into the payload (line_items.0.image) — those
+  // won't be in the catalog, so a custom-path mode shows a free-text input.
+  const knownEventKeys = useMemo(
+    () => new Set((catalog?.events ?? []).flatMap(ev => ev.properties)),
+    [catalog],
+  )
+  const [customEventMode, setCustomEventMode] = useState(false)
+  const isCustomEvent = source.kind === 'event' && !knownEventKeys.has(source.key)
+  const customActive = customEventMode || isCustomEvent
+  const value = customActive && source.kind === 'event' ? 'event::__custom__' : encodeSource(source)
 
   const handleChange = (encoded: string) => {
+    if (encoded === 'event::__custom__') {
+      setCustomEventMode(true)
+      if (source.kind !== 'event') onChange({ kind: 'event', key: '' })
+      return
+    }
+    setCustomEventMode(false)
     const decoded = decodeSource(encoded)
     if (decoded) onChange(decoded)
   }
 
   return (
+    <div className="space-y-1.5">
     <select
       value={value}
       onChange={e => handleChange(e.target.value)}
@@ -300,11 +316,22 @@ export function SourcePicker({
         </optgroup>
       )}
       <optgroup label="Other">
+        <option value="event::__custom__">Event payload path… (e.g. line_items.0.image)</option>
         <option value={`literal::${source.kind === 'literal' ? source.value : ''}`}>
           Literal value (type below)
         </option>
       </optgroup>
     </select>
+    {customActive && source.kind === 'event' && (
+      <input
+        type="text"
+        value={source.key}
+        onChange={e => onChange({ kind: 'event', key: e.target.value.trim() })}
+        placeholder="payload path — e.g. line_items.0.image"
+        className="w-full h-8 px-2 text-xs font-mono border border-border rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent/30"
+      />
+    )}
+    </div>
   )
 }
 
@@ -405,7 +432,9 @@ function extractKeys(...contents: Array<string | null | undefined>): string[] {
   const keys = new Set<string>()
   for (const c of contents) {
     if (!c) continue
-    const matches = c.matchAll(/\{\{(\w+)\}\}/g)
+    // [\w.]+ so dot-path keys ({{line_items.0.image}}) are discovered too —
+    // mirrors the backend interpolateTemplate regex.
+    const matches = c.matchAll(/\{\{([\w.]+)\}\}/g)
     for (const m of matches) keys.add(m[1])
   }
   return [...keys]
