@@ -137,6 +137,26 @@ router.post('/templates/lint', requireProjectId, async (req, res) => {
  *      and the provider's reported status.
  *   4. Return the row so the UI can poll /templates for status updates.
  */
+/**
+ * Meta requires sample media (`example.header_handle`) on media headers and
+ * carousel cards at submission — without it the provider rejects with the
+ * opaque "component of type HEADER is missing expected field(s) (example)".
+ * Returns an actionable message, or null when the template is submittable.
+ */
+function missingMediaSampleError(header: unknown, carousel: unknown): string | null {
+  const h = header as { type?: string; format?: string; example?: string } | null
+  const headerType = h?.type ?? h?.format
+  if (h && headerType && headerType !== 'TEXT' && !String(h.example ?? '').trim()) {
+    return `The ${headerType} header needs sample media for Meta review — upload a file or paste a URL in the builder, then submit again.`
+  }
+  const cards = Array.isArray(carousel) ? carousel as Array<{ headerExample?: string }> : []
+  const missingIdx = cards.findIndex(c => !String(c?.headerExample ?? '').trim())
+  if (missingIdx >= 0) {
+    return `Carousel card ${missingIdx + 1} needs sample media for Meta review — add it in the builder, then submit again.`
+  }
+  return null
+}
+
 router.post('/templates', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
@@ -215,6 +235,14 @@ router.post('/templates', requireProjectId, async (req, res) => {
         success: false,
         error: `Provider '${provider?.name ?? 'none'}' does not support template submission. Submit through the provider's dashboard and run "Sync templates" instead.`,
       })
+    }
+
+    // 2b. Submission-only guard: media headers / carousel cards must carry
+    // sample media, or Meta rejects the whole submission. (Drafts skip this —
+    // they returned above.)
+    const mediaError = missingMediaSampleError(body.header, (body as { carousel?: unknown }).carousel)
+    if (mediaError) {
+      return res.status(400).json({ success: false, error: mediaError })
     }
 
     // 3. Insert PENDING row first so we have a record even if the provider call fails
@@ -327,6 +355,10 @@ router.post('/templates/:id/submit', requireProjectId, async (req, res) => {
     const channelResult = await getChannelProvider(projectId, 'whatsapp')
     if (!channelResult?.provider.submitTemplate) {
       return res.status(400).json({ success: false, error: 'WhatsApp provider not configured or does not support submission' })
+    }
+    const draftMediaError = missingMediaSampleError(tmpl.header, tmpl.carousel)
+    if (draftMediaError) {
+      return res.status(400).json({ success: false, error: draftMediaError })
     }
     const { provider, config } = channelResult
     const raw = tmpl.rawPayload as { bodyExample?: string[]; otp?: SubmitTemplateInput['otp'] } | null

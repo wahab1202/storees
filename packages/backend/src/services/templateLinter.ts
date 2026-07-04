@@ -26,7 +26,7 @@ export type TemplateLintInput = {
   language: string
   category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | string
   bodyText: string
-  header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string } | null
+  header?: { type: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'; text?: string; example?: string } | null
   footer?: string | null
   buttons?: Array<{ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP'; text: string; url?: string; phone?: string; example?: string; otpType?: 'COPY_CODE' | 'ONE_TAP' }>
   carousel?: Array<{ headerType: 'IMAGE' | 'VIDEO'; headerExample?: string; bodyText: string; buttons?: Array<{ type: string; text: string }> }>
@@ -166,13 +166,24 @@ export function lintTemplate(input: TemplateLintInput): TemplateLintFinding[] {
         })
       }
     }
-    // Media headers (IMAGE/VIDEO/DOCUMENT) need a sample asset; we can't check
-    // that here without uploading, but we flag if `text` was provided for media
+    // Media headers (IMAGE/VIDEO/DOCUMENT) need a sample asset; we flag if
+    // `text` was provided for media
     if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(input.header.type) && input.header.text) {
       findings.push({
         code: 'media_header_with_text',
         severity: 'warning',
         message: `${input.header.type} headers don't carry text — the "text" field will be ignored.`,
+      })
+    }
+    // Meta REQUIRES example media on media headers at submission — without it
+    // the provider rejects with "component of type HEADER is missing expected
+    // field(s) (example)". Warning (not error) so drafts stay saveable; the
+    // submit routes hard-block it.
+    if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(input.header.type) && !input.header.example?.trim()) {
+      findings.push({
+        code: 'header_media_sample_missing',
+        severity: 'warning',
+        message: `${input.header.type} headers need sample media for Meta review — upload a file or paste a URL before submitting (drafts are fine without it).`,
       })
     }
   }
@@ -268,6 +279,9 @@ export function lintTemplate(input: TemplateLintInput): TemplateLintFinding[] {
       }
       if ((c.buttons?.length ?? 0) > 2) {
         findings.push({ code: 'carousel_card_too_many_buttons', severity: 'error', message: `Card ${i + 1} may have at most 2 buttons.` })
+      }
+      if (!c.headerExample?.trim()) {
+        findings.push({ code: 'carousel_card_sample_missing', severity: 'warning', message: `Card ${i + 1} needs sample media for Meta review — required at submission (drafts are fine without it).` })
       }
     })
   }
