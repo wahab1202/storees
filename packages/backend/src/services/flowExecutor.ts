@@ -10,6 +10,7 @@ import { evaluateEventFilters, readPath } from '@storees/shared'
 import type {
   FilterConfig,
   FlowNode,
+  HttpRequestNode,
   ActionNode,
   DelayNode,
   ConditionNode,
@@ -203,6 +204,20 @@ export async function advanceTrip(tripId: string): Promise<void> {
         }
         await updateTripNode(tripId, targetNode.id)
         currentNode = targetNode
+        break
+      }
+
+      case 'http_request': {
+        const httpNode = currentNode as HttpRequestNode
+        await executeHttpRequest(httpNode, trip)
+
+        const nextNode = getNextNode(nodes, currentNode.id)
+        if (!nextNode) {
+          await completeTrip(tripId)
+          return
+        }
+        await updateTripNode(tripId, nextNode.id)
+        currentNode = nextNode
         break
       }
 
@@ -621,7 +636,12 @@ async function executeAction(
   const project: ProjectLike = projectRow ?? { id: projectId, name: '' }
   const customerLike = customer as CustomerLike
 
-  const eventProperties = context.triggerProperties as Record<string, unknown> | undefined
+  // Trigger payload + earlier node outputs (http_request responses etc.) —
+  // later nodes read outputs through event dot-paths: node_outputs.<key>.body.x
+  const nodeOutputs = context.node_outputs as Record<string, unknown> | undefined
+  const triggerProps = (context.triggerProperties ?? {}) as Record<string, unknown>
+  const eventProperties: Record<string, unknown> | undefined =
+    nodeOutputs ? { ...triggerProps, node_outputs: nodeOutputs } : (context.triggerProperties as Record<string, unknown> | undefined)
 
   // For email, use the existing direct send path (backward compatible)
   if (channel === 'email') {
@@ -720,4 +740,73 @@ async function executeAction(
   })
 
   console.log(`Action executed: ${actionType} for customer ${customerId} (message: ${messageId ?? 'blocked'})`)
+}
+
+
+/**
+ * http_request node: call an external URL with {{token}}-interpolated url,
+ * headers, and body. The parsed response is written to
+ * trip.context.node_outputs[<outputKey>] = { status, body } so later nodes
+ * can bind to it (event dot-path: node_outputs.<key>.body.…). Failures are
+ * stored ({ status: 0, error }) and the trip continues — an external system
+ * being down must not strand the customer mid-journey.
+ */
+async function executeHttpRequest(node: HttpRequestNode, trip: Record<string, unknown>): Promise<void> {
+  const tripId = trip.id as string
+  const context = (trip.context ?? {}) as Record<string, unknown>
+  const triggerProps = (context.triggerProperties ?? {}) as Record<string, unknown>
+  const priorOutputs = (context.node_outputs ?? {}) as Record<string, unknown>
+
+  // Interpolation context: flat customer basics + nested event/node paths
+  const [customer] = await db
+    .select({ id: customers.id, email: customers.email, phone: customers.phone, name: customers.name, externalId: customers.externalId })
+    .from(customers)
+    .where(eq(customers.id, trip.customerId as string))
+    .limit(1)
+  const interpolationContext: Record<string, unknown> = {
+    customer_id: customer?.id ?? '',
+    customer_email: customer?.email ?? '',
+    customer_phone: customer?.phone ?? '',
+    customer_name: customer?.name ?? '',
+    customer_external_id: customer?.externalId ?? '',
+    event: triggerProps,
+    node_outputs: priorOutputs,
+    ...triggerProps,
+  }
+
+  const cfg = node.config
+  const outputKey = cfg.outputKey?.trim() || node.id
+  let output: Record<string, unknown>
+
+  try {
+    const url = interpolateTemplate(cfg.url, interpolationContext)
+    const method = cfg.method ?? 'POST'
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    for (const h of cfg.headers ?? []) {
+      if (h.key.trim()) headers[h.key.trim()] = interpolateTemplate(h.value ?? '', interpolationContext)
+    }
+    const body = method !== 'GET' && cfg.bodyTemplate
+      ? interpolateTemplate(cfg.bodyTemplate, interpolationContext)
+      : undefined
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), Math.min(30000, cfg.timeoutMs ?? 10000))
+    const resp = await fetch(url, { method, headers, body, signal: controller.signal })
+    clearTimeout(timeout)
+
+    const text = await resp.text()
+    let parsed: unknown = text
+    try { parsed = JSON.parse(text) } catch { /* keep raw text */ }
+    output = { status: resp.status, body: parsed }
+    console.log(`Trip ${tripId}: http_request ${method} ${url} → ${resp.status}`)
+  } catch (err) {
+    output = { status: 0, error: err instanceof Error ? err.message : String(err) }
+    console.error(`Trip ${tripId}: http_request failed —`, err)
+  }
+
+  // Persist the output onto the trip context (and the in-memory copy the
+  // rest of this advanceTrip walk reads)
+  const nextContext = { ...context, node_outputs: { ...priorOutputs, [outputKey]: output } }
+  ;(trip as Record<string, unknown>).context = nextContext
+  await db.update(flowTrips).set({ context: nextContext }).where(eq(flowTrips.id, tripId))
 }

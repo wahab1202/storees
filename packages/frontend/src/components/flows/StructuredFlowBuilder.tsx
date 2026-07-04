@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } fr
 import {
   Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone,
   CircleStop, Plus, Trash2, X, Save, Loader2, AlertCircle,
-  Minus, Maximize2, Shuffle, CornerDownRight, Target,
+  Minus, Maximize2, Shuffle, CornerDownRight, Target, Globe,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { NumberInput } from '@/components/ui/NumberInput'
@@ -36,6 +36,35 @@ type TreeNode = {
   noBranch?: TreeNode[]
 }
 
+/** Two-way splits: condition (Yes/No) and ab_split (A/B). Returns the pair of
+ *  branch-head node ids, or null for linear nodes. */
+function splitTargets(node: FlowNode): [string, string] | null {
+  if (node.type === 'condition') return [node.config.branches?.yes ?? '', node.config.branches?.no ?? '']
+  if (node.type === 'ab_split') {
+    const b = node.config.branches ?? []
+    return [b[0]?.target ?? '', b[1]?.target ?? '']
+  }
+  return null
+}
+
+/** Rewrite a split node's branch pointers (inverse of splitTargets). */
+function withSplitTargets(node: FlowNode, targets: [string, string]): FlowNode {
+  if (node.type === 'condition') {
+    return { ...node, config: { ...node.config, branches: { yes: targets[0], no: targets[1] } } }
+  }
+  if (node.type === 'ab_split') {
+    const b = node.config.branches ?? []
+    const a = b[0] ?? { label: 'A', target: '', weight: 50 }
+    const bb = b[1] ?? { label: 'B', target: '', weight: 50 }
+    return { ...node, config: { ...node.config, branches: [{ ...a, target: targets[0] }, { ...bb, target: targets[1] }] } }
+  }
+  return node
+}
+
+function isSplit(node: FlowNode): boolean {
+  return node.type === 'condition' || node.type === 'ab_split'
+}
+
 function buildTree(nodes: FlowNode[]): TreeNode[] {
   if (nodes.length === 0) return []
   const nodeMap = new Map<string, FlowNode>()
@@ -43,10 +72,8 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
 
   const branchTargets = new Set<string>()
   nodes.forEach(n => {
-    if (n.type === 'condition') {
-      if (n.config.branches?.yes) branchTargets.add(n.config.branches.yes)
-      if (n.config.branches?.no) branchTargets.add(n.config.branches.no)
-    }
+    const t = splitTargets(n)
+    if (t) { if (t[0]) branchTargets.add(t[0]); if (t[1]) branchTargets.add(t[1]) }
   })
 
   function buildChain(startId: string, visited: Set<string>): TreeNode[] {
@@ -57,11 +84,10 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
       if (!fn) break
       visited.add(currentId)
       const tn: TreeNode = { node: fn }
-      if (fn.type === 'condition') {
-        const yesId = fn.config.branches?.yes
-        const noId = fn.config.branches?.no
-        if (yesId && nodeMap.has(yesId)) tn.yesBranch = buildChain(yesId, new Set(visited))
-        if (noId && nodeMap.has(noId)) tn.noBranch = buildChain(noId, new Set(visited))
+      const targets = splitTargets(fn)
+      if (targets) {
+        if (targets[0] && nodeMap.has(targets[0])) tn.yesBranch = buildChain(targets[0], new Set(visited))
+        if (targets[1] && nodeMap.has(targets[1])) tn.noBranch = buildChain(targets[1], new Set(visited))
         chain.push(tn)
         break
       }
@@ -84,11 +110,11 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
 function removeConditionFromTree(chain: TreeNode[], condId: string, keep: 'yes' | 'no' | null): TreeNode[] {
   const out: TreeNode[] = []
   for (const tn of chain) {
-    if (tn.node.id === condId && tn.node.type === 'condition') {
+    if (tn.node.id === condId && isSplit(tn.node)) {
       if (keep) out.push(...(keep === 'yes' ? tn.yesBranch ?? [] : tn.noBranch ?? []))
       continue
     }
-    if (tn.node.type === 'condition') {
+    if (isSplit(tn.node)) {
       out.push({
         ...tn,
         yesBranch: tn.yesBranch ? removeConditionFromTree(tn.yesBranch, condId, keep) : tn.yesBranch,
@@ -110,13 +136,10 @@ function removeConditionFromTree(chain: TreeNode[], condId: string, keep: 'yes' 
 function flattenTree(chain: TreeNode[]): FlowNode[] {
   const out: FlowNode[] = []
   for (const tn of chain) {
-    if (tn.node.type === 'condition') {
+    if (isSplit(tn.node)) {
       const yes = tn.yesBranch ?? []
       const no = tn.noBranch ?? []
-      out.push({
-        ...tn.node,
-        config: { ...tn.node.config, branches: { yes: yes[0]?.node.id ?? '', no: no[0]?.node.id ?? '' } },
-      })
+      out.push(withSplitTargets(tn.node, [yes[0]?.node.id ?? '', no[0]?.node.id ?? '']))
       out.push(...flattenTree(yes), ...flattenTree(no))
     } else {
       out.push(tn.node)
@@ -156,6 +179,7 @@ const NODE_META: Record<string, { icon: typeof Zap; iconColor: string; iconBg: s
   condition:     { icon: GitBranch,      iconColor: 'text-amber-600',   iconBg: 'bg-amber-50',    label: 'Condition' },
   ab_split:      { icon: Shuffle,        iconColor: 'text-fuchsia-600', iconBg: 'bg-fuchsia-50',  label: 'A/B Split' },
   goto:          { icon: CornerDownRight, iconColor: 'text-indigo-600', iconBg: 'bg-indigo-50',   label: 'Goto' },
+  http_request:  { icon: Globe,          iconColor: 'text-sky-600',     iconBg: 'bg-sky-50',      label: 'HTTP Request' },
   send_email:    { icon: Mail,           iconColor: 'text-green-600',   iconBg: 'bg-green-50',    label: 'Email' },
   send_sms:      { icon: MessageSquare,  iconColor: 'text-teal-600',    iconBg: 'bg-teal-50',     label: 'SMS' },
   send_push:     { icon: Bell,           iconColor: 'text-violet-600',  iconBg: 'bg-violet-50',   label: 'Push Notification' },
@@ -213,6 +237,10 @@ function getSubtitle(node: FlowNode): string {
       return branches.map((b) => `${b.label} ${b.weight}%`).join(' · ')
     }
     case 'goto': return node.config?.target ? `→ ${node.config.target}` : 'No target set'
+    case 'http_request': {
+      const url = node.config?.url ?? ''
+      return url ? `${node.config.method ?? 'POST'} ${url.replace(/^https?:\/\//, '').slice(0, 28)}` : 'Configure request'
+    }
     case 'end': return node.label ?? 'End'
     default: return ''
   }
@@ -245,6 +273,8 @@ const ADD_OPTIONS: NodeOption[] = [
   { type: 'condition_attr',     label: 'Check user attribute',  icon: GitBranch,     color: 'text-amber-600',  bg: 'bg-amber-50',  cat: 'Conditions' },
   // Controls
   { type: 'delay',         label: 'Wait for / till',    icon: Clock,         color: 'text-blue-600',    bg: 'bg-blue-50',    cat: 'Controls' },
+  { type: 'ab_split',      label: 'A/B Split',          icon: Shuffle,       color: 'text-fuchsia-600', bg: 'bg-fuchsia-50', cat: 'Controls' },
+  { type: 'http_request',  label: 'HTTP Request',       icon: Globe,         color: 'text-sky-600',     bg: 'bg-sky-50',     cat: 'Controls' },
   { type: 'end',           label: 'Exit',               icon: CircleStop,    color: 'text-red-500',     bg: 'bg-red-50',     cat: 'Controls' },
 ]
 
@@ -426,7 +456,7 @@ function BranchRenderer({ chain, selectedId, onSelect, onDelete, onAddNode, erro
             errors={errors.get(tn.node.id) ?? []}
           />
 
-          {tn.node.type === 'condition' && (
+          {isSplit(tn.node) && (
             <ConditionSplit tn={tn} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
           )}
         </div>
@@ -439,6 +469,15 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
   const condId = tn.node.id
   const yes = tn.yesBranch ?? []
   const no = tn.noBranch ?? []
+  // Label + color per split type: condition = Yes/No, ab_split = A%/B%
+  const isAb = tn.node.type === 'ab_split'
+  const abBranches = isAb && tn.node.type === 'ab_split' ? tn.node.config.branches ?? [] : []
+  const leftLabel = isAb ? `${abBranches[0]?.label ?? 'A'} · ${abBranches[0]?.weight ?? 50}%` : 'Yes'
+  const rightLabel = isAb ? `${abBranches[1]?.label ?? 'B'} · ${abBranches[1]?.weight ?? 50}%` : 'No'
+  const leftCls = isAb ? 'text-fuchsia-600 bg-fuchsia-50 border-fuchsia-200' : 'text-green-600 bg-green-50 border-green-200'
+  const rightCls = isAb ? 'text-sky-600 bg-sky-50 border-sky-200' : 'text-red-600 bg-red-50 border-red-200'
+  const leftBar = isAb ? 'bg-fuchsia-400' : 'bg-green-400'
+  const rightBar = isAb ? 'bg-sky-400' : 'bg-red-400'
 
   // Columns size to their own content (asymmetric is fine). Tick positions are measured so the bar always lands on actual column centers.
   const yesRef = useRef<HTMLDivElement>(null)
@@ -486,20 +525,20 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
         {/* T-connector — tick percentages computed to land on actual column centers */}
         <div className="relative h-5">
           <div className="absolute top-0 h-px bg-gray-300" style={{ left: `${ticks.leftPct}%`, right: `${ticks.rightPct}%` }} />
-          <div className="absolute top-0 w-px h-full bg-green-400" style={{ left: `${ticks.leftPct}%` }} />
-          <div className="absolute top-0 w-px h-full bg-red-400" style={{ right: `${ticks.rightPct}%` }} />
+          <div className={cn('absolute top-0 w-px h-full', leftBar)} style={{ left: `${ticks.leftPct}%` }} />
+          <div className={cn('absolute top-0 w-px h-full', rightBar)} style={{ right: `${ticks.rightPct}%` }} />
         </div>
 
         {/* Columns size to content; flex (not grid) so neither side balloons to match the other */}
         <div className="flex items-start" style={{ minWidth: 540 }}>
           {/* Yes */}
           <div ref={yesRef} className="flex flex-col items-center px-3" style={{ minWidth: 270 }}>
-            <span className="text-[11px] font-bold text-green-600 bg-green-50 border border-green-200 px-2.5 py-px rounded-full">Yes</span>
-            <Connector color="bg-green-400" h="h-3" />
+            <span className={cn('text-[11px] font-bold border px-2.5 py-px rounded-full', leftCls)}>{leftLabel}</span>
+            <Connector color={leftBar} h="h-3" />
             {yes.length > 0 ? (
               <>
                 <BranchRenderer chain={yes} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
-                {yes[yes.length - 1].node.type !== 'end' && yes[yes.length - 1].node.type !== 'condition' && <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />}
+                {yes[yes.length - 1].node.type !== 'end' && !isSplit(yes[yes.length - 1].node) && <AddNodeBtn onAdd={(t) => onAddNode(yes[yes.length - 1].node.id, t, 'yes')} />}
               </>
             ) : (
               <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'yes')} />
@@ -508,12 +547,12 @@ function ConditionSplit({ tn, selectedId, onSelect, onDelete, onAddNode, errors 
 
           {/* No */}
           <div ref={noRef} className="flex flex-col items-center px-3" style={{ minWidth: 270 }}>
-            <span className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 px-2.5 py-px rounded-full">No</span>
-            <Connector color="bg-red-400" h="h-3" />
+            <span className={cn('text-[11px] font-bold border px-2.5 py-px rounded-full', rightCls)}>{rightLabel}</span>
+            <Connector color={rightBar} h="h-3" />
             {no.length > 0 ? (
               <>
                 <BranchRenderer chain={no} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} onAddNode={onAddNode} errors={errors} />
-                {no[no.length - 1].node.type !== 'end' && no[no.length - 1].node.type !== 'condition' && <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />}
+                {no[no.length - 1].node.type !== 'end' && !isSplit(no[no.length - 1].node) && <AddNodeBtn onAdd={(t) => onAddNode(no[no.length - 1].node.id, t, 'no')} />}
               </>
             ) : (
               <AddNodeBtn onAdd={(t) => onAddNode(condId, t, 'no')} />
@@ -565,6 +604,12 @@ function ConfigDrawer({
         )}
         {node.type === 'condition' && (
           <ConditionBlock node={node} onUpdate={onUpdate} events={events} />
+        )}
+        {node.type === 'ab_split' && (
+          <AbSplitBlock node={node} onUpdate={onUpdate} />
+        )}
+        {node.type === 'http_request' && (
+          <HttpRequestBlock node={node} onUpdate={onUpdate} />
         )}
         {node.type === 'end' && (
           <Fld label="Label">
@@ -1089,6 +1134,109 @@ function EventNameSelect({
   )
 }
 
+function AbSplitBlock({ node, onUpdate }: { node: FlowNode & { type: 'ab_split' }; onUpdate: (n: FlowNode) => void }) {
+  const branches = node.config.branches ?? []
+  const a = branches[0] ?? { label: 'A', target: '', weight: 50 }
+  const b = branches[1] ?? { label: 'B', target: '', weight: 50 }
+
+  function setWeight(weightA: number) {
+    const wa = Math.min(99, Math.max(1, Math.round(weightA)))
+    onUpdate({
+      ...node,
+      config: { ...node.config, branches: [{ ...a, weight: wa }, { ...b, weight: 100 - wa }] },
+    } as FlowNode)
+  }
+
+  return (
+    <>
+      <Fld label="Traffic split">
+        <div className="space-y-2">
+          <input
+            type="range"
+            min={1}
+            max={99}
+            value={a.weight}
+            onChange={e => setWeight(parseInt(e.target.value))}
+            className="w-full accent-fuchsia-600"
+          />
+          <div className="flex items-center justify-between text-[11px] font-semibold">
+            <span className="text-fuchsia-600">{a.label}: {a.weight}%</span>
+            <span className="text-sky-600">{b.label}: {b.weight}%</span>
+          </div>
+        </div>
+      </Fld>
+      <p className="text-[11px] text-gray-500 leading-relaxed">
+        Deterministic per customer — the same customer always lands on the same branch, so journeys stay stable across repeat events.
+      </p>
+    </>
+  )
+}
+
+function HttpRequestBlock({ node, onUpdate }: { node: FlowNode & { type: 'http_request' }; onUpdate: (n: FlowNode) => void }) {
+  const cfg = node.config
+  function patch(next: Partial<typeof cfg>) {
+    onUpdate({ ...node, config: { ...cfg, ...next } } as FlowNode)
+  }
+  const headers = cfg.headers ?? []
+
+  return (
+    <>
+      <Fld label="Method + URL">
+        <div className="space-y-1.5">
+          <select value={cfg.method ?? 'POST'} onChange={e => patch({ method: e.target.value as typeof cfg.method })} className={INPUT}>
+            {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <input
+            type="text"
+            value={cfg.url}
+            onChange={e => patch({ url: e.target.value.trim() })}
+            placeholder="https://api.example.com/notify"
+            className={cn(INPUT, 'font-mono !text-[11px]')}
+          />
+        </div>
+      </Fld>
+      <Fld label="Headers">
+        <div className="space-y-1.5">
+          {headers.map((h, i) => (
+            <div key={i} className="flex gap-1.5">
+              <input value={h.key} onChange={e => patch({ headers: headers.map((x, j) => j === i ? { ...x, key: e.target.value } : x) })} placeholder="Header" className={cn(INPUT, '!text-[11px]')} />
+              <input value={h.value} onChange={e => patch({ headers: headers.map((x, j) => j === i ? { ...x, value: e.target.value } : x) })} placeholder="Value" className={cn(INPUT, '!text-[11px]')} />
+              <button onClick={() => patch({ headers: headers.filter((_, j) => j !== i) })} className="p-1 text-gray-400 hover:text-red-500 flex-shrink-0"><X className="h-3 w-3" /></button>
+            </div>
+          ))}
+          <button onClick={() => patch({ headers: [...headers, { key: '', value: '' }] })} className="text-[11px] font-medium text-sky-700 hover:underline">+ Add header</button>
+        </div>
+      </Fld>
+      {(cfg.method ?? 'POST') !== 'GET' && (
+        <Fld label="Body (JSON)">
+          <textarea
+            value={cfg.bodyTemplate ?? ''}
+            onChange={e => patch({ bodyTemplate: e.target.value })}
+            rows={5}
+            placeholder={'{"email": "{{customer_email}}", "cart": "{{event.cart_id}}"}'}
+            className={cn(INPUT, 'font-mono !text-[11px] !h-auto py-2 resize-y')}
+          />
+        </Fld>
+      )}
+      <Fld label="Save response as">
+        <input
+          type="text"
+          value={cfg.outputKey ?? ''}
+          onChange={e => patch({ outputKey: e.target.value.trim() })}
+          placeholder={node.id}
+          className={cn(INPUT, 'font-mono !text-[11px]')}
+        />
+        <p className="mt-1 text-[11px] text-gray-500 leading-relaxed">
+          Later send nodes can bind variables to the response via the event path <code className="bg-gray-100 px-1 rounded text-[10px]">node_outputs.{cfg.outputKey || node.id}.body.…</code>
+        </p>
+      </Fld>
+      <p className="text-[11px] text-gray-500">
+        {'{{customer_email}}, {{event.…}} and {{node_outputs.…}} tokens are substituted in the URL, headers and body. A failed call is recorded and the flow continues.'}
+      </p>
+    </>
+  )
+}
+
 function TriggerKindBlock({ node, onUpdate, events }: { node: FlowNode & { type: 'trigger' }; onUpdate: (n: FlowNode) => void; events: readonly string[] }) {
   const cfg = node.config ?? { event: '' }
   const kind = (cfg.kind as typeof TRIGGER_KINDS[number]['value'] | undefined) ?? 'event'
@@ -1241,6 +1389,11 @@ function validateNodes(nodes: FlowNode[]): Map<string, string[]> {
     if (n.type === 'trigger' && !n.config?.event) add(n.id, 'Select a trigger event')
     if (n.type === 'action' && !n.config.templateId) add(n.id, 'Select a template')
     if (n.type === 'condition' && n.config.check === 'event_occurred' && !n.config.event) add(n.id, 'Select an event to check')
+    if (n.type === 'http_request' && !n.config.url) add(n.id, 'Enter a request URL')
+    if (n.type === 'ab_split') {
+      const sum = (n.config.branches ?? []).reduce((acc, br) => acc + (br.weight || 0), 0)
+      if (sum !== 100) add(n.id, 'Branch weights must sum to 100%')
+    }
   }
   return errs
 }
@@ -1357,25 +1510,26 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
     const preset = CONDITION_PRESETS[optionType]
     const newNode: FlowNode = baseType === 'condition'
       ? { id: nextId('condition'), type: 'condition', config: { check: preset?.check ?? 'event_occurred', event: preset?.event, since: 'trip_start', branches: { yes: '', no: '' } } }
-      : baseType === 'delay'
-        ? { id: nextId('delay'), type: 'delay', config: { value: 30, unit: 'minutes' } }
-        : baseType === 'end'
-          ? { id: nextId('end'), type: 'end', label: 'End' }
-          : { id: nextId('action'), type: 'action', config: { actionType: baseType as 'send_email', templateId: '' } }
+      : baseType === 'ab_split'
+        ? { id: nextId('ab'), type: 'ab_split', config: { branches: [{ label: 'A', target: '', weight: 50 }, { label: 'B', target: '', weight: 50 }] } }
+        : baseType === 'http_request'
+          ? { id: nextId('http'), type: 'http_request', config: { url: '', method: 'POST' } }
+          : baseType === 'delay'
+            ? { id: nextId('delay'), type: 'delay', config: { value: 30, unit: 'minutes' } }
+            : baseType === 'end'
+              ? { id: nextId('end'), type: 'end', label: 'End' }
+              : { id: nextId('action'), type: 'action', config: { actionType: baseType as 'send_email', templateId: '' } }
 
     setNodes(prev => {
       if (branch) {
-        const condIdx = prev.findIndex(n => n.id === afterId && n.type === 'condition')
-        if (condIdx >= 0) {
-          const cond = prev[condIdx]
-          if (cond.type !== 'condition') return prev
-          const updated: FlowNode = {
-            ...cond,
-            config: { ...cond.config, branches: { ...cond.config.branches, [branch]: newNode.id } },
-          }
+        const splitIdx = prev.findIndex(n => n.id === afterId && isSplit(n))
+        if (splitIdx >= 0) {
+          const split = prev[splitIdx]
+          const targets = splitTargets(split) ?? ['', '']
+          const nextTargets: [string, string] = branch === 'yes' ? [newNode.id, targets[1]] : [targets[0], newNode.id]
           const copy = [...prev]
-          copy[condIdx] = updated
-          copy.splice(condIdx + 1, 0, newNode)
+          copy[splitIdx] = withSplitTargets(split, nextTargets)
+          copy.splice(splitIdx + 1, 0, newNode)
           return copy
         }
       }
@@ -1399,13 +1553,10 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   const deleteSimpleNode = useCallback((id: string) => {
     setNodes(prev => {
       const copy = prev.map(n => {
-        if (n.type === 'condition') {
-          const b = { ...n.config.branches }
-          if (b.yes === id) b.yes = ''
-          if (b.no === id) b.no = ''
-          return { ...n, config: { ...n.config, branches: b } }
-        }
-        return n
+        const targets = splitTargets(n)
+        if (!targets) return n
+        if (targets[0] !== id && targets[1] !== id) return n
+        return withSplitTargets(n, [targets[0] === id ? '' : targets[0], targets[1] === id ? '' : targets[1]])
       })
       return copy.filter(n => n.id !== id)
     })
@@ -1414,7 +1565,8 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
 
   const handleDelete = useCallback((id: string) => {
     const target = nodes.find(n => n.id === id)
-    if (target?.type === 'condition' && (target.config.branches.yes || target.config.branches.no)) {
+    const targets = target ? splitTargets(target) : null
+    if (target && targets && (targets[0] || targets[1])) {
       // Branching node with children — the user must decide what survives
       setPendingDeleteId(id)
       return
@@ -1471,7 +1623,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
                 onAddNode={handleAddNode}
                 errors={errors}
               />
-              {tree.length > 0 && tree[tree.length - 1].node.type !== 'condition' && tree[tree.length - 1].node.type !== 'end' && (
+              {tree.length > 0 && !isSplit(tree[tree.length - 1].node) && tree[tree.length - 1].node.type !== 'end' && (
                 <AddNodeBtn onAdd={(t) => handleAddNode(nodes[nodes.length - 1].id, t)} />
               )}
             </div>
@@ -1587,7 +1739,7 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
       {/* Condition-delete decision dialog */}
       {(() => {
         const cond = nodes.find(n => n.id === pendingDeleteId)
-        if (!cond || cond.type !== 'condition') return null
+        if (!cond || !isSplit(cond)) return null
         return (
           <DeleteConditionDialog
             tree={tree}
@@ -1617,12 +1769,15 @@ function DeleteConditionDialog({
   const tn = findTreeNode(tree, condId)
   const yesCount = countSubtree(tn?.yesBranch)
   const noCount = countSubtree(tn?.noBranch)
+  const isAb = tn?.node.type === 'ab_split'
+  const leftName = isAb ? 'A path' : 'Yes path'
+  const rightName = isAb ? 'B path' : 'No path'
 
   return (
     <Dialog
       open
       onClose={onCancel}
-      title="Delete condition split?"
+      title={isAb ? 'Delete A/B split?' : 'Delete condition split?'}
       size="sm"
       footer={
         <div className="flex items-center justify-end gap-2">
@@ -1645,8 +1800,8 @@ function DeleteConditionDialog({
     >
       <div className="p-5 space-y-3">
         <p className="text-xs text-gray-600 leading-relaxed">
-          You&apos;re about to delete a conditional split with nodes on its paths
-          (Yes: {yesCount} node{yesCount === 1 ? '' : 's'}, No: {noCount} node{noCount === 1 ? '' : 's'}).
+          You&apos;re about to delete a split with nodes on its paths
+          ({leftName.replace(' path', '')}: {yesCount} node{yesCount === 1 ? '' : 's'}, {rightName.replace(' path', '')}: {noCount} node{noCount === 1 ? '' : 's'}).
           Choose what happens to them:
         </p>
 
@@ -1681,8 +1836,8 @@ function DeleteConditionDialog({
                 onChange={e => setKeepBranch(e.target.value as 'yes' | 'no')}
                 className="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-md bg-white"
               >
-                <option value="yes">Yes path ({yesCount} node{yesCount === 1 ? '' : 's'})</option>
-                <option value="no">No path ({noCount} node{noCount === 1 ? '' : 's'})</option>
+                <option value="yes">{leftName} ({yesCount} node{yesCount === 1 ? '' : 's'})</option>
+                <option value="no">{rightName} ({noCount} node{noCount === 1 ? '' : 's'})</option>
               </select>
             )}
           </span>

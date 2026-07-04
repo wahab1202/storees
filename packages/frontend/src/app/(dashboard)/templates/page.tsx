@@ -61,6 +61,8 @@ function TemplatesContent() {
   const searchParams = useSearchParams()
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [showNewModal, setShowNewModal] = useState(false)
+  // WhatsApp templates: card grid vs compact table (CleverSend-style list)
+  const [waView, setWaView] = useState<'grid' | 'table'>('grid')
   const [channelFilter, setChannelFilter] = useState<TemplateChannel | 'all'>(
     (searchParams.get('channel') as TemplateChannel) ?? 'all',
   )
@@ -259,16 +261,42 @@ function TemplatesContent() {
       ) : (
         <div className="space-y-4">
           {filteredWa.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {filteredWa.map(t => (
-                <WhatsappTemplateCard
-                  key={t.id}
-                  template={t}
-                  onRefresh={() => refreshWa.mutate(t.id)}
-                  isRefreshing={refreshWa.isPending && refreshWa.variables === t.id}
+            <>
+              <div className="flex justify-end">
+                <div className="inline-flex rounded-lg border border-border overflow-hidden">
+                  {(['grid', 'table'] as const).map(v => (
+                    <button
+                      key={v}
+                      onClick={() => setWaView(v)}
+                      className={cn(
+                        'px-3 py-1 text-[11px] font-medium transition-colors',
+                        waView === v ? 'bg-accent text-white' : 'bg-white text-text-secondary hover:bg-surface',
+                      )}
+                    >
+                      {v === 'grid' ? 'Cards' : 'Table'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {waView === 'grid' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {filteredWa.map(t => (
+                    <WhatsappTemplateCard
+                      key={t.id}
+                      template={t}
+                      onRefresh={() => refreshWa.mutate(t.id)}
+                      isRefreshing={refreshWa.isPending && refreshWa.variables === t.id}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <WhatsappTemplateTable
+                  templates={filteredWa}
+                  onRefresh={id => refreshWa.mutate(id)}
+                  refreshingId={refreshWa.isPending ? (refreshWa.variables as string) : null}
                 />
-              ))}
-            </div>
+              )}
+            </>
           )}
           {filtered.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -391,6 +419,75 @@ function TemplatesContent() {
           </div>
         )}
       </SlidePanel>
+    </div>
+  )
+}
+
+function WhatsappTemplateTable({ templates, onRefresh, refreshingId }: {
+  templates: WhatsappTemplate[]
+  onRefresh: (id: string) => void
+  refreshingId: string | null
+}) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-border bg-white">
+      <table className="w-full text-left">
+        <thead>
+          <tr className="border-b border-border bg-surface text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+            <th className="px-4 py-2.5">Name</th>
+            <th className="px-4 py-2.5">Category</th>
+            <th className="px-4 py-2.5">Language</th>
+            <th className="px-4 py-2.5">Quality</th>
+            <th className="px-4 py-2.5">Status</th>
+            <th className="px-4 py-2.5">Created</th>
+            <th className="px-4 py-2.5" />
+          </tr>
+        </thead>
+        <tbody>
+          {templates.map(t => {
+            const style = WA_STATUS_STYLES[t.status] ?? WA_STATUS_STYLES.PENDING
+            const StatusIcon = style.icon
+            const editable = t.status === 'DRAFT' || t.status === 'REJECTED'
+            const quality = (t.qualityScore ?? '').toUpperCase()
+            return (
+              <tr key={t.id} className="border-b border-border last:border-0 hover:bg-surface/50 transition-colors">
+                <td className="px-4 py-2.5">
+                  <span className="font-mono text-xs text-text-primary">{t.name}</span>
+                  <p className="max-w-[280px] truncate text-[11px] text-text-muted">{t.bodyText}</p>
+                </td>
+                <td className="px-4 py-2.5 text-xs text-text-secondary">{t.category ?? '—'}</td>
+                <td className="px-4 py-2.5 text-xs text-text-secondary">{t.language}</td>
+                <td className="px-4 py-2.5">
+                  {quality && quality !== 'UNKNOWN' ? (
+                    <span className={cn(
+                      'inline-flex h-2.5 w-2.5 rounded-full',
+                      quality === 'GREEN' ? 'bg-emerald-500' : quality === 'YELLOW' ? 'bg-amber-400' : 'bg-red-500',
+                    )} title={quality} />
+                  ) : <span className="text-[11px] text-text-muted">—</span>}
+                </td>
+                <td className="px-4 py-2.5">
+                  <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', style.bg, style.text)}>
+                    <StatusIcon className="h-3 w-3" /> {t.status}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-xs text-text-secondary whitespace-nowrap">
+                  {new Date(t.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  {editable ? (
+                    <Link href={`/templates/whatsapp/${t.id}/edit`} className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover">
+                      <Pencil className="h-3 w-3" /> Edit
+                    </Link>
+                  ) : (
+                    <button onClick={() => onRefresh(t.id)} disabled={refreshingId === t.id} className="inline-flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50">
+                      {refreshingId === t.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />} Refresh
+                    </button>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
