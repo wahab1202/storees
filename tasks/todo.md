@@ -268,3 +268,28 @@
 - [ ] Trigger a hard bounce (send to invalid address) → confirm suppression row created
 - [ ] Trigger complaint via Resend webhook payload → confirm suppression row created
 - [ ] Run two simulated campaigns from different projects in parallel → confirm rate budgets isolate them
+
+## CleverSend parity initiative (2026-07-04) — see docs/CLEVERSEND_GAP_ANALYSIS.md
+
+### Phase 1 — Flow-builder UX core
+- [x] Dialog primitive in components/ui/ (sm/lg/full sizes, focus trap, Escape)
+- [x] Template picker modal: searchable list + live preview (WhatsAppPreview / TemplatePreviewCard)
+- [x] Send-node stepped wizard: Template → Variables (per-node config.variables) → Settings (UTM)
+- [x] Branch-delete modal: delete-all-subsequent vs keep-one-path + orphan cascade cleanup
+- [x] Trigger event picker: observed event names ∪ domain catalog + free-text custom event
+
+### Phase 2 — Binding depth & attribution
+- [ ] Nested dot-path variable resolution (readPath in templateContext, interpolate regex, eventFilters)
+- [ ] UTM on flow sends + UTM baked into tracked WhatsApp short-link destinations
+- [ ] Goal & exit conditions (goal + exits[] with filters) + conversion metric in analytics
+- [ ] Persist + surface WhatsApp template quality rating
+
+### Phase 3 — Custom-events data-source suite
+- [ ] inbound_webhooks + inbound_webhook_events tables + POST /api/hooks/:token
+- [ ] Webhook detail UI: copy URL, historical log, observed schema tab
+- [ ] Schema-inference service (payload → dot-path+type) feeding all field pickers
+- [ ] Event definitions: payload filters + property mapping + user-attribute mapping + identity paths
+- [ ] Segments: generic "performed event with property filters" rule (evaluator + UI)
+
+### Phase 4 — Extended parity (demand-driven)
+- [ ] A/B split in add-menu · HTTP-request node · previous-node-data source · template table view
