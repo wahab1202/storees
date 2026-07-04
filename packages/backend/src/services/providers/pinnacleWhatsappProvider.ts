@@ -9,7 +9,7 @@ import { db } from '../../db/connection.js'
 import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { decrypt } from '../encryption.js'
-import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient } from './whatsappUtils.js'
+import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient, normalizeQualityScore } from './whatsappUtils.js'
 import { buildMetaComponents, parseMetaTemplate, type MetaTemplate } from './metaWhatsappProvider.js'
 
 /**
@@ -166,15 +166,14 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
 
     const isNumeric = /^\d+$/.test(providerTemplateId)
     const url = isNumeric
-      ? `${PINNACLE_BASE}/${providerTemplateId}?fields=name,language,status,category`
-      : `${PINNACLE_BASE}/${wabaId}/message_templates?name=${encodeURIComponent(providerTemplateId)}&fields=name,language,status,category`
+      ? `${PINNACLE_BASE}/${providerTemplateId}?fields=name,language,status,category,quality_score`
+      : `${PINNACLE_BASE}/${wabaId}/message_templates?name=${encodeURIComponent(providerTemplateId)}&fields=name,language,status,category,quality_score`
 
     const resp = await fetch(url, { headers: authHeaders(config) })
     if (!resp.ok) throw new Error(`Pinnacle getTemplateStatus failed: ${await readError(resp)}`)
 
-    const json = await resp.json() as
-      | { name: string; status?: string; category?: string; reason?: string }
-      | { data: Array<{ name: string; status?: string; category?: string; reason?: string }> }
+    type TplStatus = { name: string; status?: string; category?: string; reason?: string; quality_score?: unknown }
+    const json = await resp.json() as TplStatus | { data: TplStatus[] }
 
     const t = 'data' in json ? json.data?.[0] : json
     if (!t) throw new Error(`Pinnacle getTemplateStatus: template "${providerTemplateId}" not found`)
@@ -183,6 +182,7 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
       status: (t.status ?? 'PENDING').toUpperCase(),
       category: t.category,
       rejectionReason: t.reason ?? null,
+      qualityScore: normalizeQualityScore(t.quality_score),
     }
   },
 
@@ -196,7 +196,7 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
     if (!wabaId) throw new Error('Pinnacle syncTemplates: wabaId required')
 
     const all: ProviderTemplate[] = []
-    let url: string = `${PINNACLE_BASE}/${wabaId}/message_templates?limit=100`
+    let url: string = `${PINNACLE_BASE}/${wabaId}/message_templates?limit=100&fields=name,language,status,category,quality_score,components`
     while (url) {
       const resp = await fetch(url, { headers: authHeaders(config) })
       if (!resp.ok) throw new Error(`Pinnacle syncTemplates failed: ${await readError(resp)}`)

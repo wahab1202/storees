@@ -104,3 +104,16 @@ export function buildTemplateComponents(command: SendTemplateCommand): Array<Rec
 
   return components
 }
+
+/**
+ * Meta returns `quality_score` either as a plain string or as an object
+ * `{ score: 'GREEN', date: … }` depending on endpoint/version. Normalize to
+ * the bare uppercase rating, or null when absent.
+ */
+export function normalizeQualityScore(raw: unknown): string | null {
+  if (!raw) return null
+  const score = typeof raw === 'object' && raw !== null && 'score' in raw
+    ? (raw as { score?: unknown }).score
+    : raw
+  return typeof score === 'string' && score.trim() ? score.trim().toUpperCase() : null
+}

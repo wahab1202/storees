@@ -403,6 +403,13 @@ function WhatsappTemplateCard({ template: t, onRefresh, isRefreshing }: {
   const style = WA_STATUS_STYLES[t.status] ?? WA_STATUS_STYLES.PENDING
   const StatusIcon = style.icon
   const editable = t.status === 'DRAFT' || t.status === 'REJECTED'
+  // Meta quality rating — populated by status refresh / poll / sync
+  const quality = (t.qualityScore ?? '').toUpperCase()
+  const qualityStyle =
+    quality === 'GREEN' ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    : quality === 'YELLOW' ? 'bg-amber-50 text-amber-700 border-amber-200'
+    : quality === 'RED' ? 'bg-red-50 text-red-700 border-red-200'
+    : 'bg-gray-50 text-gray-500 border-gray-200'
 
   return (
     <div className="flex flex-col rounded-xl border border-border bg-white p-4 transition-shadow hover:shadow-sm">
@@ -413,9 +420,19 @@ function WhatsappTemplateCard({ template: t, onRefresh, isRefreshing }: {
           </div>
           <p className="truncate font-mono text-xs text-text-primary" title={t.name}>{t.name}</p>
         </div>
-        <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', style.bg, style.text)}>
-          <StatusIcon className="h-3 w-3" /> {t.status}
-        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {quality && quality !== 'UNKNOWN' && (
+            <span
+              className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium', qualityStyle)}
+              title="Meta quality rating — how recipients engage with this template"
+            >
+              Quality: {quality}
+            </span>
+          )}
+          <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', style.bg, style.text)}>
+            <StatusIcon className="h-3 w-3" /> {t.status}
+          </span>
+        </div>
       </div>
       <p className="mb-3 line-clamp-3 min-h-[3rem] text-xs text-text-secondary">{t.bodyText}</p>
       {t.rejectionReason && <p className="mb-2 line-clamp-2 text-[11px] text-red-600">{t.rejectionReason}</p>}
