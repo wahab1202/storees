@@ -30,6 +30,7 @@ import {
   SignOut as LogOut,
   ShieldCheck,
   UserCircle,
+  PlugsConnected as Webhook,
 } from '@phosphor-icons/react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -54,6 +55,7 @@ const navItems: NavItem[] = [
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
+  { href: '/event-sources', label: 'Event Sources', icon: Webhook, adminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
   { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]

@@ -3,7 +3,7 @@ import { projects } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { getDomainFields } from './domainRegistry.js'
 import { getProjectFieldDefs } from './agentFieldDefs.js'
-import type { DomainType, DomainFieldDef, FilterConfig, FilterRule, FilterGroup, AggregateRule } from '@storees/shared'
+import type { DomainType, DomainFieldDef, FilterConfig, FilterRule, FilterGroup, AggregateRule , EventOccurrenceRule } from '@storees/shared'
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 const GROQ_MODEL = 'llama-3.3-70b-versatile'
@@ -198,7 +198,11 @@ function generateSummary(filters: AiSegmentResult['filters'], fields: DomainFiel
   const AGG_FN_LABEL: Record<string, string> = { SUM: 'sum of', COUNT: 'count of', COUNT_DISTINCT: 'distinct count of', AVG: 'average', MIN: 'min', MAX: 'max' }
   const AGG_OP_LABEL: Record<string, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤', is: '=', between: 'between' }
 
-  const describe = (item: FilterRule | FilterGroup | AggregateRule): string => {
+  const describe = (item: FilterRule | FilterGroup | AggregateRule | EventOccurrenceRule): string => {
+    if ('type' in item && item.type === 'event') {
+      const tf = item.timeframeDays ? ` in last ${item.timeframeDays}d` : ''
+      return `performed ${item.event} ${item.countOp.replace('_', ' ')} ${item.count}×${tf}`
+    }
     if ('type' in item && item.type === 'group') {
       return `(${item.rules.map(describe).join(item.logic === 'OR' ? ' or ' : ' and ')})`
     }

@@ -8,13 +8,14 @@ import { NumberInput } from '@/components/ui/NumberInput'
 import { useProducts, useCollections, useProductCategories } from '@/hooks/useProducts'
 import { useCustomers } from '@/hooks/useCustomers'
 import { useDomainSchema } from '@/hooks/useDomainSchema'
-import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef, AggregateRule } from '@storees/shared'
+import type { FilterConfig, FilterRule, FilterGroup, FilterOperator, DomainFieldDef, AggregateRule, EventOccurrenceRule } from '@storees/shared'
+import { useEventNames } from '@/hooks/useEvents'
 
 // Recursive nesting depth cap. Past 3 levels the UX is unreadable; almost
 // every real-world segment can be expressed in ≤2 levels anyway.
 const MAX_NESTING_DEPTH = 3
 
-type RuleOrGroup = FilterRule | FilterGroup | AggregateRule
+type RuleOrGroup = FilterRule | FilterGroup | AggregateRule | EventOccurrenceRule
 
 function isGroup(item: RuleOrGroup): item is FilterGroup {
   return 'type' in item && item.type === 'group'
@@ -22,6 +23,10 @@ function isGroup(item: RuleOrGroup): item is FilterGroup {
 
 function isAggregate(item: RuleOrGroup): item is AggregateRule {
   return 'type' in item && item.type === 'aggregate'
+}
+
+function isEventRule(item: RuleOrGroup): item is EventOccurrenceRule {
+  return 'type' in item && item.type === 'event'
 }
 
 const OPERATORS_BY_TYPE: Record<string, { value: FilterOperator; label: string }[]> = {
@@ -604,6 +609,126 @@ const AGG_COMPARE: { value: AggregateRule['operator']; label: string }[] = [
   { value: 'lt', label: 'less than' }, { value: 'lte', label: 'at most' }, { value: 'between', label: 'between' },
 ]
 
+function defaultEventRule(): EventOccurrenceRule {
+  return { type: 'event', event: '', countOp: 'at_least', count: 1, where: [] }
+}
+
+const EVENT_COUNT_OPS: { value: EventOccurrenceRule['countOp']; label: string }[] = [
+  { value: 'at_least', label: 'at least' },
+  { value: 'at_most', label: 'at most' },
+  { value: 'exactly', label: 'exactly' },
+]
+
+const EVENT_WHERE_OPS: { value: FilterOperator; label: string }[] = [
+  { value: 'is', label: 'is' }, { value: 'is_not', label: 'is not' },
+  { value: 'greater_than', label: 'greater than' }, { value: 'less_than', label: 'less than' },
+  { value: 'contains', label: 'contains' },
+  { value: 'is_true', label: 'is true' }, { value: 'is_false', label: 'is false' },
+]
+
+function eventRuleSummary(rule: EventOccurrenceRule): string {
+  const op = EVENT_COUNT_OPS.find(o => o.value === rule.countOp)?.label ?? rule.countOp
+  const tf = rule.timeframeDays ? ` in the last ${rule.timeframeDays} days` : ''
+  const where = (rule.where ?? []).length > 0 ? ` where ${(rule.where ?? []).map(f => `${f.field} ${f.operator.replace(/_/g, ' ')} ${f.value}`).join(' and ')}` : ''
+  return `performed ${rule.event || '<event>'} ${op} ${rule.count}×${tf}${where}`
+}
+
+/** "Performed <event> ≥N times in <window> where <props>" — the generic
+ *  behavioural rule that makes ARBITRARY custom events segmentable. */
+function EventOccurrenceCard({ rule, onChange, onRemove }: {
+  rule: EventOccurrenceRule; onChange: (r: EventOccurrenceRule) => void; onRemove: () => void
+}) {
+  const { data: namesResp } = useEventNames()
+  const names = namesResp?.data ?? []
+  const known = !rule.event || names.includes(rule.event)
+  const [customMode, setCustomMode] = useState(false)
+  const custom = customMode || !known
+  const where = rule.where ?? []
+  const patch = (next: Partial<EventOccurrenceRule>) => onChange({ ...rule, ...next })
+  const inputCls = 'h-8 px-2 text-xs border border-border rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent/30'
+
+  return (
+    <div className="rounded-xl border border-teal-300/60 bg-teal-50/30 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-teal-100 text-teal-700">Behaviour · performed event</span>
+        <button onClick={onRemove} className="p-1 rounded-md text-text-muted hover:text-red-500 hover:bg-red-50" aria-label="Remove condition">
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-text-secondary">Performed</span>
+        <select
+          value={custom ? '__custom__' : rule.event}
+          onChange={e => {
+            if (e.target.value === '__custom__') { setCustomMode(true); return }
+            setCustomMode(false)
+            patch({ event: e.target.value })
+          }}
+          className={cn(inputCls, 'min-w-[180px]')}
+        >
+          <option value="">Select event…</option>
+          {names.map(n => <option key={n} value={n}>{n}</option>)}
+          <option value="__custom__">Custom event name…</option>
+        </select>
+        {custom && (
+          <input
+            value={rule.event}
+            onChange={e => patch({ event: e.target.value.trim() })}
+            placeholder="event_name"
+            className={cn(inputCls, 'w-44 font-mono')}
+          />
+        )}
+        <select value={rule.countOp} onChange={e => patch({ countOp: e.target.value as EventOccurrenceRule['countOp'] })} className={inputCls}>
+          {EVENT_COUNT_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <NumberInput min={0} value={rule.count} onChange={n => patch({ count: n ?? 0 })} className={cn(inputCls, '!w-16')} />
+        <span className="text-xs text-text-secondary">times, in the last</span>
+        <NumberInput min={0} value={rule.timeframeDays} onChange={n => patch({ timeframeDays: n && n > 0 ? n : undefined })} className={cn(inputCls, '!w-16')} />
+        <span className="text-xs text-text-secondary">days <span className="text-text-muted">(blank = all time)</span></span>
+      </div>
+
+      <div className="space-y-1.5">
+        {where.map((f, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <span className="text-[11px] text-text-muted flex-shrink-0">{i === 0 ? 'where' : 'and'}</span>
+            <input
+              value={f.field}
+              onChange={e => patch({ where: where.map((x, j) => j === i ? { ...x, field: e.target.value.trim() } : x) })}
+              placeholder="property path — e.g. cart_value or line_items.0.price"
+              className={cn(inputCls, 'flex-1 min-w-0 font-mono')}
+            />
+            <select
+              value={f.operator}
+              onChange={e => patch({ where: where.map((x, j) => j === i ? { ...x, operator: e.target.value as FilterOperator } : x) })}
+              className={cn(inputCls, 'flex-shrink-0')}
+            >
+              {EVENT_WHERE_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            {!['is_true', 'is_false'].includes(f.operator) && (
+              <input
+                value={String(f.value ?? '')}
+                onChange={e => patch({ where: where.map((x, j) => j === i ? { ...x, value: e.target.value } : x) })}
+                placeholder="value"
+                className={cn(inputCls, '!w-28 flex-shrink-0')}
+              />
+            )}
+            <button onClick={() => patch({ where: where.filter((_, j) => j !== i) })} className="p-1 text-text-muted hover:text-red-500" aria-label="Remove property filter">
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+        <button
+          onClick={() => patch({ where: [...where, { field: '', operator: 'is', value: '' }] })}
+          className="text-[11px] font-medium text-teal-700 hover:underline"
+        >
+          + Property filter
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function defaultAggregateRule(): AggregateRule {
   return {
     type: 'aggregate', source: 'order_fulfilled',
@@ -824,6 +949,10 @@ function GroupBuilder({
     onChange({ ...group, rules: [...rules, defaultAggregateRule()] })
   }
 
+  const addEventRule = () => {
+    onChange({ ...group, rules: [...rules, defaultEventRule()] })
+  }
+
   // Condition-type fork (spec §3.3): Attribute vs Behaviour, chosen before any form.
   const [picking, setPicking] = useState(false)
 
@@ -916,6 +1045,8 @@ function GroupBuilder({
               />
             ) : isAggregate(item) ? (
               <AggregateCard rule={item} onChange={u => updateItem(index, u)} onRemove={() => removeItem(index)} />
+            ) : isEventRule(item) ? (
+              <EventOccurrenceCard rule={item} onChange={u => updateItem(index, u)} onRemove={() => removeItem(index)} />
             ) : (
               <RuleRow
                 rule={item}
@@ -943,6 +1074,12 @@ function GroupBuilder({
               className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-violet-700 border border-dashed border-violet-400/50 rounded-lg hover:bg-violet-50 transition-colors"
             >
               Behaviour the customer performed
+            </button>
+            <button
+              onClick={() => { addEventRule(); setPicking(false) }}
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-teal-700 border border-dashed border-teal-400/50 rounded-lg hover:bg-teal-50 transition-colors"
+            >
+              Performed a specific event
             </button>
             <button onClick={() => setPicking(false)} className="text-xs text-text-muted hover:text-text-primary px-1.5">Cancel</button>
           </>
@@ -1046,6 +1183,9 @@ function summariseRules(items: RuleOrGroup[], logic: 'AND' | 'OR'): string {
     if (isAggregate(item)) {
       return aggregateSummary(item)
     }
+    if (isEventRule(item)) {
+      return eventRuleSummary(item)
+    }
     const field = item.field.replace(/_/g, ' ')
     const opLabel = item.operator.replace(/_/g, ' ')
     if (['is_true', 'is_false'].includes(item.operator)) return `${field} ${opLabel}`
@@ -1111,7 +1251,7 @@ export function validateFilterConfig(filters: FilterConfig): FilterValidation {
     }
   }
 
-  const walk = (items: (FilterRule | FilterGroup | AggregateRule)[], isRoot: boolean) => {
+  const walk = (items: RuleOrGroup[], isRoot: boolean) => {
     if (items.length === 0) {
       errors.push(isRoot ? 'Add at least one condition.' : 'A group has no conditions — add one or remove the group.')
       return
@@ -1119,6 +1259,9 @@ export function validateFilterConfig(filters: FilterConfig): FilterValidation {
     for (const item of items) {
       if (isGroup(item)) walk(item.rules, false)
       else if (isAggregate(item)) visitAggregate(item)
+      else if (isEventRule(item)) {
+        if (!item.event) errors.push('A "performed event" condition needs an event name.')
+      }
       else visitRule(item)
     }
   }

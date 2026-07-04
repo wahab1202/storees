@@ -438,7 +438,7 @@ export type CustomerSegment = {
 
 export type FilterConfig = {
   logic: 'AND' | 'OR'
-  rules: (FilterRule | FilterGroup | AggregateRule)[]
+  rules: (FilterRule | FilterGroup | AggregateRule | EventOccurrenceRule)[]
 }
 
 /** Nested group — allows AND within OR and vice versa.
@@ -456,7 +456,7 @@ export type FilterGroup = {
    *    order_placed events. Lets a marketer express "≥ ₹10,000 *in* category X,
    *    *between* two dates" without false matches across separate orders. */
   scope?: 'default' | 'same_order'
-  rules: (FilterRule | FilterGroup | AggregateRule)[]
+  rules: (FilterRule | FilterGroup | AggregateRule | EventOccurrenceRule)[]
 }
 
 export type FilterRule = {
@@ -580,6 +580,7 @@ export type FlowNode =
   | ActionNode
   | AbSplitNode
   | GotoNode
+  | HttpRequestNode
   | EndNode
 
 export type TriggerNode = {
@@ -668,6 +669,29 @@ export type GotoNode = {
   type: 'goto'
   config: {
     target: string              // node id to jump to
+  }
+}
+
+/**
+ * Outbound HTTP call mid-flow (CleverSend "HTTP Request" node). URL, headers
+ * and body support {{token}} interpolation (dot-paths reach the trigger
+ * payload via {{event.…}} and earlier node outputs via {{node_outputs.…}}).
+ * The parsed response is stored on the trip context under
+ * node_outputs.<outputKey>, readable by later nodes through event dot-paths.
+ * Failures never crash the trip — the error is stored and the flow continues.
+ */
+export type HttpRequestNode = {
+  id: string
+  type: 'http_request'
+  config: {
+    url: string
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+    headers?: Array<{ key: string; value: string }>
+    /** Raw body template (JSON expected) — sent for non-GET methods. */
+    bodyTemplate?: string
+    /** Context key for the response (defaults to the node id). */
+    outputKey?: string
+    timeoutMs?: number
   }
 }
 
@@ -1269,4 +1293,88 @@ export type PredictionGoalDetail = PredictionGoal & {
   quality: PredictionQuality | null
   distribution: { bucket: string; count: number }[]
   topFeatures: { name: string; importance: number }[]
+}
+
+// ============ INBOUND WEBHOOK DATA SOURCES (CleverSend parity) ============
+
+export type InboundWebhookStatus = 'active' | 'paused'
+
+export type InboundWebhook = {
+  id: string
+  projectId: string
+  name: string
+  /** URL-embedded secret — the receive URL is /api/hooks/<token>. */
+  token: string
+  status: InboundWebhookStatus
+  lastReceivedAt: string | null
+  createdAt: string
+  updatedAt: string
+  /** Computed on list reads — payloads received in the last 24h. */
+  received24h?: number
+}
+
+export type InboundWebhookEvent = {
+  id: string
+  webhookId: string
+  headers: Record<string, unknown>
+  payload: Record<string, unknown>
+  matchedDefinitions: Array<{ definitionId: string; eventName: string }>
+  status: 'processed' | 'no_match' | 'error' | 'received'
+  error: string | null
+  receivedAt: string
+}
+
+/** One observed dot-path in received payloads + its inferred type. */
+export type PayloadSchemaField = {
+  path: string                       // e.g. body.line_items.0.image
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null'
+  sample?: string
+}
+
+/** payload path → event property name */
+export type EventPropertyMapping = { path: string; property: string }
+/** payload path → customer profile target ('phone' | 'email' | 'name' | 'region' | 'city' or a custom-attribute key) */
+export type CustomerAttributeMapping = { path: string; attribute: string }
+
+export type EventDefinitionIdentityPaths = {
+  email?: string
+  phone?: string
+  externalId?: string
+  sessionId?: string
+  name?: string
+}
+
+/**
+ * Extracts a named event from webhook payloads. `filters` run over
+ * `{ body, headers }` (dot-paths); a match emits `name` into the normal
+ * event pipeline with mapped properties, plus optional profile updates.
+ */
+export type EventDefinition = {
+  id: string
+  projectId: string
+  webhookId: string
+  name: string
+  filters: FilterConfig | null
+  propertyMappings: EventPropertyMapping[]
+  attributeMappings: CustomerAttributeMapping[]
+  identityPaths: EventDefinitionIdentityPaths | null
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * Segment rule: "performed <event> <countOp> <count> times in <timeframe>
+ * where <property filters>". Compiled to an EXISTS/COUNT subquery over the
+ * events table — makes arbitrary custom events segmentable.
+ */
+export type EventOccurrenceRule = {
+  type: 'event'
+  event: string
+  countOp: 'at_least' | 'at_most' | 'exactly'
+  count: number
+  /** Only count events in the last N days. Omit = all time. */
+  timeframeDays?: number
+  /** Property filters on events.properties (dot-paths supported). AND-only. */
+  where?: FilterRule[]
 }

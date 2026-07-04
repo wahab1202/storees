@@ -41,6 +41,8 @@ import webhookSubscriptionRoutes from './routes/webhookSubscriptions.js'
 import adConversionRoutes from './routes/adConversions.js'
 import v1InAppMessageRoutes from './routes/v1InAppMessages.js'
 import urlTrackerRoutes from './routes/urlTracker.js'
+import hooksRoutes from './routes/hooks.js'
+import inboundWebhookRoutes from './routes/inboundWebhooks.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
@@ -147,6 +149,9 @@ app.use('/api/v1', v1EventRoutes)
 app.use('/api/v1', v1ImportRoutes)
 app.use('/api/v1', v1OptInRoutes)
 
+// Inbound-webhook receiver — public; the URL token is the auth
+app.use('/api/hooks', hooksRoutes)
+
 // Click redirect — public. /c is the short form baked into WhatsApp button URLs;
 // /api/t is the legacy alias. Both resolve via the durable short-link service.
 app.use('/c', urlTrackerRoutes)
@@ -166,6 +171,7 @@ app.use('/api/segments', requireAuth, segmentRoutes)
 app.use('/api/dashboard', requireAuth, dashboardRoutes)
 app.use('/api/flows', requireAuth, flowRoutes)
 app.use('/api/events', requireAuth, eventRoutes)
+app.use('/api/inbound-webhooks', requireAuth, inboundWebhookRoutes)
 app.use('/api/ai', requireAuth, aiRoutes)
 app.use('/api/products', requireAuth, productRoutes)
 app.use('/api/campaigns', requireAuth, campaignRoutes)
