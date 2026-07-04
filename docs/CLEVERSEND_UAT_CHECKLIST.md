@@ -509,6 +509,22 @@ branch shows an empty + button. Nothing disappears, before or after reload. Repe
 a condition) heals itself when you open it — the hidden steps reappear under the
 split's Yes path. Save the flow to persist the repair.
 
+## Scenario 51 — Header & button bindings in the flow wizard
+1. Open a WhatsApp send node's wizard → select a template that has a media header
+   and/or buttons → step ② Variables.
+2. Look below the `{{n}}` rows for a **Header & buttons** section.
+
+**Outcome:** every dynamic piece of the template appears:
+- media header → editable row (defaults to the approved sample URL; bind a payload
+  image via "Event payload path…", e.g. `line_items.0.image`)
+- URL button with Track clicks → info row "Tracked — short link generated automatically"
+- static URL button → info row "Fixed URL, baked in at Meta approval"
+- dynamic URL button (`{{1}}` suffix) → editable "URL suffix" row
+- copy-code button → editable coupon-code row
+- call / quick-reply buttons → info rows ("nothing to bind")
+Nothing about the template is invisible anymore. Bindings persist across
+Save → reload like scenario 9.
+
 ---
 
 **Feedback format:** scenario number + the step where it broke + what you saw instead
