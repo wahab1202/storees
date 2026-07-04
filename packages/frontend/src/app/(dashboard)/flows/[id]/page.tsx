@@ -9,7 +9,7 @@ import { FlowAnalyticsPanel } from '@/components/flows/FlowAnalyticsPanel'
 import { FlowDebugPanel } from '@/components/flows/FlowDebugPanel'
 import { Loader2, ArrowLeft, Play, Pause, GitBranch, BarChart3, Copy, Bug } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { FlowNode, ExitConfig } from '@storees/shared'
+import type { FlowNode, ExitConfig, GoalConfig } from '@storees/shared'
 
 type FlowTab = 'builder' | 'analytics' | 'debug'
 
@@ -24,14 +24,14 @@ export default function FlowDetailPage() {
   const updateStatus = useUpdateFlowStatus()
   const cloneFlow = useCloneFlow()
 
-  const handleSave = (nodes: FlowNode[], exitConfig: ExitConfig | null) => {
+  const handleSave = (nodes: FlowNode[], exitConfig: ExitConfig[] | null, goalConfig: GoalConfig | null) => {
     // Extract trigger node config so the runtime-evaluator sees changes
     // (the flow's triggerConfig column is the source of truth, separate
     // from the visual node config). Gap 11 made this critical because
     // the trigger now has a 'kind' field plus per-kind sub-configs.
     const triggerNode = nodes.find((n): n is FlowNode & { type: 'trigger' } => n.type === 'trigger')
     const triggerConfig = triggerNode?.config ?? undefined
-    updateFlow.mutate({ id, nodes, exitConfig, triggerConfig })
+    updateFlow.mutate({ id, nodes, exitConfig, goalConfig, triggerConfig })
   }
 
   if (isLoading) {
@@ -146,7 +146,8 @@ export default function FlowDetailPage() {
         {activeTab === 'builder' && (
           <StructuredFlowBuilder
             flowNodes={flow.nodes as FlowNode[]}
-            exitConfig={flow.exitConfig as ExitConfig | null}
+            exitConfig={flow.exitConfig as ExitConfig | ExitConfig[] | null}
+            goalConfig={(flow as { goalConfig?: GoalConfig | null }).goalConfig ?? null}
             onSave={handleSave}
             saving={updateFlow.isPending}
             domainType={statsData?.data.domainType}

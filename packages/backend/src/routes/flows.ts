@@ -224,12 +224,12 @@ router.patch('/:id/status', requireProjectId, async (req: AuthenticatedRequest, 
 })
 
 // PATCH /api/flows/:id?projectId=...
-// Body: { name?, description?, nodes?, triggerConfig?, exitConfig? }
+// Body: { name?, description?, nodes?, triggerConfig?, exitConfig?, goalConfig? }
 router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
-    const { name, description, nodes, triggerConfig, exitConfig } = req.body
+    const { name, description, nodes, triggerConfig, exitConfig, goalConfig } = req.body
 
     const [existing] = await db
       .select()
@@ -246,6 +246,7 @@ router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) =>
     if (nodes !== undefined) updates.nodes = nodes
     if (triggerConfig !== undefined) updates.triggerConfig = triggerConfig
     if (exitConfig !== undefined) updates.exitConfig = exitConfig
+    if (goalConfig !== undefined) updates.goalConfig = goalConfig
 
     const [updated] = await db
       .update(flows)
@@ -494,6 +495,7 @@ router.post('/:id/clone', requireProjectId, async (req: AuthenticatedRequest, re
       description: existing.description,
       triggerConfig: existing.triggerConfig,
       exitConfig: existing.exitConfig,
+      goalConfig: existing.goalConfig,
       nodes: existing.nodes,
       status: 'draft',
       createdByAgentId: cloneOwner,

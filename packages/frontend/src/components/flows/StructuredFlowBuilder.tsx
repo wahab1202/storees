@@ -3,13 +3,13 @@
 import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import {
   Zap, Clock, GitBranch, Mail, MessageSquare, Bell, Phone,
-  CircleStop, Plus, Trash2, LogOut, X, Save, Loader2, AlertCircle,
-  Minus, Maximize2, Shuffle, CornerDownRight,
+  CircleStop, Plus, Trash2, X, Save, Loader2, AlertCircle,
+  Minus, Maximize2, Shuffle, CornerDownRight, Target,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { NumberInput } from '@/components/ui/NumberInput'
 import { EVENTS_BY_DOMAIN, getEventProperties } from '@storees/shared'
-import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
+import type { FlowNode, ExitConfig, GoalConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
 import { useVariableSources } from '@/hooks/useTemplates'
 import { useEventNames } from '@/hooks/useEvents'
 import { useProducts, useCollections } from '@/hooks/useProducts'
@@ -20,8 +20,10 @@ import { Dialog } from '@/components/ui/Dialog'
 
 type Props = {
   flowNodes: FlowNode[]
-  exitConfig?: ExitConfig | null
-  onSave: (nodes: FlowNode[], exitConfig: ExitConfig | null) => void
+  /** Single (legacy) or multiple exits — normalized to an array internally. */
+  exitConfig?: ExitConfig | ExitConfig[] | null
+  goalConfig?: GoalConfig | null
+  onSave: (nodes: FlowNode[], exitConfig: ExitConfig[] | null, goalConfig: GoalConfig | null) => void
   saving?: boolean
   domainType?: string
 }
@@ -778,21 +780,21 @@ export function TriggerFiltersBlock({
             : rule.field === 'collection_id' ? 'collection' as const
             : undefined)
         const unary = isUnaryOperator(rule.operator)
+        // Fields outside the known options are custom payload paths (may be
+        // dotted, e.g. line_items.0.price) — edited via a free-text input.
+        const isCustomField = !propertyOptions.includes(rule.field)
         return (
           <div key={idx} className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1.5">
             <div className="flex items-center gap-1.5">
               <select
-                value={rule.field}
-                onChange={(e) => updateRule(idx, { field: e.target.value })}
+                value={isCustomField ? '__custom__' : rule.field}
+                onChange={(e) => updateRule(idx, { field: e.target.value === '__custom__' ? '' : e.target.value })}
                 className="flex-1 min-w-0 text-[11px] h-7 px-1.5 border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
               >
-                {propertyOptions.length === 0 && <option value="">No properties yet</option>}
                 {propertyOptions.map(prop => (
                   <option key={prop} value={prop}>{prop}</option>
                 ))}
-                {rule.field && !propertyOptions.includes(rule.field) && (
-                  <option value={rule.field}>{rule.field}</option>
-                )}
+                <option value="__custom__">Custom property path…</option>
               </select>
               <button
                 type="button"
@@ -803,6 +805,15 @@ export function TriggerFiltersBlock({
                 <X className="h-3 w-3" />
               </button>
             </div>
+            {isCustomField && (
+              <input
+                type="text"
+                value={rule.field}
+                onChange={(e) => updateRule(idx, { field: e.target.value.trim() })}
+                placeholder="payload path — e.g. line_items.0.price"
+                className="w-full text-[11px] h-7 px-1.5 font-mono border border-gray-200 rounded bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            )}
             <div className="flex items-center gap-1.5">
               <select
                 value={rule.operator}
@@ -1236,14 +1247,18 @@ function validateNodes(nodes: FlowNode[]): Map<string, string[]> {
 
 // ─── Main ───────────────────────────────────────────────
 
-export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig, onSave, saving, domainType = 'ecommerce' }: Props) {
+export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig, goalConfig: initialGoalConfig, onSave, saving, domainType = 'ecommerce' }: Props) {
   const [nodes, setNodes] = useState<FlowNode[]>(flowNodes)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // Action nodes configure in the stepped modal, not the drawer
   const [actionNodeId, setActionNodeId] = useState<string | null>(null)
   // Condition delete needs a decision (keep a path vs delete subtree)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
-  const [exitEvent, setExitEvent] = useState(initialExitConfig?.event ?? '')
+  // Goal & exits — legacy single exit normalizes to a one-element array
+  const [exits, setExits] = useState<ExitConfig[]>(() =>
+    Array.isArray(initialExitConfig) ? initialExitConfig : initialExitConfig ? [initialExitConfig] : [])
+  const [goal, setGoal] = useState<GoalConfig | null>(initialGoalConfig ?? null)
+  const [goalExitOpen, setGoalExitOpen] = useState(false)
   const [zoom, setZoom] = useState(1)
   const zoomRef = useRef(zoom)
   useEffect(() => { zoomRef.current = zoom }, [zoom])
@@ -1419,7 +1434,8 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
   }, [])
 
   const handleSave = () => {
-    onSave(nodes, exitEvent ? { event: exitEvent, scope: 'any' } : null)
+    const cleanExits = exits.filter(x => x.event)
+    onSave(nodes, cleanExits.length > 0 ? cleanExits : null, goal?.event ? goal : null)
   }
 
   return (
@@ -1501,20 +1517,19 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
         <div className="flex-shrink-0 mx-3 mb-3">
           <div className="flex items-center justify-between bg-white border border-gray-200 rounded-xl px-5 py-2.5 shadow-sm">
             <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <LogOut className="h-3.5 w-3.5 text-gray-400 rotate-180" />
-                <span className="text-[11px] font-semibold text-gray-500">Exit on:</span>
-                <select
-                  value={exitEvent}
-                  onChange={e => setExitEvent(e.target.value)}
-                  className="text-[11px] font-medium border border-gray-200 rounded-md px-2 py-1 text-gray-700 bg-gray-50"
-                >
-                  <option value="">No exit event</option>
-                  {(EVENTS_BY_DOMAIN[domainType as keyof typeof EVENTS_BY_DOMAIN] ?? EVENTS_BY_DOMAIN.ecommerce).map((ev: string) => (
-                    <option key={ev} value={ev}>{fmtEvent(ev)}</option>
-                  ))}
-                </select>
-              </div>
+              <button
+                type="button"
+                onClick={() => setGoalExitOpen(true)}
+                className="flex items-center gap-2 px-2.5 py-1 rounded-md border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors"
+              >
+                <Target className="h-3.5 w-3.5 text-gray-400" />
+                <span className="text-[11px] font-semibold text-gray-500">Goal &amp; Exits:</span>
+                <span className="text-[11px] font-medium text-gray-700">
+                  {goal?.event ? `Goal: ${fmtEvent(goal.event)}` : 'No goal'}
+                  {' · '}
+                  {exits.filter(x => x.event).length > 0 ? `${exits.filter(x => x.event).length} exit${exits.filter(x => x.event).length > 1 ? 's' : ''}` : 'no exits'}
+                </span>
+              </button>
               {errorCount > 0 && (
                 <span className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 px-2.5 py-0.5 rounded-full">
                   Errors ({errorCount})
@@ -1557,6 +1572,17 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
           />
         )
       })()}
+
+      {/* Goal & Exits dialog */}
+      {goalExitOpen && (
+        <GoalExitDialog
+          goal={goal}
+          exits={exits}
+          domainType={domainType}
+          onApply={(g, x) => { setGoal(g); setExits(x); setGoalExitOpen(false) }}
+          onClose={() => setGoalExitOpen(false)}
+        />
+      )}
 
       {/* Condition-delete decision dialog */}
       {(() => {
@@ -1661,6 +1687,125 @@ function DeleteConditionDialog({
             )}
           </span>
         </label>
+      </div>
+    </Dialog>
+  )
+}
+
+// ─── Goal & Exits Dialog ────────────────────────────────
+// CleverSend parity: "Goal for this journey is achieved when …" (event +
+// property filters → trip marked CONVERTED and completed) plus multiple
+// OR'd exit events, each with optional property filters. Changes apply to
+// builder state; they persist when the flow is saved.
+
+function GoalExitDialog({
+  goal, exits, domainType, onApply, onClose,
+}: {
+  goal: GoalConfig | null
+  exits: ExitConfig[]
+  domainType: string
+  onApply: (goal: GoalConfig | null, exits: ExitConfig[]) => void
+  onClose: () => void
+}) {
+  const events = EVENTS_BY_DOMAIN[domainType as keyof typeof EVENTS_BY_DOMAIN] ?? EVENTS_BY_DOMAIN.ecommerce
+  const [localGoal, setLocalGoal] = useState<GoalConfig | null>(goal)
+  const [localExits, setLocalExits] = useState<ExitConfig[]>(exits)
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Goal & Exit conditions"
+      size="md"
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-xs font-medium text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onApply(localGoal?.event ? localGoal : null, localExits.filter(x => x.event))}
+            className="px-5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+          >
+            Apply
+          </button>
+        </div>
+      }
+    >
+      <div className="p-5 space-y-5">
+        {/* Goal */}
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">Goal — journey is achieved when</h3>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              When this event fires (filters matching), the trip is marked <strong>converted</strong> and completes.
+              Powers the conversion rate in flow analytics.
+            </p>
+          </div>
+          <EventNameSelect
+            value={localGoal?.event ?? ''}
+            onChange={ev => setLocalGoal(ev ? { event: ev, filters: undefined } : null)}
+            catalog={events}
+            catalogLabel="Catalog events"
+          />
+          {localGoal?.event && (
+            <TriggerFiltersBlock
+              event={localGoal.event}
+              filters={localGoal.filters}
+              onChange={next => setLocalGoal({ ...localGoal, filters: next })}
+            />
+          )}
+        </section>
+
+        {/* Exits */}
+        <section className="space-y-2 pt-4 border-t border-gray-100">
+          <div>
+            <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">Exit — customer leaves when</h3>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Any matching exit removes the customer from the flow and cancels pending sends. Exits are OR&apos;d.
+            </p>
+          </div>
+          {localExits.map((x, i) => (
+            <div key={i} className="rounded-lg border border-gray-200 p-3 space-y-2">
+              <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <EventNameSelect
+                    value={x.event}
+                    onChange={ev => setLocalExits(localExits.map((e, j) => j === i ? { ...e, event: ev, filters: undefined } : e))}
+                    catalog={events}
+                    catalogLabel="Catalog events"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLocalExits(localExits.filter((_, j) => j !== i))}
+                  className="p-1.5 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                  title="Remove exit"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {x.event && (
+                <TriggerFiltersBlock
+                  event={x.event}
+                  filters={x.filters}
+                  onChange={next => setLocalExits(localExits.map((e, j) => j === i ? { ...e, filters: next } : e))}
+                />
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setLocalExits([...localExits, { event: '', scope: 'any' }])}
+            className="w-full text-[11px] h-8 rounded border border-dashed border-gray-300 text-gray-600 hover:border-indigo-300 hover:text-indigo-700 hover:bg-indigo-50 transition-colors flex items-center justify-center gap-1"
+          >
+            <Plus className="h-3 w-3" /> Add exit event
+          </button>
+        </section>
       </div>
     </Dialog>
   )
