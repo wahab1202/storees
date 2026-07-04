@@ -309,10 +309,189 @@ provider" also populates it in bulk.
 
 ---
 
-# PHASE 3 & 4 — not shipped yet
-Step-by-step scripts will be added here in the same format when each phase lands
-(webhook data sources, event definitions, segments-on-custom-events; A/B, HTTP node,
-previous-node data).
+# PHASE 3 — Custom-events data-source suite (shipped)
+
+> Deploy note: Phase 3 needs **migration 0070** on the server (`npm run db:migrate`).
+> The webhook receive URL points at the API host (`api.storees.io/api/hooks/…`), not the dashboard.
+
+## Scenario 33 — Create a webhook and copy its URL
+1. Sidebar → click **Event Sources** (new entry, below Flows).
+2. Click **Create Webhook** (top right).
+3. Type a name, e.g. `Shopflow — checkout events`, press Enter.
+4. In the new table row, click **Copy URL**.
+
+**Outcome:** step 2 → a small centered dialog with one Name field. Step 3 → the dialog
+closes; the webhook appears in the table with status **Active**, Data (last 24h) = 0,
+Last received = —. Step 4 → button flips to "Copied"; your clipboard has
+`https://<api-host>/api/hooks/<32-char-token>`.
+
+## Scenario 34 — First payload appears live
+1. Click the webhook's name to open its detail page → **Data** tab.
+2. Note the empty state: "Start sending data" + a Copy URL button.
+3. From a terminal (NO API key — the URL token is the auth):
+   ```bash
+   curl -X POST '<COPIED_URL>' -H 'Content-Type: application/json' \
+     -d '{"event_name":"checkout_abandoned","email":"uat@test.com","phone":"7339586637","cart":{"value":4999,"items":[{"sku":"NECKBAND-1","price":4999}]}}'
+   ```
+4. Watch the Data tab (it polls every 5s).
+5. Click the new row.
+
+**Outcome:** step 3 → HTTP 200 `{"success":true,"data":{"status":"no_match","matched":0}}`
+(no definitions yet — that's correct). Step 4 → a row appears within ~5s: payload
+preview, status badge **no_match** (amber), Matched —. Step 5 → row expands showing the
+full JSON body + collapsible headers.
+
+## Scenario 35 — Paused webhook rejects
+1. Back on the list, click the **Active** badge (toggles to Paused).
+2. Re-run the curl from Scenario 34.
+3. Toggle back to Active.
+
+**Outcome:** step 2 → HTTP 409 `{"success":false,"error":"Webhook is paused"}` and NO
+new row in the log.
+
+## Scenario 36 — Observed schema (union of payloads)
+1. POST two MORE payloads with overlapping-but-different fields, e.g. add
+   `"utm":{"source":"ig"}` to one and `"note":"hello"` to the other.
+2. Open the webhook detail → **Schema** tab.
+
+**Outcome:** a table of dot-paths with types and samples — the UNION across payloads:
+`body.event_name (string)`, `body.cart.value (number)`, `body.cart.items.0.price`,
+`body.utm.source`, `body.note`, plus `headers.…` rows. Array indices show as `.0`.
+
+## Scenario 37 — Event definition: filters gate the match
+1. Detail → **Event Definitions** tab → **New Event Definition**.
+2. Name: `checkout_abandoned` (lowercase enforced).
+3. Under **1 · Set filters** → Add filter → field `body.event_name` (pick from the
+   dropdown — it's fed by the observed schema) · **is** · `checkout_abandoned`.
+4. Under **2 · Identify the customer** → set Email = `body.email`, Phone = `body.phone`.
+5. Leave properties/profile mappings empty. **Save**.
+6. Re-run the Scenario 34 curl.
+7. Send one more curl with `"event_name":"something_else"` in the body.
+8. Check the Data tab, then the **Event Debugger** page.
+
+**Outcome:** step 6 → response `{"status":"processed","matched":1}`; the log row shows
+Matched: `checkout_abandoned`, status **processed** (green). Step 7 → that row shows
+**no_match**. Step 8 → Debugger shows a `checkout_abandoned` event whose properties are
+the payload body, attached to a customer with `uat@test.com` (created if new).
+
+## Scenario 38 — Profile attribute mapping updates the customer
+1. Edit the definition → **4 · Update customer profile** → add:
+   `body.cart.value` → `last_cart_value` (custom key) and `body.email` → `email`.
+2. Save, re-run the curl with `"cart":{"value":12345,…}`.
+3. Customers → open `uat@test.com` → check attributes.
+
+**Outcome:** the customer's custom attributes show `last_cart_value: 12345`. Repeat
+curls keep updating it (upsert, not append).
+
+## Scenario 39 — Defined event triggers a flow end-to-end
+1. Flows → create/edit a flow: Trigger = event `checkout_abandoned` (it now appears
+   under "Observed in your data") → WhatsApp send → Save, **Active**.
+2. Re-run the curl but with the whitelisted phone: `"phone":"7339586637"`.
+3. Check the phone and the flow's Debug tab.
+
+**Outcome:** webhook → definition → event → trigger → trip → message on the phone.
+This is the full CleverSend loop with zero engineering steps.
+
+## Scenario 40 — Property mappings shape the event
+1. Edit the definition → **3 · Event properties** → add `body.cart.value` → `cart_value`
+   and `body.cart.items.0.sku` → `first_sku`. Save.
+2. Re-run the curl. Open the newest event in the Debugger.
+
+**Outcome:** the event's properties are now EXACTLY `{cart_value: …, first_sku: …}` —
+not the whole body (empty mapping list = whole body; any mappings = only the mapped set).
+
+## Scenario 41 — Segment on a custom event
+1. Segments → New segment → **Add condition** → pick **"Performed a specific event"**
+   (new teal option).
+2. Configure: Performed `checkout_abandoned` · **at least** `1` times · in the last
+   `7` days · + Property filter: `cart_value` · **greater than** · `10000`.
+3. Save & evaluate the segment; check members.
+4. Change the property filter to `greater than 99999` and re-evaluate.
+
+**Outcome:** step 3 → `uat@test.com` is a member (their cart_value was 12345).
+Step 4 → membership drops to 0. Arbitrary custom-event properties are segmentable.
+
+## Scenario 42 — Pickers now suggest nested paths
+1. Open any flow send node → wizard step ② → open a variable's source dropdown.
+2. Look at the "Event properties" optgroup.
+
+**Outcome:** for events with nested payloads the dropdown now lists dotted paths
+(e.g. `checkout_abandoned.cart.value`) discovered from real payloads — no more typing
+paths blind (typing still works via "Event payload path…").
+
+---
+
+# PHASE 4 — Extended parity (shipped)
+
+## Scenario 43 — A/B split renders with weights
+1. Flow builder → **+** → Controls column → **A/B Split**.
+2. Look at the canvas, then click the split node.
+3. In the drawer drag the **Traffic split** slider to 70.
+4. Add a different send node under each branch (use the + under A and under B).
+
+**Outcome:** step 2 → the node renders like a condition split but with
+fuchsia/blue pills reading `A · 50%` / `B · 50%`. Step 3 → pills update to
+`A · 70%` / `B · 30%` (B auto-compensates; weights can't leave 1–99).
+Step 4 → both branches hold their own chains.
+
+## Scenario 44 — A/B assignment is deterministic
+1. Save + activate a flow: Trigger → A/B (50/50) → branch A sends template X,
+   branch B sends template Y.
+2. Fire the trigger event for the SAME customer 3 times (wait for each trip to finish
+   or exit it).
+3. Check the Debug tab / received messages.
+
+**Outcome:** the same customer lands on the SAME branch every time (assignment hashes
+customer+node). Different customers distribute roughly evenly.
+
+## Scenario 45 — A/B delete safety
+1. Delete the A/B split node (trash icon).
+2. Choose **Keep one path → A path** → Delete.
+
+**Outcome:** the dialog says "Delete A/B split?" with per-path node counts; after
+confirming, A's chain splices up into the split's place and B's chain is gone —
+identical semantics to condition-split deletion (Scenario 18).
+
+## Scenario 46 — HTTP request node calls out
+1. Get a test URL from https://webhook.site (or run `nc -l 9999` locally).
+2. Builder → **+** → Controls → **HTTP Request**. In the drawer:
+   Method POST · URL = your test URL · Body:
+   ```json
+   {"email": "{{customer_email}}", "cart": "{{event.cart_value}}"}
+   ```
+   Save response as: `crm`.
+3. Place it BETWEEN the trigger and a send node. Save, Active, fire the trigger.
+4. Check webhook.site.
+
+**Outcome:** the request arrives with the customer's real email and the trigger
+event's cart_value substituted. The node card subtitle shows `POST webhook.site/…`.
+
+## Scenario 47 — HTTP failure doesn't strand the trip
+1. Change the URL to `https://definitely-not-a-real-host-xyz.invalid/x`. Save, fire.
+2. Check the Debug tab and the phone/inbox.
+
+**Outcome:** the send AFTER the http node still goes out — the trip continues; the
+failure is recorded on the trip context, not thrown.
+
+## Scenario 48 — Previous-node data in a later send
+1. Point the HTTP node at an endpoint that returns JSON, e.g.
+   `https://api.github.com/zen` won't do (plain text) — use
+   `https://httpbin.org/json` with method GET, Save response as `crm`.
+2. In the send node AFTER it → wizard step ② → variable source →
+   **Event payload path…** → type `node_outputs.crm.body.slideshow.title`.
+3. Fire the trigger.
+
+**Outcome:** the received message contains the value from the HTTP response
+(`Sample Slide Show`). Earlier-node outputs are bindable exactly like trigger
+payload fields — CleverSend's "Previous Node Data" equivalent.
+
+## Scenario 49 — WhatsApp template table view
+1. Templates → WhatsApp tab → click the **Table** toggle (top right of the list).
+2. Click **Cards** to switch back.
+
+**Outcome:** a compact table with Name (+body preview), Category, Language,
+**Quality dot** (green/amber/red), Status, Created, and the same Edit/Refresh
+actions. Toggle is instant; search still filters both views.
 
 ---
 

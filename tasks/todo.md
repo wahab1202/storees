@@ -285,11 +285,11 @@
 - [x] Persist + surface WhatsApp template quality rating
 
 ### Phase 3 — Custom-events data-source suite
-- [ ] inbound_webhooks + inbound_webhook_events tables + POST /api/hooks/:token
-- [ ] Webhook detail UI: copy URL, historical log, observed schema tab
-- [ ] Schema-inference service (payload → dot-path+type) feeding all field pickers
-- [ ] Event definitions: payload filters + property mapping + user-attribute mapping + identity paths
-- [ ] Segments: generic "performed event with property filters" rule (evaluator + UI)
+- [x] inbound_webhooks + inbound_webhook_events tables + POST /api/hooks/:token
+- [x] Webhook detail UI: copy URL, historical log, observed schema tab
+- [x] Schema-inference service (payload → dot-path+type) feeding all field pickers
+- [x] Event definitions: payload filters + property mapping + user-attribute mapping + identity paths
+- [x] Segments: generic "performed event with property filters" rule (evaluator + UI)
 
 ### Phase 4 — Extended parity (demand-driven)
-- [ ] A/B split in add-menu · HTTP-request node · previous-node-data source · template table view
+- [x] A/B split in add-menu · HTTP-request node · previous-node-data source · template table view
