@@ -12,6 +12,9 @@ export type FlowAnalytics = {
     exitedTrips: number
     completionRate: number
     avgTimeToCompleteHours: number | null
+    /** Trips whose goal event fired (converted_at set). 0 when no goal configured. */
+    convertedTrips: number
+    conversionRate: number
   }
   nodeFunnel: Array<{
     nodeId: string
@@ -83,6 +86,7 @@ export async function getFlowAnalytics(flowId: string): Promise<FlowAnalytics> {
     db.select({
       status: flowTrips.status,
       count: sql<number>`count(*)::int`,
+      converted: sql<number>`count(*) filter (where ${flowTrips.convertedAt} is not null)::int`,
     })
     .from(flowTrips)
     .where(eq(flowTrips.flowId, flowId))
@@ -157,7 +161,11 @@ export async function getFlowAnalytics(flowId: string): Promise<FlowAnalytics> {
 
   // Build overview
   const statusMap: Record<string, number> = {}
-  for (const s of tripStats) statusMap[s.status] = s.count
+  let convertedTrips = 0
+  for (const s of tripStats) {
+    statusMap[s.status] = s.count
+    convertedTrips += s.converted ?? 0
+  }
   const totalTrips = Object.values(statusMap).reduce((a, b) => a + b, 0)
   const completedTrips = statusMap['completed'] ?? 0
   const exitedTrips = statusMap['exited'] ?? 0
@@ -227,6 +235,8 @@ export async function getFlowAnalytics(flowId: string): Promise<FlowAnalytics> {
       exitedTrips,
       completionRate: totalTrips > 0 ? (completedTrips / totalTrips) * 100 : 0,
       avgTimeToCompleteHours: avgCompletion ? Math.round(avgCompletion * 10) / 10 : null,
+      convertedTrips,
+      conversionRate: totalTrips > 0 ? (convertedTrips / totalTrips) * 100 : 0,
     },
     nodeFunnel,
     weeklyTrips,

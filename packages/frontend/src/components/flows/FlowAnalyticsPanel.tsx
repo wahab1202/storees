@@ -16,6 +16,7 @@ import {
   MailX,
   Activity,
   ChevronRight,
+  Target,
 } from 'lucide-react'
 
 /* ─── Status colors for trip badges ─── */
@@ -96,6 +97,13 @@ function OverviewCards({
       icon: TrendingUp,
       color: overview.completionRate >= 50 ? 'text-green-600' : 'text-amber-600',
       bg: overview.completionRate >= 50 ? 'bg-green-50' : 'bg-amber-50',
+    },
+    {
+      label: 'Converted',
+      value: `${overview.convertedTrips ?? 0}${overview.totalTrips > 0 && (overview.convertedTrips ?? 0) > 0 ? ` (${(overview.conversionRate ?? 0).toFixed(1)}%)` : ''}`,
+      icon: Target,
+      color: 'text-emerald-600',
+      bg: 'bg-emerald-50',
     },
     {
       label: 'Avg. Duration',

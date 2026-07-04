@@ -368,7 +368,9 @@ export type Flow = {
   name: string
   description: string
   triggerConfig: TriggerConfig
-  exitConfig: ExitConfig | null
+  /** Single (legacy) or multiple exits — runtime normalizes both shapes. */
+  exitConfig: ExitConfig | ExitConfig[] | null
+  goalConfig?: GoalConfig | null
   nodes: FlowNode[]
   status: 'draft' | 'active' | 'paused'
   createdAt: Date
@@ -384,6 +386,7 @@ export type FlowTrip = {
   context: Record<string, unknown>
   enteredAt: Date
   exitedAt: Date | null
+  convertedAt?: Date | string | null
 }
 
 export type ScheduledJob = {
@@ -556,6 +559,18 @@ export type TriggerConfig = {
 export type ExitConfig = {
   event: string
   scope: 'any' | 'matching'
+  /** Optional event-property filters — the exit only fires when they match. */
+  filters?: FilterConfig
+}
+
+/**
+ * "Goal for this journey is achieved when …" — when the goal event (with
+ * matching filters) fires during a trip, the trip is marked converted and
+ * completed. Powers the flow conversion metric.
+ */
+export type GoalConfig = {
+  event: string
+  filters?: FilterConfig
 }
 
 export type FlowNode =
@@ -1078,6 +1093,8 @@ export type WhatsappTemplate = {
   /** Carousel cards (when this is a carousel template); null otherwise. */
   carousel?: WhatsappCarouselCard[] | null
   rejectionReason: string | null
+  /** Meta quality rating: GREEN / YELLOW / RED / UNKNOWN (null until fetched). */
+  qualityScore?: string | null
   previousCategory: string | null
   submittedAt: string | null
   lastStatusCheckAt: string | null

@@ -37,8 +37,9 @@ export function startTriggerWorker(): Worker {
         return
       }
 
-      // Exit events processed BEFORE trigger evaluation (order of operations)
-      await checkExitEvents(event.customerId, event.eventName)
+      // Exit events processed BEFORE trigger evaluation (order of operations).
+      // Properties travel too — goal/exit configs may carry property filters.
+      await checkExitEvents(event.customerId, event.eventName, event.properties as Record<string, unknown> | undefined)
 
       // 1. Get all ACTIVE flows for this project
       const activeFlows = await db

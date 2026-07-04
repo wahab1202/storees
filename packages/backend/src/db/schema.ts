@@ -296,7 +296,10 @@ export const flows = pgTable('flows', {
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   triggerConfig: jsonb('trigger_config').notNull(),
+  // Single ExitConfig (legacy) or ExitConfig[] — runtime normalizes both
   exitConfig: jsonb('exit_config'),
+  // GoalConfig — journey conversion goal (event + optional property filters)
+  goalConfig: jsonb('goal_config'),
   nodes: jsonb('nodes').notNull(),
   status: varchar('status', { length: 20 }).notNull().default('draft'),
   // Phase F3 — replay lookback window in days. Events older than this are not
@@ -325,6 +328,8 @@ export const flowTrips = pgTable('flow_trips', {
   triggerEventId: uuid('trigger_event_id'),
   enteredAt: timestamp('entered_at', { withTimezone: true }).notNull().defaultNow(),
   exitedAt: timestamp('exited_at', { withTimezone: true }),
+  // Stamped when the flow's goal event fires during the trip (conversion)
+  convertedAt: timestamp('converted_at', { withTimezone: true }),
 }, (table) => [
   index('idx_trips_active').on(table.flowId, table.status),
   index('idx_trips_customer').on(table.customerId, table.flowId),
@@ -1090,6 +1095,8 @@ export const whatsappTemplates = pgTable('whatsapp_templates', {
   submittedAt: timestamp('submitted_at', { withTimezone: true }),
   lastStatusCheckAt: timestamp('last_status_check_at', { withTimezone: true }),
   rejectionReason: text('rejection_reason'),
+  // Meta quality rating (GREEN/YELLOW/RED/UNKNOWN) — refreshed with status
+  qualityScore: varchar('quality_score', { length: 20 }),
   previousCategory: varchar('previous_category', { length: 50 }),
   syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

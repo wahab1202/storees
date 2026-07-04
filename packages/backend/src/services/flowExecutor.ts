@@ -6,8 +6,9 @@ import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate, appendUtmParameters } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
 import { createHash } from 'node:crypto'
-import { evaluateEventFilters } from '@storees/shared'
+import { evaluateEventFilters, readPath } from '@storees/shared'
 import type {
+  FilterConfig,
   FlowNode,
   ActionNode,
   DelayNode,
@@ -241,11 +242,17 @@ function hashToBucket(key: string): number {
 }
 
 /**
- * Handle exit events — check if any active trips should be exited.
+ * Handle goal + exit events for active/waiting trips.
+ *
+ * Goal first: when the flow's GoalConfig event fires (property filters
+ * matching), the trip is marked CONVERTED (converted_at) and completed —
+ * "journey achieved". Then exits: exit_config holds a single ExitConfig
+ * (legacy) or an array; each may carry its own property filters.
  */
 export async function checkExitEvents(
   customerId: string,
   eventName: string,
+  eventProperties?: Record<string, unknown>,
 ): Promise<void> {
   // Find all active/waiting trips for this customer
   const activeTrips = await db
@@ -276,37 +283,58 @@ export async function checkExitEvents(
 
   const allTrips = [...activeTrips, ...waitingTrips]
 
+  const props = eventProperties ?? {}
+
   for (const trip of allTrips) {
     const [flow] = await db
-      .select({ exitConfig: flows.exitConfig })
+      .select({ exitConfig: flows.exitConfig, goalConfig: flows.goalConfig })
       .from(flows)
       .where(eq(flows.id, trip.flowId))
       .limit(1)
 
-    if (!flow?.exitConfig) continue
+    if (!flow) continue
 
-    const exitConfig = flow.exitConfig as { event: string; scope: string }
+    // ── Goal: journey achieved → converted + completed
+    const goal = flow.goalConfig as { event: string; filters?: FilterConfig } | null
+    if (goal?.event && goal.event === eventName
+      && (!goal.filters || evaluateEventFilters(goal.filters, props))) {
+      await db.update(flowTrips).set({
+        status: 'completed',
+        convertedAt: new Date(),
+        exitedAt: new Date(),
+      }).where(eq(flowTrips.id, trip.tripId))
+      await cancelPendingTripJobs(trip.tripId)
+      console.log(`Trip ${trip.tripId} converted — goal ${eventName}`)
+      continue
+    }
 
-    if (exitConfig.event === eventName) {
-      // Exit the trip
+    // ── Exits: legacy single object or array, each optionally filtered
+    const rawExit = flow.exitConfig
+    const exits = (Array.isArray(rawExit) ? rawExit : rawExit ? [rawExit] : []) as Array<{ event: string; filters?: FilterConfig }>
+    const matched = exits.some(x =>
+      x.event === eventName && (!x.filters || evaluateEventFilters(x.filters, props)))
+
+    if (matched) {
       await db.update(flowTrips).set({
         status: 'exited',
         exitedAt: new Date(),
       }).where(eq(flowTrips.id, trip.tripId))
-
-      // Cancel any pending scheduled jobs
-      await db.update(scheduledJobs).set({
-        status: 'cancelled',
-      }).where(
-        and(
-          eq(scheduledJobs.flowTripId, trip.tripId),
-          eq(scheduledJobs.status, 'pending'),
-        ),
-      )
-
+      await cancelPendingTripJobs(trip.tripId)
       console.log(`Trip ${trip.tripId} exited due to ${eventName}`)
     }
   }
+}
+
+/** Cancel any pending scheduled jobs for a trip (goal reached or exit fired). */
+async function cancelPendingTripJobs(tripId: string): Promise<void> {
+  await db.update(scheduledJobs).set({
+    status: 'cancelled',
+  }).where(
+    and(
+      eq(scheduledJobs.flowTripId, tripId),
+      eq(scheduledJobs.status, 'pending'),
+    ),
+  )
 }
 
 // ============ HELPERS ============
@@ -496,7 +524,7 @@ async function evaluateCondition(
 
     // Support dotted paths like "customAttributes.loyalty_tier" so the UI
     // can target keys nested inside the customAttributes JSON blob.
-    const value = resolveDottedPath(customer as Record<string, unknown>, config.field)
+    const value = readPath(customer as Record<string, unknown>, config.field)
     // is/is_not used to be strict === — which silently failed on any format/type
     // difference (e.g. phone stored "+919944608585" never equals typed
     // "9944608585"), routing every trip down No. Compare normalized: trimmed
@@ -526,13 +554,7 @@ async function evaluateCondition(
   return false
 }
 
-function resolveDottedPath(obj: Record<string, unknown>, path: string): unknown {
-  if (!path.includes('.')) return obj[path]
-  return path.split('.').reduce<unknown>((acc, key) => {
-    if (acc == null || typeof acc !== 'object') return undefined
-    return (acc as Record<string, unknown>)[key]
-  }, obj)
-}
+// (dotted-path reads use the shared readPath util)
 
 async function executeAction(
   node: ActionNode,
