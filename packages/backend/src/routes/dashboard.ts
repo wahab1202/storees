@@ -47,6 +47,25 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
     `)
     const core = coreResult.rows[0] as Record<string, string>
 
+    // customers.last_seen only remembers each customer's LATEST activity day,
+    // so "active in the PREVIOUS 7d window" counted only customers who never
+    // came back — massively undercounting it (hence absurd +2000% badges).
+    // When the project has events, count DISTINCT event customers per window
+    // instead; last_seen stays as the fallback for event-less projects.
+    const activeFromEvents = await db.execute(sql`
+      SELECT
+        COUNT(DISTINCT customer_id) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS active_7d,
+        COUNT(DISTINCT customer_id) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS active_prev_7d
+      FROM events
+      WHERE project_id = ${projectId} AND customer_id IS NOT NULL
+        AND timestamp >= ${fourteenDaysAgo} AND ${customerIdScope}
+    `)
+    const activeEv = activeFromEvents.rows[0] as Record<string, string>
+    if (Number(activeEv.active_7d) > 0 || Number(activeEv.active_prev_7d) > 0) {
+      core.active_7d = activeEv.active_7d
+      core.active_prev_7d = activeEv.active_prev_7d
+    }
+
     // Domain-specific metrics with period comparison
     let domainStats: Record<string, number | undefined> = {}
     let domainChanges: Record<string, number> = {}
@@ -247,7 +266,32 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
     const customerScope = await rawCustomerScopeSql(req, projectId)
     const customerIdScope = await scopedCustomerIdsSubquery(req, projectId)
 
-    // Daily new customers + daily active customers
+    // Daily new customers + daily active customers.
+    //
+    // Actives MUST come from events (distinct customers per day). The old
+    // GROUP BY last_seen::date drained history into the present: last_seen is
+    // one mutable date per customer, so anyone active on day X AND later only
+    // counted on the later day — the chart was permanently "flat history +
+    // today spike". Fallback to last_seen only when the window has no events.
+    const [{ exists: hasWindowEvents }] = (await db.execute(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM events
+        WHERE project_id = ${projectId} AND customer_id IS NOT NULL AND timestamp >= ${startDate}
+      ) AS exists
+    `)).rows as Array<{ exists: boolean }>
+
+    const activeDailySubquery = hasWindowEvents
+      ? sql`
+        SELECT timestamp::date AS day, COUNT(DISTINCT customer_id) AS active_count
+        FROM events
+        WHERE project_id = ${projectId} AND customer_id IS NOT NULL
+          AND timestamp >= ${startDate} AND ${customerIdScope}
+        GROUP BY timestamp::date`
+      : sql`
+        SELECT last_seen::date AS day, COUNT(*) AS active_count
+        FROM customers WHERE ${customerScope} AND last_seen >= ${startDate}
+        GROUP BY last_seen::date`
+
     const customerTrends = await db.execute(sql`
       SELECT
         d.day::date AS date,
@@ -259,11 +303,7 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
         FROM customers WHERE ${customerScope} AND first_seen >= ${startDate}
         GROUP BY first_seen::date
       ) nc ON nc.day = d.day::date
-      LEFT JOIN (
-        SELECT last_seen::date AS day, COUNT(*) AS active_count
-        FROM customers WHERE ${customerScope} AND last_seen >= ${startDate}
-        GROUP BY last_seen::date
-      ) ac ON ac.day = d.day::date
+      LEFT JOIN (${activeDailySubquery}) ac ON ac.day = d.day::date
       ORDER BY d.day
     `)
 
