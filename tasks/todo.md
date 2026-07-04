@@ -279,10 +279,10 @@
 - [x] Trigger event picker: observed event names ∪ domain catalog + free-text custom event
 
 ### Phase 2 — Binding depth & attribution
-- [ ] Nested dot-path variable resolution (readPath in templateContext, interpolate regex, eventFilters)
-- [ ] UTM on flow sends + UTM baked into tracked WhatsApp short-link destinations
-- [ ] Goal & exit conditions (goal + exits[] with filters) + conversion metric in analytics
-- [ ] Persist + surface WhatsApp template quality rating
+- [x] Nested dot-path variable resolution (readPath in templateContext, interpolate regex, eventFilters)
+- [x] UTM on flow sends + UTM baked into tracked WhatsApp short-link destinations
+- [x] Goal & exit conditions (goal + exits[] with filters) + conversion metric in analytics
+- [x] Persist + surface WhatsApp template quality rating
 
 ### Phase 3 — Custom-events data-source suite
 - [ ] inbound_webhooks + inbound_webhook_events tables + POST /api/hooks/:token
