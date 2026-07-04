@@ -7,18 +7,38 @@ import {
   useWebhookSubscriptions,
   useWebhookDeliveries,
   useCreateWebhook,
+  useUpdateWebhook,
   useDeleteWebhook,
   useTestWebhook,
   useResendDelivery,
   WEBHOOK_EVENT_CATALOG,
   type WebhookSubscription,
+  type RetryPolicy,
 } from '@/hooks/useWebhooks'
-import { Plus, Send, Trash2, Loader2, Copy, ChevronDown, ChevronRight, RefreshCw, CheckCircle2, XCircle, Clock } from 'lucide-react'
+import { Plus, Send, Trash2, Loader2, Copy, ChevronDown, ChevronRight, RefreshCw, CheckCircle2, XCircle, Clock, Pencil, X, KeyRound } from 'lucide-react'
+
+const RETRY_PRESETS: { id: string; label: string; policy: RetryPolicy }[] = [
+  { id: 'default', label: 'Default — 5 attempts (1s → 256s)', policy: { max_attempts: 5, schedule_seconds: [1, 4, 16, 64, 256] } },
+  { id: 'quick', label: 'Quick — 3 attempts (5s, 30s)', policy: { max_attempts: 3, schedule_seconds: [5, 30] } },
+  { id: 'persistent', label: 'Persistent — 8 attempts (up to 1h)', policy: { max_attempts: 8, schedule_seconds: [1, 4, 16, 64, 256, 600, 1800, 3600] } },
+]
+const presetIdFor = (p?: RetryPolicy): string =>
+  RETRY_PRESETS.find(x => JSON.stringify(x.policy) === JSON.stringify(p))?.id ?? 'default'
+
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return 'never'
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  if (s < 60) return `${Math.floor(s)}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
 
 export default function WebhooksPage() {
   const { data, isLoading } = useWebhookSubscriptions()
   const subs = data?.data ?? []
   const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<WebhookSubscription | null>(null)
   const [newSecret, setNewSecret] = useState<{ url: string; secret: string } | null>(null)
 
   return (
@@ -59,9 +79,18 @@ export default function WebhooksPage() {
       )}
 
       {adding && (
-        <AddWebhookForm
+        <WebhookForm
           onClose={() => setAdding(false)}
-          onCreated={(url, secret) => { setAdding(false); setNewSecret({ url, secret }) }}
+          onSecret={(url, secret) => setNewSecret({ url, secret })}
+          onDone={() => setAdding(false)}
+        />
+      )}
+      {editing && (
+        <WebhookForm
+          existing={editing}
+          onClose={() => setEditing(null)}
+          onSecret={(url, secret) => setNewSecret({ url, secret })}
+          onDone={() => setEditing(null)}
         />
       )}
 
@@ -73,39 +102,76 @@ export default function WebhooksPage() {
             No webhooks yet. Add one to start delivering events to an external platform.
           </div>
         ) : (
-          subs.map(sub => <WebhookCard key={sub.id} sub={sub} />)
+          subs.map(sub => <WebhookCard key={sub.id} sub={sub} onEdit={() => { setAdding(false); setEditing(sub) }} />)
         )}
       </div>
     </div>
   )
 }
 
-function AddWebhookForm({ onClose, onCreated }: { onClose: () => void; onCreated: (url: string, secret: string) => void }) {
+function WebhookForm({ existing, onClose, onSecret, onDone }: {
+  existing?: WebhookSubscription
+  onClose: () => void
+  onSecret: (url: string, secret: string) => void
+  onDone: () => void
+}) {
   const create = useCreateWebhook()
-  const [url, setUrl] = useState('')
-  const [description, setDescription] = useState('')
-  const [authMethod, setAuthMethod] = useState<'hmac' | 'bearer'>('hmac')
-  const [events, setEvents] = useState<string[]>(['customer.segment.entered', 'customer.segment.exited'])
+  const update = useUpdateWebhook()
+  const isEdit = !!existing
+  const [url, setUrl] = useState(existing?.url ?? '')
+  const [description, setDescription] = useState(existing?.description ?? '')
+  const [authMethod, setAuthMethod] = useState<'hmac' | 'bearer'>(existing?.authMethod ?? 'hmac')
+  const [events, setEvents] = useState<string[]>(existing?.events ?? ['customer.segment.entered', 'customer.segment.exited'])
   const [signingSecret, setSigningSecret] = useState('')
+  const [headers, setHeaders] = useState<Array<{ key: string; value: string }>>(
+    Object.entries(existing?.customHeaders ?? {}).map(([key, value]) => ({ key, value })),
+  )
+  const [retryPreset, setRetryPreset] = useState<string>(presetIdFor(existing?.retryPolicy))
+  const pending = create.isPending || update.isPending
 
   const toggleEvent = (id: string) =>
     setEvents(prev => prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id])
+
+  async function regenerate() {
+    if (!existing) return
+    if (!confirm('Regenerate the signing secret? The old one stops working on the next delivery.')) return
+    try {
+      const res = await update.mutateAsync({ id: existing.id, regenerateSecret: true })
+      if (res.data?.signingSecret) onSecret(existing.url, res.data.signingSecret)
+      toast.success('Secret regenerated — copy it now')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to regenerate')
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!/^https:\/\//i.test(url)) return toast.error('URL must be HTTPS')
     if (events.length === 0) return toast.error('Select at least one event')
+    const customHeaders = Object.fromEntries(headers.filter(h => h.key.trim()).map(h => [h.key.trim(), h.value]))
+    const retryPolicy = RETRY_PRESETS.find(x => x.id === retryPreset)?.policy
     try {
-      const res = await create.mutateAsync({ url, description: description || undefined, authMethod, events, signingSecret: signingSecret || undefined })
-      onCreated(url, res.data!.signingSecret)
-      toast.success('Webhook created')
+      if (isEdit) {
+        await update.mutateAsync({ id: existing!.id, url, description: description || null, authMethod, events, customHeaders, retryPolicy })
+        toast.success('Webhook updated')
+        onDone()
+      } else {
+        const res = await create.mutateAsync({ url, description: description || undefined, authMethod, events, signingSecret: signingSecret || undefined, customHeaders, retryPolicy })
+        onSecret(url, res.data!.signingSecret)
+        toast.success('Webhook created')
+        onDone()
+      }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create webhook')
+      toast.error(err instanceof Error ? err.message : 'Failed to save webhook')
     }
   }
 
   return (
     <form onSubmit={submit} className="mt-4 rounded-lg border border-slate-200 bg-white p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-slate-900">{isEdit ? 'Edit webhook' : 'New webhook'}</p>
+        <button type="button" onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-400"><X size={15} /></button>
+      </div>
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1">Webhook URL (HTTPS)</label>
         <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://example.com/cdp-webhook"
@@ -127,12 +193,26 @@ function AddWebhookForm({ onClose, onCreated }: { onClose: () => void; onCreated
           ))}
         </div>
       </div>
-      <div>
-        <label className="block text-sm font-medium text-slate-700 mb-1">Signing secret</label>
-        <input value={signingSecret} onChange={e => setSigningSecret(e.target.value)} placeholder="Leave blank to auto-generate"
-          className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200" />
-        <p className="text-xs text-slate-400 mt-1">For a Bearer receiver (e.g. Gowelmart), paste the receiver&apos;s expected token here.</p>
-      </div>
+      {isEdit ? (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Signing secret</label>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 px-3 py-2 text-sm border border-slate-200 bg-slate-50 rounded-lg text-slate-400">••••••••••••••••••••••••••••••••</code>
+            <button type="button" onClick={regenerate} disabled={update.isPending}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50">
+              <KeyRound size={13} /> Regenerate
+            </button>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Shown once at creation. Regenerating invalidates the old secret immediately.</p>
+        </div>
+      ) : (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Signing secret</label>
+          <input value={signingSecret} onChange={e => setSigningSecret(e.target.value)} placeholder="Leave blank to auto-generate"
+            className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+          <p className="text-xs text-slate-400 mt-1">For a Bearer receiver (e.g. Gowelmart), paste the receiver&apos;s expected token here.</p>
+        </div>
+      )}
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1.5">Events</label>
         <div className="space-y-1.5">
@@ -146,21 +226,57 @@ function AddWebhookForm({ onClose, onCreated }: { onClose: () => void; onCreated
           ))}
         </div>
       </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1.5">Custom headers</label>
+        <div className="space-y-1.5">
+          {headers.map((h, i) => (
+            <div key={i} className="flex gap-2">
+              <input value={h.key} onChange={e => setHeaders(headers.map((x, j) => j === i ? { ...x, key: e.target.value } : x))}
+                placeholder="X-Tenant" className="flex-1 px-3 py-1.5 text-xs font-mono border border-slate-300 rounded-lg" />
+              <input value={h.value} onChange={e => setHeaders(headers.map((x, j) => j === i ? { ...x, value: e.target.value } : x))}
+                placeholder="gowelmart" className="flex-1 px-3 py-1.5 text-xs font-mono border border-slate-300 rounded-lg" />
+              <button type="button" onClick={() => setHeaders(headers.filter((_, j) => j !== i))}
+                className="p-1.5 text-slate-400 hover:text-red-500"><X size={13} /></button>
+            </div>
+          ))}
+          <button type="button" onClick={() => setHeaders([...headers, { key: '', value: '' }])}
+            className="text-xs font-medium text-indigo-600 hover:underline">+ Add header</button>
+        </div>
+        <p className="text-xs text-slate-400 mt-1">Static headers sent with every delivery — e.g. tenant routing.</p>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1">Retry policy</label>
+        <select value={retryPreset} onChange={e => setRetryPreset(e.target.value)}
+          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200">
+          {RETRY_PRESETS.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
+        </select>
+        <p className="text-xs text-slate-400 mt-1">Retries fire on 5xx / 408 / 429 / network errors. 400-level failures are final (misconfiguration, not transient).</p>
+      </div>
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:text-slate-900">Cancel</button>
-        <button type="submit" disabled={create.isPending}
+        <button type="submit" disabled={pending}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50">
-          {create.isPending && <Loader2 size={14} className="animate-spin" />} Create
+          {pending && <Loader2 size={14} className="animate-spin" />} {isEdit ? 'Save changes' : 'Create'}
         </button>
       </div>
     </form>
   )
 }
 
-function WebhookCard({ sub }: { sub: WebhookSubscription }) {
+function WebhookCard({ sub, onEdit }: { sub: WebhookSubscription; onEdit: () => void }) {
   const [showDeliveries, setShowDeliveries] = useState(false)
   const del = useDeleteWebhook()
   const test = useTestWebhook()
+  const update = useUpdateWebhook()
+
+  async function toggleActive() {
+    try {
+      await update.mutateAsync({ id: sub.id, isActive: !sub.isActive })
+      toast.success(sub.isActive ? 'Webhook disabled' : 'Webhook enabled')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update')
+    }
+  }
 
   async function handleTest() {
     try { await test.mutateAsync(sub.id); toast.success('Test event queued'); setShowDeliveries(true) }
@@ -180,11 +296,13 @@ function WebhookCard({ sub }: { sub: WebhookSubscription }) {
             <p className="text-sm font-medium text-slate-900 break-all">{sub.url}</p>
             {sub.description && <p className="text-xs text-slate-500 mt-0.5">{sub.description}</p>}
             <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              <span className={cn('text-[10px] px-2 py-0.5 rounded-full', sub.isActive ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500')}>
+              <button onClick={toggleActive} disabled={update.isPending} title="Click to toggle"
+                className={cn('text-[10px] px-2 py-0.5 rounded-full transition-colors', sub.isActive ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200')}>
                 {sub.isActive ? 'Active' : 'Disabled'}
-              </span>
+              </button>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase">{sub.authMethod}</span>
               {sub.events.map(e => <code key={e} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600">{e}</code>)}
+              <span className="text-[10px] text-slate-400">Last delivery: {timeAgo(sub.lastDeliveryAt)}</span>
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
@@ -195,6 +313,10 @@ function WebhookCard({ sub }: { sub: WebhookSubscription }) {
             <button onClick={() => setShowDeliveries(v => !v)}
               className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">
               {showDeliveries ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Deliveries
+            </button>
+            <button onClick={onEdit} title="Edit"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">
+              <Pencil size={13} /> Edit
             </button>
             <button onClick={handleDelete} disabled={del.isPending} title="Delete"
               className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50">

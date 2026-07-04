@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import crypto from 'node:crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { webhookSubscriptions, webhookDeliveries } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -14,6 +14,13 @@ import { webhookDeliveryQueue } from '../services/queue.js'
 const router = Router()
 
 const VALID_AUTH = new Set(['hmac', 'bearer'])
+
+function isValidRetryPolicy(p: { max_attempts?: number; schedule_seconds?: number[] }): boolean {
+  const attempts = Number(p.max_attempts)
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 10) return false
+  if (!Array.isArray(p.schedule_seconds) || p.schedule_seconds.length === 0) return false
+  return p.schedule_seconds.every(x => Number.isFinite(x) && x > 0 && x <= 24 * 3600)
+}
 
 function maskSecretPreview(): string {
   // We never decrypt to show the secret again — just a fixed mask.
@@ -35,8 +42,14 @@ router.get('/subscriptions', requireProjectId, async (req, res) => {
         authMethod: webhookSubscriptions.authMethod,
         events: webhookSubscriptions.events,
         customHeaders: webhookSubscriptions.customHeaders,
+        retryPolicy: webhookSubscriptions.retryPolicy,
         isActive: webhookSubscriptions.isActive,
         createdAt: webhookSubscriptions.createdAt,
+        // Spec §1: "Last delivery: 2 min ago" on the list card
+        lastDeliveryAt: sql<string | null>`(
+          SELECT MAX(attempted_at) FROM webhook_deliveries d
+          WHERE d.subscription_id = ${webhookSubscriptions.id}
+        )`,
       })
       .from(webhookSubscriptions)
       .where(eq(webhookSubscriptions.projectId, req.projectId!))
@@ -51,7 +64,7 @@ router.get('/subscriptions', requireProjectId, async (req, res) => {
 // POST /api/webhooks/subscriptions — create. Returns the plaintext secret ONCE.
 router.post('/subscriptions', requireProjectId, async (req, res) => {
   try {
-    const { url, description, authMethod, events, customHeaders, signingSecret, isActive } = req.body as {
+    const { url, description, authMethod, events, customHeaders, signingSecret, isActive, retryPolicy } = req.body as {
       url?: string
       description?: string
       authMethod?: string
@@ -59,6 +72,10 @@ router.post('/subscriptions', requireProjectId, async (req, res) => {
       customHeaders?: Record<string, string>
       signingSecret?: string
       isActive?: boolean
+      retryPolicy?: { max_attempts?: number; schedule_seconds?: number[] }
+    }
+    if (retryPolicy !== undefined && !isValidRetryPolicy(retryPolicy)) {
+      return res.status(400).json({ success: false, error: 'retryPolicy needs max_attempts 1-10 and positive schedule_seconds' })
     }
 
     if (!url || !/^https:\/\//i.test(url)) {
@@ -82,6 +99,7 @@ router.post('/subscriptions', requireProjectId, async (req, res) => {
       signingSecret: encrypt(secret),
       events,
       customHeaders: customHeaders ?? {},
+      ...(retryPolicy ? { retryPolicy } : {}),
       isActive: isActive ?? true,
     }).returning({ id: webhookSubscriptions.id })
 
@@ -102,9 +120,10 @@ router.patch('/subscriptions/:id', requireProjectId, async (req, res) => {
       .limit(1)
     if (!existing) return res.status(404).json({ success: false, error: 'Subscription not found' })
 
-    const { url, description, authMethod, events, customHeaders, isActive, regenerateSecret } = req.body as {
+    const { url, description, authMethod, events, customHeaders, isActive, regenerateSecret, retryPolicy } = req.body as {
       url?: string; description?: string; authMethod?: string; events?: string[]
       customHeaders?: Record<string, string>; isActive?: boolean; regenerateSecret?: boolean
+      retryPolicy?: { max_attempts?: number; schedule_seconds?: number[] }
     }
 
     const patch: Record<string, unknown> = { updatedAt: new Date() }
@@ -123,6 +142,10 @@ router.patch('/subscriptions/:id', requireProjectId, async (req, res) => {
     }
     if (customHeaders !== undefined) patch.customHeaders = customHeaders
     if (isActive !== undefined) patch.isActive = isActive
+    if (retryPolicy !== undefined) {
+      if (!isValidRetryPolicy(retryPolicy)) return res.status(400).json({ success: false, error: 'retryPolicy needs max_attempts 1-10 and positive schedule_seconds' })
+      patch.retryPolicy = retryPolicy
+    }
 
     let newSecret: string | null = null
     if (regenerateSecret) {
