@@ -6,6 +6,8 @@ import { withProject } from '@/lib/project'
 
 const BASE = '/api/outbound-webhooks'
 
+export type RetryPolicy = { max_attempts: number; schedule_seconds: number[] }
+
 export type WebhookSubscription = {
   id: string
   url: string
@@ -13,8 +15,10 @@ export type WebhookSubscription = {
   authMethod: 'hmac' | 'bearer'
   events: string[]
   customHeaders: Record<string, string>
+  retryPolicy?: RetryPolicy
   isActive: boolean
   createdAt: string
+  lastDeliveryAt?: string | null
   secretPreview?: string
 }
 
@@ -64,6 +68,8 @@ export type CreateWebhookInput = {
   authMethod: 'hmac' | 'bearer'
   events: string[]
   signingSecret?: string
+  customHeaders?: Record<string, string>
+  retryPolicy?: RetryPolicy
 }
 
 export function useCreateWebhook() {

@@ -538,6 +538,29 @@ scenario 50), and the Email chain hangs off the chosen sub-path. Step 5 → the 
 (everything below the deleted head) re-chains directly under the Yes pill instead of
 disappearing. Save + reload → structure intact.
 
+## Scenario 53 — Outbound webhooks (Settings → Webhooks, STOREES_WEBHOOK_SPEC)
+1. Settings → Webhooks → **Add Webhook**. Fill: a test URL (webhook.site), auth
+   **Bearer token**, secret pasted (or blank = auto), events
+   `customer.segment.entered` + `.exited`, one custom header `X-Tenant: test`,
+   retry policy **Quick**. Create.
+2. Copy the one-time secret banner. Click **Edit** on the card.
+3. In edit: secret shows masked dots + a **Regenerate** button; change the
+   description; Save changes.
+4. Click the **Active** pill → toggles to Disabled → click again.
+5. Click **Test** → open Deliveries → expand the row.
+6. Real proof: re-evaluate a segment so a customer enters/exits it (or wait for
+   the evaluator cycle) → a `customer.segment.entered` delivery appears with
+   `data.customer_id` = the customer's EXTERNAL id (Medusa id for GWM).
+7. Check webhook.site: request has `Authorization: Bearer …`, `X-Storees-Event`,
+   `X-Storees-Delivery`, `X-Storees-Timestamp`, and your `X-Tenant` header.
+
+**Outcome:** every step behaves as written; card shows "Last delivery: N min ago";
+a failing URL retries per the chosen policy (5xx/timeout) but 4xx failures go final
+immediately; Resend re-delivers from the log. For Gowelmart production: URL
+`https://apiecommerce.gowelmart.com/storees-cdp/webhook`, Bearer auth with the §7
+secret, both segment events — Gowelmart replies 200 with ok/action fields visible
+in the delivery row.
+
 ---
 
 **Feedback format:** scenario number + the step where it broke + what you saw instead
