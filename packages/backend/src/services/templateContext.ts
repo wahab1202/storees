@@ -3,6 +3,7 @@ import type {
   TemplateVariableSource,
   TemplateVariableFormat,
 } from '@storees/shared'
+import { readPath } from '@storees/shared'
 
 /**
  * Send-time variable resolver — the heart of Phase 0.
@@ -121,13 +122,15 @@ function readSource(
     case 'customer':
       return readCustomerField(customer, source.field)
     case 'attribute':
-      return customer.customAttributes?.[source.key]
+      // Dot-paths traverse nested custom-attribute objects
+      return readPath(customer.customAttributes as Record<string, unknown> | undefined, source.key)
     case 'product':
       return readProductField(product, source.field, eventProperties)
     case 'project':
       return readProjectField(project, source.field)
     case 'event':
-      return eventProperties?.[source.key]
+      // Dot-paths reach into nested event payloads — e.g. line_items.0.image
+      return readPath(eventProperties, source.key)
   }
 }
 
@@ -144,7 +147,7 @@ function readProductField(
     case 'image_url': return product?.imageUrl ?? eventProperties?.product_image_url ?? eventProperties?.image_url
     case 'type': return product?.productType ?? eventProperties?.product_type
     case 'vendor': return product?.vendor ?? eventProperties?.vendor
-    default: return eventProperties?.[field]
+    default: return readPath(eventProperties, field)
   }
 }
 
