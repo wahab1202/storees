@@ -493,6 +493,22 @@ payload fields — CleverSend's "Previous Node Data" equivalent.
 **Quality dot** (green/amber/red), Status, Created, and the same Edit/Refresh
 actions. Toggle is instant; search still filters both views.
 
+## Scenario 50 — Inserting a split mid-chain keeps the downstream (bug fix)
+1. Build: Trigger → WhatsApp send → Wait (a chain of at least 2 nodes below the trigger).
+2. Click the **+** button BETWEEN the trigger and the WhatsApp node → **Conditional Split**.
+3. A dialog appears: "Insert condition split — there are N existing steps below…".
+4. Choose **Yes path (condition met)** → **Insert split**.
+5. Look at the canvas. Then Save Flow, refresh, and look again.
+
+**Outcome:** step 3 → the dialog MUST appear (previously the split swallowed the chain
+silently). Step 5 → the WhatsApp + Wait nodes hang under the **Yes** branch; the No
+branch shows an empty + button. Nothing disappears, before or after reload. Repeat with
+**A/B Split** — same dialog with A/B wording.
+
+**Recovery check:** any flow previously broken by this bug (nodes vanished after adding
+a condition) heals itself when you open it — the hidden steps reappear under the
+split's Yes path. Save the flow to persist the repair.
+
 ---
 
 **Feedback format:** scenario number + the step where it broke + what you saw instead
