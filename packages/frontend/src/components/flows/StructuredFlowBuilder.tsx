@@ -10,11 +10,13 @@ import { cn } from '@/lib/utils'
 import { NumberInput } from '@/components/ui/NumberInput'
 import { EVENTS_BY_DOMAIN, getEventProperties } from '@storees/shared'
 import type { FlowNode, ExitConfig, FilterConfig, FilterRule, FilterOperator } from '@storees/shared'
-import { useVariableSources, useTemplates } from '@/hooks/useTemplates'
-import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates'
+import { useVariableSources } from '@/hooks/useTemplates'
+import { useEventNames } from '@/hooks/useEvents'
 import { useProducts, useCollections } from '@/hooks/useProducts'
 import { useSegments } from '@/hooks/useSegments'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
+import { SendNodeConfigModal } from './SendNodeConfigModal'
+import { Dialog } from '@/components/ui/Dialog'
 
 type Props = {
   flowNodes: FlowNode[]
@@ -70,6 +72,71 @@ function buildTree(nodes: FlowNode[]): TreeNode[] {
   }
 
   return buildChain(nodes[0].id, new Set())
+}
+
+/**
+ * Tree surgery for deleting a condition node. `keep === null` drops the
+ * condition AND both branch subtrees; `keep === 'yes' | 'no'` splices the kept
+ * branch's chain into the condition's place and drops the other subtree.
+ */
+function removeConditionFromTree(chain: TreeNode[], condId: string, keep: 'yes' | 'no' | null): TreeNode[] {
+  const out: TreeNode[] = []
+  for (const tn of chain) {
+    if (tn.node.id === condId && tn.node.type === 'condition') {
+      if (keep) out.push(...(keep === 'yes' ? tn.yesBranch ?? [] : tn.noBranch ?? []))
+      continue
+    }
+    if (tn.node.type === 'condition') {
+      out.push({
+        ...tn,
+        yesBranch: tn.yesBranch ? removeConditionFromTree(tn.yesBranch, condId, keep) : tn.yesBranch,
+        noBranch: tn.noBranch ? removeConditionFromTree(tn.noBranch, condId, keep) : tn.noBranch,
+      })
+    } else {
+      out.push(tn)
+    }
+  }
+  return out
+}
+
+/**
+ * Serialize a tree back to the flat nodes array (pre-order: chain, then yes
+ * subtree, then no subtree) and rewrite every condition's branch pointers from
+ * the actual tree structure. Because unreachable nodes never make it into
+ * buildTree's output, a rebuild also garbage-collects historical orphans.
+ */
+function flattenTree(chain: TreeNode[]): FlowNode[] {
+  const out: FlowNode[] = []
+  for (const tn of chain) {
+    if (tn.node.type === 'condition') {
+      const yes = tn.yesBranch ?? []
+      const no = tn.noBranch ?? []
+      out.push({
+        ...tn.node,
+        config: { ...tn.node.config, branches: { yes: yes[0]?.node.id ?? '', no: no[0]?.node.id ?? '' } },
+      })
+      out.push(...flattenTree(yes), ...flattenTree(no))
+    } else {
+      out.push(tn.node)
+    }
+  }
+  return out
+}
+
+function findTreeNode(chain: TreeNode[], id: string): TreeNode | null {
+  for (const tn of chain) {
+    if (tn.node.id === id) return tn
+    const inYes = tn.yesBranch ? findTreeNode(tn.yesBranch, id) : null
+    if (inYes) return inYes
+    const inNo = tn.noBranch ? findTreeNode(tn.noBranch, id) : null
+    if (inNo) return inNo
+  }
+  return null
+}
+
+function countSubtree(chain: TreeNode[] | undefined): number {
+  if (!chain) return 0
+  return chain.reduce((sum, tn) => sum + 1 + countSubtree(tn.yesBranch) + countSubtree(tn.noBranch), 0)
 }
 
 // ─── Helpers ────────────────────────────────────────────
@@ -129,7 +196,15 @@ function getSubtitle(node: FlowNode): string {
           : `Check: ${node.config.field}`
       }
       return 'Pick a field to check'
-    case 'action': return node.config.templateId ? `Template: ${node.config.templateId.slice(0, 20)}` : 'No template selected'
+    case 'action': {
+      if (node.config.templateName) {
+        const extras: string[] = []
+        if (node.config.variables?.length) extras.push(`${node.config.variables.length} var${node.config.variables.length > 1 ? 's' : ''}`)
+        if (node.config.utmParameters?.enabled) extras.push('UTM')
+        return `${node.config.templateName}${extras.length ? ` · ${extras.join(' · ')}` : ''}`
+      }
+      return node.config.templateId ? `Template: ${node.config.templateId.slice(0, 20)}` : 'No template selected'
+    }
     case 'ab_split': {
       const branches = node.config?.branches ?? []
       if (branches.length === 0) return 'No branches configured'
@@ -488,9 +563,6 @@ function ConfigDrawer({
         )}
         {node.type === 'condition' && (
           <ConditionBlock node={node} onUpdate={onUpdate} events={events} />
-        )}
-        {node.type === 'action' && (
-          <ActionBlock node={node} onUpdate={onUpdate} />
         )}
         {node.type === 'end' && (
           <Fld label="Label">
@@ -940,79 +1012,69 @@ function ConditionBlock({
   )
 }
 
-const ACTION_CHANNEL_BY_TYPE: Record<string, 'email' | 'sms' | 'push' | 'whatsapp'> = {
-  send_email: 'email',
-  send_sms: 'sms',
-  send_push: 'push',
-  send_whatsapp: 'whatsapp',
-}
+// Action nodes are configured in the SendNodeConfigModal wizard (template
+// picker with live preview → per-node variable mapping → UTM settings) —
+// clicking an action node on the canvas opens it directly. No drawer form.
 
-function ActionBlock({
-  node, onUpdate,
+/**
+ * Event-name picker: catalog events + names actually observed in this
+ * project's data (any custom event POSTed to /v1/events shows up here), plus
+ * a free-text escape hatch so a flow can be built BEFORE the first event
+ * arrives. Closes the "trigger list is a fixed dropdown" gap.
+ */
+function EventNameSelect({
+  value, onChange, catalog, catalogLabel,
 }: {
-  node: FlowNode & { type: 'action' }
-  onUpdate: (n: FlowNode) => void
+  value: string
+  onChange: (event: string) => void
+  catalog: readonly string[]
+  catalogLabel: string
 }) {
-  const cfg = node.config
-  const channel = ACTION_CHANNEL_BY_TYPE[cfg.actionType] ?? 'email'
-  const isWhatsapp = channel === 'whatsapp'
-  const { data: templatesData, isLoading: generalLoading } = useTemplates()
-  const { data: waData, isLoading: waLoading } = useWhatsappTemplates()
-  const isLoading = isWhatsapp ? waLoading : generalLoading
-  // WhatsApp must use the synced, APPROVED provider templates (the send path
-  // resolves templateId against whatsapp_templates WHERE status='APPROVED'); a
-  // generic/demo template id falls back to a free-form send → Meta #131047.
-  // Other channels keep the generic template source filtered by channel.
-  const templates = isWhatsapp
-    ? (waData?.data ?? [])
-        .filter(t => t.status === 'approved' || t.status === 'APPROVED')
-        .map(t => ({ id: t.id, name: `${t.name}${t.language ? ` · ${t.language}` : ''}` }))
-    : (templatesData?.data ?? [])
-        .filter(t => t.channel === channel)
-        .map(t => ({ id: t.id, name: t.name }))
-
-  function patch(next: Partial<typeof cfg>) {
-    onUpdate({ ...node, config: { ...cfg, ...next } } as FlowNode)
-  }
+  const { data: namesResp } = useEventNames()
+  const observed = useMemo(() => {
+    const names = namesResp?.data ?? []
+    return names.filter(n => !catalog.includes(n))
+  }, [namesResp, catalog])
+  const isKnown = !value || catalog.includes(value) || observed.includes(value)
+  const [customMode, setCustomMode] = useState(false)
+  const custom = customMode || !isKnown
 
   return (
-    <>
-      <Fld label="Channel">
-        <select
-          value={cfg.actionType}
-          onChange={e => patch({
-            actionType: e.target.value as 'send_email' | 'send_sms' | 'send_push' | 'send_whatsapp',
-            templateId: '', // clear — templates don't cross channels
-          })}
-          className={INPUT}
-        >
-          <option value="send_email">Email</option>
-          <option value="send_sms">SMS</option>
-          <option value="send_push">Push Notification</option>
-          <option value="send_whatsapp">WhatsApp</option>
-        </select>
-      </Fld>
-      <Fld label="Template">
-        <select
-          value={cfg.templateId ?? ''}
-          onChange={e => patch({ templateId: e.target.value })}
-          className={INPUT}
-          disabled={isLoading}
-        >
-          <option value="">
-            {isLoading ? 'Loading…' : templates.length === 0 ? `No ${channel} templates yet` : 'Select template…'}
-          </option>
-          {templates.map(t => (
-            <option key={t.id} value={t.id}>{t.name}</option>
-          ))}
-        </select>
-        {!isLoading && templates.length === 0 && (
-          <p className="mt-1 text-[11px] text-amber-700">
-            Create a {channel} template under <a href="/templates/create" className="underline font-medium">Templates → New</a>, then come back.
-          </p>
+    <div className="space-y-1.5">
+      <select
+        value={custom ? '__custom__' : value}
+        onChange={e => {
+          if (e.target.value === '__custom__') {
+            setCustomMode(true)
+            return
+          }
+          setCustomMode(false)
+          onChange(e.target.value)
+        }}
+        className={INPUT}
+      >
+        <option value="">Select event...</option>
+        <optgroup label={catalogLabel}>
+          {catalog.map(ev => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
+        </optgroup>
+        {observed.length > 0 && (
+          <optgroup label="Observed in your data">
+            {observed.map(ev => <option key={ev} value={ev}>{ev}</option>)}
+          </optgroup>
         )}
-      </Fld>
-    </>
+        <option value="__custom__">Custom event name…</option>
+      </select>
+      {custom && (
+        <input
+          type="text"
+          value={value}
+          onChange={e => onChange(e.target.value.trim())}
+          placeholder="e.g. checkout_abandoned (exact event_name sent to /v1/events)"
+          className={INPUT}
+          autoFocus
+        />
+      )}
+    </div>
   )
 }
 
@@ -1042,14 +1104,12 @@ function TriggerKindBlock({ node, onUpdate, events }: { node: FlowNode & { type:
       {kind === 'event' && (
         <>
           <Fld label="Event">
-            <select
+            <EventNameSelect
               value={cfg.event ?? ''}
-              onChange={(e) => patch({ event: e.target.value, filters: undefined })}
-              className={INPUT}
-            >
-              <option value="">Select event...</option>
-              {events.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-            </select>
+              onChange={ev => patch({ event: ev, filters: undefined })}
+              catalog={events}
+              catalogLabel="Catalog events"
+            />
           </Fld>
           <TriggerFiltersBlock
             event={cfg.event ?? ''}
@@ -1062,16 +1122,14 @@ function TriggerKindBlock({ node, onUpdate, events }: { node: FlowNode & { type:
       {kind === 'business_event' && (
         <>
           <Fld label="Business event">
-            <select
+            <EventNameSelect
               value={cfg.event ?? ''}
-              onChange={(e) => patch({ event: e.target.value, filters: undefined })}
-              className={INPUT}
-            >
-              <option value="">Select…</option>
-              {BUSINESS_EVENT_PRESETS.map((ev) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-            </select>
+              onChange={ev => patch({ event: ev, filters: undefined })}
+              catalog={BUSINESS_EVENT_PRESETS}
+              catalogLabel="Standard business events"
+            />
             <p className="mt-1 text-[11px] text-gray-500">
-              Your backend fires these via POST /v1/events with the event name above. See docs for the standard business-event taxonomy.
+              Your backend fires these via POST /v1/events with the event name above. Any custom name works — it just has to match exactly.
             </p>
           </Fld>
           <TriggerFiltersBlock
@@ -1181,6 +1239,10 @@ function validateNodes(nodes: FlowNode[]): Map<string, string[]> {
 export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig, onSave, saving, domainType = 'ecommerce' }: Props) {
   const [nodes, setNodes] = useState<FlowNode[]>(flowNodes)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Action nodes configure in the stepped modal, not the drawer
+  const [actionNodeId, setActionNodeId] = useState<string | null>(null)
+  // Condition delete needs a decision (keep a path vs delete subtree)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [exitEvent, setExitEvent] = useState(initialExitConfig?.event ?? '')
   const [zoom, setZoom] = useState(1)
   const zoomRef = useRef(zoom)
@@ -1308,10 +1370,18 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
       copy.splice(idx + 1, 0, newNode)
       return copy
     })
-    setSelectedId(newNode.id)
+    if (newNode.type === 'action') {
+      // Send nodes go straight into the config wizard — a bare, unconfigured
+      // card with no template is never what the user wants to end up with.
+      setActionNodeId(newNode.id)
+    } else {
+      setSelectedId(newNode.id)
+    }
   }, [])
 
-  const handleDelete = useCallback((id: string) => {
+  // Simple delete for non-branching nodes: drop the node, null any branch
+  // pointer that referenced it (its children re-chain by array order).
+  const deleteSimpleNode = useCallback((id: string) => {
     setNodes(prev => {
       const copy = prev.map(n => {
         if (n.type === 'condition') {
@@ -1325,6 +1395,23 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
       return copy.filter(n => n.id !== id)
     })
     if (selectedId === id) setSelectedId(null)
+  }, [selectedId])
+
+  const handleDelete = useCallback((id: string) => {
+    const target = nodes.find(n => n.id === id)
+    if (target?.type === 'condition' && (target.config.branches.yes || target.config.branches.no)) {
+      // Branching node with children — the user must decide what survives
+      setPendingDeleteId(id)
+      return
+    }
+    deleteSimpleNode(id)
+  }, [nodes, deleteSimpleNode])
+
+  /** Resolve a pending condition delete: keep one path or drop the whole subtree. */
+  const applyConditionDelete = useCallback((condId: string, keep: 'yes' | 'no' | null) => {
+    setNodes(prev => flattenTree(removeConditionFromTree(buildTree(prev), condId, keep)))
+    setPendingDeleteId(null)
+    if (selectedId === condId) setSelectedId(null)
   }, [selectedId])
 
   const handleUpdate = useCallback((u: FlowNode) => {
@@ -1353,7 +1440,17 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
               <BranchRenderer
                 chain={tree}
                 selectedId={selectedId}
-                onSelect={id => setSelectedId(selectedId === id ? null : id)}
+                onSelect={id => {
+                  const n = nodes.find(x => x.id === id)
+                  if (n?.type === 'action') {
+                    // Send nodes open the full config wizard (template preview,
+                    // variable mapping, UTM) — the drawer is too small for it.
+                    setSelectedId(id)
+                    setActionNodeId(id)
+                    return
+                  }
+                  setSelectedId(selectedId === id ? null : id)
+                }}
                 onDelete={handleDelete}
                 onAddNode={handleAddNode}
                 errors={errors}
@@ -1437,10 +1534,134 @@ export function StructuredFlowBuilder({ flowNodes, exitConfig: initialExitConfig
         </div>
       </div>
 
-      {/* Config drawer */}
-      {selectedNode && (
+      {/* Config drawer — glanceable nodes only; action nodes use the wizard modal */}
+      {selectedNode && selectedNode.type !== 'action' && (
         <ConfigDrawer node={selectedNode} onUpdate={handleUpdate} onClose={() => setSelectedId(null)} domainType={domainType} />
       )}
+
+      {/* Send-node config wizard */}
+      {(() => {
+        const actionNode = nodes.find(n => n.id === actionNodeId)
+        if (!actionNode || actionNode.type !== 'action') return null
+        return (
+          <SendNodeConfigModal
+            key={actionNode.id}
+            open
+            initial={actionNode.config}
+            onSave={cfg => {
+              handleUpdate({ ...actionNode, config: cfg })
+              setActionNodeId(null)
+              setSelectedId(null)
+            }}
+            onClose={() => { setActionNodeId(null); setSelectedId(null) }}
+          />
+        )
+      })()}
+
+      {/* Condition-delete decision dialog */}
+      {(() => {
+        const cond = nodes.find(n => n.id === pendingDeleteId)
+        if (!cond || cond.type !== 'condition') return null
+        return (
+          <DeleteConditionDialog
+            tree={tree}
+            condId={cond.id}
+            onConfirm={keep => applyConditionDelete(cond.id, keep)}
+            onCancel={() => setPendingDeleteId(null)}
+          />
+        )
+      })()}
     </div>
+  )
+}
+
+// ─── Delete Condition Dialog ────────────────────────────
+// Deleting a split is destructive and branching — the user picks what
+// survives: drop everything downstream, or keep one path spliced in place.
+
+function DeleteConditionDialog({
+  tree, condId, onConfirm, onCancel,
+}: {
+  tree: TreeNode[]; condId: string
+  onConfirm: (keep: 'yes' | 'no' | null) => void
+  onCancel: () => void
+}) {
+  const [mode, setMode] = useState<'all' | 'keep'>('all')
+  const [keepBranch, setKeepBranch] = useState<'yes' | 'no'>('yes')
+  const tn = findTreeNode(tree, condId)
+  const yesCount = countSubtree(tn?.yesBranch)
+  const noCount = countSubtree(tn?.noBranch)
+
+  return (
+    <Dialog
+      open
+      onClose={onCancel}
+      title="Delete condition split?"
+      size="sm"
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-4 py-2 text-xs font-medium text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(mode === 'all' ? null : keepBranch)}
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
+          >
+            Delete
+          </button>
+        </div>
+      }
+    >
+      <div className="p-5 space-y-3">
+        <p className="text-xs text-gray-600 leading-relaxed">
+          You&apos;re about to delete a conditional split with nodes on its paths
+          (Yes: {yesCount} node{yesCount === 1 ? '' : 's'}, No: {noCount} node{noCount === 1 ? '' : 's'}).
+          Choose what happens to them:
+        </p>
+
+        <label className="flex items-start gap-2.5 rounded-lg border border-gray-200 p-3 cursor-pointer hover:bg-gray-50 transition-colors">
+          <input
+            type="radio"
+            name="delete-mode"
+            checked={mode === 'all'}
+            onChange={() => setMode('all')}
+            className="mt-0.5 accent-indigo-600"
+          />
+          <span>
+            <span className="block text-xs font-semibold text-gray-900">Delete all subsequent nodes</span>
+            <span className="block text-[11px] text-gray-500">The split and everything on both paths is removed.</span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2.5 rounded-lg border border-gray-200 p-3 cursor-pointer hover:bg-gray-50 transition-colors">
+          <input
+            type="radio"
+            name="delete-mode"
+            checked={mode === 'keep'}
+            onChange={() => setMode('keep')}
+            className="mt-0.5 accent-indigo-600"
+          />
+          <span className="flex-1">
+            <span className="block text-xs font-semibold text-gray-900">Keep one path</span>
+            <span className="block text-[11px] text-gray-500 mb-2">The chosen path takes the split&apos;s place; the other path is removed.</span>
+            {mode === 'keep' && (
+              <select
+                value={keepBranch}
+                onChange={e => setKeepBranch(e.target.value as 'yes' | 'no')}
+                className="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-md bg-white"
+              >
+                <option value="yes">Yes path ({yesCount} node{yesCount === 1 ? '' : 's'})</option>
+                <option value="no">No path ({noCount} node{noCount === 1 ? '' : 's'})</option>
+              </select>
+            )}
+          </span>
+        </label>
+      </div>
+    </Dialog>
   )
 }
