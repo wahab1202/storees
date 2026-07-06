@@ -27,6 +27,32 @@ Step 2 below = building the letterbox. Step 3 = teaching Storees to read the let
 
 ---
 
+## "But Shopflo is a third-party app — will they even do this?"
+
+Yes — and we know because **it's already happening for this exact store**:
+
+1. **We never send anything to Shopflo.** The session note is written onto OUR
+   OWN Shopify cart (on finewine-cosmetics.com), using Shopify's standard cart
+   feature. Shopflo simply reads the cart when the shopper checks out — the same
+   way it reads the products and the prices — and passes the notes along.
+2. **Shopflo already sends these webhooks for FineWine.** Before Storees, the
+   store's checkout events went to CleverSend the exact same way — their setup
+   showed hundreds of Shopflo payloads arriving at CleverSend's webhook URL. And
+   those payloads already contained cart notes (`note_attributes` with utm
+   values) — proof that Shopflo forwards them untouched.
+
+So the ask isn't "please accept a new vendor's data." It's: **"you already send
+our checkout events to CleverSend — point that same webhook at this new URL"**
+(or add it as a second destination while both run).
+
+**If Shopflo ever refuses or strips the notes** (unlikely, given the above):
+- Completed purchases still stitch without Shopflo at all — Shopify's own order
+  webhook carries the cart notes, and Storees already reads them.
+- Only *abandoned* checkouts depend on Shopflo's webhook; the fallback there is
+  matching by phone/email with a time-window, which we can wire if needed.
+
+---
+
 ## Step 2 — Create the letterbox (an "Event Source") and give it to Shopflo
 
 ### 2a. Create it in Storees
