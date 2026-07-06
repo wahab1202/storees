@@ -208,9 +208,10 @@ function platformColor(platform: string): string {
    and did it ever link to a customer?" ─── */
 
 function SessionsPanel({ activeSession, onPick }: { activeSession: string; onPick: (sessionId: string) => void }) {
-  const { data, isLoading } = useEventSessions()
+  const { data, isLoading, isError } = useEventSessions()
   const sessions = data?.data ?? []
 
+  if (isError) return <p className="rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-700">Couldn&apos;t load sessions — the backend may not be updated/restarted (needs GET /api/events/sessions).</p>
   if (isLoading) return <div className="rounded-lg border border-border bg-surface-elevated p-4 text-center"><Loader2 className="h-4 w-4 animate-spin inline text-text-muted" /></div>
   if (sessions.length === 0) {
     return <p className="rounded-lg border border-dashed border-border p-4 text-xs text-text-muted">No sessions in the last 7 days. Sessions appear when SDK/webhook events carry a session_id.</p>
