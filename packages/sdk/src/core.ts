@@ -7,6 +7,7 @@ import { Transport } from './transport'
 import { EventQueue } from './queue'
 import { AutoTracker } from './autotrack'
 import { WidgetManager } from './widget'
+import { ShopifyCartBridge } from './shopifyCart'
 
 const DEFAULT_CONFIG: Partial<StoreesSdkConfig> = {
   autoTrack: {
@@ -108,6 +109,12 @@ class StoreesSdk {
     // which is fine for time/scroll/exit triggers (all fire after first paint).
     this.widgetManager = new WidgetManager(this.config.apiUrl, this.config.apiKey, this.config.debug || false)
     this.widgetManager.init().catch(err => log.warn('[widget] init failed:', err))
+
+    // Shopify cart bridge — stamps storees_sid onto the cart so checkout /
+    // order webhooks can stitch this session to the identified customer.
+    if (this.config.cartBridge !== false) {
+      new ShopifyCartBridge(() => this.autoTracker.getSessionId(), log).start()
+    }
 
     this.initialized = true
     log.log('SDK initialized', {

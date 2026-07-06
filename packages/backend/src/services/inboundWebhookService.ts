@@ -10,6 +10,7 @@ import type {
   EventDefinitionIdentityPaths,
 } from '@storees/shared'
 import { resolveCustomer } from './customerService.js'
+import { linkAnonymousSession } from './anonymousSessionService.js'
 import { eventsQueue, metricsQueue, customerAggregateQueue } from './queue.js'
 
 /**
@@ -106,12 +107,34 @@ export type ProcessResult = {
   error?: string
 }
 
+/**
+ * Shopify convention: note_attributes / attributes arrive as
+ * [{name, value}] pairs — unaddressable by dot-paths. Expose them
+ * additionally as `<key>_map` objects (note_attributes_map.storees_sid)
+ * so definitions can filter on and extract them.
+ */
+function withAttributeMaps(payload: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...payload }
+  for (const key of ['note_attributes', 'attributes', 'cart_attributes']) {
+    const v = payload[key]
+    if (!Array.isArray(v)) continue
+    const map: Record<string, unknown> = {}
+    for (const item of v) {
+      if (item && typeof item === 'object' && 'name' in item) {
+        map[String((item as { name: unknown }).name)] = (item as { value?: unknown }).value
+      }
+    }
+    if (Object.keys(map).length > 0) out[`${key}_map`] = map
+  }
+  return out
+}
+
 export async function processInboundPayload(
   webhook: { id: string; projectId: string },
   headers: Record<string, unknown>,
   payload: Record<string, unknown>,
 ): Promise<ProcessResult> {
-  const envelope = { body: payload, headers } as Record<string, unknown>
+  const envelope = { body: withAttributeMaps(payload), headers } as Record<string, unknown>
   const matched: ProcessResult['matched'] = []
   let firstError: string | undefined
 
@@ -213,6 +236,18 @@ async function emitDefinedEvent(
             updated_at = NOW()
         WHERE id = ${customerId}
       `)
+    }
+  }
+
+  // 2b. THE SESSION STITCH — when this payload carries BOTH an identity (a
+  // resolved customer) and a session id (e.g. Shopflo forwarding the cart's
+  // storees_sid via note_attributes), link the anonymous session so the
+  // browsing events back-attribute to the customer.
+  if (customerId && sessionId) {
+    try {
+      await linkAnonymousSession(projectId, sessionId, customerId)
+    } catch (err) {
+      console.error('[inbound-webhook] session link failed:', err)
     }
   }
 

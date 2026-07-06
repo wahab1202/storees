@@ -561,6 +561,28 @@ immediately; Resend re-delivers from the log. For Gowelmart production: URL
 secret, both segment events — Gowelmart replies 200 with ok/action fields visible
 in the delivery row.
 
+## Scenario 54 — Shopflo checkout identity stitch (the FineWine case)
+Prereq: deploy backend + frontend + REBUILD THE SDK (`npm run build -w @storees/sdk`
+on the box serving /sdk/storees.min.js), and connect a Shopflo webhook to a FineWine
+Event Source (Scenario 33) with a `checkout_abandoned` definition whose identity
+paths are: Email = `body.email`, Phone = `body.phone`,
+**Session ID = `body.note_attributes_map.storees_sid`**.
+
+1. Incognito → browse finewine-cosmetics.com. In DevTools → Network, look for a
+   POST to `/cart/update.js`.
+2. Expand it → request body.
+3. Add to cart → proceed into the Shopflo checkout → enter phone/email → abandon.
+4. Wait for Shopflo's abandonment webhook → Event Sources → the webhook's Data tab.
+5. Event Debugger → Sessions panel → find your browsing session (the `s:…` id from
+   the page_viewed events).
+
+**Outcome:** step 1-2 → the SDK stamps `{"attributes":{"storees_sid":"<session id>"}}`
+onto the cart (response 200). Step 4 → the payload's `note_attributes` contains
+`storees_sid` with YOUR browsing session id. Step 5 → the browsing session flips
+from `anonymous` to **linked → you**, with earlier page views back-attributed. If
+step 2 shows no request: SDK bundle is stale. If step 4 has no storees_sid in
+note_attributes: Shopflo isn't forwarding cart attributes — escalate to Shopflo.
+
 ---
 
 **Feedback format:** scenario number + the step where it broke + what you saw instead

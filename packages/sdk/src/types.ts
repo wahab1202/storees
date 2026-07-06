@@ -14,6 +14,10 @@ export type StoreesSdkConfig = {
   }
   batchSize?: number
   flushInterval?: number
+  /** Stamp the session id onto the Shopify cart (storees_sid attribute) so
+   *  checkout/order identity can stitch the browsing session. Default true;
+   *  harmless no-op on non-Shopify sites. */
+  cartBridge?: boolean
   debug?: boolean
 }
 
