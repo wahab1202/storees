@@ -431,21 +431,35 @@ async function updateLastSeen(
  */
 export async function updateCustomerAggregates(
   customerId: string,
-  orderTotal: number,
-  orderDate?: Date,
+  _orderTotal?: number,   // vestigial — kept for call-site compatibility
+  _orderDate?: Date,      // aggregates are recomputed from the orders table
 ): Promise<void> {
-  const ts = orderDate ?? new Date()
-  // Update order stats first, then recompute CLV from the updated row
+  // IDEMPOTENT: recompute order stats from the ORDERS TABLE (deduped on
+  // (project, external_order_id)), NOT by +1. Incremental counting
+  // double-counted whenever an order reached the counter through more than
+  // one path (webhook + historical sync, or the aggregate worker) even
+  // though the order row was inserted once — that's the "Orders tab shows 1
+  // but the card shows 2" bug. Callers invoke this AFTER inserting the order
+  // row, so the new order is included. Cancelled orders excluded.
   await db.execute(sql`
-    UPDATE customers SET
-      total_orders = total_orders + 1,
-      total_spent = total_spent + ${orderTotal},
-      avg_order_value = (total_spent + ${orderTotal}) / NULLIF(total_orders + 1, 0),
-      last_seen = NOW(),
-      first_order_date = CASE WHEN first_order_date IS NULL THEN ${ts}::timestamptz ELSE LEAST(first_order_date, ${ts}::timestamptz) END,
-      last_order_date = CASE WHEN last_order_date IS NULL THEN ${ts}::timestamptz ELSE GREATEST(last_order_date, ${ts}::timestamptz) END,
-      updated_at = NOW()
-    WHERE id = ${customerId}
+    UPDATE customers c SET
+      total_orders     = COALESCE(agg.cnt, 0),
+      total_spent      = COALESCE(agg.spent, 0),
+      avg_order_value  = CASE WHEN COALESCE(agg.cnt, 0) > 0 THEN agg.spent / agg.cnt ELSE 0 END,
+      first_order_date = agg.first_at,
+      last_order_date  = agg.last_at,
+      last_seen        = GREATEST(last_seen, NOW()),
+      updated_at       = NOW()
+    FROM (
+      SELECT
+        COUNT(*)::int AS cnt,
+        COALESCE(SUM(total::numeric), 0)::numeric(12,2) AS spent,
+        MIN(created_at) AS first_at,
+        MAX(created_at) AS last_at
+      FROM orders
+      WHERE customer_id = ${customerId} AND status != 'cancelled'
+    ) agg
+    WHERE c.id = ${customerId}
   `)
 
   // Recompute CLV from updated data using the JS model
@@ -527,49 +541,59 @@ export async function recalculateAggregates(
 
 /**
  * Recalculate all customer aggregates from real data.
- * Uses order_completed events (which contain line_items with unit_price)
- * as the source of truth, falling back to orders table if no events exist.
+ *
+ * SOURCE OF TRUTH = the orders table, which is deduped on
+ * (project, external_order_id). Events are NOT counted for order stats —
+ * the same order arrives as multiple event rows (Shopify webhook +
+ * historical sync + /v1/events push, each with its own idempotency key), so
+ * counting events double-counted orders (Orders tab showed 1, the card
+ * showed 2, single-order customers became "Repeat Buyers"). Events are used
+ * only as a FALLBACK for customers who have order events but no order row
+ * (e.g. a source that emits events without materialising orders).
  */
 export async function recalculateAllAggregates(projectId: string): Promise<number> {
-  // Primary: compute from order_completed events (real GoWelmart data)
-  // Per-order revenue mirrors the dashboard (dashboard.ts): prefer the
-  // canonical properties.total the connector sets (Medusa
-  // summary.current_order_total — already 0 for canceled/refunded orders),
-  // falling back to summing line items. Connectors rename source `unit_price`
-  // → `price` on line_items, but older bulk imports keep `unit_price` — accept
-  // either. Counting orders, not revenue, gates inclusion so a buyer whose
-  // order total parses to 0 still gets total_orders set.
+  // Primary: orders table — authoritative and deduped.
   const result = await db.execute(sql`
     UPDATE customers c SET
-      total_orders = agg.order_count,
-      total_spent  = agg.total_revenue,
-      avg_order_value = CASE
-        WHEN agg.order_count > 0 THEN agg.total_revenue / agg.order_count
-        ELSE 0
-      END,
-      clv = agg.total_revenue,
-      updated_at = NOW()
+      total_orders     = agg.order_count,
+      total_spent      = agg.total_spent,
+      avg_order_value  = CASE WHEN agg.order_count > 0 THEN agg.total_spent / agg.order_count ELSE 0 END,
+      clv              = agg.total_spent,
+      updated_at       = NOW()
     FROM (
       SELECT
         customer_id,
         COUNT(*)::integer AS order_count,
-        COALESCE(SUM(order_revenue), 0)::numeric(12,2) AS total_revenue
+        COALESCE(SUM(total::numeric), 0)::numeric(12,2) AS total_spent
+      FROM orders
+      WHERE project_id = ${projectId} AND status != 'cancelled'
+      GROUP BY customer_id
+    ) agg
+    WHERE c.id = agg.customer_id AND c.project_id = ${projectId}
+  `)
+
+  const ordersUpdated = Number((result as { rowCount?: number }).rowCount ?? 0)
+
+  // Fallback: customers with order EVENTS but NO order rows. DISTINCT ON
+  // order_id collapses duplicate events for the same order; those without an
+  // id fall back to the event id so they stay individually counted.
+  await db.execute(sql`
+    UPDATE customers c SET
+      total_orders     = agg.order_count,
+      total_spent      = agg.total_revenue,
+      avg_order_value  = CASE WHEN agg.order_count > 0 THEN agg.total_revenue / agg.order_count ELSE 0 END,
+      clv              = agg.total_revenue,
+      updated_at       = NOW()
+    FROM (
+      SELECT customer_id,
+             COUNT(*)::integer AS order_count,
+             COALESCE(SUM(order_revenue), 0)::numeric(12,2) AS total_revenue
       FROM (
-        -- DEDUPE BY ORDER ID: the same order can land as multiple event rows
-        -- (Shopify webhook + /v1/events push + connector pull each create a
-        -- separate events row with its own idempotency key). COUNT(*) over
-        -- raw events double-counted them → total_orders=2 for one real order
-        -- → false "Repeat Buyers". DISTINCT ON collapses events sharing an
-        -- order_id to one row; orders with no id fall back to the event id so
-        -- they stay individually counted (never falsely merged).
         SELECT DISTINCT ON (e.customer_id, COALESCE(e.properties->>'order_id', e.properties->>'id', e.id::text))
           e.customer_id,
           COALESCE(
             (e.properties->>'total')::numeric,
-            (SELECT COALESCE(SUM(COALESCE(
-                                   (item->>'price')::numeric,
-                                   (item->>'unit_price')::numeric,
-                                   0)), 0)
+            (SELECT COALESCE(SUM(COALESCE((item->>'price')::numeric, (item->>'unit_price')::numeric, 0)), 0)
              FROM jsonb_array_elements(e.properties->'line_items') item),
             0
           ) AS order_revenue
@@ -583,37 +607,9 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
     ) agg
     WHERE c.id = agg.customer_id
       AND c.project_id = ${projectId}
+      -- only customers the orders-table pass did NOT already set
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.project_id = ${projectId})
   `)
-
-  const eventUpdated = Number((result as { rowCount?: number }).rowCount ?? 0)
-
-  // Fallback: for customers not covered by events, use orders table
-  if (eventUpdated === 0) {
-    await db.execute(sql`
-      UPDATE customers c SET
-        total_orders = COALESCE(agg.order_count, 0),
-        total_spent  = COALESCE(agg.total_spent, 0),
-        avg_order_value = CASE
-          WHEN COALESCE(agg.order_count, 0) > 0
-          THEN COALESCE(agg.total_spent, 0) / agg.order_count
-          ELSE 0
-        END,
-        clv = COALESCE(agg.total_spent, 0),
-        updated_at = NOW()
-      FROM (
-        SELECT
-          customer_id,
-          COUNT(*)::integer AS order_count,
-          SUM(total::numeric)::numeric(12,2) AS total_spent
-        FROM orders
-        WHERE project_id = ${projectId}
-          AND status != 'cancelled'
-        GROUP BY customer_id
-      ) agg
-      WHERE c.id = agg.customer_id
-        AND c.project_id = ${projectId}
-    `)
-  }
 
   // Backfill first_order_date and last_order_date from orders table
   await db.execute(sql`
@@ -684,5 +680,5 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
     }).where(eq(customers.id, row.id))
   }
 
-  return eventUpdated
+  return ordersUpdated
 }
