@@ -80,12 +80,22 @@ router.get('/:id', requireProjectId, async (req, res) => {
 // PATCH /api/inbound-webhooks/:id — rename / pause / resume
 router.patch('/:id', requireProjectId, async (req, res) => {
   try {
-    const { name, status } = req.body as { name?: string; status?: 'active' | 'paused' }
+    const { name, status, secretHeader, regenerateToken } = req.body as {
+      name?: string; status?: 'active' | 'paused'; secretHeader?: string | null; regenerateToken?: boolean
+    }
     const updates: Record<string, unknown> = { updatedAt: new Date() }
     if (name !== undefined) updates.name = String(name).trim()
     if (status !== undefined) {
       if (!['active', 'paused'].includes(status)) return res.status(400).json({ success: false, error: 'Invalid status' })
       updates.status = status
+    }
+    // Optional shared-secret header: string sets it, null/'' clears it
+    if (secretHeader !== undefined) {
+      updates.secretHeader = secretHeader ? String(secretHeader).trim().slice(0, 128) : null
+    }
+    // Rotate the URL token — the old receive URL stops working immediately
+    if (regenerateToken) {
+      updates.token = crypto.randomBytes(24).toString('base64url')
     }
     const [updated] = await db.update(inboundWebhooks).set(updates)
       .where(and(eq(inboundWebhooks.id, req.params.id as string), eq(inboundWebhooks.projectId, req.projectId!)))

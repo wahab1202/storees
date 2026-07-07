@@ -74,6 +74,15 @@ our checkout events to CleverSend — point that same webhook at this new URL"**
    address can post letters into it, so treat it like a password. Don't post it
    in public channels.
 
+**Is it secure? Is there an auth token?** Yes — the long random ending of the URL
+IS the auth token (32 random characters, unguessable, sent over HTTPS). This is
+the same pattern Slack, Zapier, Stripe and even CleverSend use — because most
+senders (Shopflo included) can only paste a URL, not set custom headers. If your
+sender CAN set a header, open the webhook's **Settings** tab and set a **secret
+header** for a second lock — then deliveries must also carry `x-storees-secret`.
+And if a URL ever leaks, Settings → **Rotate URL** issues a fresh one and kills the
+old instantly. It's POST only — a GET returns a clear "use POST" error.
+
 ### 2b. Hand the address to Shopflo
 
 Shopflo needs to be told: "send your checkout events to this address." Depending on

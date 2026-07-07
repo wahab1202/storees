@@ -1305,6 +1305,8 @@ export type InboundWebhook = {
   name: string
   /** URL-embedded secret — the receive URL is /api/hooks/<token>. */
   token: string
+  /** Optional extra auth: required value of the x-storees-secret header. */
+  secretHeader?: string | null
   status: InboundWebhookStatus
   lastReceivedAt: string | null
   createdAt: string
