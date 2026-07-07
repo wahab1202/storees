@@ -244,12 +244,20 @@ async function injectTrackedButtonSlugs(
   for (const b of list) {
     if ((b.type ?? '').toUpperCase() !== 'URL') continue
     urlPos += 1 // counts every URL button, matching buildTemplateComponents
-    if (!b.track || !b.url) continue
+    if (!b.track) continue
+    // Per-send destination override (wa_button_dest_N): lets a flow point the
+    // tracked button at an EVENT field — e.g. abandoned-cart recovery, where
+    // every recipient's checkout URL differs and the token sits mid-URL (so
+    // Meta's suffix-only dynamic buttons can't express it). The short link
+    // 302s to whatever destination we mint it with, so the approved button
+    // base (…/c/{{1}}) is immutable while the target is per-recipient.
+    const destination = command.variables?.[`wa_button_dest_${urlPos}`] || b.url
+    if (!destination) continue
     const { slug } = await createTrackedLink({
       // UTM params (pre-interpolated by the caller, e.g. a flow send node)
       // ride on the destination — the short link 302s to url + UTM, so
       // attribution works even though the approved button URL is immutable.
-      originalUrl: appendUtmToUrl(b.url, command.utmParameters),
+      originalUrl: appendUtmToUrl(destination, command.utmParameters),
       projectId: command.projectId,
       channel: 'whatsapp',
       messageId,
