@@ -10,7 +10,7 @@ import { Dialog } from '@/components/ui/Dialog'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { CopyUrlButton, webhookUrl } from '@/components/eventSources/CopyUrlButton'
 import {
-  useInboundWebhookDetail, useUpdateInboundWebhook, useInboundWebhookEvents, useReprocessWebhook,
+  useInboundWebhookDetail, useUpdateInboundWebhook, useInboundWebhookEvents, useReprocessWebhook, useExplainEvent,
   useInboundWebhookSchema, useEventDefinitions, useCreateEventDefinition,
   useUpdateEventDefinition, useDeleteEventDefinition,
   type EventDefinition, type PayloadSchemaField,
@@ -126,7 +126,7 @@ function DataTab({ webhookId, token }: { webhookId: string; token: string }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => <LogRow key={r.id} row={r} />)}
+            {rows.map(r => <LogRow key={r.id} row={r} webhookId={webhookId} />)}
           </tbody>
         </table>
       </div>
@@ -141,8 +141,9 @@ function DataTab({ webhookId, token }: { webhookId: string; token: string }) {
   )
 }
 
-function LogRow({ row }: { row: { id: string; payload: Record<string, unknown>; headers: Record<string, unknown>; matchedDefinitions: Array<{ eventName: string }>; status: string; error: string | null; receivedAt: string } }) {
+function LogRow({ row, webhookId }: { webhookId: string; row: { id: string; payload: Record<string, unknown>; headers: Record<string, unknown>; matchedDefinitions: Array<{ eventName: string }>; status: string; error: string | null; receivedAt: string } }) {
   const [open, setOpen] = useState(false)
+  const explain = useExplainEvent(webhookId, open && row.status !== 'processed' ? row.id : null)
   const preview = JSON.stringify(row.payload)
   const statusStyle = row.status === 'processed' ? 'bg-emerald-50 text-emerald-700'
     : row.status === 'no_match' ? 'bg-amber-50 text-amber-700'
@@ -166,6 +167,36 @@ function LogRow({ row }: { row: { id: string; payload: Record<string, unknown>; 
         <tr className="border-b border-border last:border-0 bg-surface/40">
           <td colSpan={5} className="px-6 py-3">
             {row.error && <p className="mb-2 text-[11px] text-red-600">{row.error}</p>}
+            {row.status !== 'processed' && explain.data?.data && (
+              <div className="mb-3 rounded-md border border-amber-200 bg-amber-50/60 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-1.5">Why didn&apos;t this match?</p>
+                {!explain.data.data.hasDefinitions ? (
+                  <p className="text-[11px] text-amber-800">No event definitions exist on this webhook yet. Go to the <strong>Event Definitions</strong> tab and create one (filter <code className="bg-white/70 px-1 rounded">body.event_name is checkout_abandoned</code>, identity Phone → <code className="bg-white/70 px-1 rounded">body.phone</code>).</p>
+                ) : (
+                  <div className="space-y-2">
+                    {explain.data.data.results.map(d => (
+                      <div key={d.definitionId} className="text-[11px]">
+                        <span className="font-semibold text-text-primary">{d.name}</span>
+                        {!d.isActive && <span className="ml-1 text-text-muted">(disabled)</span>}
+                        <span className={cn('ml-1', d.matched ? 'text-emerald-700' : 'text-red-600')}>{d.matched ? '✓ would match' : '✗ no match'}</span>
+                        <div className="mt-0.5 space-y-0.5">
+                          {d.rules.length === 0 && <div className="text-text-muted">no filters — matches every payload</div>}
+                          {d.rules.map((r, i) => (
+                            <div key={i} className={cn('font-mono', r.pass ? 'text-emerald-700' : 'text-red-600')}>
+                              {r.pass ? '✓' : '✗'} <code>{r.field}</code> {r.operator} <code>{JSON.stringify(r.expected)}</code>
+                              {' → actual: '}<code>{r.actual === undefined ? 'undefined (field not found — check the path)' : JSON.stringify(r.actual)}</code>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-0.5 text-text-muted">
+                          identity → phone: <code>{JSON.stringify(d.identityResolved.phone)}</code>, session: <code>{JSON.stringify(d.identityResolved.sessionId)}</code>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted mb-1">Body</p>
             <pre className="max-h-64 overflow-auto rounded-md border border-border bg-white p-3 text-[11px] leading-relaxed">{JSON.stringify(row.payload, null, 2)}</pre>
             <details className="mt-2">

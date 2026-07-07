@@ -98,6 +98,23 @@ export function useInboundWebhookSchema(id: string) {
   })
 }
 
+export type ExplainResult = {
+  hasDefinitions: boolean
+  results: Array<{
+    definitionId: string; name: string; isActive: boolean; matched: boolean
+    rules: Array<{ field: string; operator: string; expected: unknown; actual: unknown; pass: boolean }>
+    identityResolved: { email: unknown; phone: unknown; sessionId: unknown }
+  }>
+}
+
+export function useExplainEvent(webhookId: string, eventId: string | null) {
+  return useQuery({
+    queryKey: ['inbound-webhook-explain', webhookId, eventId],
+    queryFn: () => api.get<ExplainResult>(withProject(`/api/inbound-webhooks/${webhookId}/events/${eventId}/explain`)),
+    enabled: !!webhookId && !!eventId,
+  })
+}
+
 export function useEventDefinitions(webhookId: string) {
   return useQuery({
     queryKey: ['event-definitions', webhookId],

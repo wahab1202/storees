@@ -4,7 +4,7 @@ import { eq, and, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { inboundWebhooks, inboundWebhookEvents, eventDefinitions } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
-import { inferWebhookSchema, reprocessWebhook } from '../services/inboundWebhookService.js'
+import { inferWebhookSchema, reprocessWebhook, explainDefinitionsForPayload } from '../services/inboundWebhookService.js'
 
 const router = Router()
 
@@ -189,6 +189,32 @@ router.get('/:id/schema', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('GET /inbound-webhooks/:id/schema error:', err)
     res.status(500).json({ success: false, error: 'Failed to infer schema' })
+  }
+})
+
+// GET /api/inbound-webhooks/:id/events/:eventId/explain — why did/didn't this match?
+router.get('/:id/events/:eventId/explain', requireProjectId, async (req, res) => {
+  try {
+    const [hook] = await db.select({ id: inboundWebhooks.id }).from(inboundWebhooks)
+      .where(and(eq(inboundWebhooks.id, req.params.id as string), eq(inboundWebhooks.projectId, req.projectId!)))
+      .limit(1)
+    if (!hook) return res.status(404).json({ success: false, error: 'Webhook not found' })
+
+    const [row] = await db.select({ headers: inboundWebhookEvents.headers, payload: inboundWebhookEvents.payload })
+      .from(inboundWebhookEvents)
+      .where(and(eq(inboundWebhookEvents.id, req.params.eventId as string), eq(inboundWebhookEvents.webhookId, req.params.id as string)))
+      .limit(1)
+    if (!row) return res.status(404).json({ success: false, error: 'Event not found' })
+
+    const explain = await explainDefinitionsForPayload(
+      req.params.id as string,
+      (row.headers ?? {}) as Record<string, unknown>,
+      (row.payload ?? {}) as Record<string, unknown>,
+    )
+    res.json({ success: true, data: explain })
+  } catch (err) {
+    console.error('GET /inbound-webhooks/:id/events/:eventId/explain error:', err)
+    res.status(500).json({ success: false, error: 'Failed to explain' })
   }
 })
 

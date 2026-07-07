@@ -4,6 +4,7 @@ import { inboundWebhooks, inboundWebhookEvents, eventDefinitions, events, custom
 import { evaluateEventFilters, readPath } from '@storees/shared'
 import type {
   FilterConfig,
+  FilterRule,
   PayloadSchemaField,
   EventPropertyMapping,
   CustomerAttributeMapping,
@@ -202,6 +203,62 @@ async function runDefinitionsForRow(
   }).where(eq(inboundWebhookEvents.id, rawRowId))
 
   return { matched, status, error: firstError }
+}
+
+/**
+ * Diagnose WHY a stored payload matched / didn't match. For each ACTIVE
+ * definition, evaluates every filter rule against the payload and reports the
+ * RESOLVED value + pass/fail — so "no_match" stops being a black box (usually
+ * it's a wrong field path like `event_name` instead of `body.event_name`).
+ */
+export async function explainDefinitionsForPayload(
+  webhookId: string,
+  headers: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): Promise<{
+  hasDefinitions: boolean
+  results: Array<{
+    definitionId: string
+    name: string
+    isActive: boolean
+    matched: boolean
+    rules: Array<{ field: string; operator: string; expected: unknown; actual: unknown; pass: boolean }>
+    identityResolved: { email: unknown; phone: unknown; sessionId: unknown }
+  }>
+}> {
+  const envelope = { body: withAttributeMaps(payload), headers } as Record<string, unknown>
+  const defs = await db
+    .select({
+      id: eventDefinitions.id, name: eventDefinitions.name, isActive: eventDefinitions.isActive,
+      filters: eventDefinitions.filters, identityPaths: eventDefinitions.identityPaths,
+    })
+    .from(eventDefinitions)
+    .where(eq(eventDefinitions.webhookId, webhookId))
+
+  const results = defs.map(def => {
+    const filters = def.filters as FilterConfig | null
+    const flatRules = (filters?.rules ?? []).filter((r): r is FilterRule => !('type' in r))
+    const rules = flatRules.map(r => {
+      const actual = readPath(envelope, r.field.replace(/^properties\./, ''))
+      // Re-use the same matcher the engine uses (single-rule config)
+      const pass = evaluateEventFilters({ logic: 'AND', rules: [r] }, envelope as Record<string, unknown>)
+      return { field: r.field, operator: r.operator, expected: r.value, actual, pass }
+    })
+    const matched = !filters || flatRules.length === 0 || rules.every(x => x.pass)
+    const ids = (def.identityPaths ?? {}) as Record<string, string>
+    return {
+      definitionId: def.id, name: def.name, isActive: def.isActive,
+      matched: matched && def.isActive,
+      rules,
+      identityResolved: {
+        email: ids.email ? readPath(envelope, ids.email) : undefined,
+        phone: ids.phone ? readPath(envelope, ids.phone) : undefined,
+        sessionId: ids.sessionId ? readPath(envelope, ids.sessionId) : undefined,
+      },
+    }
+  })
+
+  return { hasDefinitions: defs.length > 0, results }
 }
 
 /**
