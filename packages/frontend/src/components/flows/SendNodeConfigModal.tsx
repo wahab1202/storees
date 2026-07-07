@@ -76,7 +76,16 @@ function waSpecialRows(tpl: WhatsappTemplate | undefined): { editable: WaSpecial
     if (type === 'URL') {
       urlPos += 1
       if (b.track) {
-        info.push({ label: `Button “${b.text}”`, hint: 'Tracked — a per-recipient short link is generated automatically at send time (UTM from step ③ rides on it).' })
+        // Tracked buttons get a per-send short link. Expose an OPTIONAL
+        // destination override so a flow can point the button at an event
+        // field (e.g. abandoned-cart recovery: bind to abandoned_checkout_url);
+        // blank = use the template's own URL.
+        editable.push({
+          key: `wa_button_dest_${urlPos}`,
+          label: `Button “${b.text}” destination (tracked)`,
+          hint: 'A short link is generated automatically. Bind a per-recipient destination (e.g. Event payload path → abandoned_checkout_url), or leave blank to use the template link. UTM from step ③ rides on it.',
+          defaultLiteral: '',
+        })
       } else if ((b.url ?? '').includes('{{1}}')) {
         editable.push({
           key: `wa_button_url_${urlPos}`,
