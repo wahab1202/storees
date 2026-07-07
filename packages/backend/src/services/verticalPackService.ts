@@ -3,7 +3,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { db } from '../db/connection.js'
 import { projects, segments } from '../db/schema.js'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { createCatalogue } from './catalogueService.js'
 import { bulkCreateItems } from './itemService.js'
 import { upsertInteractionConfig } from './interactionEngine.js'
@@ -173,8 +173,16 @@ export async function activatePack(
     // The pack's default_status field is informational for the wizard UI
   }
 
-  // 5. Insert segment templates
+  // 5. Insert segment templates — skip names that already exist for the
+  // project. (onConflictDoNothing was a no-op: there is NO unique index on
+  // (project_id, name), so it never matched — which is exactly how projects
+  // ended up with duplicate "Repeat Buyers" seeded by both onboarding AND a
+  // vertical pack.)
   for (const template of pack.segment_templates) {
+    const [dup] = await db.select({ id: segments.id }).from(segments)
+      .where(and(eq(segments.projectId, projectId), eq(segments.name, template.name)))
+      .limit(1)
+    if (dup) continue
     await db.insert(segments).values({
       projectId,
       name: template.name,
@@ -182,7 +190,7 @@ export async function activatePack(
       type: 'template',
       filters: template.filter,
       isActive: true,
-    }).onConflictDoNothing() // idempotent — unique on (projectId, name) via existing logic
+    })
   }
 
   // 6. Update project vertical setting

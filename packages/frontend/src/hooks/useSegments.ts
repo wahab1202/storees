@@ -93,6 +93,19 @@ export function useSegmentPreview() {
   })
 }
 
+export function useRecalculateAggregates() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<{ updated: number; message: string }>(withProject('/api/customers/recalculate'), {}),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['segments'] })
+      queryClient.invalidateQueries({ queryKey: ['customers'] })
+      toast.success(res.data?.message ?? 'Customer stats recalculated')
+    },
+    onError: (err) => toast.error(err.message ?? 'Failed to recalculate customer stats'),
+  })
+}
+
 export function useEvaluateSegments() {
   const queryClient = useQueryClient()
 

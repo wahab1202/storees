@@ -555,7 +555,14 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
         COUNT(*)::integer AS order_count,
         COALESCE(SUM(order_revenue), 0)::numeric(12,2) AS total_revenue
       FROM (
-        SELECT
+        -- DEDUPE BY ORDER ID: the same order can land as multiple event rows
+        -- (Shopify webhook + /v1/events push + connector pull each create a
+        -- separate events row with its own idempotency key). COUNT(*) over
+        -- raw events double-counted them → total_orders=2 for one real order
+        -- → false "Repeat Buyers". DISTINCT ON collapses events sharing an
+        -- order_id to one row; orders with no id fall back to the event id so
+        -- they stay individually counted (never falsely merged).
+        SELECT DISTINCT ON (e.customer_id, COALESCE(e.properties->>'order_id', e.properties->>'id', e.id::text))
           e.customer_id,
           COALESCE(
             (e.properties->>'total')::numeric,
@@ -568,6 +575,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
           ) AS order_revenue
         FROM events e
         WHERE e.project_id = ${projectId}
+          AND e.customer_id IS NOT NULL
           AND e.event_name IN ('order_placed', 'order_completed')
       ) per_order
       GROUP BY customer_id
