@@ -172,8 +172,21 @@ export class AutoTracker {
     setTimeout(() => this.recordPageView(), 0)
   }
 
+  private lastPageViewUrl = ''
+  private lastPageViewAt = 0
+
   private recordPageView(): void {
     if (!this.consent.hasCategory('analytics')) return
+
+    // Dedup redundant re-fires: Shopify themes (and some apps) call
+    // history.replaceState right after load, so the initial record + the
+    // navigation record fire for the SAME url in the same instant → two
+    // page_viewed rows. Skip an identical url within a short window.
+    const url = window.location.href
+    const now = Date.now()
+    if (url === this.lastPageViewUrl && now - this.lastPageViewAt < 1500) return
+    this.lastPageViewUrl = url
+    this.lastPageViewAt = now
 
     const event = this.eventBuilder.buildPageView(undefined, this.utmParams)
     this.queue.push(event)
