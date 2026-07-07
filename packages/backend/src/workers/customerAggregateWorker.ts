@@ -5,7 +5,7 @@ import { db } from '../db/connection.js'
 import { customers, events, orders } from '../db/schema.js'
 import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
 import { relayConversionEvent } from '../services/conversionApiService.js'
-import { computeClv } from '../services/customerService.js'
+import { computeClv, updateCustomerAggregates } from '../services/customerService.js'
 
 /**
  * Customer-aggregate worker — the heart of the event-driven CDP.
@@ -199,8 +199,13 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
     // have no order id and keep per-event counting — they ARE per-event.
     const externalOrderId = String(evt.properties.order_id ?? evt.properties.id ?? '').trim()
     if (eventName === 'order_placed' && externalOrderId) {
+      // Materialise the order row (deduped on project+external_order_id), then
+      // recompute total_orders/total_spent FROM the orders table. This is
+      // idempotent and immune to multi-path double counting — the same order
+      // arriving through the webhook, historical sync, /v1/events and this
+      // worker all converge on one order row and one recomputed count.
       const rawItems = Array.isArray(evt.properties.line_items) ? evt.properties.line_items as Record<string, unknown>[] : []
-      const inserted = await db.insert(orders).values({
+      await db.insert(orders).values({
         projectId: evt.projectId,
         customerId,
         externalOrderId,
@@ -216,17 +221,14 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
           imageUrl: (item.image_url as string) ?? undefined,
         })),
         createdAt: ts,
-      }).onConflictDoNothing().returning({ id: orders.id })
+      }).onConflictDoNothing()
 
-      if (inserted.length === 0) {
-        // Another path already counted this order — refresh last_seen only.
-        await db.execute(sql`
-          UPDATE customers SET last_seen = GREATEST(last_seen, ${ts}), updated_at = NOW()
-          WHERE id = ${customerId}
-        `)
-        return
-      }
+      await updateCustomerAggregates(customerId) // recomputes from orders table + CLV
+      return
     }
+
+    // ── Non-order revenue events below (subscriptions, EMIs, premiums, or
+    //    order_placed with no id) keep per-event counting — they ARE per-event.
 
     if (!Number.isFinite(total) || total < 0) {
       // Bad payload — still bump last_seen + counter, skip revenue.
