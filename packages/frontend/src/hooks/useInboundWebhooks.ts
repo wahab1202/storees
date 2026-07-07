@@ -46,7 +46,7 @@ export function useCreateInboundWebhook() {
 export function useUpdateInboundWebhook() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...input }: { id: string; name?: string; status?: 'active' | 'paused' }) =>
+    mutationFn: ({ id, ...input }: { id: string; name?: string; status?: 'active' | 'paused'; secretHeader?: string | null; regenerateToken?: boolean }) =>
       api.patch<InboundWebhook>(withProject(`/api/inbound-webhooks/${id}`), input),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['inbound-webhooks'] }),
     onError: (err) => toast.error(err.message ?? 'Failed to update webhook'),

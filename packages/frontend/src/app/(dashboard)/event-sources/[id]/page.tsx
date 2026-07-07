@@ -3,11 +3,12 @@
 import { useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Plus, Loader2, Trash2, Pencil, ChevronDown, ChevronRight, Braces, X } from 'lucide-react'
+import { ArrowLeft, Plus, Loader2, Trash2, Pencil, ChevronDown, ChevronRight, Braces, X, ShieldCheck, KeyRound, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 import { Dialog } from '@/components/ui/Dialog'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { CopyUrlButton } from '@/components/eventSources/CopyUrlButton'
+import { CopyUrlButton, webhookUrl } from '@/components/eventSources/CopyUrlButton'
 import {
   useInboundWebhookDetail, useUpdateInboundWebhook, useInboundWebhookEvents,
   useInboundWebhookSchema, useEventDefinitions, useCreateEventDefinition,
@@ -16,7 +17,7 @@ import {
 } from '@/hooks/useInboundWebhooks'
 import type { FilterConfig, FilterRule, FilterOperator, EventPropertyMapping, CustomerAttributeMapping, EventDefinitionIdentityPaths } from '@storees/shared'
 
-type Tab = 'data' | 'schema' | 'definitions'
+type Tab = 'data' | 'schema' | 'definitions' | 'settings'
 
 const INPUT = 'w-full h-8 px-2 text-xs border border-border rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent/30'
 
@@ -54,7 +55,7 @@ export default function EventSourceDetailPage() {
       </div>
 
       <div className="flex gap-1 border-b border-border">
-        {([['data', 'Data'], ['schema', 'Schema'], ['definitions', 'Event Definitions']] as Array<[Tab, string]>).map(([key, label]) => (
+        {([['data', 'Data'], ['schema', 'Schema'], ['definitions', 'Event Definitions'], ['settings', 'Settings']] as Array<[Tab, string]>).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -71,6 +72,7 @@ export default function EventSourceDetailPage() {
       {tab === 'data' && <DataTab webhookId={id} token={hook.token} />}
       {tab === 'schema' && <SchemaTab webhookId={id} />}
       {tab === 'definitions' && <DefinitionsTab webhookId={id} />}
+      {tab === 'settings' && <SettingsTab webhook={hook} />}
     </div>
   )
 }
@@ -490,5 +492,82 @@ function DefinitionEditor({ webhookId, definition, onClose }: {
         </section>
       </div>
     </Dialog>
+  )
+}
+
+
+/* ─── Settings — URL, security, token rotation ─── */
+
+function SettingsTab({ webhook }: { webhook: { id: string; token: string; secretHeader?: string | null } }) {
+  const update = useUpdateInboundWebhook()
+  const [secret, setSecret] = useState(webhook.secretHeader ?? '')
+  const [copied, setCopied] = useState(false)
+  const url = webhookUrl(webhook.token)
+
+  function saveSecret() {
+    update.mutate({ id: webhook.id, secretHeader: secret.trim() || null }, {
+      onSuccess: () => toast.success(secret.trim() ? 'Secret header set' : 'Secret header cleared'),
+    })
+  }
+  function rotate() {
+    if (!confirm('Generate a new URL? The current receive URL stops working immediately — you must give the new one to the sender (Shopflo etc.).')) return
+    update.mutate({ id: webhook.id, regenerateToken: true }, {
+      onSuccess: () => toast.success('New URL generated — copy and re-share it'),
+    })
+  }
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      {/* Method + URL */}
+      <section className="rounded-xl border border-border bg-white p-4 space-y-2">
+        <h3 className="text-sm font-semibold text-text-primary">Receive URL</h3>
+        <p className="text-[11px] text-text-muted">
+          Senders deliver with <code className="bg-surface px-1 rounded">POST</code> and a JSON body.
+          The random token in the URL is the authentication — treat it like a password.
+        </p>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 min-w-0 truncate rounded-md border border-border bg-surface px-3 py-2 text-xs text-text-secondary" title={url}>{url}</code>
+          <button
+            onClick={() => { navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <button onClick={rotate} disabled={update.isPending} className="inline-flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-red-600 disabled:opacity-50">
+          <KeyRound className="h-3.5 w-3.5" /> Rotate URL (invalidate the current one)
+        </button>
+      </section>
+
+      {/* Optional shared-secret header */}
+      <section className="rounded-xl border border-border bg-white p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-accent" />
+          <h3 className="text-sm font-semibold text-text-primary">Extra security — secret header (optional)</h3>
+        </div>
+        <p className="text-[11px] text-text-muted leading-relaxed">
+          For senders that <em>can</em> set custom headers, require an <code className="bg-surface px-1 rounded">x-storees-secret</code> header
+          on every delivery. Deliveries without the exact value are rejected with 401. Leave blank if the sender
+          only supports pasting a URL (e.g. most Shopflo setups) — the URL token already authenticates.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={secret}
+            onChange={e => setSecret(e.target.value)}
+            placeholder="e.g. a long random string you also give the sender"
+            className={cn(INPUT, 'flex-1 font-mono')}
+          />
+          <button
+            onClick={saveSecret}
+            disabled={update.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent text-white px-4 py-2 text-xs font-semibold hover:bg-accent-hover disabled:opacity-50"
+          >
+            {update.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Save
+          </button>
+        </div>
+        {webhook.secretHeader && <p className="text-[11px] text-emerald-700">Secret header is active — deliveries must send it.</p>}
+      </section>
+    </div>
   )
 }

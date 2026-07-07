@@ -1254,6 +1254,9 @@ export const inboundWebhooks = pgTable('inbound_webhooks', {
   // URL-embedded secret — the whole auth story for the public receiver
   token: varchar('token', { length: 64 }).notNull().unique(),
   status: varchar('status', { length: 20 }).notNull().default('active'),
+  // Optional shared-secret: when set, deliveries must carry
+  // `x-storees-secret: <value>` (for senders that support custom headers)
+  secretHeader: varchar('secret_header', { length: 128 }),
   lastReceivedAt: timestamp('last_received_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
