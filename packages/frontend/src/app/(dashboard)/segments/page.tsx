@@ -1,12 +1,12 @@
 'use client'
 
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useSegments, useEvaluateSegments, useDeleteSegment, useUpdateSegment } from '@/hooks/useSegments'
+import { useSegments, useEvaluateSegments, useRecalculateAggregates, useDeleteSegment, useUpdateSegment } from '@/hooks/useSegments'
 import { filterSummary } from '@/components/segments/SegmentFilterBuilder'
 import { LifecycleChart } from '@/components/segments/LifecycleChart'
 import { ExportAudienceButton } from '@/components/segments/ExportAudienceButton'
 import Link from 'next/link'
-import { RefreshCw, Users, ArrowRight, Plus, PieChart, Filter, Pencil, Trash2, Archive, ArchiveRestore } from 'lucide-react'
+import { RefreshCw, Users, ArrowRight, Plus, PieChart, Filter, Pencil, Trash2, Archive, ArchiveRestore, Calculator } from 'lucide-react'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import type { FilterConfig } from '@storees/shared'
@@ -14,6 +14,7 @@ import type { FilterConfig } from '@storees/shared'
 export default function SegmentsPage() {
   const { data, isLoading, isError } = useSegments()
   const evaluate = useEvaluateSegments()
+  const recalc = useRecalculateAggregates()
   const deleteSegment = useDeleteSegment()
   const updateSegment = useUpdateSegment()
 
@@ -23,6 +24,15 @@ export default function SegmentsPage() {
         title="Segments"
         actions={
           <>
+            <button
+              onClick={() => recalc.mutate()}
+              disabled={recalc.isPending}
+              title="Rebuild each customer's order count / spend from their orders (de-duplicated), then re-evaluate every segment. Use if member counts look wrong."
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-primary rounded-lg hover:bg-surface transition-colors disabled:opacity-50"
+            >
+              <Calculator className={cn('h-4 w-4', recalc.isPending && 'animate-spin')} />
+              Recalculate stats
+            </button>
             <button
               onClick={() => evaluate.mutate()}
               disabled={evaluate.isPending}

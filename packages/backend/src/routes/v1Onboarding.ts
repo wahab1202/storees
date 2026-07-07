@@ -218,9 +218,16 @@ router.post('/projects', async (req: Request, res: Response) => {
       settings: {},
     }).returning()
 
-    // Seed domain-specific segment templates
+    // Seed domain-specific segment templates. Skip any name that already
+    // exists for the project so re-seeding / a later vertical pack can't
+    // create duplicate "Repeat Buyers" rows (there is no unique constraint
+    // on (project_id, name) — the check has to be explicit).
     const templates = DOMAIN_SEGMENT_TEMPLATES[domain_type]
     for (const template of templates) {
+      const [dup] = await db.select({ id: segments.id }).from(segments)
+        .where(and(eq(segments.projectId, project.id), eq(segments.name, template.name)))
+        .limit(1)
+      if (dup) continue
       await db.insert(segments).values({
         projectId: project.id,
         name: template.name,
