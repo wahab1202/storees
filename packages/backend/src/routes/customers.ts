@@ -3,6 +3,8 @@ import { eq, and, desc, asc, ilike, or, sql, count, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events, customerSegments, segments, flowTrips, flows, messages, campaigns, products } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { evaluateAllSegments } from '../services/segmentService.js'
+import { computeClv } from '../services/customerService.js'
 import { customerScopeFilter, requireRole } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
@@ -638,6 +640,101 @@ router.post('/refresh-metrics', requireRole('admin'), requireProjectId, async (r
   } catch (err) {
     console.error('Refresh metrics error:', err)
     res.status(500).json({ success: false, error: 'Failed to refresh metrics' })
+  }
+})
+
+/**
+ * POST /api/customers/recompute-aggregates?projectId=…&zeroOrphans=true
+ *
+ * REPAIR: rebuild total_orders / total_spent / AOV / first+last order dates
+ * from the orders table (the deduped source of truth). Heals inflation from
+ * the historical double-counting bug where the aggregate worker counted the
+ * same order once per ingestion path. `zeroOrphans=true` also resets
+ * customers that have counters but NO order rows (use on order-backed
+ * projects only — fintech/SaaS projects count events, not orders).
+ * Re-evaluates all segments afterwards so memberships correct immediately.
+ */
+router.post('/recompute-aggregates', requireProjectId, async (req: AuthenticatedRequest, res) => {
+  try {
+    const projectId = req.projectId!
+    const zeroOrphans = String(req.query.zeroOrphans ?? '') === 'true'
+
+    const recomputed = await db.execute(sql`
+      UPDATE customers c SET
+        total_orders     = agg.cnt,
+        total_spent      = agg.spent,
+        avg_order_value  = CASE WHEN agg.cnt > 0 THEN agg.spent / agg.cnt ELSE 0 END,
+        first_order_date = agg.first_at,
+        last_order_date  = agg.last_at,
+        updated_at       = NOW()
+      FROM (
+        SELECT customer_id,
+               COUNT(*)::int AS cnt,
+               COALESCE(SUM(total::numeric), 0) AS spent,
+               MIN(created_at) AS first_at,
+               MAX(created_at) AS last_at
+        FROM orders
+        WHERE project_id = ${projectId}
+        GROUP BY customer_id
+      ) agg
+      WHERE c.id = agg.customer_id AND c.project_id = ${projectId}
+        AND (c.total_orders IS DISTINCT FROM agg.cnt OR c.total_spent IS DISTINCT FROM agg.spent)
+      RETURNING c.id
+    `)
+
+    let orphansZeroed = 0
+    if (zeroOrphans) {
+      const zeroed = await db.execute(sql`
+        UPDATE customers c SET
+          total_orders = 0, total_spent = 0, avg_order_value = 0, updated_at = NOW()
+        WHERE c.project_id = ${projectId}
+          AND c.total_orders > 0
+          AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+        RETURNING c.id
+      `)
+      orphansZeroed = zeroed.rows.length
+    }
+
+    // Refresh CLV for every corrected customer (same JS model as live updates)
+    const changedIds = (recomputed.rows as Array<{ id: string }>).map(r => r.id)
+    for (const id of changedIds) {
+      try {
+        const [row] = await db.select({
+          totalSpent: customers.totalSpent,
+          totalOrders: customers.totalOrders,
+          firstOrderDate: customers.firstOrderDate,
+          lastOrderDate: customers.lastOrderDate,
+          lastSeen: customers.lastSeen,
+          metrics: customers.metrics,
+        }).from(customers).where(eq(customers.id, id)).limit(1)
+        if (!row) continue
+        const metrics = (row.metrics ?? {}) as Record<string, unknown>
+        const clvResult = computeClv({
+          totalSpent: Number(row.totalSpent),
+          totalOrders: row.totalOrders,
+          firstOrderDate: row.firstOrderDate,
+          lastOrderDate: row.lastOrderDate,
+          lastSeenDate: row.lastSeen,
+          churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+        })
+        await db.update(customers).set({
+          clv: String(clvResult.clv_total),
+          metrics: { ...metrics, ...clvResult },
+          updatedAt: new Date(),
+        }).where(eq(customers.id, id))
+      } catch { /* per-customer CLV refresh is best-effort */ }
+    }
+
+    // Segment memberships depend on the counters — re-evaluate now
+    await evaluateAllSegments(projectId)
+
+    res.json({
+      success: true,
+      data: { recomputed: changedIds.length, orphansZeroed, segmentsReevaluated: true },
+    })
+  } catch (err) {
+    console.error('Recompute aggregates error:', err)
+    res.status(500).json({ success: false, error: 'Failed to recompute aggregates' })
   }
 })
 

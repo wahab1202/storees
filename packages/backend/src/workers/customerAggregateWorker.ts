@@ -2,7 +2,7 @@ import { Worker } from 'bullmq'
 import { eq, sql, isNull, asc } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { customers, events } from '../db/schema.js'
+import { customers, events, orders } from '../db/schema.js'
 import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
 import { relayConversionEvent } from '../services/conversionApiService.js'
 import { computeClv } from '../services/customerService.js'
@@ -187,6 +187,47 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
 
   if (REVENUE_INCREMENT_EVENTS.has(eventName)) {
     const total = Number(evt.properties.total ?? 0)
+
+    // ORDER-ID DEDUPE — the same order can reach us through several paths
+    // (Shopify webhook, historical sync, connector pull, /v1/events push,
+    // Event Source definitions). The webhook + sync paths already dedupe via
+    // the orders table's (project, external_order_id) unique index and bump
+    // aggregates only on first insert; this worker previously counted
+    // blindly, double-counting cross-path orders (1 real order → Orders: 2 →
+    // fake "Repeat Buyers"). Same rule now: insert-or-skip, bump only on
+    // first insert. Non-order revenue events (subscriptions, EMIs, premiums)
+    // have no order id and keep per-event counting — they ARE per-event.
+    const externalOrderId = String(evt.properties.order_id ?? evt.properties.id ?? '').trim()
+    if (eventName === 'order_placed' && externalOrderId) {
+      const rawItems = Array.isArray(evt.properties.line_items) ? evt.properties.line_items as Record<string, unknown>[] : []
+      const inserted = await db.insert(orders).values({
+        projectId: evt.projectId,
+        customerId,
+        externalOrderId,
+        status: 'pending',
+        total: String(Number.isFinite(total) && total >= 0 ? total : 0),
+        discount: String(Number(evt.properties.discount ?? 0) || 0),
+        currency: String(evt.properties.currency ?? 'INR').toUpperCase().slice(0, 3),
+        lineItems: rawItems.map(item => ({
+          productId: String(item.product_id ?? item.productId ?? ''),
+          productName: String(item.product_name ?? item.title ?? ''),
+          quantity: Number(item.quantity ?? 1),
+          price: Number(item.price ?? item.unit_price ?? 0),
+          imageUrl: (item.image_url as string) ?? undefined,
+        })),
+        createdAt: ts,
+      }).onConflictDoNothing().returning({ id: orders.id })
+
+      if (inserted.length === 0) {
+        // Another path already counted this order — refresh last_seen only.
+        await db.execute(sql`
+          UPDATE customers SET last_seen = GREATEST(last_seen, ${ts}), updated_at = NOW()
+          WHERE id = ${customerId}
+        `)
+        return
+      }
+    }
+
     if (!Number.isFinite(total) || total < 0) {
       // Bad payload — still bump last_seen + counter, skip revenue.
       await db.execute(sql`
