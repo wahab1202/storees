@@ -572,6 +572,87 @@
         }
     }
 
+    /**
+     * Detect a Shopify product/collection page and extract structured info, so the
+     * SDK can emit `product_viewed` / `collection_viewed` (not just generic
+     * page_viewed). These are what the segment engine's has_viewed operator and
+     * product-affinity flows match on.
+     *
+     * Everything is best-effort and defensive: the handle + name (from URL/title)
+     * always resolve; id/price/vendor come from Shopify's on-page data when present
+     * and are simply omitted otherwise. Never throws.
+     */
+    function shopifyMeta() {
+        var _a, _b;
+        const w = window;
+        return (_b = (_a = w.ShopifyAnalytics) === null || _a === void 0 ? void 0 : _a.meta) !== null && _b !== void 0 ? _b : w.meta;
+    }
+    /** Read a numeric price (major units) from JSON-LD or og/product meta tags. */
+    function priceFromDom() {
+        try {
+            for (const el of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
+                const parsed = JSON.parse(el.textContent || '{}');
+                const nodes = Array.isArray(parsed) ? parsed : [parsed];
+                for (const node of nodes) {
+                    if (node['@type'] === 'Product' && node.offers) {
+                        const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                        const p = Number(offer === null || offer === void 0 ? void 0 : offer.price);
+                        if (Number.isFinite(p))
+                            return p;
+                    }
+                }
+            }
+        }
+        catch ( /* ignore malformed JSON-LD */_a) { /* ignore malformed JSON-LD */ }
+        const metaPrice = document.querySelector('meta[property="product:price:amount"], meta[property="og:price:amount"]');
+        const p = Number(metaPrice === null || metaPrice === void 0 ? void 0 : metaPrice.getAttribute('content'));
+        return Number.isFinite(p) ? p : undefined;
+    }
+    /** If the current page is a product page, return structured info; else null. */
+    function detectProduct() {
+        var _a, _b, _c, _d;
+        const path = window.location.pathname;
+        const m = path.match(/\/products\/([^/?#]+)/);
+        if (!m)
+            return null;
+        const handle = decodeURIComponent(m[1]);
+        const meta = shopifyMeta();
+        const prod = meta === null || meta === void 0 ? void 0 : meta.product;
+        const variantId = (_a = new URLSearchParams(window.location.search).get('variant')) !== null && _a !== void 0 ? _a : undefined;
+        // Price: matching variant from Shopify meta (in cents) → any variant → DOM
+        let price;
+        const variants = (_b = prod === null || prod === void 0 ? void 0 : prod.variants) !== null && _b !== void 0 ? _b : [];
+        const matched = variantId ? variants.find(v => String(v.id) === variantId) : variants[0];
+        if ((matched === null || matched === void 0 ? void 0 : matched.price) != null) {
+            const cents = Number(matched.price);
+            if (Number.isFinite(cents))
+                price = cents / 100;
+        }
+        if (price === undefined)
+            price = priceFromDom();
+        const currencyMeta = document.querySelector('meta[property="product:price:currency"], meta[property="og:price:currency"]');
+        return {
+            product_handle: handle,
+            product_id: (prod === null || prod === void 0 ? void 0 : prod.id) != null ? String(prod.id) : undefined,
+            product_name: ((_c = document.title.split(/\s[–|-]\s/)[0]) === null || _c === void 0 ? void 0 : _c.trim()) || handle,
+            price,
+            currency: (_d = currencyMeta === null || currencyMeta === void 0 ? void 0 : currencyMeta.getAttribute('content')) !== null && _d !== void 0 ? _d : undefined,
+            vendor: prod === null || prod === void 0 ? void 0 : prod.vendor,
+            variant_id: variantId,
+            url: window.location.href,
+        };
+    }
+    /** If the current page is a collection page, return the handle; else null. */
+    function detectCollection() {
+        const m = window.location.pathname.match(/\/collections\/([^/?#]+)/);
+        if (!m)
+            return null;
+        const handle = decodeURIComponent(m[1]);
+        if (handle === 'all')
+            return null;
+        return { collection_handle: handle, url: window.location.href };
+    }
+
     const SESSION_ID_KEY = 'storees_session_id';
     const SESSION_START_KEY = 'storees_session_start';
     const SESSION_PAGES_KEY = 'storees_session_pages';
@@ -696,6 +777,24 @@
                 return;
             const event = this.eventBuilder.buildPageView(undefined, this.utmParams);
             this.queue.push(event);
+            // Emit a SPECIFIC event on product / collection pages too — generic
+            // page_viewed can't drive "viewed product X but didn't buy" segments or
+            // product-affinity flows; those need product_viewed with product fields.
+            if (this.config.productViews !== false) {
+                try {
+                    const product = detectProduct();
+                    if (product) {
+                        this.queue.push(this.eventBuilder.build('product_viewed', Object.assign({}, product)));
+                    }
+                    else {
+                        const collection = detectCollection();
+                        if (collection) {
+                            this.queue.push(this.eventBuilder.build('collection_viewed', Object.assign({}, collection)));
+                        }
+                    }
+                }
+                catch ( /* detection is best-effort — never break page tracking */_a) { /* detection is best-effort — never break page tracking */ }
+            }
             // Increment session page count
             const count = parseInt(sessionGet(SESSION_PAGES_KEY) || '0', 10);
             sessionSet(SESSION_PAGES_KEY, String(count + 1));
@@ -1072,6 +1171,89 @@
         return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    /**
+     * Shopify cart bridge — stamps the current SDK session id onto the Shopify
+     * cart as the `storees_sid` attribute (POST /cart/update.js).
+     *
+     * Why this matters: Shopify carries cart attributes into
+     * `order.note_attributes` (the backend's order→session stitch reads exactly
+     * that key), and hosted-checkout providers like Shopflo forward cart
+     * attributes in their webhook payloads the same way. This one attribute is
+     * the bridge that lets identity captured at checkout (phone/email typed on a
+     * DIFFERENT domain, e.g. checkout.shopflo.co) back-attribute the anonymous
+     * browsing session.
+     *
+     * Behavior:
+     * - Idempotent per session id (in-memory + sessionStorage guard, so SPA
+     *   navigations don't re-POST).
+     * - Session renewals re-stamp automatically (the guard keys on the sid).
+     * - Safe on non-Shopify sites: /cart/update.js 404s once, we stop trying for
+     *   the rest of the page load. One tiny request, no errors surfaced.
+     */
+    class ShopifyCartBridge {
+        constructor(getSessionId, log) {
+            this.getSessionId = getSessionId;
+            this.log = log;
+            this.stampedSid = null;
+            this.inflight = false;
+            this.unavailable = false; // non-Shopify page — stop trying
+        }
+        /** Idempotent — call as often as convenient; it no-ops unless the sid changed. */
+        async stamp() {
+            if (this.unavailable || this.inflight)
+                return;
+            const sid = this.getSessionId();
+            if (!sid || this.stampedSid === sid)
+                return;
+            try {
+                if (sessionStorage.getItem('storees_sid_stamped') === sid) {
+                    this.stampedSid = sid;
+                    return;
+                }
+            }
+            catch ( /* storage unavailable — rely on the in-memory guard */_a) { /* storage unavailable — rely on the in-memory guard */ }
+            this.inflight = true;
+            try {
+                const res = await fetch('/cart/update.js', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ attributes: { storees_sid: sid } }),
+                });
+                if (res.ok) {
+                    this.stampedSid = sid;
+                    try {
+                        sessionStorage.setItem('storees_sid_stamped', sid);
+                    }
+                    catch ( /* ignore */_b) { /* ignore */ }
+                    this.log.log('[cart] storees_sid stamped onto Shopify cart', sid);
+                }
+                else {
+                    // 404/405 → not a Shopify storefront (or AJAX API disabled)
+                    this.unavailable = true;
+                    this.log.log('[cart] /cart/update.js unavailable — cart bridge off for this page');
+                }
+            }
+            catch (_c) {
+                // network hiccup — leave guards unset so a later trigger retries
+            }
+            finally {
+                this.inflight = false;
+            }
+        }
+        /** Stamp now and keep the cart in sync with session renewals. */
+        start() {
+            void this.stamp();
+            // Sessions renew after inactivity; a 30s idempotent re-check keeps the
+            // cart attribute current without hooking the session lifecycle.
+            setInterval(() => void this.stamp(), 30000);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible')
+                    void this.stamp();
+            });
+        }
+    }
+
     const DEFAULT_CONFIG = {
         autoTrack: {
             pageViews: true,
@@ -1130,6 +1312,11 @@
             // which is fine for time/scroll/exit triggers (all fire after first paint).
             this.widgetManager = new WidgetManager(this.config.apiUrl, this.config.apiKey, this.config.debug || false);
             this.widgetManager.init().catch(err => log.warn('[widget] init failed:', err));
+            // Shopify cart bridge — stamps storees_sid onto the cart so checkout /
+            // order webhooks can stitch this session to the identified customer.
+            if (this.config.cartBridge !== false) {
+                new ShopifyCartBridge(() => this.autoTracker.getSessionId(), log).start();
+            }
             this.initialized = true;
             log.log('SDK initialized', {
                 apiUrl: this.config.apiUrl,

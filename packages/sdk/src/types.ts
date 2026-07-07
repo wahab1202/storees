@@ -3,6 +3,9 @@ export type StoreesSdkConfig = {
   apiUrl: string
   autoTrack?: {
     pageViews?: boolean
+    /** Emit product_viewed / collection_viewed on Shopify product/collection
+     *  pages (in addition to page_viewed). Default true. */
+    productViews?: boolean
     sessions?: boolean
     clicks?: boolean
     scroll?: boolean

@@ -1,3 +1,4 @@
+import { detectProduct, detectCollection } from './productDetect'
 import type { StoreesSdkConfig } from './types'
 import type { Logger } from './utils'
 import { generateId, sessionGet, sessionSet } from './utils'
@@ -176,6 +177,23 @@ export class AutoTracker {
 
     const event = this.eventBuilder.buildPageView(undefined, this.utmParams)
     this.queue.push(event)
+
+    // Emit a SPECIFIC event on product / collection pages too — generic
+    // page_viewed can't drive "viewed product X but didn't buy" segments or
+    // product-affinity flows; those need product_viewed with product fields.
+    if (this.config.productViews !== false) {
+      try {
+        const product = detectProduct()
+        if (product) {
+          this.queue.push(this.eventBuilder.build('product_viewed', { ...product }))
+        } else {
+          const collection = detectCollection()
+          if (collection) {
+            this.queue.push(this.eventBuilder.build('collection_viewed', { ...collection }))
+          }
+        }
+      } catch { /* detection is best-effort — never break page tracking */ }
+    }
 
     // Increment session page count
     const count = parseInt(sessionGet(SESSION_PAGES_KEY) || '0', 10)
