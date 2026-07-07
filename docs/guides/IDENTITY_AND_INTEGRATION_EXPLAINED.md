@@ -69,9 +69,17 @@ way to know they're the same person.
 
 ## 2. Where does a NAME come from for a WhatsApp message?
 
-Short answer: **from the customer record — not from the abandoned-cart event.**
+Short answer: **a real name comes from the customer record — not the event.** But
+the Shopflo payload does give you a ready-made *greeting* that never breaks.
 
-The Shopflo abandoned-cart payload has empty name fields (`first_name: ""`). So:
+The raw name fields (`customer.first_name`) are empty. HOWEVER Shopflo includes a
+`quickReplyMetaData.customer_full_name` field that is **"Dear"** for a new shopper
+and the **real name** for a returning one — a built-in graceful fallback. So:
+- For the abandoned-cart WhatsApp, bind the greeting to
+  `quickReplyMetaData.customer_full_name` — you get "Hi Dear!" for strangers and
+  "Hi Priya!" for known customers, automatically.
+- A *guaranteed-real* name (for other messages) still only exists once the customer
+  is known:
 
 | Situation | Is a name available? | Why |
 |---|---|---|
