@@ -311,7 +311,12 @@ async function emitDefinedEvent(
   const readStr = (path: string | undefined): string | null => {
     if (!path) return null
     const v = readPath(envelope, path)
-    return v === undefined || v === null || typeof v === 'object' ? null : String(v)
+    if (v === undefined || v === null || typeof v === 'object') return null
+    // Empty / whitespace identity values are ABSENT, not real — a mapped
+    // customer.phone of "" (common on new-shopper payloads) must not resolve
+    // to the empty string (which collides on the phone unique index → error).
+    const str = String(v).trim()
+    return str === '' ? null : str
   }
 
   // 1. Identity — resolve a customer when any identity path yields a value
