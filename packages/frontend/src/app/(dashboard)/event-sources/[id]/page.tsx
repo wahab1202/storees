@@ -3,14 +3,14 @@
 import { useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Plus, Loader2, Trash2, Pencil, ChevronDown, ChevronRight, Braces, X, ShieldCheck, KeyRound, Copy, Check } from 'lucide-react'
+import { ArrowLeft, Plus, Loader2, Trash2, Pencil, ChevronDown, ChevronRight, Braces, X, ShieldCheck, KeyRound, Copy, Check, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { Dialog } from '@/components/ui/Dialog'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { CopyUrlButton, webhookUrl } from '@/components/eventSources/CopyUrlButton'
 import {
-  useInboundWebhookDetail, useUpdateInboundWebhook, useInboundWebhookEvents,
+  useInboundWebhookDetail, useUpdateInboundWebhook, useInboundWebhookEvents, useReprocessWebhook,
   useInboundWebhookSchema, useEventDefinitions, useCreateEventDefinition,
   useUpdateEventDefinition, useDeleteEventDefinition,
   type EventDefinition, type PayloadSchemaField,
@@ -82,6 +82,7 @@ export default function EventSourceDetailPage() {
 function DataTab({ webhookId, token }: { webhookId: string; token: string }) {
   const [page, setPage] = useState(1)
   const { data, isLoading } = useInboundWebhookEvents(webhookId, page)
+  const reprocess = useReprocessWebhook(webhookId)
   const rows = data?.data ?? []
   const pagination = data?.pagination
 
@@ -100,6 +101,19 @@ function DataTab({ webhookId, token }: { webhookId: string; token: string }) {
 
   return (
     <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] text-text-muted">
+          Definitions run at receive time. If you added/fixed a definition after these arrived, <strong>Reprocess</strong> re-runs it over the stored payloads.
+        </p>
+        <button
+          onClick={() => reprocess.mutate()}
+          disabled={reprocess.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface disabled:opacity-50"
+        >
+          {reprocess.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          Reprocess no-match rows
+        </button>
+      </div>
       <div className="overflow-hidden rounded-xl border border-border bg-white">
         <table className="w-full text-left">
           <thead>

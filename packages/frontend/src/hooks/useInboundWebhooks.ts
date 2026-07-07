@@ -76,6 +76,20 @@ export function useInboundWebhookEvents(id: string, page = 1) {
   })
 }
 
+export function useReprocessWebhook(id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<{ scanned: number; processed: number; stillNoMatch: number; errors: number }>(
+      withProject(`/api/inbound-webhooks/${id}/reprocess`), {}),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['inbound-webhook-events', id] })
+      const d = res.data
+      toast.success(d ? `Reprocessed ${d.scanned}: ${d.processed} matched, ${d.stillNoMatch} still no-match` : 'Reprocessed')
+    },
+    onError: (err) => toast.error(err.message ?? 'Failed to reprocess'),
+  })
+}
+
 export function useInboundWebhookSchema(id: string) {
   return useQuery({
     queryKey: ['inbound-webhook-schema', id],

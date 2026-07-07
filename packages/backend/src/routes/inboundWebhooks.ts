@@ -4,7 +4,7 @@ import { eq, and, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { inboundWebhooks, inboundWebhookEvents, eventDefinitions } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
-import { inferWebhookSchema } from '../services/inboundWebhookService.js'
+import { inferWebhookSchema, reprocessWebhook } from '../services/inboundWebhookService.js'
 
 const router = Router()
 
@@ -152,6 +152,26 @@ router.get('/:id/events', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('GET /inbound-webhooks/:id/events error:', err)
     res.status(500).json({ success: false, error: 'Failed to load webhook events' })
+  }
+})
+
+// POST /api/inbound-webhooks/:id/reprocess — re-run current definitions over
+// past raw payloads (for events received before the definition existed/was fixed)
+router.post('/:id/reprocess', requireProjectId, async (req, res) => {
+  try {
+    const webhookId = req.params.id as string
+    const [hook] = await db.select({ id: inboundWebhooks.id, projectId: inboundWebhooks.projectId })
+      .from(inboundWebhooks)
+      .where(and(eq(inboundWebhooks.id, webhookId), eq(inboundWebhooks.projectId, req.projectId!)))
+      .limit(1)
+    if (!hook) return res.status(404).json({ success: false, error: 'Webhook not found' })
+
+    const onlyUnmatched = String((req.body as { onlyUnmatched?: boolean }).onlyUnmatched ?? true) !== 'false'
+    const result = await reprocessWebhook({ id: hook.id, projectId: hook.projectId }, { onlyUnmatched })
+    res.json({ success: true, data: result })
+  } catch (err) {
+    console.error('POST /inbound-webhooks/:id/reprocess error:', err)
+    res.status(500).json({ success: false, error: 'Failed to reprocess' })
   }
 })
 

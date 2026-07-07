@@ -134,10 +134,6 @@ export async function processInboundPayload(
   headers: Record<string, unknown>,
   payload: Record<string, unknown>,
 ): Promise<ProcessResult> {
-  const envelope = { body: withAttributeMaps(payload), headers } as Record<string, unknown>
-  const matched: ProcessResult['matched'] = []
-  let firstError: string | undefined
-
   // Log the raw receipt first — the detail page's history + schema source
   const [rawRow] = await db.insert(inboundWebhookEvents).values({
     projectId: webhook.projectId,
@@ -145,6 +141,33 @@ export async function processInboundPayload(
     headers,
     payload,
   }).returning({ id: inboundWebhookEvents.id })
+
+  const result = await runDefinitionsForRow(webhook.id, webhook.projectId, rawRow.id, headers, payload)
+
+  await db.update(inboundWebhooks)
+    .set({ lastReceivedAt: new Date(), updatedAt: new Date() })
+    .where(eq(inboundWebhooks.id, webhook.id))
+
+  return result
+}
+
+/**
+ * Run the webhook's ACTIVE event definitions against one stored raw payload and
+ * update that row's matched/status. Used both live (right after receipt) and by
+ * Reprocess (re-run current definitions over past rows — e.g. after fixing a
+ * definition that left everything `no_match`). Idempotent: emitted events carry
+ * `ibw_<rawRowId>_<defId>` idempotency keys, so re-running never duplicates.
+ */
+async function runDefinitionsForRow(
+  webhookId: string,
+  projectId: string,
+  rawRowId: string,
+  headers: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): Promise<ProcessResult> {
+  const envelope = { body: withAttributeMaps(payload), headers } as Record<string, unknown>
+  const matched: ProcessResult['matched'] = []
+  let firstError: string | undefined
 
   const definitions = await db
     .select({
@@ -156,14 +179,14 @@ export async function processInboundPayload(
       identityPaths: eventDefinitions.identityPaths,
     })
     .from(eventDefinitions)
-    .where(and(eq(eventDefinitions.webhookId, webhook.id), eq(eventDefinitions.isActive, true)))
+    .where(and(eq(eventDefinitions.webhookId, webhookId), eq(eventDefinitions.isActive, true)))
 
   for (const def of definitions as DefinitionRow[]) {
     try {
       const filters = def.filters as FilterConfig | null
       if (filters && filters.rules?.length > 0 && !evaluateEventFilters(filters, envelope)) continue
 
-      await emitDefinedEvent(webhook.projectId, def, envelope, rawRow.id)
+      await emitDefinedEvent(projectId, def, envelope, rawRowId)
       matched.push({ definitionId: def.id, eventName: def.name })
     } catch (err) {
       firstError = firstError ?? (err instanceof Error ? err.message : String(err))
@@ -176,13 +199,50 @@ export async function processInboundPayload(
     matchedDefinitions: matched,
     status,
     error: firstError ?? null,
-  }).where(eq(inboundWebhookEvents.id, rawRow.id))
-
-  await db.update(inboundWebhooks)
-    .set({ lastReceivedAt: new Date(), updatedAt: new Date() })
-    .where(eq(inboundWebhooks.id, webhook.id))
+  }).where(eq(inboundWebhookEvents.id, rawRowId))
 
   return { matched, status, error: firstError }
+}
+
+/**
+ * Reprocess stored raw payloads through the current definitions. Answers the
+ * "I created/fixed the definition AFTER these events arrived, and they're all
+ * no_match" case. `onlyUnmatched` (default true) skips rows already processed.
+ * Bounded to the most recent `limit` rows.
+ */
+export async function reprocessWebhook(
+  webhook: { id: string; projectId: string },
+  opts: { onlyUnmatched?: boolean; limit?: number } = {},
+): Promise<{ scanned: number; processed: number; stillNoMatch: number; errors: number }> {
+  const onlyUnmatched = opts.onlyUnmatched ?? true
+  const limit = Math.min(opts.limit ?? 2000, 5000)
+
+  const rows = await db
+    .select({
+      id: inboundWebhookEvents.id,
+      headers: inboundWebhookEvents.headers,
+      payload: inboundWebhookEvents.payload,
+      status: inboundWebhookEvents.status,
+    })
+    .from(inboundWebhookEvents)
+    .where(eq(inboundWebhookEvents.webhookId, webhook.id))
+    .orderBy(desc(inboundWebhookEvents.receivedAt))
+    .limit(limit)
+
+  let processed = 0, stillNoMatch = 0, errors = 0, scanned = 0
+  for (const row of rows) {
+    if (onlyUnmatched && row.status === 'processed') continue
+    scanned++
+    const r = await runDefinitionsForRow(
+      webhook.id, webhook.projectId, row.id,
+      (row.headers ?? {}) as Record<string, unknown>,
+      (row.payload ?? {}) as Record<string, unknown>,
+    )
+    if (r.status === 'processed') processed++
+    else if (r.status === 'error') errors++
+    else stillNoMatch++
+  }
+  return { scanned, processed, stillNoMatch, errors }
 }
 
 async function emitDefinedEvent(
