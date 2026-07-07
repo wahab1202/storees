@@ -2,21 +2,28 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Sparkles, Send, Gift, TrendingUp, Heart, Pause, Loader2, RefreshCw, Megaphone, Workflow } from 'lucide-react'
+import { Sparkles, Send, Gift, TrendingUp, Heart, Pause, Loader2, RefreshCw, Megaphone, Workflow, ShoppingCart } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
 import { cn } from '@/lib/utils'
 
 type NextBestAction = {
-  action: 'send_offer' | 'win_back' | 'upsell' | 'nurture' | 'do_nothing'
+  action: 'recover_cart' | 'send_offer' | 'win_back' | 'upsell' | 'nurture' | 'do_nothing'
   channel: string
   reason: string
   template_suggestion: string
   confidence: number
+  cart_context?: {
+    likely_reason: string
+    recovery_propensity: number
+    product_details?: string
+    recovery_url?: string
+  }
 }
 
 const ACTION_CONFIG = {
+  recover_cart: { icon: ShoppingCart, label: 'Recover Cart', color: 'text-fuchsia-700', bg: 'bg-fuchsia-50 border-fuchsia-200' },
   send_offer: { icon: Gift, label: 'Send Offer', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' },
   win_back: { icon: Heart, label: 'Win Back', color: 'text-red-700', bg: 'bg-red-50 border-red-200' },
   upsell: { icon: TrendingUp, label: 'Upsell', color: 'text-blue-700', bg: 'bg-blue-50 border-blue-200' },
@@ -120,6 +127,24 @@ export function NextBestActionCard({ customerId, customerEmail, customerName }: 
 
       {/* Reason */}
       <p className="text-sm text-text-primary mb-3">{result.reason}</p>
+
+      {/* Abandoned-cart friction context */}
+      {result.cart_context && (
+        <div className="mb-3 rounded-lg border border-fuchsia-200 bg-fuchsia-50/60 p-3 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-800">Abandoned cart · likely reason</span>
+            <span className="text-[11px] font-semibold text-fuchsia-800">{result.cart_context.recovery_propensity}/100 recover</span>
+          </div>
+          {result.cart_context.product_details && (
+            <p className="text-[11px] text-text-secondary">{result.cart_context.product_details}</p>
+          )}
+          <p className="text-[11px] text-text-muted italic">{result.cart_context.likely_reason}</p>
+          {result.cart_context.recovery_url && (
+            <a href={result.cart_context.recovery_url} target="_blank" rel="noreferrer" className="inline-block text-[11px] font-medium text-fuchsia-700 underline">Their checkout link ↗</a>
+          )}
+          <p className="text-[10px] text-text-muted">Heuristic reason — a likely signal, not a certainty.</p>
+        </div>
+      )}
 
       {/* Details */}
       <div className="space-y-2 text-xs">

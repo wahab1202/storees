@@ -2,13 +2,21 @@ import { eq, and, sql, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, events, customerSegments, segments, projects } from '../db/schema.js'
 import { getLlmConfig, chatCompletion } from './llmService.js'
+import { analyzeCartFriction, type CartFriction } from './cartFrictionService.js'
 
 type NextBestAction = {
-  action: 'send_offer' | 'win_back' | 'upsell' | 'nurture' | 'do_nothing'
+  action: 'recover_cart' | 'send_offer' | 'win_back' | 'upsell' | 'nurture' | 'do_nothing'
   channel: string
   reason: string
   template_suggestion: string
   confidence: number
+  /** Present when the recommendation is driven by a recent abandoned cart. */
+  cart_context?: {
+    likely_reason: string
+    recovery_propensity: number
+    product_details?: string
+    recovery_url?: string
+  }
 }
 
 /**
@@ -20,9 +28,12 @@ export async function computeNextBestAction(
   customerId: string,
   projectId: string,
 ): Promise<NextBestAction> {
+  // Abandoned-cart friction — drives a targeted recover_cart when present.
+  const friction = await analyzeCartFriction(projectId, customerId)
+
   const config = await getLlmConfig(projectId)
   if (!config) {
-    return fallbackAction(customerId)
+    return fallbackAction(customerId, friction)
   }
 
   // Gather customer context
@@ -77,6 +88,7 @@ export async function computeNextBestAction(
 Your job is to recommend the single best action to take for a specific customer right now.
 
 Available actions:
+- recover_cart: The customer abandoned a cart recently and hasn't bought since — recover it with a nudge tuned to the LIKELY friction (see the cart section). Prefer this when a live abandoned cart is present.
 - send_offer: Send a promotional message with a specific incentive (discount, free shipping, bundle deal)
 - win_back: Re-engagement campaign with urgency ("We miss you", limited-time offer)
 - upsell: Recommend higher-value or complementary products based on purchase history
@@ -89,10 +101,15 @@ Consider:
 - New customer with 1 order → nurture to build relationship
 - Very active customer → do_nothing or gentle upsell
 - Lapsed 60+ days → win_back before they churn
+- LIVE abandoned cart present → recover_cart, and match the nudge to the likely friction:
+    checkout_friction → make finishing effortless, NO discount
+    price_sensitivity → a modest incentive on the abandoned items
+    high_intent → urgency/reminder, hold the discount
+    new_low_trust → trust-building (reviews, returns, free shipping)
 
 Respond ONLY with a JSON object (no markdown, no explanation):
 {
-  "action": "send_offer" | "win_back" | "upsell" | "nurture" | "do_nothing",
+  "action": "recover_cart" | "send_offer" | "win_back" | "upsell" | "nurture" | "do_nothing",
   "channel": "email" | "sms" | "push" | "whatsapp",
   "reason": "1-2 sentence explanation",
   "template_suggestion": "Brief template idea",
@@ -110,7 +127,15 @@ Churn Risk: ${churnRisk}%
 Days Since Last Order: ${daysSinceLastOrder}
 Segments: ${segmentNames}
 Recent Events: ${eventSummary}
-Preferred Channel: ${bestChannel}`
+Preferred Channel: ${bestChannel}${friction.hasRecentAbandon && !friction.alreadyRecovered ? `
+
+── LIVE ABANDONED CART ──
+Abandoned: ${friction.abandonedAt}
+Items: ${friction.cart?.productDetails ?? 'cart items'} (₹${friction.cart?.totalPrice ?? '?'})
+Browsing before abandon: ${friction.browsing?.productViews ?? 0} views across ${friction.browsing?.sessions ?? 0} session(s)
+Likely friction: ${friction.signal} — ${friction.likelyReason}
+Suggested nudge: ${friction.suggestedNudge}
+Heuristic recovery propensity: ${friction.recoveryPropensity}/100` : ''}`
 
   try {
     const response = await chatCompletion(config, [
@@ -134,17 +159,25 @@ Preferred Channel: ${bestChannel}`
       reason: parsed.reason ?? 'Based on customer profile analysis',
       template_suggestion: parsed.template_suggestion ?? '',
       confidence: Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.7))),
+      ...(friction.hasRecentAbandon && !friction.alreadyRecovered ? {
+        cart_context: {
+          likely_reason: friction.likelyReason ?? '',
+          recovery_propensity: friction.recoveryPropensity ?? 0,
+          product_details: friction.cart?.productDetails,
+          recovery_url: friction.cart?.recoveryUrl,
+        },
+      } : {}),
     }
   } catch (err) {
     console.error('NBA LLM error:', err)
-    return fallbackAction(customerId)
+    return fallbackAction(customerId, friction)
   }
 }
 
 /**
  * Deterministic fallback when LLM is not available.
  */
-async function fallbackAction(customerId: string): Promise<NextBestAction> {
+async function fallbackAction(customerId: string, friction?: CartFriction): Promise<NextBestAction> {
   const [customer] = await db
     .select({
       totalOrders: customers.totalOrders,
@@ -156,6 +189,31 @@ async function fallbackAction(customerId: string): Promise<NextBestAction> {
 
   if (!customer) {
     return { action: 'do_nothing', channel: 'email', reason: 'Customer not found', template_suggestion: '', confidence: 0 }
+  }
+
+  // Live abandoned cart wins — recover it with a friction-matched nudge.
+  if (friction?.hasRecentAbandon && !friction.alreadyRecovered) {
+    const channel = 'whatsapp'
+    const nudgeTemplate = friction.signal === 'checkout_friction'
+      ? 'One tap to finish — your cart is ready, need help checking out?'
+      : friction.signal === 'price_sensitivity'
+        ? `Still want ${friction.cart?.productDetails ?? 'your picks'}? Here's a little something to complete it`
+        : friction.signal === 'new_low_trust'
+          ? 'Loved by thousands — free returns. Complete your first order?'
+          : `You left ${friction.cart?.productDetails ?? 'items'} — going fast, complete your order`
+    return {
+      action: 'recover_cart',
+      channel,
+      reason: friction.likelyReason ?? 'Recent abandoned cart — recover it.',
+      template_suggestion: nudgeTemplate,
+      confidence: Math.min(0.9, (friction.recoveryPropensity ?? 50) / 100),
+      cart_context: {
+        likely_reason: friction.likelyReason ?? '',
+        recovery_propensity: friction.recoveryPropensity ?? 0,
+        product_details: friction.cart?.productDetails,
+        recovery_url: friction.cart?.recoveryUrl,
+      },
+    }
   }
 
   const metrics = (customer.metrics ?? {}) as Record<string, unknown>
