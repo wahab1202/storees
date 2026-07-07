@@ -284,7 +284,9 @@ async function resolveCustomerCore(params: ResolveParams): Promise<string> {
     if (found) {
       const updates: Record<string, unknown> = { updatedAt: new Date() }
       if (!skipLastSeenBump) updates.lastSeen = new Date()
-      if (externalId) updates.externalId = externalId
+      // Fill external_id only when currently empty — don't clobber a Shopify
+      // customer id with a different source's id (e.g. a Shopflo uid).
+      if (externalId) updates.externalId = sql`COALESCE(${customers.externalId}, ${externalId})`
       if (name) updates.name = name
       if (phone) updates.phone = phone
       if (emailSubscribed !== undefined) updates.emailSubscribed = emailSubscribed
@@ -411,7 +413,9 @@ async function updateLastSeen(
   // first_seen only moves backward toward earlier dates — never forward.
   if (extra?.sourceCreatedAt) updates.firstSeen = sql`LEAST(${customers.firstSeen}, ${extra.sourceCreatedAt})`
   if (extra?.name) updates.name = extra.name
-  if (extra?.externalId) updates.externalId = extra.externalId
+  // external_id fills only when empty — never overwrite one source's id
+  // (e.g. Shopify customer id) with another's (e.g. Shopflo uid).
+  if (extra?.externalId) updates.externalId = sql`COALESCE(${customers.externalId}, ${extra.externalId})`
   if (extra?.email) updates.email = extra.email
   if (extra?.phone) updates.phone = extra.phone
   if (extra?.emailSubscribed !== undefined) updates.emailSubscribed = extra.emailSubscribed
