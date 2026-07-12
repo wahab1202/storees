@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Sparkles, Send, Gift, TrendingUp, Heart, Pause, Loader2, RefreshCw, Megaphone, Workflow, ShoppingCart } from 'lucide-react'
+import { Send, Gift, TrendingUp, Heart, Pause, Loader2, RefreshCw, Megaphone, Workflow, ShoppingCart } from 'lucide-react'
+import { PredictionIcon } from '@/components/icons/PredictionIcon'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
@@ -56,7 +57,7 @@ export function NextBestActionCard({ customerId, customerEmail, customerName }: 
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <div className="p-1.5 rounded-lg bg-purple-50">
-              <Sparkles className="h-4 w-4 text-purple-600" />
+              <PredictionIcon className="text-purple-600" size={18} />
             </div>
             <h3 className="text-sm font-semibold text-text-primary">AI Next Best Action</h3>
           </div>
@@ -77,7 +78,7 @@ export function NextBestActionCard({ customerId, customerEmail, customerName }: 
       <div className="bg-white border border-border rounded-xl p-5">
         <div className="flex items-center gap-2 mb-3">
           <div className="p-1.5 rounded-lg bg-purple-50">
-            <Sparkles className="h-4 w-4 text-purple-600" />
+            <PredictionIcon className="text-purple-600" size={18} />
           </div>
           <h3 className="text-sm font-semibold text-text-primary">AI Next Best Action</h3>
         </div>
@@ -106,7 +107,7 @@ export function NextBestActionCard({ customerId, customerEmail, customerName }: 
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-purple-50">
-            <Sparkles className="h-4 w-4 text-purple-600" />
+            <PredictionIcon className="text-purple-600" size={18} />
           </div>
           <h3 className="text-sm font-semibold text-text-primary">AI Next Best Action</h3>
         </div>
