@@ -634,6 +634,13 @@ async function syncEntity(
   const interBatchDelayMs = cfg.template.interBatchDelayMs ?? 0
   let hitSafetyCap = false
 
+  // Field-coverage accumulator for drift detection. If a field the template
+  // MAPS comes back empty across the sync, the source likely changed shape
+  // (renamed/removed a field) — the exact failure that silently turned every
+  // order 'pending'. We surface it as a sync-log warning instead of letting it
+  // pass invisibly. See reportFieldCoverage.
+  const coverage: FieldCoverage = new Map()
+
   for (let i = 0; i < MAX_PAGES_PER_ENTITY; i++) {
     let pageResult
     try {
@@ -661,6 +668,7 @@ async function syncEntity(
     }
 
     await handler(projectId, syncId, pageResult.records, cfg.template, stats[entity])
+    accumulateFieldCoverage(coverage, pageResult.records, cfg.template.fieldMap[entity])
     await updateSyncStats(syncId, fullStats)
 
     if (!pageResult.hasMore) break
@@ -690,6 +698,8 @@ async function syncEntity(
     )
   }
 
+  await reportFieldCoverage(syncId, entity, cfg.template, coverage)
+
   await log(
     syncId,
     'info',
@@ -698,6 +708,92 @@ async function syncEntity(
   )
 
   return { ok: stats[entity].failed === 0, latestTimestamp: runStart }
+}
+
+// ── Field-coverage drift detection ───────────────────────────────────────────
+//
+// Root-cause guard for the class of bug where a source silently stops sending a
+// field (or a template edit drops the mapping) and downstream code defaults it
+// to a plausible-but-wrong value. We measure, per sync, how often each MAPPED
+// scalar field actually carries a value, then warn when a mapped field is
+// almost entirely empty, and (for orders) when no status field is mapped at all.
+// Works for every connector template — VirpanAI and every custom project.
+
+type FieldCoverage = Map<string, { present: number; total: number }>
+
+// Fields that are legitimately sparse — most orders aren't canceled/discounted —
+// so a low fill rate is normal, not drift. Excluded from the empty-field warning.
+const SPARSE_FIELDS = new Set(['canceled_at', 'discount', 'dealer_id', 'fcm_token'])
+
+function accumulateFieldCoverage(
+  acc: FieldCoverage,
+  records: unknown[],
+  entityMap: Record<string, unknown> | undefined,
+): void {
+  if (!entityMap) return
+  // Only monitor scalar (string-spec) fields; nested/line-item maps are skipped.
+  const scalarKeys = Object.entries(entityMap)
+    .filter(([, spec]) => typeof spec === 'string')
+    .map(([k]) => k)
+  if (scalarKeys.length === 0) return
+  for (const raw of records) {
+    const mapped = mapRecord(raw, entityMap as Parameters<typeof mapRecord>[1])
+    for (const k of scalarKeys) {
+      const cur = acc.get(k) ?? { present: 0, total: 0 }
+      cur.total += 1
+      const v = mapped[k]
+      if (v !== null && v !== undefined && v !== '') cur.present += 1
+      acc.set(k, cur)
+    }
+  }
+}
+
+async function reportFieldCoverage(
+  syncId: string,
+  entity: EntityType,
+  template: ConnectorTemplate,
+  coverage: FieldCoverage,
+): Promise<void> {
+  if (coverage.size === 0) return
+
+  // One-line coverage summary — makes drift eyeball-able in the sync log.
+  const summary = [...coverage.entries()]
+    .map(([k, { present, total }]) => `${k}=${total ? Math.round((100 * present) / total) : 0}%`)
+    .join(' ')
+  await log(syncId, 'info', `${entity} field coverage: ${summary}`, { entityType: entity })
+
+  // A mapped field that came back almost entirely empty → the source likely
+  // dropped/renamed it. Skip legitimately-sparse fields and tiny samples.
+  for (const [key, { present, total }] of coverage) {
+    if (SPARSE_FIELDS.has(key) || total < 50) continue
+    const rate = present / total
+    if (rate < 0.1) {
+      await log(
+        syncId,
+        'warn',
+        `Field "${key}" is mapped for ${entity} but only ${Math.round(rate * 100)}% of ${total} records carry a value — the source likely stopped sending it or changed shape. Check the connector mapping vs. a live payload.`,
+        { entityType: entity },
+      )
+    }
+  }
+
+  // Orders-specific: catch the exact GWM failure — no status field mapped at
+  // all → every order renders "Unknown". Fires on the first sync after such a
+  // template edit, instead of hiding for months.
+  if (entity === 'orders') {
+    const orderMap = (template.fieldMap.orders ?? {}) as Record<string, unknown>
+    const statusMapped = ['order_status', 'fulfillment_status'].some(
+      (k) => typeof orderMap[k] === 'string',
+    )
+    if (!statusMapped) {
+      await log(
+        syncId,
+        'warn',
+        `No order status field is mapped (order_status / fulfillment_status). Every order will display as "Unknown". If the source provides a fulfillment/order status, map it in the connector.`,
+        { entityType: 'orders' },
+      )
+    }
+  }
 }
 
 // ── Main entry point ─────────────────────────────────────────────────────────

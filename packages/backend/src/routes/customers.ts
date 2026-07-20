@@ -332,7 +332,13 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         projectId,
         customerId,
         externalOrderId: (props.order_id as string) ?? (props.display_id ? `#${props.display_id}` : null),
-        status: (props.fulfillment_status as string) ?? (props.status as string) ?? 'pending',
+        // Honesty over a plausible-looking lie: when the source carried NO
+        // status field, fall back to 'unknown' (rendered as a distinct muted
+        // badge), NOT 'pending'. A silent 'pending' default is exactly what hid
+        // the GWM bug for months — every status-less order looked like a real
+        // "not fulfilled" state instead of "we have no status data". 'pending'
+        // now only appears when the source genuinely says pending.
+        status: (props.fulfillment_status as string) ?? (props.status as string) ?? 'unknown',
         total,
         discount: Number(props.discount_total) || 0,
         currency: (props.currency as string) ?? 'INR',
@@ -371,9 +377,10 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         existing.status = 'delivered'
         existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
       } else if (
-        (!existing.status || existing.status === 'pending') &&
+        (!existing.status || existing.status === 'pending' || existing.status === 'unknown') &&
         order.status &&
-        order.status !== 'pending'
+        order.status !== 'pending' &&
+        order.status !== 'unknown'
       ) {
         // The orders TABLE seeds a placeholder 'pending' (aggregate worker
         // insert) while the event-derived row carries the source's real

@@ -32,6 +32,10 @@ const BUCKET_COLORS: Record<string, string> = {
   cancelled: 'bg-red-100 text-red-800',
   refunded: 'bg-gray-100 text-gray-800',
   other: 'bg-gray-100 text-gray-700',
+  // 'unknown' = the source sent NO status. Deliberately muted + outlined so it
+  // reads as "no data", visibly different from a real 'pending' state. This is
+  // the anti-silent-default: missing data must never look like a real status.
+  unknown: 'bg-transparent text-text-muted border border-dashed border-border',
 }
 
 const STATUS_BUCKETS: Record<string, string> = {
@@ -53,7 +57,9 @@ function titleCase(s: string): string {
 
 function normalizeStatus(raw: string | null | undefined): { label: string; bucket: string } {
   const s = (raw ?? '').trim().toLowerCase()
-  if (!s) return { label: 'Pending', bucket: 'pending' }
+  // No status at all, or an explicit 'unknown' sentinel → show "Unknown", not
+  // "Pending". Missing data is surfaced honestly instead of disguised.
+  if (!s || s === 'unknown') return { label: 'Unknown', bucket: 'unknown' }
   return { label: titleCase(s), bucket: STATUS_BUCKETS[s] ?? 'other' }
 }
 

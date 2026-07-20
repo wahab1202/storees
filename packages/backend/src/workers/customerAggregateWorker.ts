@@ -209,7 +209,10 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
         projectId: evt.projectId,
         customerId,
         externalOrderId,
-        status: 'pending',
+        // Materialize the real status the connector event carries; only fall
+        // back to 'unknown' (an honest "no status data" — never a silent
+        // 'pending', which masked the GWM bug) when the source sent none.
+        status: String(evt.properties.fulfillment_status ?? evt.properties.status ?? 'unknown'),
         total: String(Number.isFinite(total) && total >= 0 ? total : 0),
         discount: String(Number(evt.properties.discount ?? 0) || 0),
         currency: String(evt.properties.currency ?? 'INR').toUpperCase().slice(0, 3),
