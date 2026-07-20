@@ -71,6 +71,11 @@ export type ConnectorTemplate = {
   // but every template can override per its API's tolerance.
   interBatchDelayMs?: number    // Pause between successive page fetches (default 0)
   maxFetchRetries?: number      // Retry attempts on transient HTTP errors (default 3)
+  // Per-page HTTP timeout (ms, default 30_000). Raise it for exports that slow
+  // down on deep offset pages — offset pagination degrades as the offset grows
+  // (the source scans/skips N rows), so a full backfill of a large table can
+  // exceed the default and abort mid-run. See GWM /storees-cdp/export/orders.
+  fetchTimeoutMs?: number
 }
 
 export type RuntimeConfig = {
@@ -259,7 +264,7 @@ export async function fetchPage(
   const response = await fetch(url.toString(), {
     method: endpoint.method ?? 'GET',
     headers,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(cfg.template.fetchTimeoutMs ?? 30_000),
   })
 
   if (!response.ok) {

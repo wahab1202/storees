@@ -79,6 +79,13 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
 
   interBatchDelayMs: 100,
   maxFetchRetries: 3,
+  // GWM's /storees-cdp/export/* uses offset pagination, which degrades on deep
+  // pages (OFFSET N makes the source skip N rows). Past ~offset 16.5k the orders
+  // export exceeds the 30s default and the whole backfill aborts mid-run. Raise
+  // the per-page timeout so a full historical resync can complete. NOTE: this is
+  // a mitigation — the real fix is source-side keyset pagination / an index; a
+  // large enough table will still eventually outgrow any fixed timeout.
+  fetchTimeoutMs: 120_000,
 
   // The /storees-cdp/export/* endpoints all use `updated_after` (the CDP-export
   // convention) — unlike the old Medusa admin routes that used updated_at[gte].
