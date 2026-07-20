@@ -1,9 +1,9 @@
 import { Router } from 'express'
-import { eq, and, sql, count, desc, gte } from 'drizzle-orm'
+import { eq, and, sql, count, desc, gte, inArray, or, isNull } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events, projects, segments, flows, emailTemplates, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
-import { rawCustomerScopeSql, scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
+import { rawCustomerScopeSql, scopedCustomerIdsSubquery, resolveScopedAgentIds } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 const router = Router()
@@ -407,6 +407,37 @@ router.get('/counts', requireProjectId, async (req: AuthenticatedRequest, res) =
   try {
     const projectId = req.projectId!
     const customerScope = await rawCustomerScopeSql(req, projectId)
+
+    // Dealer RBAC: scope the sidebar counts to what the dealer can actually see,
+    // matching each entity's list page — otherwise a dealer sees the project-wide
+    // totals (e.g. "Segments 51") while their list shows only their own few.
+    //   admin → all; agent → owned; manager → own + reports; no agentId → none.
+    // Templates use the HYBRID model: shared (createdByAgentId NULL) OR owned.
+    const scopedIds = await resolveScopedAgentIds(req)
+    if (scopedIds === null) {
+      return res.json({
+        success: true,
+        data: { customers: 0, segments: 0, flows: 0, templates: 0, campaigns: 0 },
+      })
+    }
+    const owned = scopedIds.length > 0 ? scopedIds : null // null → admin (no filter)
+
+    const segWhere = owned
+      ? and(eq(segments.projectId, projectId), inArray(segments.createdByAgentId, owned))
+      : eq(segments.projectId, projectId)
+    const flowWhere = owned
+      ? and(eq(flows.projectId, projectId), inArray(flows.createdByAgentId, owned))
+      : eq(flows.projectId, projectId)
+    const campWhere = owned
+      ? and(eq(campaigns.projectId, projectId), inArray(campaigns.createdByAgentId, owned))
+      : eq(campaigns.projectId, projectId)
+    const tmplWhere = owned
+      ? and(
+          eq(emailTemplates.projectId, projectId),
+          or(isNull(emailTemplates.createdByAgentId), inArray(emailTemplates.createdByAgentId, owned)),
+        )
+      : eq(emailTemplates.projectId, projectId)
+
     const [
       [{ customersCount }],
       [{ segmentsCount }],
@@ -415,10 +446,10 @@ router.get('/counts', requireProjectId, async (req: AuthenticatedRequest, res) =
       [{ campaignsCount }],
     ] = await Promise.all([
       db.select({ customersCount: count() }).from(customers).where(customerScope),
-      db.select({ segmentsCount: count() }).from(segments).where(eq(segments.projectId, projectId)),
-      db.select({ flowsCount: count() }).from(flows).where(eq(flows.projectId, projectId)),
-      db.select({ templatesCount: count() }).from(emailTemplates).where(eq(emailTemplates.projectId, projectId)),
-      db.select({ campaignsCount: count() }).from(campaigns).where(eq(campaigns.projectId, projectId)),
+      db.select({ segmentsCount: count() }).from(segments).where(segWhere),
+      db.select({ flowsCount: count() }).from(flows).where(flowWhere),
+      db.select({ templatesCount: count() }).from(emailTemplates).where(tmplWhere),
+      db.select({ campaignsCount: count() }).from(campaigns).where(campWhere),
     ])
 
     res.json({
@@ -442,9 +473,32 @@ router.get('/counts', requireProjectId, async (req: AuthenticatedRequest, res) =
 // same numbers as admins for now. Per-agent counts would require re-evaluating
 // every segment against the caller's scope, which is too expensive for a sidebar
 // tile — do it in /segments/:id/preview instead.
-router.get('/segments', requireProjectId, async (req, res) => {
+router.get('/segments', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
+
+    // Dealer RBAC: mirror the segments-list scoping so the dashboard Segment
+    // Overview never leaks project-wide segments/counts to a dealer.
+    //   admin   → [] → all project segments (unchanged)
+    //   agent   → only segments they own (createdByAgentId = self); an owned
+    //             segment's memberCount is already scoped to that dealer's own
+    //             customers (owned segments self-scope on evaluation)
+    //   manager → own + reports
+    //   no agentId (misconfigured dealer) → null → show nothing, never all
+    const scopedIds = await resolveScopedAgentIds(req)
+    if (scopedIds === null) {
+      return res.json({ success: true, data: [] })
+    }
+    const isAdminScope = scopedIds.length === 0
+
+    const whereClause = isAdminScope
+      ? and(eq(segments.projectId, projectId), eq(segments.isActive, true))
+      : and(
+          eq(segments.projectId, projectId),
+          eq(segments.isActive, true),
+          inArray(segments.createdByAgentId, scopedIds),
+        )
+
     const rows = await db
       .select({
         id: segments.id,
@@ -452,7 +506,7 @@ router.get('/segments', requireProjectId, async (req, res) => {
         memberCount: segments.memberCount,
       })
       .from(segments)
-      .where(and(eq(segments.projectId, projectId), eq(segments.isActive, true)))
+      .where(whereClause)
       .orderBy(desc(segments.memberCount))
       .limit(10)
 
