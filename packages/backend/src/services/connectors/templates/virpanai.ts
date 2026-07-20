@@ -142,6 +142,15 @@ export const VIRPANAI_TEMPLATE: ConnectorTemplate = {
       customer_id: 'customer_id',
       order_id: 'order_id',
       canceled_at: 'canceled_at',
+      // Source order lifecycle status, DISPLAY ONLY (buildOrderRow stamps it as
+      // properties.status → shown in the customer Orders tab). The CDP export
+      // currently omits it, so this yields null until the GWM backend adds a
+      // per-order `order_status` field (e.g. pending/processing/shipped/
+      // delivered/cancelled). Intentionally NOT mapping `fulfillment_status`:
+      // the revenue gate keys off fulfillment_status==='delivered', so mapping
+      // it would silently reclassify every non-delivered order as non-revenue.
+      // Keep revenue on the canceled_at fallback; status here is cosmetic.
+      order_status: 'order_status',
       timestamp: 'timestamp',
       total: 'total',
       currency: 'currency',

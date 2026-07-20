@@ -370,6 +370,17 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       } else if (order.status === 'delivered' && existing.status !== 'delivered') {
         existing.status = 'delivered'
         existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
+      } else if (
+        (!existing.status || existing.status === 'pending') &&
+        order.status &&
+        order.status !== 'pending'
+      ) {
+        // The orders TABLE seeds a placeholder 'pending' (aggregate worker
+        // insert) while the event-derived row carries the source's real
+        // status. Prefer any concrete status over that placeholder — otherwise
+        // a truly-synced status (e.g. 'shipped'/'completed') stays hidden
+        // behind the table row and every order reads 'pending'.
+        existing.status = order.status
       }
     }
     deduped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())

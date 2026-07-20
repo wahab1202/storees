@@ -230,6 +230,17 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
       break
     }
 
+    case 'order_status_updated': {
+      // Real-time status transition for an already-placed order. Carries just
+      // the order id + new status (no line items). Accept any of the common
+      // field spellings so the sending system isn't forced into one shape.
+      base.properties = {
+        order_id: String(payload.order_id ?? payload.id ?? ''),
+        status: String(payload.status ?? payload.order_status ?? payload.fulfillment_status ?? ''),
+      }
+      break
+    }
+
     case 'checkout_started':
       base.email = (payload.email as string) ?? base.email
       base.properties = {
@@ -345,6 +356,25 @@ async function handleSideEffects(
       }).where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, externalOrderId)))
 
       await recalculateAggregates(customerId, total)
+      break
+    }
+
+    case 'order_status_updated': {
+      // Generic real-time status transition — lets the source system push ANY
+      // status (processing/shipped/delivered/…) between syncs, not just the
+      // fulfilled/cancelled terminals above. Stores the raw source value; the
+      // Orders tab normalizes it for display. order_cancelled/order_fulfilled
+      // remain as convenience aliases for those two terminal states.
+      const externalOrderId = String(payload.order_id ?? payload.id ?? '')
+      const rawStatus = String(
+        payload.status ?? payload.order_status ?? payload.fulfillment_status ?? '',
+      ).trim()
+      if (!externalOrderId || !rawStatus) break
+      const looksFulfilled = /^(fulfilled|completed|complete|delivered|shipped)$/i.test(rawStatus)
+      await db.update(orders).set({
+        status: rawStatus.slice(0, 20), // orders.status is varchar(20)
+        ...(looksFulfilled ? { fulfilledAt: new Date() } : {}),
+      }).where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, externalOrderId)))
       break
     }
   }

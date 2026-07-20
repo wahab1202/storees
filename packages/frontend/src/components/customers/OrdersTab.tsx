@@ -19,11 +19,42 @@ function formatDate(date: Date | string): string {
   })
 }
 
-const STATUS_COLORS: Record<string, string> = {
+// Display buckets for order status. Sources speak different vocabularies —
+// Medusa ('canceled', 'completed'), Shopify ('fulfilled'), and the GWM CDP
+// export ('pending'/'processing'/'shipped'/'delivered'/…). normalizeStatus()
+// collapses them into a fixed set of colored buckets so any status renders
+// meaningfully; an unrecognized value still shows (title-cased, neutral color)
+// rather than silently masquerading as 'pending'.
+const BUCKET_COLORS: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-800',
+  processing: 'bg-blue-100 text-blue-800',
   fulfilled: 'bg-green-100 text-green-800',
   cancelled: 'bg-red-100 text-red-800',
   refunded: 'bg-gray-100 text-gray-800',
+  other: 'bg-gray-100 text-gray-700',
+}
+
+const STATUS_BUCKETS: Record<string, string> = {
+  pending: 'pending', created: 'pending', placed: 'pending', open: 'pending',
+  awaiting: 'pending', not_fulfilled: 'pending',
+  processing: 'processing', in_progress: 'processing', preparing: 'processing',
+  confirmed: 'processing', partially_fulfilled: 'processing',
+  fulfilled: 'fulfilled', completed: 'fulfilled', complete: 'fulfilled',
+  delivered: 'fulfilled', shipped: 'fulfilled', partially_shipped: 'fulfilled',
+  out_for_delivery: 'fulfilled',
+  cancelled: 'cancelled', canceled: 'cancelled', void: 'cancelled', failed: 'cancelled',
+  refunded: 'refunded', returned: 'refunded', partially_refunded: 'refunded',
+  partially_returned: 'refunded', chargeback: 'refunded',
+}
+
+function titleCase(s: string): string {
+  return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function normalizeStatus(raw: string | null | undefined): { label: string; bucket: string } {
+  const s = (raw ?? '').trim().toLowerCase()
+  if (!s) return { label: 'Pending', bucket: 'pending' }
+  return { label: titleCase(s), bucket: STATUS_BUCKETS[s] ?? 'other' }
 }
 
 export function OrdersTab({ orders, isLoading }: Props) {
@@ -93,14 +124,19 @@ function OrderRow({
         </td>
         <td className="py-2 px-2 text-text-secondary">{formatDate(order.createdAt)}</td>
         <td className="py-2 px-2">
-          <span
-            className={cn(
-              'inline-block px-2 py-0.5 text-xs rounded-full font-medium',
-              STATUS_COLORS[order.status] ?? STATUS_COLORS.pending,
-            )}
-          >
-            {order.status}
-          </span>
+          {(() => {
+            const st = normalizeStatus(order.status)
+            return (
+              <span
+                className={cn(
+                  'inline-block px-2 py-0.5 text-xs rounded-full font-medium',
+                  BUCKET_COLORS[st.bucket] ?? BUCKET_COLORS.other,
+                )}
+              >
+                {st.label}
+              </span>
+            )
+          })()}
         </td>
         <td className="py-2 px-2 text-right font-medium text-text-primary">
           {formatCurrency(order.total)}
