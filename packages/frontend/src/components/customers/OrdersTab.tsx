@@ -40,15 +40,15 @@ const BUCKET_COLORS: Record<string, string> = {
 
 const STATUS_BUCKETS: Record<string, string> = {
   pending: 'pending', created: 'pending', placed: 'pending', open: 'pending',
-  awaiting: 'pending', not_fulfilled: 'pending',
+  awaiting: 'pending', not_fulfilled: 'pending', unfulfilled: 'pending',
   processing: 'processing', in_progress: 'processing', preparing: 'processing',
-  confirmed: 'processing', partially_fulfilled: 'processing',
+  confirmed: 'processing', partially_fulfilled: 'processing', partial: 'processing',
   fulfilled: 'fulfilled', completed: 'fulfilled', complete: 'fulfilled',
   delivered: 'fulfilled', shipped: 'fulfilled', partially_shipped: 'fulfilled',
   out_for_delivery: 'fulfilled',
   cancelled: 'cancelled', canceled: 'cancelled', void: 'cancelled', failed: 'cancelled',
   refunded: 'refunded', returned: 'refunded', partially_refunded: 'refunded',
-  partially_returned: 'refunded', chargeback: 'refunded',
+  partially_returned: 'refunded', chargeback: 'refunded', restocked: 'refunded',
 }
 
 function titleCase(s: string): string {

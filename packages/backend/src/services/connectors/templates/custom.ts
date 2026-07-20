@@ -57,6 +57,12 @@ export const CUSTOM_TEMPLATE: ConnectorTemplate = {
       timestamp: '',
       total: '',
       currency: '',
+      // Status slot — leave the source field name here during onboarding (e.g.
+      // 'fulfillment_status' or 'status'). Present-but-empty is intentional: it
+      // reminds the onboarding team to map it. An order with no status mapped
+      // renders "Unknown" (never a silent 'pending'), and the sync logs a
+      // warning — see reportFieldCoverage in dataSyncService.
+      fulfillment_status: '',
       line_items: {
         sourcePath: '',
         fields: {

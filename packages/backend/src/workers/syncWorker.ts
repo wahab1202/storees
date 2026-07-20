@@ -64,6 +64,17 @@ type ShopifyOrder = {
   }>
 }
 
+// Shopify's fulfillment_status is 'fulfilled' | 'partial' | 'restocked' | null.
+// null means genuinely UNFULFILLED (a real state) — Shopify always sends the
+// field, so null is not "missing data". Carry the real state instead of the old
+// `=== 'fulfilled' ? 'fulfilled' : 'pending'` collapse, which flattened partial
+// / restocked / unfulfilled all into a misleading 'pending'. The Orders tab
+// normalizes each into a colored bucket.
+function mapShopifyFulfillment(ff: string | null | undefined): string {
+  if (ff == null || ff === '') return 'unfulfilled'
+  return ff
+}
+
 export function startSyncWorker(): Worker {
   const worker = new Worker(
     'shopify-sync',
@@ -131,7 +142,7 @@ export function startSyncWorker(): Worker {
               projectId,
               customerId,
               externalOrderId: String(shopifyOrder.id),
-              status: shopifyOrder.fulfillment_status === 'fulfilled' ? 'fulfilled' : 'pending',
+              status: mapShopifyFulfillment(shopifyOrder.fulfillment_status),
               total: String(total),
               discount: String(discount),
               currency: shopifyOrder.currency,
