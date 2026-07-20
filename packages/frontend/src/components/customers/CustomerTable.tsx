@@ -37,6 +37,16 @@ function getMetric(c: CustomerWithSegments, key: string): unknown {
   return (c.metrics as Record<string, unknown>)?.[key]
 }
 
+// B2B stores (GWM and its dealers) key customers by shop, not person — the
+// connector lands it at custom_attributes.shop_name. When present, show the
+// shop as the primary label so a dealer can find a customer by shop name;
+// the person's name/email drops to the muted secondary line. Falls back to
+// the person name for every non-B2B customer (no shop_name → unchanged).
+function getShopName(c: CustomerWithSegments): string | undefined {
+  const shop = (c.customAttributes as Record<string, unknown> | undefined)?.shop_name
+  return typeof shop === 'string' && shop.trim() !== '' ? shop : undefined
+}
+
 function getDomainColumns(domain?: string): DomainColumnConfig {
   switch (domain) {
     case 'fintech':
@@ -137,23 +147,33 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, domain }: 
           </tr>
         </thead>
         <tbody>
-          {customers.map(customer => (
+          {customers.map(customer => {
+            const shopName = getShopName(customer)
+            // When a shop name exists it becomes the primary label; the person
+            // name (or email if no name) fills the secondary line so the human
+            // behind the shop stays visible. Otherwise keep the original
+            // name-then-email layout.
+            const primaryLabel = shopName ?? customer.name ?? 'Unknown'
+            const secondaryLabel = shopName
+              ? (customer.name || customer.email || undefined)
+              : (customer.email || undefined)
+            return (
               <tr
                 key={customer.id}
                 className="border-b border-border cursor-pointer transition-colors hover:bg-surface"
                 onClick={() => router.push(`/customers/${customer.id}`)}
               >
-                {/* Customer name + email */}
+                {/* Customer name + email (shop name takes precedence for B2B) */}
                 <td className="px-4 py-3">
                   <Link
                     href={`/customers/${customer.id}`}
                     className="font-medium text-text-primary hover:text-accent hover:underline transition-colors"
                     onClick={e => e.stopPropagation()}
                   >
-                    {customer.name || 'Unknown'}
+                    {primaryLabel}
                   </Link>
-                  {customer.email && (
-                    <div className="text-xs text-text-muted mt-0.5">{customer.email}</div>
+                  {secondaryLabel && (
+                    <div className="text-xs text-text-muted mt-0.5">{secondaryLabel}</div>
                   )}
                 </td>
 
@@ -195,7 +215,8 @@ export function CustomerTable({ customers, sortBy, sortOrder, onSort, domain }: 
                   {cfg.getActivityCount(customer)}
                 </td>
               </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>
