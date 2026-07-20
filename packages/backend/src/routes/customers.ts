@@ -383,6 +383,53 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         existing.status = order.status
       }
     }
+    // Overlay real-time status transitions (the "stay on events" backfill
+    // path): GWM POSTs order_fulfilled / order_cancelled / order_status_updated
+    // per order. Those events carry only order_id + status and do NOT create an
+    // order row — and most GWM orders exist only as order_placed EVENTS (no
+    // orders-table row), so the eventProcessor's table UPDATE can't reach them.
+    // Reading the transition events here and overlaying by order id makes the
+    // status show regardless of whether a table row exists. Latest event wins.
+    const statusEventRows = await db
+      .select({
+        eventName: events.eventName,
+        properties: events.properties,
+        timestamp: events.timestamp,
+      })
+      .from(events)
+      .where(
+        and(
+          eq(events.customerId, customerId),
+          eq(events.projectId, projectId),
+          inArray(events.eventName, ['order_fulfilled', 'order_cancelled', 'order_status_updated']),
+        ),
+      )
+      .orderBy(desc(events.timestamp))
+
+    const statusByOrder = new Map<string, string>()
+    for (const ev of statusEventRows) {
+      const props = (ev.properties ?? {}) as Record<string, unknown>
+      const orderId = String(props.order_id ?? '')
+      if (!orderId || statusByOrder.has(orderId)) continue // rows are DESC → first seen is latest
+      const raw = (props.status ?? props.fulfillment_status ?? props.order_status) as string | undefined
+      const status = (raw && String(raw).trim())
+        || (ev.eventName === 'order_fulfilled' ? 'fulfilled'
+          : ev.eventName === 'order_cancelled' ? 'cancelled'
+          : '')
+      if (status) statusByOrder.set(orderId, status)
+    }
+
+    if (statusByOrder.size > 0) {
+      for (const order of deduped) {
+        const override = order.externalOrderId ? statusByOrder.get(order.externalOrderId) : undefined
+        if (!override) continue
+        order.status = override
+        if (/^(fulfilled|completed|complete|delivered|shipped)$/i.test(override)) {
+          order.fulfilledAt = order.fulfilledAt ?? order.createdAt
+        }
+      }
+    }
+
     deduped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
     res.json({ success: true, data: deduped })
