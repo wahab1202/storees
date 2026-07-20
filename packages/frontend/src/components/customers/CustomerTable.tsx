@@ -37,14 +37,20 @@ function getMetric(c: CustomerWithSegments, key: string): unknown {
   return (c.metrics as Record<string, unknown>)?.[key]
 }
 
-// B2B stores (GWM and its dealers) key customers by shop, not person — the
-// connector lands it at custom_attributes.shop_name. When present, show the
-// shop as the primary label so a dealer can find a customer by shop name;
-// the person's name/email drops to the muted secondary line. Falls back to
-// the person name for every non-B2B customer (no shop_name → unchanged).
+// B2B stores (GWM and its dealers) key customers by shop, not person. In the
+// live data the shop name lands at custom_attributes.company (the
+// gowelmart_import path); `shop_name` is reserved for connectors that emit it
+// but is currently empty. Read company first, then shop_name. When present,
+// show the shop as the primary label so a dealer can find a customer by shop
+// name; the person's name/email drops to the muted secondary line. Falls back
+// to the person name for every non-B2B customer (no shop → unchanged).
 function getShopName(c: CustomerWithSegments): string | undefined {
-  const shop = (c.customAttributes as Record<string, unknown> | undefined)?.shop_name
-  return typeof shop === 'string' && shop.trim() !== '' ? shop : undefined
+  const ca = c.customAttributes as Record<string, unknown> | undefined
+  for (const key of ['company', 'shop_name']) {
+    const v = ca?.[key]
+    if (typeof v === 'string' && v.trim() !== '') return v.trim()
+  }
+  return undefined
 }
 
 function getDomainColumns(domain?: string): DomainColumnConfig {
