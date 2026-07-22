@@ -1,4 +1,5 @@
 import { decrypt } from '../encryption.js'
+import { assertPublicUrl } from '../ssrfGuard.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -256,6 +257,7 @@ export async function fetchPage(
     ...buildAuthHeader(cfg.template.auth, authValue),
   }
 
+  await assertPublicUrl(url.toString())
   const response = await fetch(url.toString(), {
     method: endpoint.method ?? 'GET',
     headers,
