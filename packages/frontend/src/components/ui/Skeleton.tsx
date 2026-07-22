@@ -50,12 +50,3 @@ export function TableSkeleton({ rows = 5, cols = 5 }: { rows?: number; cols?: nu
     </div>
   )
 }
-
-export function MetricCardSkeleton() {
-  return (
-    <div className="bg-surface-elevated border border-border rounded-lg p-5 space-y-2">
-      <Skeleton className="h-4 w-24" />
-      <Skeleton className="h-8 w-20" />
-    </div>
-  )
-}

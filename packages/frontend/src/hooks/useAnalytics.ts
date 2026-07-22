@@ -210,13 +210,6 @@ export function useSaveAnalysis() {
   })
 }
 
-export function useDeleteAnalysis() {
-  return useMutation({
-    mutationFn: (id: string) =>
-      api.delete(withProject(`/api/analytics/saved/${id}`)),
-  })
-}
-
 // ============ SEGMENT TRANSITIONS ============
 
 type SegmentTransition = {
@@ -263,18 +256,6 @@ export function useTransitions(period1?: string, period2?: string) {
     queryFn: () =>
       api.get<TransitionResult>(withProject('/api/analytics/transitions', { period1, period2 })),
     enabled: !!period1 && !!period2,
-    staleTime: 60_000,
-  })
-}
-
-export function useSegmentTrend(segmentIds: string[]) {
-  return useQuery({
-    queryKey: ['segment-trend', segmentIds],
-    queryFn: () =>
-      api.get<SegmentTrendPoint[]>(withProject('/api/analytics/segment-trend', {
-        segmentIds: segmentIds.join(','),
-      })),
-    enabled: segmentIds.length > 0,
     staleTime: 60_000,
   })
 }

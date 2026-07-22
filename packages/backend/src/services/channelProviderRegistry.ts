@@ -236,13 +236,3 @@ function getEnvFallback(channel: MessageChannel): { provider: ChannelProvider; c
       return null
   }
 }
-
-/** List all registered provider names by channel */
-export function listProviders(): Record<string, string[]> {
-  const result: Record<string, string[]> = { sms: [], whatsapp: [], push: [], email: [] }
-  for (const key of providerImpls.keys()) {
-    const [channel, name] = key.includes('_') ? key.split('_', 2) : ['other', key]
-    if (result[channel]) result[channel].push(name)
-  }
-  return result
-}

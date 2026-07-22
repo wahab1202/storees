@@ -187,8 +187,3 @@ export function getDomainCategories(domainType: DomainType): string[] {
   return [...new Set(config.fields.map(f => f.category))]
 }
 
-/** Look up a single field definition. */
-export function getFieldDef(domainType: DomainType, fieldName: string): DomainFieldDef | undefined {
-  const config = getDomainConfig(domainType)
-  return config.fields.find(f => f.field === fieldName)
-}
