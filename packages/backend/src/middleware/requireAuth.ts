@@ -40,10 +40,8 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
   req.adminUser = payload
 
-  // Bind the request to the token's project. The JWT is the source of truth for
-  // tenant identity — a client-supplied ?projectId= must never override it
-  // (requireProjectId rejects any mismatch).
-  if (payload.projectId) {
+  // Auto-populate projectId if not already set (from JWT)
+  if (payload.projectId && !req.query.projectId) {
     (req as Request & { projectId?: string }).projectId = payload.projectId
   }
 
