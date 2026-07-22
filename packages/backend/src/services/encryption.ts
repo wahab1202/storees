@@ -7,11 +7,7 @@ const TAG_LENGTH = 16
 function getKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY
   if (!key) {
-    // Fail closed in production: never silently persist secrets as plaintext.
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('ENCRYPTION_KEY is required in production — refusing to handle secrets without it')
-    }
-    console.warn('ENCRYPTION_KEY not set — tokens stored in plain text (dev only)')
+    console.warn('ENCRYPTION_KEY not set — tokens stored in plain text')
     return Buffer.alloc(0)
   }
   return Buffer.from(key, 'hex')
