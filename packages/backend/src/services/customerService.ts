@@ -496,23 +496,25 @@ export async function updateCustomerAggregates(
 
 /**
  * Recalculate aggregates after order cancellation.
- * Uses atomic SQL decrement to prevent lost-update race conditions.
+ * Recomputes from the orders table (the order is already flagged cancelled) so
+ * the result is idempotent — a duplicate order_cancelled webhook can't
+ * double-decrement the totals.
  */
 export async function recalculateAggregates(
   customerId: string,
-  orderTotal: number,
 ): Promise<void> {
   await db.execute(sql`
-    UPDATE customers SET
-      total_orders = GREATEST(0, total_orders - 1),
-      total_spent = GREATEST(0, total_spent - ${orderTotal}),
-      avg_order_value = CASE
-        WHEN GREATEST(0, total_orders - 1) > 0
-        THEN GREATEST(0, total_spent - ${orderTotal}) / GREATEST(1, total_orders - 1)
-        ELSE 0
-      END,
+    UPDATE customers c SET
+      total_orders = agg.cnt,
+      total_spent = agg.sum_total,
+      avg_order_value = CASE WHEN agg.cnt > 0 THEN agg.sum_total / agg.cnt ELSE 0 END,
       updated_at = NOW()
-    WHERE id = ${customerId}
+    FROM (
+      SELECT COUNT(*)::int AS cnt, COALESCE(SUM(total), 0) AS sum_total
+      FROM orders
+      WHERE customer_id = ${customerId} AND status != 'cancelled'
+    ) agg
+    WHERE c.id = ${customerId}
   `)
 
   // Recompute CLV from updated data

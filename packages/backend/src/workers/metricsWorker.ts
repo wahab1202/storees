@@ -499,17 +499,14 @@ async function computeEngagementOnly(
   const engagement = await computeEngagementMetrics(projectId, customerId)
   if (Object.keys(engagement).length === 0) return
 
-  // Merge engagement into existing metrics without recomputing domain metrics
-  const [customer] = await db
-    .select({ metrics: customers.metrics })
-    .from(customers)
-    .where(eq(customers.id, customerId))
-    .limit(1)
-
-  const existingMetrics = (customer?.metrics ?? {}) as Record<string, unknown>
-  await db.update(customers)
-    .set({ metrics: { ...existingMetrics, ...engagement }, updatedAt: new Date() })
-    .where(eq(customers.id, customerId))
+  // Merge engagement into existing metrics atomically in SQL — a concurrent
+  // writer (CLV/domain metrics) must not clobber these keys via a stale read.
+  await db.execute(sql`
+    UPDATE customers
+    SET metrics = COALESCE(metrics, '{}'::jsonb) || ${JSON.stringify(engagement)}::jsonb,
+        updated_at = NOW()
+    WHERE id = ${customerId}
+  `)
 }
 
 // ============ GENERIC/CUSTOM METRICS ============
