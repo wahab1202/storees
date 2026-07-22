@@ -653,7 +653,10 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
     and(eq(customers.projectId, projectId), sql`total_orders > 0`),
   )
 
-  for (const row of buyers) {
+  // CLV is a JS-model computation, so compute per buyer then flush the row
+  // updates in bounded-parallel chunks instead of one serial round-trip each.
+  const CLV_WRITE_CONCURRENCY = 25
+  const clvUpdates = buyers.map(row => {
     const metrics = (row.metrics ?? {}) as Record<string, unknown>
     const clvResult = computeClv({
       totalSpent: Number(row.totalSpent),
@@ -663,11 +666,21 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       lastSeenDate: row.lastSeen,
       churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
     })
-    await db.update(customers).set({
+    return {
+      id: row.id,
       clv: String(clvResult.clv_total),
       metrics: { ...metrics, ...clvResult, total_orders: row.totalOrders, total_spent: Number(row.totalSpent) },
-      updatedAt: new Date(),
-    }).where(eq(customers.id, row.id))
+    }
+  })
+
+  for (let i = 0; i < clvUpdates.length; i += CLV_WRITE_CONCURRENCY) {
+    await Promise.all(clvUpdates.slice(i, i + CLV_WRITE_CONCURRENCY).map(u =>
+      db.update(customers).set({
+        clv: u.clv,
+        metrics: u.metrics,
+        updatedAt: new Date(),
+      }).where(eq(customers.id, u.id)),
+    ))
   }
 
   return ordersUpdated
