@@ -145,13 +145,20 @@ export async function evaluateConversions(
   if (attribution === 'view_through') recipientConditions.push(isNotNull(campaignSends.openedAt))
   if (attribution === 'click_through') recipientConditions.push(isNotNull(campaignSends.clickedAt))
 
-  const recipients = await db
+  // Recipient pool as a subquery — joined inside each goal aggregation rather
+  // than shipping the (potentially huge) id array into every query as inArray
+  // params. A cheap existence check preserves the early return.
+  const recipientSubquery = db
     .select({ customerId: campaignSends.customerId })
     .from(campaignSends)
     .where(and(...recipientConditions))
 
-  if (recipients.length === 0) return []
-  const recipientIds = recipients.map(r => r.customerId)
+  const [anyRecipient] = await db
+    .select({ customerId: campaignSends.customerId })
+    .from(campaignSends)
+    .where(and(...recipientConditions))
+    .limit(1)
+  if (!anyRecipient) return []
 
   const results: ConversionResult[] = []
 
@@ -187,7 +194,7 @@ export async function evaluateConversions(
         and(
           eq(events.projectId, campaign.projectId),
           goalEventPredicate(goal),
-          inArray(events.customerId, recipientIds),
+          inArray(events.customerId, recipientSubquery),
           gte(events.timestamp, campaign.sentAt!),
           lte(events.timestamp, trackingWindowEnd),
         ),
