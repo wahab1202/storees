@@ -44,3 +44,24 @@ export function normalizeEmailList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.map(v => String(v).trim()).filter(Boolean)
 }
+
+/**
+ * Canonical-first extraction of a line item's core fields. Connectors emit
+ * snake_case (product_id/product_name/price); Shopify-direct emits
+ * id/title/unit_price. Centralised so these fallback rules can't drift between
+ * call sites (a drift silently empties fields on a source switch). The image
+ * field is intentionally left to callers — its fallback shape varies by source.
+ */
+export function normalizeLineItemFields(item: Record<string, unknown>): {
+  productId: string
+  productName: string
+  quantity: number
+  price: number
+} {
+  return {
+    productId: String(item.product_id ?? item.productId ?? ''),
+    productName: String(item.product_name ?? item.title ?? ''),
+    quantity: Number(item.quantity ?? 1),
+    price: Number(item.price ?? item.unit_price ?? 0),
+  }
+}

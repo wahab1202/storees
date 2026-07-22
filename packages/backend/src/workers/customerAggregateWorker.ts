@@ -6,6 +6,7 @@ import { customers, events, orders } from '../db/schema.js'
 import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
 import { relayConversionEvent } from '../services/conversionApiService.js'
 import { computeClv, updateCustomerAggregates } from '../services/customerService.js'
+import { normalizeLineItemFields } from '@storees/shared'
 
 /**
  * Customer-aggregate worker — the heart of the event-driven CDP.
@@ -217,10 +218,7 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
         discount: String(Number(evt.properties.discount ?? 0) || 0),
         currency: String(evt.properties.currency ?? 'INR').toUpperCase().slice(0, 3),
         lineItems: rawItems.map(item => ({
-          productId: String(item.product_id ?? item.productId ?? ''),
-          productName: String(item.product_name ?? item.title ?? ''),
-          quantity: Number(item.quantity ?? 1),
-          price: Number(item.price ?? item.unit_price ?? 0),
+          ...normalizeLineItemFields(item),
           imageUrl: (item.image_url as string) ?? undefined,
         })),
         createdAt: ts,
