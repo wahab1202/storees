@@ -35,3 +35,12 @@ export function readPath(obj: Record<string, unknown> | null | undefined, path: 
     return (acc as Record<string, unknown>)[key]
   }, obj)
 }
+
+/**
+ * Normalize an unknown value into a trimmed, non-empty string array.
+ * Non-array input yields an empty array.
+ */
+export function normalizeEmailList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map(v => String(v).trim()).filter(Boolean)
+}
