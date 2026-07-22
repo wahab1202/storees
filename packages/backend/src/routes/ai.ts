@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { encrypt, decrypt } from '../services/encryption.js'
 import { generateSegmentFilter, isAiEnabled } from '../services/aiSegmentService.js'
 import { computeNextBestAction } from '../services/nextBestActionService.js'
 import { chatCompletion, getLlmConfig, testConnection } from '../services/llmService.js'
@@ -311,7 +312,7 @@ router.post('/config', requireProjectId, async (req, res) => {
       .limit(1)
     const settings = (project?.settings ?? {}) as Record<string, unknown>
     const existingProvider = String(settings.ai_provider ?? '')
-    const existingKey = existingProvider === provider ? String(settings.ai_api_key ?? '') : ''
+    const existingKey = existingProvider === provider ? decrypt(String(settings.ai_api_key ?? '')) : ''
     const nextKey = apiKey?.trim() || existingKey
     if (!nextKey) {
       return res.status(400).json({ success: false, error: 'apiKey is required for a new AI provider' })
@@ -323,7 +324,7 @@ router.post('/config', requireProjectId, async (req, res) => {
         settings = COALESCE(settings, '{}'::jsonb)
           || jsonb_build_object(
             'ai_provider', ${provider},
-            'ai_api_key', ${nextKey},
+            'ai_api_key', ${encrypt(nextKey)},
             'ai_model', ${model ?? ''}
           ),
         updated_at = NOW()
@@ -337,11 +338,14 @@ router.post('/config', requireProjectId, async (req, res) => {
   }
 })
 
+// Redact by pattern rather than an exact denylist so provider-specific key names
+// (apikey, secretAccessKey, serviceAccountKey, serverToken, …) can never leak.
+const SECRET_KEY_HINT = /(secret|token|password|passwd|key|credential|auth|private)/i
+
 function redactSecrets(config: Record<string, string>): Record<string, string> {
-  const secretKeys = new Set(['apiKey', 'authToken', 'accessToken', 'apiSecret', 'password', 'serviceAccountKey', 'serverToken'])
   return Object.fromEntries(Object.entries(config).map(([key, value]) => [
     key,
-    secretKeys.has(key) && value ? `${value.slice(0, 4)}...${value.slice(-4)}` : value,
+    SECRET_KEY_HINT.test(key) && value ? `${value.slice(0, 4)}...${value.slice(-4)}` : value,
   ]))
 }
 
