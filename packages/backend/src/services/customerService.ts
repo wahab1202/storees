@@ -430,6 +430,40 @@ async function updateLastSeen(
 }
 
 /**
+ * Recompute a customer's CLV from their current aggregates and merge the result
+ * into metrics atomically — a concurrent metrics writer must not be clobbered by
+ * a stale read-modify-write.
+ */
+async function refreshCustomerClv(customerId: string): Promise<void> {
+  const [row] = await db.select({
+    totalSpent: customers.totalSpent,
+    totalOrders: customers.totalOrders,
+    firstOrderDate: customers.firstOrderDate,
+    lastOrderDate: customers.lastOrderDate,
+    lastSeen: customers.lastSeen,
+    metrics: customers.metrics,
+  }).from(customers).where(eq(customers.id, customerId)).limit(1)
+  if (!row) return
+
+  const metrics = (row.metrics ?? {}) as Record<string, unknown>
+  const clvResult = computeClv({
+    totalSpent: Number(row.totalSpent),
+    totalOrders: row.totalOrders,
+    firstOrderDate: row.firstOrderDate,
+    lastOrderDate: row.lastOrderDate,
+    lastSeenDate: row.lastSeen,
+    churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+  })
+  await db.execute(sql`
+    UPDATE customers SET
+      clv = ${String(clvResult.clv_total)},
+      metrics = COALESCE(metrics, '{}'::jsonb) || ${JSON.stringify(clvResult)}::jsonb,
+      updated_at = NOW()
+    WHERE id = ${customerId}
+  `)
+}
+
+/**
  * Update customer aggregates after an order event.
  * Uses atomic SQL increment to prevent lost-update race conditions.
  */
@@ -466,32 +500,7 @@ export async function updateCustomerAggregates(
     WHERE c.id = ${customerId}
   `)
 
-  // Recompute CLV from updated data using the JS model
-  const [row] = await db.select({
-    totalSpent: customers.totalSpent,
-    totalOrders: customers.totalOrders,
-    firstOrderDate: customers.firstOrderDate,
-    lastOrderDate: customers.lastOrderDate,
-    lastSeen: customers.lastSeen,
-    metrics: customers.metrics,
-  }).from(customers).where(eq(customers.id, customerId)).limit(1)
-
-  if (row) {
-    const metrics = (row.metrics ?? {}) as Record<string, unknown>
-    const clvResult = computeClv({
-      totalSpent: Number(row.totalSpent),
-      totalOrders: row.totalOrders,
-      firstOrderDate: row.firstOrderDate,
-      lastOrderDate: row.lastOrderDate,
-      lastSeenDate: row.lastSeen,
-      churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
-    })
-    await db.update(customers).set({
-      clv: String(clvResult.clv_total),
-      metrics: { ...metrics, ...clvResult },
-      updatedAt: new Date(),
-    }).where(eq(customers.id, customerId))
-  }
+  await refreshCustomerClv(customerId)
 }
 
 /**
@@ -517,32 +526,7 @@ export async function recalculateAggregates(
     WHERE c.id = ${customerId}
   `)
 
-  // Recompute CLV from updated data
-  const [row] = await db.select({
-    totalSpent: customers.totalSpent,
-    totalOrders: customers.totalOrders,
-    firstOrderDate: customers.firstOrderDate,
-    lastOrderDate: customers.lastOrderDate,
-    lastSeen: customers.lastSeen,
-    metrics: customers.metrics,
-  }).from(customers).where(eq(customers.id, customerId)).limit(1)
-
-  if (row) {
-    const metrics = (row.metrics ?? {}) as Record<string, unknown>
-    const clvResult = computeClv({
-      totalSpent: Number(row.totalSpent),
-      totalOrders: row.totalOrders,
-      firstOrderDate: row.firstOrderDate,
-      lastOrderDate: row.lastOrderDate,
-      lastSeenDate: row.lastSeen,
-      churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
-    })
-    await db.update(customers).set({
-      clv: String(clvResult.clv_total),
-      metrics: { ...metrics, ...clvResult },
-      updatedAt: new Date(),
-    }).where(eq(customers.id, customerId))
-  }
+  await refreshCustomerClv(customerId)
 }
 
 /**
