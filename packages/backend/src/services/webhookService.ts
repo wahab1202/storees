@@ -4,6 +4,7 @@ import { db } from '../db/connection.js'
 import { webhookSubscriptions, webhookDeliveries } from '../db/schema.js'
 import { webhookDeliveryQueue } from './queue.js'
 import { decrypt } from './encryption.js'
+import { assertPublicUrl } from './ssrfGuard.js'
 
 // Outbound webhook delivery. emitWebhookEvent() fans a domain event out to every
 // active subscription that listens for it (persisting a delivery row + enqueuing
@@ -118,6 +119,7 @@ export async function deliverWebhook(deliveryId: string): Promise<void> {
   let responseHeaders: Record<string, string> | null = null
   let error: string | null = null
   try {
+    await assertPublicUrl(sub.url)
     const res = await fetch(sub.url, { method: 'POST', headers, body: rawBody, signal: controller.signal })
     statusCode = res.status
     responseBody = (await res.text().catch(() => '')).slice(0, 2000)
