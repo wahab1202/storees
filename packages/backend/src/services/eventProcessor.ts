@@ -1,6 +1,6 @@
 import { eq, and } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { events, orders } from '../db/schema.js'
+import { events, orders, deadLetterEvents } from '../db/schema.js'
 import { eventsQueue, metricsQueue, interactionQueue } from './queue.js'
 import {
   resolveCustomer,
@@ -74,14 +74,14 @@ export async function processWebhookEvent(
       timestamp: normalized.timestamp,
     }
 
-    await db.insert(events).values({
+    const [insertedEvent] = await db.insert(events).values({
       projectId: processed.projectId,
       customerId: processed.customerId,
       eventName: processed.eventName,
       properties: processed.properties,
       platform: processed.platform,
       timestamp: processed.timestamp,
-    })
+    }).returning({ id: events.id })
 
     // 6. Publish — send to BullMQ for segment evaluation + flow triggers
     await eventsQueue.add(eventName, {
@@ -102,14 +102,20 @@ export async function processWebhookEvent(
         customerId: processed.customerId,
         eventName: processed.eventName,
         properties: processed.properties,
-        eventId: processed.projectId, // event ID not returned from insert; use projectId as correlation
+        eventId: insertedEvent.id,
       })
     }
 
     console.log(`Event processed: ${eventName} for customer ${customerId}`)
   } catch (err) {
     console.error(`Event processing failed for ${eventName}:`, err)
-    // TODO: write to dead_letter_events table
+    // Persist the failed event so it can be inspected/replayed rather than lost.
+    await db.insert(deadLetterEvents).values({
+      projectId,
+      eventName,
+      payload,
+      error: err instanceof Error ? err.message : String(err),
+    }).catch(dlErr => console.error('[dead-letter] failed to persist event:', dlErr))
   }
 }
 
@@ -308,15 +314,11 @@ async function handleSideEffects(
       const currency = (payload.currency as string) ?? 'INR'
       const lineItems = (payload.line_items as Record<string, unknown>[]) ?? []
 
-      // Dedupe: check if order already exists
-      const [existing] = await db
-        .select({ id: orders.id })
-        .from(orders)
-        .where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, externalOrderId)))
-        .limit(1)
-
-      if (!existing) {
-        await db.insert(orders).values({
+      // Dedupe atomically on the (projectId, externalOrderId) unique index — a
+      // concurrent duplicate webhook must not throw (and drop the event) or
+      // double-count aggregates.
+      {
+        const [inserted] = await db.insert(orders).values({
           projectId,
           customerId,
           externalOrderId,
@@ -341,9 +343,12 @@ async function handleSideEffects(
               undefined,
           })),
           createdAt: normalized.timestamp,
-        })
+        }).onConflictDoNothing().returning({ id: orders.id })
 
-        await updateCustomerAggregates(customerId, total)
+        // Only update aggregates when a new order row was actually inserted.
+        if (inserted) {
+          await updateCustomerAggregates(customerId, total)
+        }
       }
       break
     }
@@ -359,13 +364,12 @@ async function handleSideEffects(
 
     case 'order_cancelled': {
       const externalOrderId = String(payload.order_id ?? payload.id ?? '')
-      const total = Number(payload.total ?? payload.total_price ?? 0)
 
       await db.update(orders).set({
         status: 'cancelled',
       }).where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, externalOrderId)))
 
-      await recalculateAggregates(customerId, total)
+      await recalculateAggregates(customerId)
       break
     }
   }

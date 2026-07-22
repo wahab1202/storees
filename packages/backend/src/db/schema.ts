@@ -1225,6 +1225,17 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   index('idx_webhook_subs_project').on(table.projectId, table.isActive),
 ])
 
+export const deadLetterEvents = pgTable('dead_letter_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+  eventName: varchar('event_name', { length: 255 }),
+  payload: jsonb('payload').notNull().default({}),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_dead_letter_events_project').on(table.projectId, table.createdAt),
+])
+
 export const webhookDeliveries = pgTable('webhook_deliveries', {
   id: uuid('id').primaryKey().defaultRandom(),
   subscriptionId: uuid('subscription_id').notNull().references(() => webhookSubscriptions.id, { onDelete: 'cascade' }),
