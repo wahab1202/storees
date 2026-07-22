@@ -353,17 +353,32 @@ async function importOrderBatch(
   // Resolve customer UUIDs (each row needs a customer_id FK). resolveCustomer
   // creates a bare row if the external_id is unknown — better than dropping
   // orders. The customers sync fills in profile fields next pass.
+  // Orders frequently share a customer — resolve each DISTINCT external id
+  // once (bounded concurrency) instead of once per order. Deduping also avoids
+  // concurrent create races on the same external_id.
+  const uniqueExternalIds = [...new Set(pending.map(p => p.rawCustomerId))]
+  const idByExternal = new Map<string, string>()
+  const RESOLVE_CONCURRENCY = 10
+  for (let i = 0; i < uniqueExternalIds.length; i += RESOLVE_CONCURRENCY) {
+    await Promise.all(uniqueExternalIds.slice(i, i + RESOLVE_CONCURRENCY).map(async extId => {
+      try {
+        idByExternal.set(extId, await resolveCustomer({ projectId, externalId: extId }))
+      } catch (err) {
+        await log(syncId, 'error', `Customer lookup failed for ${extId}: ${(err as Error).message}`, {
+          entityType: 'order',
+        })
+      }
+    }))
+  }
+
   const resolved: Array<{ row: ReturnType<typeof buildOrderRow>; customerId: string }> = []
   for (const p of pending) {
-    try {
-      const id = await resolveCustomer({ projectId, externalId: p.rawCustomerId })
-      resolved.push({ row: p.row, customerId: id })
-    } catch (err) {
+    const customerId = idByExternal.get(p.rawCustomerId)
+    if (customerId == null) {
       stats.failed += 1
-      await log(syncId, 'error', `Customer lookup failed for ${p.rawCustomerId}: ${(err as Error).message}`, {
-        entityType: 'order',
-      })
+      continue
     }
+    resolved.push({ row: p.row, customerId })
   }
 
   if (resolved.length === 0) return
