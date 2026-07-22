@@ -17,7 +17,7 @@ import { JourneyTimelineTab } from '@/components/customers/JourneyTimelineTab'
 import { NextBestActionCard } from '@/components/customers/NextBestActionCard'
 import { cn } from '@/lib/utils'
 
-const TABS = ['User Info', 'Journey', 'Activity', 'Orders', 'Journeys', 'Messages', 'Predictions', 'Consent'] as const
+const TABS = ['User Info', 'CDP Moat', 'Activity', 'Orders', 'Journeys', 'Messages', 'Predictions', 'Consent'] as const
 type Tab = (typeof TABS)[number]
 
 function getInitials(name: string | null, email: string | null): string {
@@ -161,7 +161,7 @@ export default function CustomerProfilePage() {
           <NextBestActionCard customerId={id} customerEmail={customer.email ?? undefined} customerName={customer.name ?? undefined} />
         </div>
       )}
-      {activeTab === 'Journey' && (
+      {activeTab === 'CDP Moat' && (
         <JourneyTimelineTab customerId={id} />
       )}
       {activeTab === 'Activity' && (
