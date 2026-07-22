@@ -13,8 +13,6 @@
     "@phosphor-icons/react": "^2.1.10",
     "@storees/shared": "*",
     "@tanstack/react-query": "^5.62.0",
-    "@xyflow/react": "^12.10.1",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",
     "next": "^14.2.0",
