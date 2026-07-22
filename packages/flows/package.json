@@ -17,15 +17,9 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@storees/shared": "*",
-    "bullmq": "^5.0.0",
-    "drizzle-orm": "^0.39.0",
-    "ioredis": "^5.4.0",
-    "pg": "^8.13.0",
-    "resend": "^4.0.0"
+    "@storees/shared": "*"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.0",
     "typescript": "^5.7.0"
   }
 }
