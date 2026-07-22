@@ -8,6 +8,7 @@ import {
   recalculateAggregates,
 } from './customerService.js'
 import { stitchOrderToSession } from './anonymousSessionService.js'
+import { normalizeLineItemFields } from '@storees/shared'
 
 type WebhookPayload = Record<string, unknown>
 
@@ -245,13 +246,16 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
         total: Number(payload.total ?? payload.total_price ?? 0),
         discount: Number(payload.discount ?? payload.total_discounts ?? 0),
         item_count: lineItems.length,
-        items: (lineItems as Record<string, unknown>[]).map(item => ({
-          product_id: String(item.product_id ?? item.productId ?? ''),
-          product_name: String(item.product_name ?? item.title ?? ''),
-          quantity: Number(item.quantity ?? 1),
-          price: Number(item.price ?? item.unit_price ?? 0),
-          image_url: (item.image_url as string) ?? (item.image as Record<string, unknown>)?.src as string ?? undefined,
-        })),
+        items: (lineItems as Record<string, unknown>[]).map(item => {
+          const f = normalizeLineItemFields(item)
+          return {
+            product_id: f.productId,
+            product_name: f.productName,
+            quantity: f.quantity,
+            price: f.price,
+            image_url: (item.image_url as string) ?? (item.image as Record<string, unknown>)?.src as string ?? undefined,
+          }
+        }),
       }
       base.timestamp = payload.created_at ? new Date(payload.created_at as string) : new Date()
       break
@@ -276,13 +280,16 @@ function normalizePayload(eventName: string, payload: WebhookPayload): Normalize
         cart_id: String(payload.cart_id ?? payload.id ?? payload.token ?? ''),
         cart_value: cartValue,
         item_count: cartItems.length,
-        items: (cartItems as Record<string, unknown>[]).map(item => ({
-          product_id: String(item.product_id ?? item.productId ?? ''),
-          product_name: String(item.product_name ?? item.title ?? ''),
-          quantity: Number(item.quantity ?? 1),
-          price: Number(item.price ?? item.unit_price ?? 0),
-          image_url: (item.image_url as string) ?? (item.image as string) ?? undefined,
-        })),
+        items: (cartItems as Record<string, unknown>[]).map(item => {
+          const f = normalizeLineItemFields(item)
+          return {
+            product_id: f.productId,
+            product_name: f.productName,
+            quantity: f.quantity,
+            price: f.price,
+            image_url: (item.image_url as string) ?? (item.image as string) ?? undefined,
+          }
+        }),
         checkout_url: payload.token
           ? `https://${base.externalCustomerId ? '' : ''}cart/${payload.token}`
           : undefined,
@@ -333,10 +340,7 @@ async function handleSideEffects(
           // product_id, title, image.src, sometimes unit_price. Accept all so
           // a switch of source doesn't silently empty fields downstream.
           lineItems: lineItems.map(item => ({
-            productId: String(item.product_id ?? item.productId ?? ''),
-            productName: String(item.product_name ?? item.title ?? ''),
-            quantity: Number(item.quantity ?? 1),
-            price: Number(item.price ?? item.unit_price ?? 0),
+            ...normalizeLineItemFields(item),
             imageUrl:
               (item.image_url as string) ??
               (item.image as Record<string, unknown>)?.src as string ??
