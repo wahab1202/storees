@@ -224,21 +224,6 @@ function nonEmpty(v: unknown): string | null {
 }
 
 /**
- * Replace {{key}} occurrences in `template` using a substitution map. The
- * key matcher is purposely strict — it only matches identifier characters
- * (\w) so it doesn't trip on JSON/HTML braces. Multi-line templates work
- * because `\w` doesn't include newlines.
- *
- * Unmapped keys collapse to empty string. Pair this with templateLint to
- * surface those at save-time rather than silently dropping them in inboxes.
- */
-export function applyVariableMap(template: string, map: Record<string, string>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
-    return key in map ? map[key] : ''
-  })
-}
-
-/**
  * Find every {{key}} reference in a template (subject + body combined). Used
  * by save-time lint and by the picker UI to auto-create rows for newly typed
  * variables.

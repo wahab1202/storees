@@ -1,4 +1,4 @@
-import { eq, and, asc, isNotNull, sql } from 'drizzle-orm'
+import { eq, and, asc, isNotNull } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { agents, customers } from '../db/schema.js'
 import { agentRbacEnabled } from '../config/features.js'
@@ -123,6 +123,3 @@ export async function getProjectFieldDefs(projectId: string, baseFields: DomainF
   const agentFields = await buildAgentFieldDefs(projectId)
   return [...baseFields, ...agentFields]
 }
-
-// Re-export sql for the v1Schema route (which used to declare it via drizzle directly)
-export { sql }

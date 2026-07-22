@@ -131,11 +131,6 @@ export async function explainCustomer(
   return result as MlExplainResponse
 }
 
-export async function listModels(): Promise<{ models: { goalId: string; modelVersion: string; auc: number; trainedAt: string }[] }> {
-  const result = await mlFetch('/propensity/models')
-  return result as { models: { goalId: string; modelVersion: string; auc: number; trainedAt: string }[] }
-}
-
 export async function promoteModelVersion(goalId: string, modelVersion: string): Promise<{ status: string }> {
   const result = await mlFetch('/propensity/promote', {
     method: 'POST',

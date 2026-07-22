@@ -416,11 +416,6 @@ async function checkFrequencyCap(
   return count >= cap.max
 }
 
-/** Test-only: clears the freq-cap cache for a project (admin UI calls this when caps change). */
-export function invalidateFreqCapCache(projectId: string): void {
-  freqCapCache.delete(projectId)
-}
-
 async function checkReachability(
   projectId: string,
   customerId: string,

@@ -76,14 +76,6 @@ export function useConnectors(projectId: string) {
   })
 }
 
-export function useConnector(connectorId: string | undefined, projectId: string) {
-  return useQuery({
-    queryKey: ['connector', projectId, connectorId],
-    queryFn: () => api.get<Connector>(`/api/data-sources/connectors/${connectorId}?projectId=${projectId}`),
-    enabled: !!connectorId && !!projectId,
-  })
-}
-
 export function useSyncHistory(connectorId: string | undefined, projectId: string) {
   return useQuery({
     queryKey: ['connector-syncs', projectId, connectorId],

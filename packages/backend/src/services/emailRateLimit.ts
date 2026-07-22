@@ -75,10 +75,3 @@ export async function acquireEmailSlot(projectId: string): Promise<AcquireResult
   const retryAfterMs = (minuteEpoch + 1) * 60_000 - nowMs + 50 // +50ms cushion
   return { ok: false, limit, current, retryAfterMs }
 }
-
-/** For tests / admin tooling: clear the per-minute counter for a project. */
-export async function resetEmailRateCounter(projectId: string): Promise<void> {
-  const minuteEpoch = Math.floor(Date.now() / 60_000)
-  await redis.del(`${KEY_PREFIX}${projectId}:${minuteEpoch}`)
-  limitCache.delete(projectId)
-}
