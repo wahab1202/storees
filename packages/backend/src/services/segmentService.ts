@@ -122,28 +122,24 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
     )
   }
 
-  // Emit enters_segment events for newly added members
-  for (const customerId of toAdd) {
-    await eventsQueue.add('enters_segment', {
+  // Emit enters_segment / exits_segment events in bulk (one round-trip each)
+  // rather than one queue add per membership change.
+  const segmentEventJob = (customerId: string, eventName: 'enters_segment' | 'exits_segment') => ({
+    name: eventName,
+    data: {
       projectId: segment.projectId,
       customerId,
-      eventName: 'enters_segment',
+      eventName,
       properties: { segmentId, segmentName: segment.name },
       platform: 'system',
       timestamp: new Date().toISOString(),
-    })
+    },
+  })
+  if (toAdd.length > 0) {
+    await eventsQueue.addBulk(toAdd.map(id => segmentEventJob(id, 'enters_segment')))
   }
-
-  // Emit exits_segment events for removed members
-  for (const customerId of toRemove) {
-    await eventsQueue.add('exits_segment', {
-      projectId: segment.projectId,
-      customerId,
-      eventName: 'exits_segment',
-      properties: { segmentId, segmentName: segment.name },
-      platform: 'system',
-      timestamp: new Date().toISOString(),
-    })
+  if (toRemove.length > 0) {
+    await eventsQueue.addBulk(toRemove.map(id => segmentEventJob(id, 'exits_segment')))
   }
 
   // Mirror membership changes to outbound webhooks (customer.segment.entered /

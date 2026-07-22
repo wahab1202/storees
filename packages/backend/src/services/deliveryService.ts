@@ -40,30 +40,24 @@ export async function send(command: SendCommand): Promise<string | null> {
     }
   }
 
-  // 1. Consent check
-  const consented = await checkConsent(
-    command.projectId,
-    command.userId,
-    command.channel,
-    command.messageType,
-  )
+  // Gates 1-3 are independent reads — run them together, then evaluate in
+  // priority order so the recorded block reason is unchanged. Frequency cap is
+  // marketing-only; transactional sends bypass it by design.
+  const capApplies = !command.ignoreFrequencyCap && command.messageType !== 'transactional'
+  const [consented, capped, reachable] = await Promise.all([
+    checkConsent(command.projectId, command.userId, command.channel, command.messageType),
+    capApplies ? checkFrequencyCap(command.projectId, command.userId, command.channel) : Promise.resolve(false),
+    checkReachability(command.projectId, command.userId, command.channel),
+  ])
+
   if (!consented) {
     await recordMessage(command, 'blocked', 'consent_blocked')
     return null
   }
-
-  // 2. Frequency cap check — marketing-only. Transactional sends (UTILITY/AUTH
-  // WhatsApp, and any transactional email/sms) bypass it by design.
-  if (!command.ignoreFrequencyCap && command.messageType !== 'transactional') {
-    const capped = await checkFrequencyCap(command.projectId, command.userId, command.channel)
-    if (capped) {
-      await recordMessage(command, 'blocked', 'frequency_capped')
-      return null
-    }
+  if (capped) {
+    await recordMessage(command, 'blocked', 'frequency_capped')
+    return null
   }
-
-  // 3. Channel reachability check
-  const reachable = await checkReachability(command.projectId, command.userId, command.channel)
   if (!reachable) {
     await recordMessage(command, 'blocked', 'no_channel_reachability')
     return null

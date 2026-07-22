@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 
-type SendTimeResult = {
+export type SendTimeResult = {
   best_send_hour: number | null
   best_send_dow: number | null
   send_time_confidence: number
@@ -15,33 +15,29 @@ type SendTimeResult = {
 export async function computeOptimalSendTime(
   customerId: string,
   projectId: string,
+  projectDefault?: SendTimeResult,
 ): Promise<SendTimeResult> {
-  // Customer-level: find the hour with the most opens
+  // Customer-level: top open hour + total sample size in a single query.
   const customerResult = await db.execute(sql`
-    SELECT
-      EXTRACT(HOUR FROM cs.opened_at)::integer AS open_hour,
-      EXTRACT(DOW FROM cs.opened_at)::integer AS open_dow,
-      COUNT(*) AS opens
-    FROM campaign_sends cs
-    JOIN campaigns c ON c.id = cs.campaign_id
-    WHERE cs.customer_id = ${customerId}
-      AND c.project_id = ${projectId}
-      AND cs.opened_at IS NOT NULL
-    GROUP BY 1, 2
+    SELECT open_hour, open_dow, opens, SUM(opens) OVER () AS total_opens
+    FROM (
+      SELECT
+        EXTRACT(HOUR FROM cs.opened_at)::integer AS open_hour,
+        EXTRACT(DOW FROM cs.opened_at)::integer AS open_dow,
+        COUNT(*) AS opens
+      FROM campaign_sends cs
+      JOIN campaigns c ON c.id = cs.campaign_id
+      WHERE cs.customer_id = ${customerId}
+        AND c.project_id = ${projectId}
+        AND cs.opened_at IS NOT NULL
+      GROUP BY 1, 2
+    ) hours
     ORDER BY opens DESC
     LIMIT 1
   `)
 
   const cRow = customerResult.rows[0] as Record<string, unknown> | undefined
-  const sampleResult = await db.execute(sql`
-    SELECT COUNT(*) AS total_opens
-    FROM campaign_sends cs
-    JOIN campaigns c ON c.id = cs.campaign_id
-    WHERE cs.customer_id = ${customerId}
-      AND c.project_id = ${projectId}
-      AND cs.opened_at IS NOT NULL
-  `)
-  const sampleSize = Number((sampleResult.rows[0] as Record<string, unknown>)?.total_opens ?? 0)
+  const sampleSize = Number(cRow?.total_opens ?? 0)
 
   // If customer has ≥3 opens, use their personal preference
   if (cRow && sampleSize >= 3) {
@@ -53,8 +49,10 @@ export async function computeOptimalSendTime(
     }
   }
 
-  // Fall back to project-level defaults
-  return computeProjectDefaults(projectId)
+  // Fall back to project-level defaults. During a bulk dispatch the caller
+  // precomputes this once and passes it in, avoiding a redundant per-recipient
+  // project-wide aggregation.
+  return projectDefault ?? computeProjectDefaults(projectId)
 }
 
 /**
