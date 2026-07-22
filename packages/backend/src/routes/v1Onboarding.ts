@@ -1,15 +1,29 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import crypto from 'crypto'
 import { db } from '../db/connection.js'
 import { projects, apiKeys, events, segments, consentAuditLog, customers, anonymousSessions } from '../db/schema.js'
 import { eq, and, count, gte, lte, sql, isNotNull } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
 import { registerDomain, checkDomainStatus } from '../services/emailDomainService.js'
 import type { DomainType, IntegrationType } from '@storees/shared'
 
 const router = Router()
+
+/**
+ * Guard for `/projects/:id` routes: a user may only act on their own project.
+ * Single-project-per-user model — the JWT's project must match the path id.
+ */
+function requireProjectOwnership(req: Request, res: Response, next: NextFunction): void {
+  const admin = (req as AuthenticatedRequest).adminUser
+  if (!admin?.projectId || admin.projectId !== req.params.id) {
+    res.status(403).json({ success: false, error: 'You do not have access to this project' })
+    return
+  }
+  next()
+}
 
 const VALID_DOMAINS: DomainType[] = ['ecommerce', 'fintech', 'saas', 'custom']
 
@@ -314,7 +328,7 @@ router.post('/projects', async (req: Request, res: Response) => {
  *
  * Returns: whether first event received, total events, customers count, API key status
  */
-router.get('/projects/:id/integration-status', async (req: Request, res: Response) => {
+router.get('/projects/:id/integration-status', requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 
@@ -389,7 +403,7 @@ router.get('/projects/:id/integration-status', async (req: Request, res: Respons
  * This is a convenience endpoint called from the onboarding wizard's "Test" button.
  * It creates a test event directly (no API key required since it's from the admin panel).
  */
-router.post('/projects/:id/test-event', async (req: Request, res: Response) => {
+router.post('/projects/:id/test-event', requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 
@@ -436,7 +450,7 @@ router.post('/projects/:id/test-event', async (req: Request, res: Response) => {
  * Returns cURL examples, sample events, and endpoint documentation
  * tailored to the project's domain type.
  */
-router.get('/projects/:id/guide', async (req: Request, res: Response) => {
+router.get('/projects/:id/guide', requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 
@@ -482,8 +496,13 @@ router.get('/projects/:id/guide', async (req: Request, res: Response) => {
 /**
  * GET /api/onboarding/projects — List all projects (for admin/reset tooling)
  */
-router.get('/projects', async (_req: Request, res: Response) => {
+router.get('/projects', async (req: Request, res: Response) => {
   try {
+    // Scope to the caller's own project — a user must not enumerate other tenants.
+    const callerProjectId = (req as AuthenticatedRequest).adminUser?.projectId
+    if (!callerProjectId) {
+      return res.status(403).json({ success: false, error: 'Forbidden' })
+    }
     const rows = await db
       .select({
         id: projects.id,
@@ -494,6 +513,7 @@ router.get('/projects', async (_req: Request, res: Response) => {
         createdAt: projects.createdAt,
       })
       .from(projects)
+      .where(eq(projects.id, callerProjectId))
       .orderBy(projects.createdAt)
 
     res.json({ success: true, data: rows })
@@ -514,7 +534,7 @@ router.get('/projects', async (_req: Request, res: Response) => {
  * Body: { agentScopedAccess?: boolean, ...other future flags }
  * Returns: { features }  (full features object after merge)
  */
-router.patch('/projects/:id/features', requireRole('admin'), async (req: Request, res: Response) => {
+router.patch('/projects/:id/features', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const incoming = (req.body ?? {}) as Record<string, unknown>
@@ -569,7 +589,7 @@ router.patch('/projects/:id/features', requireRole('admin'), async (req: Request
  * returns the DNS records the tenant needs to add to their domain. Idempotent
  * if a domain is already registered (returns current status without recreating).
  */
-router.post('/projects/:id/email-domain', requireRole('admin'), async (req: Request, res: Response) => {
+router.post('/projects/:id/email-domain', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const { domain, fromName, fromLocalPart } = (req.body ?? {}) as {
@@ -605,7 +625,7 @@ router.post('/projects/:id/email-domain', requireRole('admin'), async (req: Requ
  * Hits Resend's domains.get; on status='verified' stamps email_domain_verified_at
  * so future sends can use the per-tenant from-domain.
  */
-router.get('/projects/:id/email-domain', requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/projects/:id/email-domain', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 
@@ -664,7 +684,7 @@ router.get('/projects/:id/email-domain', requireRole('admin'), async (req: Reque
  * via the next cache TTL (60s); we don't import deliveryService here to keep the
  * route module dependency-free.
  */
-router.patch('/projects/:id/frequency-caps', requireRole('admin'), async (req: Request, res: Response) => {
+router.patch('/projects/:id/frequency-caps', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const incoming = (req.body ?? {}) as Record<string, { perDays?: number; max?: number }>
@@ -717,7 +737,7 @@ router.patch('/projects/:id/frequency-caps', requireRole('admin'), async (req: R
  * Returns the project's current frequency-cap config so the Settings UI can
  * pre-populate the form.
  */
-router.get('/projects/:id/frequency-caps', requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/projects/:id/frequency-caps', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const [project] = await db
@@ -743,7 +763,7 @@ router.get('/projects/:id/frequency-caps', requireRole('admin'), async (req: Req
  * card "X anonymous browsers identified, Y events back-attributed last
  * month".
  */
-router.get('/projects/:id/identity-merge-stats', requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/projects/:id/identity-merge-stats', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const days = Math.min(Math.max(Number(req.query.days ?? 30), 1), 365)
@@ -788,7 +808,7 @@ router.get('/projects/:id/identity-merge-stats', requireRole('admin'), async (re
  *
  * Admin-only. Default range: last 90 days.
  */
-router.get('/projects/:id/consent-export', requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/projects/:id/consent-export', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const fromStr = (req.query.from as string) ?? ''
@@ -880,7 +900,7 @@ router.get('/projects/:id/consent-export', requireRole('admin'), async (req: Req
  * Used by the resetToFintech script to clear the demo before re-seeding.
  * Relies on ON DELETE CASCADE in the DB schema.
  */
-router.delete('/projects/:id', async (req: Request, res: Response) => {
+router.delete('/projects/:id', requireRole('admin'), requireProjectOwnership, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 
