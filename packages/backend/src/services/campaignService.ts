@@ -23,7 +23,7 @@ import { copyCampaignAttachments, listCampaignAttachments, loadResendAttachments
 import { injectGmailAnnotation } from './gmailAnnotation.js'
 import { campaignQueue } from './queue.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
-import { computeOptimalSendTime } from './sendTimeService.js'
+import { computeOptimalSendTime, computeProjectDefaults, type SendTimeResult } from './sendTimeService.js'
 import { assertApprovedWhatsappCampaignTemplate } from './whatsappCampaignValidation.js'
 import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
@@ -494,6 +494,12 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
   let totalHoldouts = 0
   let cursor: string | null = null
 
+  // For best_time scheduling, compute the project-wide default once rather than
+  // re-running the same aggregation for every recipient without personal data.
+  const sendTimeDefault = (campaign.sendTimeMode ?? 'asap') === 'best_time'
+    ? await computeProjectDefaults(campaign.projectId)
+    : undefined
+
   while (true) {
     // Stop early if the cap is satisfied — saves the rest of the audience pull.
     if (audienceCap != null && totalRecipients >= audienceCap) break
@@ -702,7 +708,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
               phone: r.phone,
               name: r.name,
               customAttributes: asRecord(r.customAttributes),
-            }) ?? null,
+            }, sendTimeDefault) ?? null,
         })))
         let insertedRecipients = 0
         // Postgres parameter-limit safety
@@ -1057,6 +1063,7 @@ async function getNextPendingSendAt(campaignId: string): Promise<Date | null> {
 async function resolveRecipientScheduledAt(
   campaign: CampaignRow,
   customer: CustomerLike,
+  sendTimeDefault?: SendTimeResult,
 ): Promise<Date | undefined> {
   const mode = campaign.sendTimeMode ?? 'asap'
   if (mode === 'asap') return undefined
@@ -1068,7 +1075,7 @@ async function resolveRecipientScheduledAt(
     return nextLocalDateTime(base, timezone)
   }
   if (mode === 'best_time') {
-    const best = await computeOptimalSendTime(customer.id, campaign.projectId)
+    const best = await computeOptimalSendTime(customer.id, campaign.projectId, sendTimeDefault)
     const hour = best.best_send_hour ?? 10
     return nextLocalDateTime(setUtcHour(base, hour), timezone)
   }

@@ -1,4 +1,4 @@
-import { eq, and, gt, desc, sql } from 'drizzle-orm'
+import { eq, and, gt, desc, sql, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flowTrips, flows, customers, customerSegments, emailTemplates, scheduledJobs, events, projects } from '../db/schema.js'
 import { filterToSql } from '@storees/segments'
@@ -300,13 +300,19 @@ export async function checkExitEvents(
 
   const props = eventProperties ?? {}
 
-  for (const trip of allTrips) {
-    const [flow] = await db
-      .select({ exitConfig: flows.exitConfig, goalConfig: flows.goalConfig })
-      .from(flows)
-      .where(eq(flows.id, trip.flowId))
-      .limit(1)
+  // Fetch every flow referenced by these trips in one query, then look up
+  // per-trip from the map (was one SELECT per trip, on every ingested event).
+  const flowIds = [...new Set(allTrips.map(t => t.flowId))]
+  const flowRows = flowIds.length > 0
+    ? await db
+        .select({ id: flows.id, exitConfig: flows.exitConfig, goalConfig: flows.goalConfig })
+        .from(flows)
+        .where(inArray(flows.id, flowIds))
+    : []
+  const flowById = new Map(flowRows.map(f => [f.id, f]))
 
+  for (const trip of allTrips) {
+    const flow = flowById.get(trip.flowId)
     if (!flow) continue
 
     // ── Goal: journey achieved → converted + completed
