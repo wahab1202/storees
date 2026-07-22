@@ -138,8 +138,7 @@ router.post('/connectors', requireProjectId, async (req, res) => {
 
     res.json({ success: true, data: { id: inserted.id } })
   } catch (err) {
-    console.error('Create connector error:', err)
-    res.status(500).json({ success: false, error: 'Failed to save connector' })
+    res.status(500).json({ success: false, error: (err as Error).message })
   }
 })
 

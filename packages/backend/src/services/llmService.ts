@@ -1,7 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
-import { decrypt } from './encryption.js'
 
 type LlmProvider = 'groq' | 'openai' | 'anthropic'
 
@@ -51,7 +50,7 @@ export async function getLlmConfig(projectId: string): Promise<LlmConfig | null>
   if (settings.ai_api_key && settings.ai_provider) {
     return {
       provider: settings.ai_provider as LlmProvider,
-      apiKey: decrypt(String(settings.ai_api_key)),
+      apiKey: String(settings.ai_api_key),
       model: String(settings.ai_model ?? DEFAULT_MODELS[settings.ai_provider as LlmProvider] ?? 'llama-3.3-70b-versatile'),
     }
   }
