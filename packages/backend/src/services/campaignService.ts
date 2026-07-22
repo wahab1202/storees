@@ -28,6 +28,7 @@ import { assertApprovedWhatsappCampaignTemplate } from './whatsappCampaignValida
 import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
 import type { CampaignUtmParameters, GmailAnnotation } from '@storees/shared'
+import { normalizeEmailList } from '@storees/shared'
 
 // Page sizes tuned for 100K-recipient campaigns: bounded heap, bounded round-trips.
 const RECIPIENT_PAGE_SIZE = 1000
@@ -1011,12 +1012,6 @@ async function sendOneRecipient(
     console.error(`Campaign ${channel} send failed for ${send.customerId}:`, err)
   }
   return { id: send.id, success: false }
-}
-
-function normalizeEmailList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.map(v => String(v).trim()).filter(Boolean)
-    : []
 }
 
 async function nextCampaignChunkSize(

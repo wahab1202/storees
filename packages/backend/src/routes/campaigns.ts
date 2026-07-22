@@ -30,13 +30,9 @@ import { appendUtmParameters, interpolateTemplate, personalizeDynamicImages, sen
 import { injectGmailAnnotation } from '../services/gmailAnnotation.js'
 import { loadResendAttachments } from '../services/campaignAttachmentService.js'
 import type { CampaignUtmParameters, FilterConfig, GmailAnnotation, TemplateVariable } from '@storees/shared'
+import { normalizeEmailList } from '@storees/shared'
 
 const router = Router()
-
-function normalizeEmailList(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.map(v => String(v).trim()).filter(Boolean)
-}
 
 function normalizeUtmParameters(value: unknown): CampaignUtmParameters | null {
   if (!value || typeof value !== 'object') return null
