@@ -32,7 +32,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           })
           const meData = await meRes.json()
           if (!meRes.ok || !meData.success) {
-            throw new Error('Invalid session')
+            // Return null (not throw) — NextAuth v5 turns thrown errors into a
+            // generic "Configuration" code on the client.
+            return null
           }
           return {
             id: meData.data.id,
@@ -58,12 +60,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const data = await res.json()
 
         if (!res.ok || !data.success) {
-          throw new Error(data.error ?? 'Invalid credentials')
+          // Invalid credentials — return null so NextAuth emits CredentialsSignin
+          // rather than a generic "Configuration" error.
+          return null
         }
 
-        // If 2FA is required, pass it through as a special error
+        // 2FA is detected and handled by the login page before it calls signIn,
+        // so a raw-credentials sign-in for a 2FA account simply fails here.
         if (data.data.requires2FA) {
-          throw new Error(`2FA_REQUIRED:${data.data.tempToken}`)
+          return null
         }
 
         return {
