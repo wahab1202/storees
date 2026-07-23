@@ -4,6 +4,7 @@ import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { events, anonymousSessions, flows } from '../db/schema.js'
 import { eventsQueue } from '../services/queue.js'
+import { deviceStitchEnabled } from '../config/features.js'
 
 /**
  * Phase F3 — back-attribute previously anonymous events when a session resolves
@@ -37,13 +38,17 @@ type MergeJob = {
   projectId: string
   sessionId: string
   customerId: string
+  deviceId?: string | null
 }
 
 export function startIdentityMergeWorker(): Worker {
   const worker = new Worker(
     WORKER_NAME,
     async (job) => {
-      const { projectId, sessionId, customerId } = job.data as MergeJob
+      const { projectId, sessionId, customerId, deviceId } = job.data as MergeJob
+      // When device stitching is enabled, collapse the whole device's anonymous
+      // history (all its sessions), not just the checkout-time session.
+      const useDevice = !!deviceId && deviceStitchEnabled()
 
       // Largest lookback across all active flows; events older than this
       // can't possibly trigger anything so don't waste cycles attributing.
@@ -54,12 +59,16 @@ export function startIdentityMergeWorker(): Worker {
 
       const lookback = maxLookback ?? 30 // fallback if no active flows
 
-      // 1. Back-attribute prior anonymous events for this session
+      // 1. Back-attribute prior anonymous events — by session, and (when device
+      //    stitching is on) every session sharing this durable device_id.
+      const matchPredicate = useDevice
+        ? sql`(session_id = ${sessionId} OR device_id = ${deviceId})`
+        : sql`session_id = ${sessionId}`
       const updated = await db.execute(sql`
         UPDATE events
         SET customer_id = ${customerId}
         WHERE project_id = ${projectId}
-          AND session_id = ${sessionId}
+          AND ${matchPredicate}
           AND customer_id IS NULL
           AND timestamp >= NOW() - (${lookback}::int * INTERVAL '1 day')
         RETURNING id, event_name, properties, timestamp

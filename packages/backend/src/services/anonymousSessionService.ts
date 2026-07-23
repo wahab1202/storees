@@ -15,6 +15,7 @@ export async function linkAnonymousSession(
   projectId: string,
   sessionId: string,
   customerId: string,
+  deviceId?: string | null,
 ): Promise<void> {
   const [existing] = await db
     .select({ id: anonymousSessions.id, customerId: anonymousSessions.customerId })
@@ -30,13 +31,13 @@ export async function linkAnonymousSession(
     // Conflict (rare — usually a shared device): re-point to the new customer
     // and let the back-attribution worker re-process.
     await db.update(anonymousSessions)
-      .set({ customerId, linkedAt: new Date(), eventsBackAttributed: null, flowsTriggered: null, resolvedAt: null })
+      .set({ customerId, deviceId: deviceId ?? null, linkedAt: new Date(), eventsBackAttributed: null, flowsTriggered: null, resolvedAt: null })
       .where(eq(anonymousSessions.id, existing.id))
   } else {
-    await db.insert(anonymousSessions).values({ projectId, sessionId, customerId })
+    await db.insert(anonymousSessions).values({ projectId, sessionId, customerId, deviceId: deviceId ?? null })
   }
 
-  await identityMergeQueue.add('merge', { projectId, sessionId, customerId })
+  await identityMergeQueue.add('merge', { projectId, sessionId, customerId, deviceId: deviceId ?? null })
     .catch(err => console.error('[anon-session] failed to enqueue merge:', err))
 }
 
@@ -58,11 +59,15 @@ export async function stitchOrderToSession(
 ): Promise<void> {
   const noteAttrs = orderPayload.note_attributes
   if (!Array.isArray(noteAttrs)) return
-  const entry = noteAttrs.find(
-    (a) => !!a && typeof a === 'object' && (a as { name?: unknown }).name === 'storees_sid',
-  ) as { value?: unknown } | undefined
-  const sid = entry?.value
-  if (typeof sid === 'string' && sid.trim()) {
-    await linkAnonymousSession(projectId, sid.trim(), customerId)
+  const attrValue = (name: string): string | undefined => {
+    const entry = noteAttrs.find(
+      (a) => !!a && typeof a === 'object' && (a as { name?: unknown }).name === name,
+    ) as { value?: unknown } | undefined
+    return typeof entry?.value === 'string' && entry.value.trim() ? entry.value.trim() : undefined
+  }
+  const sid = attrValue('storees_sid')
+  const did = attrValue('storees_did')
+  if (sid) {
+    await linkAnonymousSession(projectId, sid, customerId, did)
   }
 }
