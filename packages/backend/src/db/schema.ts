@@ -189,6 +189,7 @@ export const events = pgTable('events', {
   source: varchar('source', { length: 30 }).notNull().default('api'),
   // 'shopify_webhook' | 'api' | 'sdk' | 'sync' | 'system'
   sessionId: varchar('session_id', { length: 255 }),
+  deviceId: varchar('device_id', { length: 255 }),
   idempotencyKey: varchar('idempotency_key', { length: 255 }),
   timestamp: timestamp('timestamp', { withTimezone: true }).notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
@@ -352,6 +353,9 @@ export const anonymousSessions = pgTable('anonymous_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   sessionId: varchar('session_id', { length: 255 }).notNull(),
+  // Durable device id (SDK anonymousId) — stable across sessions; the persistent
+  // stitch key. NULL for legacy rows / order-only stitches without a device id.
+  deviceId: varchar('device_id', { length: 255 }),
   customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
   linkedAt: timestamp('linked_at', { withTimezone: true }).notNull().defaultNow(),
   // Worker outcome — NULL until the merge job runs

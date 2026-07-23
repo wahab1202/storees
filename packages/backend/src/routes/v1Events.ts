@@ -95,8 +95,8 @@ router.post('/events', async (req: Request, res: Response) => {
       : deriveIdempotencyKey(payload.event_name.trim(), customerId, payload.properties, eventTimestamp)
 
     const result = await db.execute(sql`
-      INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
-      VALUES (${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${eventPlatform}, ${eventSource}, ${eventSessionId}, ${effectiveKey}, ${eventTimestamp})
+      INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, device_id, idempotency_key, timestamp)
+      VALUES (${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${eventPlatform}, ${eventSource}, ${eventSessionId}, ${payload.device_id ?? null}, ${effectiveKey}, ${eventTimestamp})
       ON CONFLICT (project_id, idempotency_key) DO NOTHING
       RETURNING id
     `)
@@ -266,13 +266,13 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       if (withIdemKey.length > 0) {
         const insertValues = withIdemKey.map(({ payload, customerId }) => {
           const ts = payload.timestamp ? new Date(payload.timestamp) : new Date()
-          return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, ${payload.idempotency_key}, ${ts})`
+          return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, ${payload.device_id ?? null}, ${payload.idempotency_key}, ${ts})`
         })
 
         // RETURNING id + idempotency_key so we can match results correctly
         // (PG does not guarantee RETURNING order matches VALUES order with ON CONFLICT DO NOTHING)
         const insertResult = await db.execute(sql`
-          INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
+          INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, device_id, idempotency_key, timestamp)
           VALUES ${sql.join(insertValues, sql`, `)}
           ON CONFLICT (project_id, idempotency_key) DO NOTHING
           RETURNING id, idempotency_key
@@ -297,11 +297,11 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       if (withoutIdemKey.length > 0) {
         const insertValues = withoutIdemKey.map(({ payload, customerId }) => {
           const ts = payload.timestamp ? new Date(payload.timestamp) : new Date()
-          return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, NULL, ${ts})`
+          return sql`(${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${payload.platform ?? 'api'}, ${payload.source ?? 'api'}, ${payload.session_id ?? null}, ${payload.device_id ?? null}, NULL, ${ts})`
         })
 
         const insertResult = await db.execute(sql`
-          INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
+          INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, device_id, idempotency_key, timestamp)
           VALUES ${sql.join(insertValues, sql`, `)}
           RETURNING id
         `)

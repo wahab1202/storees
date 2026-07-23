@@ -48,6 +48,7 @@ export type SdkEvent = {
   timestamp: string
   idempotency_key: string
   session_id?: string
+  device_id?: string
   source?: string
   platform?: string
   properties: Record<string, unknown>

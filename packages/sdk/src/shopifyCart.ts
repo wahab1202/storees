@@ -26,6 +26,7 @@ export class ShopifyCartBridge {
 
   constructor(
     private getSessionId: () => string,
+    private getDeviceId: () => string,
     private log: Logger,
   ) {}
 
@@ -47,7 +48,10 @@ export class ShopifyCartBridge {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attributes: { storees_sid: sid } }),
+        // storees_did (durable device id) rides alongside storees_sid so the
+        // order→session stitch can collapse ALL of this device's browse
+        // history, not just the checkout-time session.
+        body: JSON.stringify({ attributes: { storees_sid: sid, storees_did: this.getDeviceId() } }),
       })
       if (res.ok) {
         this.stampedSid = sid

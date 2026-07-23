@@ -90,10 +90,11 @@ export class Transport {
   async sendCustomerUpsert(
     customerId: string,
     attributes: Record<string, unknown>,
-    sessionId?: string
+    sessionId?: string,
+    deviceId?: string
   ): Promise<void> {
     const url = `${this.apiUrl}/api/v1/customers`
-    const body = JSON.stringify({ customer_id: customerId, attributes, session_id: sessionId })
+    const body = JSON.stringify({ customer_id: customerId, attributes, session_id: sessionId, device_id: deviceId })
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {

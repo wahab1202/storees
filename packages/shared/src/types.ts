@@ -1139,6 +1139,7 @@ export type EventIngestionPayload = {
   timestamp?: string
   idempotency_key?: string
   session_id?: string
+  device_id?: string
   source?: 'sdk' | 'api' | 'server' | string
   platform?: 'web' | 'mobile' | 'server' | string
   properties?: Record<string, unknown>
@@ -1162,6 +1163,8 @@ export type CustomerUpsertPayload = {
     name?: string
     [key: string]: unknown
   }
+  session_id?: string
+  device_id?: string
 }
 
 // ============ ANALYTICS TYPES ============

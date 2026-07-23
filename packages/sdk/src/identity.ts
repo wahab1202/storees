@@ -84,6 +84,16 @@ export class IdentityManager {
     return this.userId || `anon_${this.anonymousId}`
   }
 
+  /**
+   * Get the durable device id — the raw anonymousId, stable across sessions and
+   * browser restarts (localStorage), independent of login state. Used as the
+   * persistent stitch key so a returning visitor's prior anonymous history can
+   * be back-attributed once they identify.
+   */
+  getDeviceId(): string {
+    return this.anonymousId
+  }
+
   /** Get customer_email if available */
   getCustomerEmail(): string | undefined {
     return this.attributes?.email as string | undefined
