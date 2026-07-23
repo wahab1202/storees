@@ -13,6 +13,7 @@ export async function linkAnonymousSession(
   projectId: string,
   sessionId: string,
   customerId: string,
+  deviceId?: string | null,
 ): Promise<void> {
   const [existing] = await db
     .select({ id: anonymousSessions.id, customerId: anonymousSessions.customerId })
@@ -29,20 +30,43 @@ export async function linkAnonymousSession(
     // usually shared device). Update to the new customer; back-attribution
     // worker will re-process. Audit-trail this in the future via an event.
     await db.update(anonymousSessions)
-      .set({ customerId, linkedAt: new Date(), eventsBackAttributed: null, flowsTriggered: null, resolvedAt: null })
+      .set({ customerId, deviceId: deviceId ?? null, linkedAt: new Date(), eventsBackAttributed: null, flowsTriggered: null, resolvedAt: null })
       .where(eq(anonymousSessions.id, existing.id))
   } else {
-    await db.insert(anonymousSessions).values({
-      projectId,
-      sessionId,
-      customerId,
-    })
+    await db.insert(anonymousSessions).values({ projectId, sessionId, customerId, deviceId: deviceId ?? null })
   }
 
-  // Enqueue the merge job — non-blocking, fire-and-forget
-  await identityMergeQueue.add('merge', {
-    projectId,
-    sessionId,
-    customerId,
-  }).catch(err => console.error('[identify] failed to enqueue merge:', err))
+  await identityMergeQueue.add('merge', { projectId, sessionId, customerId, deviceId: deviceId ?? null })
+    .catch(err => console.error('[anon-session] failed to enqueue merge:', err))
+}
+
+/**
+ * Stitch an order's customer to a prior anonymous browse session via a stitch id
+ * the storefront stamped onto the order.
+ *
+ * Flow: the storefront sets a Shopify cart attribute `storees_sid` = the SDK
+ * session id; Shopify (and 3rd-party checkouts like Shopflo that preserve cart
+ * attributes) carry it through to `order.note_attributes`. When the order lands,
+ * we read it and back-attribute the anonymous browse history to the customer who
+ * placed the order — closing the loop even when the visitor never identified
+ * on-site (the common Shopflo case).
+ */
+export async function stitchOrderToSession(
+  projectId: string,
+  customerId: string,
+  orderPayload: Record<string, unknown>,
+): Promise<void> {
+  const noteAttrs = orderPayload.note_attributes
+  if (!Array.isArray(noteAttrs)) return
+  const attrValue = (name: string): string | undefined => {
+    const entry = noteAttrs.find(
+      (a) => !!a && typeof a === 'object' && (a as { name?: unknown }).name === name,
+    ) as { value?: unknown } | undefined
+    return typeof entry?.value === 'string' && entry.value.trim() ? entry.value.trim() : undefined
+  }
+  const sid = attrValue('storees_sid')
+  const did = attrValue('storees_did')
+  if (sid) {
+    await linkAnonymousSession(projectId, sid, customerId, did)
+  }
 }

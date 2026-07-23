@@ -396,10 +396,11 @@ router.post('/events/batch', async (req: Request, res: Response) => {
 router.post('/customers', async (req: Request, res: Response) => {
   try {
     const projectId = req.projectId!
-    const { customer_id, attributes, session_id } = req.body as {
+    const { customer_id, attributes, session_id, device_id } = req.body as {
       customer_id: string
       attributes?: Record<string, unknown>
       session_id?: string
+      device_id?: string
     }
 
     if (!customer_id?.trim()) {
@@ -453,7 +454,7 @@ router.post('/customers', async (req: Request, res: Response) => {
       // Phase F3 — link the browser session if one was provided. Enqueue
       // identity-merge so prior anonymous events get back-attributed.
       if (session_id) {
-        await linkAnonymousSession(projectId, session_id, existing.id)
+        await linkAnonymousSession(projectId, session_id, existing.id, device_id)
       }
 
       res.json({ success: true, data: { id: existing.id, created: false } })
@@ -495,7 +496,7 @@ router.post('/customers', async (req: Request, res: Response) => {
 
       // Phase F3 — link the browser session if one was provided
       if (session_id) {
-        await linkAnonymousSession(projectId, session_id, customer.id)
+        await linkAnonymousSession(projectId, session_id, customer.id, device_id)
       }
 
       res.status(201).json({ success: true, data: { id: customer.id, created: true } })
