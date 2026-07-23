@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Loader2, Eye, EyeOff } from 'lucide-react'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+
 export default function LoginPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -24,25 +26,46 @@ export default function LoginPage() {
     setLoading(true)
 
     try {
+      // Authenticate against the backend directly so we get real error messages
+      // and can detect the 2FA step. (NextAuth v5 collapses any error thrown in
+      // authorize() into a generic "Configuration" code, so we can't rely on it
+      // to surface "invalid password" or the 2FA token.)
+      const res = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await res.json()
+
+      if (!res.ok || !data.success) {
+        setError(
+          res.status === 401 || data.error === 'Invalid credentials'
+            ? 'Incorrect email or password'
+            : (data.error ?? 'Sign in failed. Please try again.'),
+        )
+        return
+      }
+
+      if (data.data.requires2FA) {
+        sessionStorage.setItem('2fa_temp_token', data.data.tempToken)
+        router.push('/verify-2fa')
+        return
+      }
+
+      // Hand the verified backend token to NextAuth to establish the session
+      // (the authorize() JWT-passthrough validates it via /me).
       const result = await signIn('credentials', {
         email,
-        password,
+        password: `__2FA_JWT__:${data.data.token}`,
         redirect: false,
       })
 
       if (result?.error) {
-        // Check for 2FA requirement
-        if (result.error.startsWith('2FA_REQUIRED:')) {
-          const tempToken = result.error.replace('2FA_REQUIRED:', '')
-          sessionStorage.setItem('2fa_temp_token', tempToken)
-          router.push('/verify-2fa')
-          return
-        }
-        setError(result.error === 'CredentialsSignin' ? 'Invalid email or password' : result.error)
-      } else {
-        // Full page navigation to ensure the session cookie is sent with the request
-        window.location.href = callbackUrl
+        setError('Sign in failed. Please try again.')
+        return
       }
+      // Full page navigation to ensure the session cookie is sent with the request
+      window.location.href = callbackUrl
     } catch {
       setError('Something went wrong. Please try again.')
     } finally {
