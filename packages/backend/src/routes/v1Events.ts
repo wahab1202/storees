@@ -106,8 +106,8 @@ router.post('/events', async (req: Request, res: Response) => {
       : deriveIdempotencyKey(payload.event_name.trim(), customerId ?? eventSessionId ?? 'anon', payload.properties, eventTimestamp)
 
     const result = await db.execute(sql`
-      INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, idempotency_key, timestamp)
-      VALUES (${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${eventPlatform}, ${eventSource}, ${eventSessionId}, ${effectiveKey}, ${eventTimestamp})
+      INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, device_id, idempotency_key, timestamp)
+      VALUES (${projectId}, ${customerId}, ${payload.event_name.trim()}, ${JSON.stringify(payload.properties ?? {})}::jsonb, ${eventPlatform}, ${eventSource}, ${eventSessionId}, ${payload.device_id ?? null}, ${effectiveKey}, ${eventTimestamp})
       ON CONFLICT (project_id, idempotency_key) DO NOTHING
       RETURNING id
     `)
@@ -295,6 +295,7 @@ router.post('/events/batch', async (req: Request, res: Response) => {
           platform: payload.platform ?? 'api',
           source: payload.source ?? 'api',
           sessionId: payload.session_id ?? null,
+          deviceId: payload.device_id ?? null,
           idempotencyKey: payload.idempotency_key!,
           timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
         }))
@@ -331,6 +332,7 @@ router.post('/events/batch', async (req: Request, res: Response) => {
           platform: payload.platform ?? 'api',
           source: payload.source ?? 'api',
           sessionId: payload.session_id ?? null,
+          deviceId: payload.device_id ?? null,
           timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
         }))
 

@@ -147,6 +147,15 @@
         getCustomerId() {
             return this.userId || `anon_${this.anonymousId}`;
         }
+        /**
+         * Get the durable device id — the raw anonymousId, stable across sessions and
+         * browser restarts (localStorage), independent of login state. Used as the
+         * persistent stitch key so a returning visitor's prior anonymous history can
+         * be back-attributed once they identify.
+         */
+        getDeviceId() {
+            return this.anonymousId;
+        }
         /** Get customer_email if available */
         getCustomerEmail() {
             var _a;
@@ -311,6 +320,7 @@
                 timestamp: now(),
                 idempotency_key: `sdk_${generateId()}_${Date.now()}`,
                 session_id: this.sessionIdGetter(),
+                device_id: this.identity.getDeviceId(),
                 source: 'sdk',
                 platform: 'web',
                 properties: Object.assign(Object.assign({}, properties), { 
@@ -402,9 +412,9 @@
          *  pre-identify browser session to this customer and back-attribute prior
          *  anonymous events (browse-abandonment / open-but-not-purchase use cases).
          */
-        async sendCustomerUpsert(customerId, attributes, sessionId) {
+        async sendCustomerUpsert(customerId, attributes, sessionId, deviceId) {
             const url = `${this.apiUrl}/api/v1/customers`;
-            const body = JSON.stringify({ customer_id: customerId, attributes, session_id: sessionId });
+            const body = JSON.stringify({ customer_id: customerId, attributes, session_id: sessionId, device_id: deviceId });
             for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
                 try {
                     const response = await fetch(url, {
@@ -663,6 +673,8 @@
             this.utmParams = {};
             this.scrollThresholds = new Set();
             this.cleanupFns = [];
+            this.lastPageViewUrl = '';
+            this.lastPageViewAt = 0;
             this.config = autoTrackConfig;
             this.eventBuilder = eventBuilder;
             this.queue = queue;
@@ -775,6 +787,16 @@
         recordPageView() {
             if (!this.consent.hasCategory('analytics'))
                 return;
+            // Dedup redundant re-fires: Shopify themes (and some apps) call
+            // history.replaceState right after load, so the initial record + the
+            // navigation record fire for the SAME url in the same instant → two
+            // page_viewed rows. Skip an identical url within a short window.
+            const url = window.location.href;
+            const now = Date.now();
+            if (url === this.lastPageViewUrl && now - this.lastPageViewAt < 1500)
+                return;
+            this.lastPageViewUrl = url;
+            this.lastPageViewAt = now;
             const event = this.eventBuilder.buildPageView(undefined, this.utmParams);
             this.queue.push(event);
             // Emit a SPECIFIC event on product / collection pages too — generic
@@ -1191,8 +1213,9 @@
      *   the rest of the page load. One tiny request, no errors surfaced.
      */
     class ShopifyCartBridge {
-        constructor(getSessionId, log) {
+        constructor(getSessionId, getDeviceId, log) {
             this.getSessionId = getSessionId;
+            this.getDeviceId = getDeviceId;
             this.log = log;
             this.stampedSid = null;
             this.inflight = false;
@@ -1218,7 +1241,10 @@
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ attributes: { storees_sid: sid } }),
+                    // storees_did (durable device id) rides alongside storees_sid so the
+                    // order→session stitch can collapse ALL of this device's browse
+                    // history, not just the checkout-time session.
+                    body: JSON.stringify({ attributes: { storees_sid: sid, storees_did: this.getDeviceId() } }),
                 });
                 if (res.ok) {
                     this.stampedSid = sid;
@@ -1315,7 +1341,7 @@
             // Shopify cart bridge — stamps storees_sid onto the cart so checkout /
             // order webhooks can stitch this session to the identified customer.
             if (this.config.cartBridge !== false) {
-                new ShopifyCartBridge(() => this.autoTracker.getSessionId(), log).start();
+                new ShopifyCartBridge(() => this.autoTracker.getSessionId(), () => this.identity.getDeviceId(), log).start();
             }
             this.initialized = true;
             log.log('SDK initialized', {
@@ -1347,7 +1373,7 @@
             }
             // Upsert customer on the backend
             if (attributes) {
-                this.transport.sendCustomerUpsert(userId, attributes, this.autoTracker.getSessionId());
+                this.transport.sendCustomerUpsert(userId, attributes, this.autoTracker.getSessionId(), this.identity.getDeviceId());
             }
         }
         /** Track a custom event */

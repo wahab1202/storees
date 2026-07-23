@@ -113,7 +113,11 @@ class StoreesSdk {
     // Shopify cart bridge — stamps storees_sid onto the cart so checkout /
     // order webhooks can stitch this session to the identified customer.
     if (this.config.cartBridge !== false) {
-      new ShopifyCartBridge(() => this.autoTracker.getSessionId(), log).start()
+      new ShopifyCartBridge(
+        () => this.autoTracker.getSessionId(),
+        () => this.identity.getDeviceId(),
+        log,
+      ).start()
     }
 
     this.initialized = true
@@ -154,7 +158,12 @@ class StoreesSdk {
 
     // Upsert customer on the backend
     if (attributes) {
-      this.transport.sendCustomerUpsert(userId, attributes, this.autoTracker.getSessionId())
+      this.transport.sendCustomerUpsert(
+        userId,
+        attributes,
+        this.autoTracker.getSessionId(),
+        this.identity.getDeviceId(),
+      )
     }
   }
 

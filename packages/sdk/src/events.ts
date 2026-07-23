@@ -32,6 +32,7 @@ export class EventBuilder {
       timestamp: now(),
       idempotency_key: `sdk_${generateId()}_${Date.now()}`,
       session_id: this.sessionIdGetter(),
+      device_id: this.identity.getDeviceId(),
       source: 'sdk',
       platform: 'web',
       properties: {
