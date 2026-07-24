@@ -68,6 +68,9 @@ class StoreesSdk {
 
     // Initialize modules
     this.identity = new IdentityManager(log)
+    // Reconcile the durable device id against IndexedDB asynchronously — heals
+    // the sync stores if they were evicted (Safari ITP / cleared cache).
+    this.identity.hydrateDurableId().catch(err => log.warn('[identity] hydrate failed:', err))
 
     this.consent = new ConsentManager(
       this.config.consent?.required || false,
