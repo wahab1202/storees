@@ -135,6 +135,9 @@ export const customers = pgTable('customers', {
   city: varchar('city', { length: 128 }),
   customAttributes: jsonb('custom_attributes').default('{}'),
   metrics: jsonb('metrics').default('{}'), // Precomputed domain-specific metrics
+  // Set when this row was merged into another customer (Phase 2 · 2b). NULL =
+  // canonical/active; non-NULL = superseded, points at the survivor. Reversible.
+  mergedInto: uuid('merged_into'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -1227,6 +1230,20 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_webhook_subs_project').on(table.projectId, table.isActive),
+])
+
+// Reversible audit of within-brand identity merges (Phase 2, step 2b).
+export const customerMerges = pgTable('customer_merges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  survivorId: uuid('survivor_id').notNull(),
+  mergedId: uuid('merged_id').notNull(),
+  reason: text('reason'),
+  moved: jsonb('moved').notNull().default('{}'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  undoneAt: timestamp('undone_at', { withTimezone: true }),
+}, (table) => [
+  index('idx_customer_merges_project').on(table.projectId, table.createdAt),
 ])
 
 // Deterministic identity graph substrate (Phase 2). Additive — `customers`

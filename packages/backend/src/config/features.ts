@@ -25,3 +25,13 @@ export function agentRbacEnabled(
 export function deviceStitchEnabled(): boolean {
   return process.env.ENABLE_DEVICE_STITCH === 'true'
 }
+
+/**
+ * Within-brand identity merge (Phase 2, step 2b). When OFF, applyMerges only
+ * runs in dry-run mode (reports what it would do, writes nothing). A live merge
+ * requires this flag AND an explicit dryRun:false. Default OFF — enable per
+ * deployment only after reviewing the shadow report.
+ */
+export function identityMergeEnabled(): boolean {
+  return process.env.ENABLE_IDENTITY_MERGE === 'true'
+}
