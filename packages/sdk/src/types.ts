@@ -21,6 +21,10 @@ export type StoreesSdkConfig = {
    *  checkout/order identity can stitch the browsing session. Default true;
    *  harmless no-op on non-Shopify sites. */
   cartBridge?: boolean
+  /** Reconcile the device id against the server-set first-party cookie for
+   *  durability against Safari/ITP eviction. Default true; requires apiUrl to
+   *  be first-party (merchant CNAME) to actually persist — harmless otherwise. */
+  serverDeviceId?: boolean
   debug?: boolean
 }
 

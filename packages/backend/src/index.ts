@@ -33,6 +33,7 @@ import verticalPackRoutes from './routes/verticalPacks.js'
 import wizardRoutes from './routes/wizard.js'
 import analyticsRoutes from './routes/analytics.js'
 import identityRoutes from './routes/identity.js'
+import deviceIdRoutes from './routes/deviceId.js'
 import predictionRoutes from './routes/predictions.js'
 import sendTimeRoutes from './routes/sendTime.js'
 import channelWebhookRoutes from './routes/channelWebhooks.js'
@@ -120,6 +121,11 @@ app.use((req, res, next) => {
   }
   restrictiveCors(req, res, next)
 })
+
+// Server-set first-party device id (Phase 2 · 2c). origin:true reflects the
+// caller's origin (not '*') so the SDK can send credentials and the cookie can
+// be set — durable when reached first-party via a merchant CNAME.
+app.use('/id', cors({ origin: true, credentials: true }), deviceIdRoutes)
 
 // Serve SDK static files at /sdk/ (e.g., /sdk/storees.min.js) — CORS enabled for all origins
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

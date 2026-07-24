@@ -83,14 +83,14 @@ Only **known** (previously phone-identified, consented) people are ever bridged.
 
 ---
 
-## 6. Durability tail (finishes Phase 1 on Safari)
+## 6. Durability tail (finishes Phase 1 on Safari) — **DELIVERED (2c)**
 
-Phase 1's cookie is JS-set → Safari caps it at 7 days. Full durability needs a **server-set first-party cookie**:
+Phase 1's cookie is JS-set → Safari caps it at 7 days. The fix is a **server-set first-party cookie**, now built:
 
-- A `GET /id` endpoint issues an `HttpOnly`, `SameSite=Lax`, long-lived cookie carrying the `device_id`.
-- It must run **first-party to the merchant domain** — a CNAME (`id.<merchant>.com` → Storees). Third-party context = ITP blocks it outright.
+- `GET /id` issues an `HttpOnly`, `Secure`, `SameSite=Lax`, 400-day cookie carrying the `device_id`. Resolution is churn-safe: existing cookie → the id the SDK supplies (`?d=`) → new uuid.
+- The SDK calls it best-effort on init (`serverDeviceId` config, default on), sending its current id, and **adopts** the server's durable id — healing an id evicted from the client stores.
 
-This is ops + a small endpoint, not schema. Sequenced with Phase 2 but independently shippable.
+**Operator step (per merchant, to actually persist on Safari):** point a CNAME `id.<merchant>.com` → the Storees backend and set the SDK's `apiUrl` to it. First-party = the cookie sticks. Without the CNAME the call still runs but the cookie is third-party (ITP-blocked) and simply echoes the SDK's id — no harm, no durability gain.
 
 ---
 
