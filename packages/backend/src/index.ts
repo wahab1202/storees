@@ -32,6 +32,7 @@ import consentRoutes from './routes/consent.js'
 import verticalPackRoutes from './routes/verticalPacks.js'
 import wizardRoutes from './routes/wizard.js'
 import analyticsRoutes from './routes/analytics.js'
+import identityRoutes from './routes/identity.js'
 import predictionRoutes from './routes/predictions.js'
 import sendTimeRoutes from './routes/sendTime.js'
 import channelWebhookRoutes from './routes/channelWebhooks.js'
@@ -194,6 +195,7 @@ app.use('/api/consent', requireAuth, consentRoutes)
 app.use('/api/packs', requireAuth, verticalPackRoutes)
 app.use('/api/wizard', requireAuth, wizardRoutes)
 app.use('/api/analytics', requireAuth, analyticsRoutes)
+app.use('/api/identity', requireAuth, identityRoutes)
 app.use('/api/predictions', requireAuth, predictionRoutes)
 app.use('/api/send-time', requireAuth, sendTimeRoutes)
 app.use('/api/agents', requireAuth, agentRoutes)
