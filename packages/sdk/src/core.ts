@@ -72,6 +72,21 @@ class StoreesSdk {
     // the sync stores if they were evicted (Safari ITP / cleared cache).
     this.identity.hydrateDurableId().catch(err => log.warn('[identity] hydrate failed:', err))
 
+    // Reconcile against the server-set first-party cookie (2c). We send our
+    // current id, so a cross-origin call just echoes it (no churn); reached
+    // first-party via a merchant CNAME it returns the durable cookie id and
+    // heals an id evicted from the client stores.
+    if (this.config.serverDeviceId !== false) {
+      const base = this.config.apiUrl.replace(/\/$/, '')
+      const did = this.identity.getDeviceId()
+      fetch(`${base}/id?d=${encodeURIComponent(did)}`, { credentials: 'include' })
+        .then(r => (r.ok ? r.json() : null))
+        .then((j: { data?: { deviceId?: string } } | null) => {
+          if (j?.data?.deviceId) this.identity.adoptDeviceId(j.data.deviceId)
+        })
+        .catch(() => { /* best-effort */ })
+    }
+
     this.consent = new ConsentManager(
       this.config.consent?.required || false,
       this.config.consent?.defaultCategories || ['necessary', 'analytics'],

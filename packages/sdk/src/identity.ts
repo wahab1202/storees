@@ -143,6 +143,19 @@ export class IdentityManager {
     }
   }
 
+  /**
+   * Adopt an authoritative device id issued by the server-set first-party
+   * cookie (step 2c). Only changes state if it differs — the server prefers its
+   * durable cookie, so this heals an id evicted from the client stores.
+   */
+  adoptDeviceId(id: string): void {
+    if (!id || id === this.deviceId) return
+    this.deviceId = id
+    durableSetSync(DEVICE_ID_KEY, id)
+    void idbSet(DEVICE_ID_KEY, id)
+    this.log.log('Device id adopted from server', id)
+  }
+
   /** Get customer_email if available */
   getCustomerEmail(): string | undefined {
     return this.attributes?.email as string | undefined
