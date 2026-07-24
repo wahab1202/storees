@@ -1228,6 +1228,25 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   index('idx_webhook_subs_project').on(table.projectId, table.isActive),
 ])
 
+// Deterministic identity graph substrate (Phase 2). Additive — `customers`
+// stays the resolved cluster; edges resolve identifiers to it. Multiple
+// customers sharing an edge_hash is the would-merge signal (shadow mode).
+export const identityEdges = pgTable('identity_edges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  edgeType: varchar('edge_type', { length: 20 }).notNull(),
+  edgeValue: text('edge_value'),
+  edgeHash: varchar('edge_hash', { length: 64 }).notNull(),
+  source: varchar('source', { length: 20 }).notNull().default('backfill'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_identity_edges_unique').on(table.projectId, table.customerId, table.edgeType, table.edgeHash),
+  index('idx_identity_edges_hash').on(table.projectId, table.edgeType, table.edgeHash),
+  index('idx_identity_edges_customer').on(table.projectId, table.customerId),
+])
+
 export const deadLetterEvents = pgTable('dead_letter_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
