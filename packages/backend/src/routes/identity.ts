@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
-import { backfillIdentityEdges, shadowMergeReport } from '../services/identityGraphService.js'
+import { backfillIdentityEdges, shadowMergeReport, applyMerges } from '../services/identityGraphService.js'
 
 // Identity graph — Phase 2, step 2a (shadow mode). Admin-only. Nothing here
 // mutates customer_id; backfill is additive and idempotent, the report is read-only.
@@ -28,6 +28,24 @@ router.get('/shadow-report', requireRole('admin'), requireProjectId, async (req,
   } catch (err) {
     console.error('Identity shadow-report error:', err)
     res.status(500).json({ success: false, error: 'Report failed' })
+  }
+})
+
+// POST /api/identity/apply-merges — merge the would-merge clusters. Dry-run by
+// default; ?dryRun=false performs a live merge and additionally requires
+// ENABLE_IDENTITY_MERGE=true.
+router.post('/apply-merges', requireRole('admin'), requireProjectId, async (req, res) => {
+  try {
+    const dryRun = req.query.dryRun !== 'false' && (req.body as { dryRun?: boolean })?.dryRun !== false
+    const result = await applyMerges(req.projectId!, { dryRun })
+    res.json({ success: true, data: result })
+  } catch (err) {
+    console.error('Identity apply-merges error:', err)
+    const disabled = err instanceof Error && err.message.includes('disabled')
+    res.status(disabled ? 409 : 500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Merge failed',
+    })
   }
 })
 

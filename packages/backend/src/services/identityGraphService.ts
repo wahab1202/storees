@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { customers, anonymousSessions, identityEdges } from '../db/schema.js'
+import { customers, anonymousSessions, identityEdges, customerMerges, events, orders } from '../db/schema.js'
+import { recalculateAggregates } from './customerService.js'
+import { identityMergeEnabled } from '../config/features.js'
 
 /**
  * Deterministic identity graph — Phase 2, step 2a (SHADOW MODE).
@@ -146,4 +148,109 @@ export async function shadowMergeReport(projectId: string, limit = 500): Promise
     customerIds: r.customer_ids as string[],
     customerCount: Number(r.customer_count),
   }))
+}
+
+/* ── Step 2b: within-brand merge (OFF by default; dry-run first) ── */
+
+export type MergeResult = {
+  survivorId: string
+  mergedId: string
+  moved: { events: number; orders: number; sessions: number; edges: number }
+  dryRun: boolean
+}
+
+async function countBy(table: typeof events | typeof orders | typeof anonymousSessions | typeof identityEdges, projectId: string, customerId: string): Promise<number> {
+  const [row] = await db.select({ n: sql<number>`count(*)` }).from(table)
+    .where(and(eq(table.projectId, projectId), eq(table.customerId, customerId)))
+  return Number(row?.n ?? 0)
+}
+
+/**
+ * Merge `loser` into `survivor` within a project. Re-points the identity-bearing
+ * rows (events / orders / anonymous_sessions / identity_edges), soft-marks the
+ * loser with merged_into (the row stays — no FK breaks), recomputes the
+ * survivor's aggregates, and writes a customer_merges audit row. dryRun (default)
+ * only counts what would move.
+ */
+export async function mergeCustomers(
+  projectId: string,
+  survivorId: string,
+  loserId: string,
+  reason: string,
+  dryRun = true,
+): Promise<MergeResult> {
+  const moved = {
+    events: await countBy(events, projectId, loserId),
+    orders: await countBy(orders, projectId, loserId),
+    sessions: await countBy(anonymousSessions, projectId, loserId),
+    edges: await countBy(identityEdges, projectId, loserId),
+  }
+  if (dryRun || survivorId === loserId) {
+    return { survivorId, mergedId: loserId, moved, dryRun: true }
+  }
+
+  await db.update(events).set({ customerId: survivorId })
+    .where(and(eq(events.projectId, projectId), eq(events.customerId, loserId)))
+  await db.update(orders).set({ customerId: survivorId })
+    .where(and(eq(orders.projectId, projectId), eq(orders.customerId, loserId)))
+  await db.update(anonymousSessions).set({ customerId: survivorId })
+    .where(and(eq(anonymousSessions.projectId, projectId), eq(anonymousSessions.customerId, loserId)))
+
+  // Drop loser edges the survivor already has (unique index), re-point the rest.
+  await db.execute(sql`
+    DELETE FROM identity_edges le
+    WHERE le.project_id = ${projectId} AND le.customer_id = ${loserId}
+      AND EXISTS (
+        SELECT 1 FROM identity_edges se
+        WHERE se.project_id = ${projectId} AND se.customer_id = ${survivorId}
+          AND se.edge_type = le.edge_type AND se.edge_hash = le.edge_hash
+      )
+  `)
+  await db.update(identityEdges).set({ customerId: survivorId })
+    .where(and(eq(identityEdges.projectId, projectId), eq(identityEdges.customerId, loserId)))
+
+  await db.update(customers).set({ mergedInto: survivorId, updatedAt: new Date() }).where(eq(customers.id, loserId))
+  await recalculateAggregates(survivorId)
+  await db.insert(customerMerges).values({ projectId, survivorId, mergedId: loserId, reason, moved })
+
+  return { survivorId, mergedId: loserId, moved, dryRun: false }
+}
+
+/** Survivor = most orders, tie-broken by oldest account. */
+async function pickSurvivor(projectId: string, ids: string[]): Promise<string> {
+  const rows = await db.select({ id: customers.id, totalOrders: customers.totalOrders, createdAt: customers.createdAt })
+    .from(customers).where(and(eq(customers.projectId, projectId), inArray(customers.id, ids)))
+  rows.sort((a, b) => (b.totalOrders - a.totalOrders) || (a.createdAt.getTime() - b.createdAt.getTime()))
+  return rows[0]?.id ?? ids[0]
+}
+
+/**
+ * Apply the would-merge clusters from the shadow report. dryRun (default true)
+ * reports what would happen and writes nothing. A live run (dryRun:false)
+ * additionally requires ENABLE_IDENTITY_MERGE=true.
+ */
+export async function applyMerges(
+  projectId: string,
+  opts: { dryRun?: boolean; limit?: number } = {},
+): Promise<{ dryRun: boolean; clusters: number; merges: MergeResult[] }> {
+  const live = opts.dryRun === false
+  if (live && !identityMergeEnabled()) {
+    throw new Error('Identity merge is disabled — set ENABLE_IDENTITY_MERGE=true to run a live merge')
+  }
+
+  const clusters = await shadowMergeReport(projectId, opts.limit ?? 500)
+  const merges: MergeResult[] = []
+  const consumed = new Set<string>()
+
+  for (const cluster of clusters) {
+    const ids = cluster.customerIds.filter(id => !consumed.has(id))
+    if (ids.length < 2) continue
+    const survivor = await pickSurvivor(projectId, ids)
+    for (const loserId of ids) {
+      if (loserId === survivor) continue
+      merges.push(await mergeCustomers(projectId, survivor, loserId, `${cluster.edgeType}:${cluster.edgeHash.slice(0, 8)}`, !live))
+      if (live) consumed.add(loserId)
+    }
+  }
+  return { dryRun: !live, clusters: clusters.length, merges }
 }
