@@ -55,6 +55,108 @@ function sessionSet(key, value) {
         // ignore
     }
 }
+/** First-party cookie get */
+function cookieGet(key) {
+    try {
+        const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+    catch (_a) {
+        return null;
+    }
+}
+/**
+ * First-party cookie set. Long-lived (browsers cap Max-Age at ~400 days;
+ * Safari ITP caps script-set cookies to 7 days, so this is redundancy, not a
+ * silver bullet — a server-set first-party cookie is needed for full Safari
+ * durability). Host-only + SameSite=Lax; Secure on https.
+ */
+function cookieSet(key, value, days = 400) {
+    try {
+        const maxAge = days * 24 * 60 * 60;
+        const secure = typeof location !== 'undefined' && location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = `${key}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax${secure}`;
+    }
+    catch (_a) {
+        // ignore
+    }
+}
+/* ── IndexedDB: async best-effort backup store (survives some evictions that
+   clear localStorage/cookies; itself subject to Safari ITP eviction). ── */
+const IDB_NAME = 'storees';
+const IDB_STORE = 'kv';
+function idbOpen() {
+    return new Promise((resolve) => {
+        try {
+            if (typeof indexedDB === 'undefined')
+                return resolve(null);
+            const req = indexedDB.open(IDB_NAME, 1);
+            req.onupgradeneeded = () => {
+                if (!req.result.objectStoreNames.contains(IDB_STORE))
+                    req.result.createObjectStore(IDB_STORE);
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => resolve(null);
+        }
+        catch (_a) {
+            resolve(null);
+        }
+    });
+}
+async function idbGet(key) {
+    const db = await idbOpen();
+    if (!db)
+        return null;
+    return new Promise((resolve) => {
+        try {
+            const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+            req.onsuccess = () => { var _a; return resolve((_a = req.result) !== null && _a !== void 0 ? _a : null); };
+            req.onerror = () => resolve(null);
+        }
+        catch (_a) {
+            resolve(null);
+        }
+    });
+}
+async function idbSet(key, value) {
+    const db = await idbOpen();
+    if (!db)
+        return;
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            tx.objectStore(IDB_STORE).put(value, key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        }
+        catch (_a) {
+            resolve();
+        }
+    });
+}
+/**
+ * Read a durable id from the synchronous stores (localStorage, then cookie),
+ * healing whichever one is missing so a value evicted from one store is
+ * restored from the other.
+ */
+function durableGetSync(key) {
+    const ls = storageGet(key);
+    const ck = cookieGet(key);
+    const val = ls !== null && ls !== void 0 ? ls : ck;
+    if (val) {
+        if (!ls)
+            storageSet(key, val);
+        if (!ck)
+            cookieSet(key, val);
+    }
+    return val;
+}
+/** Write a durable id to every synchronous store. */
+function durableSetSync(key, value) {
+    storageSet(key, value);
+    cookieSet(key, value);
+}
 /** Get current ISO timestamp */
 function now() {
     return new Date().toISOString();
@@ -77,12 +179,28 @@ function createLogger(debug) {
 }
 
 const ANON_ID_KEY = 'storees_anon_id';
+const DEVICE_ID_KEY = 'storees_device_id';
 const USER_ID_KEY = 'storees_user_id';
 const USER_ATTRS_KEY = 'storees_user_attrs';
 class IdentityManager {
     constructor(log) {
+        var _a;
+        this.deviceIdWasNew = false;
         this.log = log;
-        // Restore or generate anonymous ID
+        // Durable device id — the persistent cross-session stitch key. Read from
+        // the redundant sync stores (localStorage + first-party cookie, self-
+        // healing); IndexedDB is reconciled asynchronously in hydrateDurableId().
+        // Unlike anonymousId it is NOT reset on logout — the device is the same
+        // device. Migrate a legacy anonymousId into it so existing visitors keep
+        // continuity.
+        let device = durableGetSync(DEVICE_ID_KEY);
+        if (!device) {
+            device = (_a = storageGet(ANON_ID_KEY)) !== null && _a !== void 0 ? _a : generateId();
+            this.deviceIdWasNew = true;
+        }
+        this.deviceId = device;
+        durableSetSync(DEVICE_ID_KEY, device);
+        // Restore or generate anonymous ID (per anonymous session; reset on logout)
         const stored = storageGet(ANON_ID_KEY);
         if (stored) {
             this.anonymousId = stored;
@@ -100,7 +218,7 @@ class IdentityManager {
                 try {
                     this.attributes = JSON.parse(storedAttrs);
                 }
-                catch (_a) {
+                catch (_b) {
                     // corrupt data, ignore
                 }
             }
@@ -142,13 +260,36 @@ class IdentityManager {
         return this.userId || `anon_${this.anonymousId}`;
     }
     /**
-     * Get the durable device id — the raw anonymousId, stable across sessions and
-     * browser restarts (localStorage), independent of login state. Used as the
-     * persistent stitch key so a returning visitor's prior anonymous history can
-     * be back-attributed once they identify.
+     * Get the durable device id — stable across sessions, browser restarts, and
+     * logouts, stored redundantly across localStorage + first-party cookie +
+     * IndexedDB. The persistent stitch key so a returning visitor's prior
+     * anonymous history can be back-attributed once they identify.
      */
     getDeviceId() {
-        return this.anonymousId;
+        return this.deviceId;
+    }
+    /**
+     * Reconcile the durable device id against IndexedDB (async). If the sync
+     * stores were evicted (Safari ITP, cleared cache) and we generated a fresh
+     * id this load, but IndexedDB still holds the original, restore it so
+     * continuity survives. Otherwise mirror the current id into IndexedDB as a
+     * backup. Fire-and-forget from init.
+     */
+    async hydrateDurableId() {
+        try {
+            const fromIdb = await idbGet(DEVICE_ID_KEY);
+            if (this.deviceIdWasNew && fromIdb) {
+                this.deviceId = fromIdb;
+                durableSetSync(DEVICE_ID_KEY, fromIdb);
+                this.log.log('Device id restored from IndexedDB', fromIdb);
+            }
+            else {
+                await idbSet(DEVICE_ID_KEY, this.deviceId);
+            }
+        }
+        catch (_a) {
+            // best-effort — durability degrades gracefully to the sync stores
+        }
     }
     /** Get customer_email if available */
     getCustomerEmail() {
@@ -160,7 +301,13 @@ class IdentityManager {
         var _a;
         return (_a = this.attributes) === null || _a === void 0 ? void 0 : _a.phone;
     }
-    /** Reset identity — used on logout */
+    /**
+     * Reset identity — used on logout. Clears the user + rotates the anonymous
+     * session id (so the next anonymous visitor on a shared device isn't
+     * attributed to the previous user), but PRESERVES the durable device id —
+     * the device is the same device. Clearing the device id belongs to an
+     * explicit "forget me" / consent-withdrawal path, not logout.
+     */
     reset() {
         storageRemove(USER_ID_KEY);
         storageRemove(USER_ATTRS_KEY);
@@ -169,7 +316,7 @@ class IdentityManager {
         this.attributes = undefined;
         this.anonymousId = generateId();
         storageSet(ANON_ID_KEY, this.anonymousId);
-        this.log.log('Identity reset, new anonymousId:', this.anonymousId);
+        this.log.log('Identity reset, new anonymousId:', this.anonymousId, 'deviceId preserved:', this.deviceId);
     }
 }
 
@@ -1317,6 +1464,9 @@ class StoreesSdk {
         const log = createLogger(this.config.debug || false);
         // Initialize modules
         this.identity = new IdentityManager(log);
+        // Reconcile the durable device id against IndexedDB asynchronously — heals
+        // the sync stores if they were evicted (Safari ITP / cleared cache).
+        this.identity.hydrateDurableId().catch(err => log.warn('[identity] hydrate failed:', err));
         this.consent = new ConsentManager(((_a = this.config.consent) === null || _a === void 0 ? void 0 : _a.required) || false, ((_b = this.config.consent) === null || _b === void 0 ? void 0 : _b.defaultCategories) || ['necessary', 'analytics'], log);
         this.transport = new Transport(this.config.apiUrl, this.config.apiKey, log);
         this.queue = new EventQueue(this.transport, this.consent, this.config.batchSize || 20, this.config.flushInterval || 30000, log);
