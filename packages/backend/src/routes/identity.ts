@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
-import { backfillIdentityEdges, shadowMergeReport, applyMerges } from '../services/identityGraphService.js'
+import { backfillIdentityEdges, shadowMergeReport, applyMerges, undoMerge } from '../services/identityGraphService.js'
 
 // Identity graph — Phase 2, step 2a (shadow mode). Admin-only. Nothing here
 // mutates customer_id; backfill is additive and idempotent, the report is read-only.
@@ -45,6 +45,24 @@ router.post('/apply-merges', requireRole('admin'), requireProjectId, async (req,
     res.status(disabled ? 409 : 500).json({
       success: false,
       error: err instanceof Error ? err.message : 'Merge failed',
+    })
+  }
+})
+
+// POST /api/identity/undo-merge — reverse a merge by id. Admin-gated but NOT
+// flag-gated: undo must always work as the safety valve. Body/query: mergeId.
+router.post('/undo-merge', requireRole('admin'), requireProjectId, async (req, res) => {
+  try {
+    const mergeId = (req.body as { mergeId?: string })?.mergeId ?? (req.query.mergeId as string | undefined)
+    if (!mergeId) return res.status(400).json({ success: false, error: 'mergeId is required' })
+    const result = await undoMerge(req.projectId!, mergeId)
+    res.json({ success: true, data: result })
+  } catch (err) {
+    console.error('Identity undo-merge error:', err)
+    const notFound = err instanceof Error && /not found|already undone/.test(err.message)
+    res.status(notFound ? 404 : 500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Undo failed',
     })
   }
 })
