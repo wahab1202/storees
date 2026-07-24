@@ -1232,6 +1232,16 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   index('idx_webhook_subs_project').on(table.projectId, table.isActive),
 ])
 
+// Row-level record of a merge's re-pointed rows, for undo (Phase 2, step 2b).
+export const customerMergeRows = pgTable('customer_merge_rows', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mergeId: uuid('merge_id').notNull().references(() => customerMerges.id, { onDelete: 'cascade' }),
+  entity: varchar('entity', { length: 20 }).notNull(),
+  rowId: uuid('row_id').notNull(),
+}, (table) => [
+  index('idx_customer_merge_rows_merge').on(table.mergeId),
+])
+
 // Reversible audit of within-brand identity merges (Phase 2, step 2b).
 export const customerMerges = pgTable('customer_merges', {
   id: uuid('id').primaryKey().defaultRandom(),
