@@ -1,7 +1,7 @@
 import { Router, Response } from 'express'
 import { requirePublicKeyAuth, type ApiKeyAuthRequest } from '../middleware/apiKeyAuth.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
-import { recognize, registerToNetwork } from '../services/globalIdentityService.js'
+import { recognize, registerToNetwork, withdrawFromNetwork } from '../services/globalIdentityService.js'
 import { resolveCustomer } from '../services/customerService.js'
 
 // Cross-brand recognition (Phase 2 · 2d-3). Public storefront endpoint — same
@@ -42,6 +42,26 @@ router.post('/recognize', rateLimiter(60), async (req: ApiKeyAuthRequest, res: R
   } catch (err) {
     console.error('Recognize error:', err)
     res.status(500).json({ success: false, error: 'Recognition failed' })
+  }
+})
+
+/**
+ * POST /api/v1/recognize/withdraw — a person exercises their right to leave the
+ * cross-brand network. Withdrawal propagates network-wide immediately: their
+ * keys are marked withdrawn, so no brand recognises them thereafter. Their
+ * per-brand customer records (and data) are untouched — only recognition stops.
+ */
+router.post('/recognize/withdraw', rateLimiter(30), async (req: ApiKeyAuthRequest, res: Response) => {
+  try {
+    const { phone, email } = req.body as { phone?: string; email?: string }
+    if (!phone?.trim() && !email?.trim()) {
+      return res.status(400).json({ success: false, error: 'phone or email is required' })
+    }
+    await withdrawFromNetwork({ phone, email })
+    res.json({ success: true, data: { withdrawn: true } })
+  } catch (err) {
+    console.error('Recognize withdraw error:', err)
+    res.status(500).json({ success: false, error: 'Withdrawal failed' })
   }
 })
 
