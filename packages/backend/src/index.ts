@@ -20,6 +20,7 @@ import subscriptionCategoryRoutes from './routes/subscriptionCategories.js'
 import v1EventRoutes from './routes/v1Events.js'
 import v1ImportRoutes from './routes/v1Import.js'
 import v1OptInRoutes from './routes/v1OptIn.js'
+import v1RecognizeRoutes from './routes/v1Recognize.js'
 import v1ApiKeyRoutes from './routes/v1ApiKeys.js'
 import v1SchemaRoutes from './routes/v1Schema.js'
 import onboardingRoutes from './routes/v1Onboarding.js'
@@ -155,6 +156,7 @@ app.use('/api/webhooks/channel', channelWebhookRoutes)
 app.use('/api/v1', v1EventRoutes)
 app.use('/api/v1', v1ImportRoutes)
 app.use('/api/v1', v1OptInRoutes)
+app.use('/api/v1', v1RecognizeRoutes)
 
 // Inbound-webhook receiver — public; the URL token is the auth
 app.use('/api/hooks', hooksRoutes)
