@@ -1,8 +1,12 @@
 import { and, eq, or, isNull, isNotNull, type SQL } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { globalIdentities, globalIdentityKeys, globalIdentityLinks } from '../db/schema.js'
+import { globalIdentities, globalIdentityKeys, globalIdentityLinks, consents, consentAuditLog } from '../db/schema.js'
 import { hashIdentityKey } from './identityGraphService.js'
 import { crossBrandEnabled } from '../config/features.js'
+
+const CB_CHANNEL = 'network'
+const CB_PURPOSE = 'cross_brand'
+export type CrossBrandConsentSource = 'sdk' | 'api' | 'admin' | 'webhook' | 'one_click_unsub'
 
 /**
  * Cross-brand recognition network (Phase 2, step 2d-1). Storees-OWNED, cross-
@@ -114,4 +118,45 @@ export async function withdrawFromNetwork(identifiers: NetworkIdentifiers): Prom
   const match = keyMatch(keysFor(identifiers))
   if (!match) return
   await db.update(globalIdentityKeys).set({ withdrawnAt: new Date() }).where(match)
+}
+
+/**
+ * Record a cross-brand recognition consent decision (queryable consents row +
+ * audit trail) and act on it: opt-in registers the person into the network;
+ * opt-out withdraws them (recognition stops network-wide). The single entry
+ * point for cross-brand consent — no bare payload flags. No-op unless enabled.
+ */
+export async function setCrossBrandConsent(
+  projectId: string,
+  customerId: string,
+  identifiers: NetworkIdentifiers,
+  optIn: boolean,
+  source: CrossBrandConsentSource = 'sdk',
+): Promise<void> {
+  if (!crossBrandEnabled()) return
+  const now = new Date()
+
+  const [existing] = await db.select({ id: consents.id }).from(consents)
+    .where(and(
+      eq(consents.projectId, projectId), eq(consents.customerId, customerId),
+      eq(consents.channel, CB_CHANNEL), eq(consents.purpose, CB_PURPOSE),
+    )).limit(1)
+  if (existing) {
+    await db.update(consents)
+      .set({ status: optIn ? 'opted_in' : 'opted_out', revokedAt: optIn ? null : now, source })
+      .where(eq(consents.id, existing.id))
+  } else {
+    await db.insert(consents).values({
+      projectId, customerId, channel: CB_CHANNEL, purpose: CB_PURPOSE,
+      status: optIn ? 'opted_in' : 'opted_out', source, revokedAt: optIn ? null : now,
+    })
+  }
+
+  await db.insert(consentAuditLog).values({
+    projectId, customerId, channel: CB_CHANNEL, messageType: CB_PURPOSE,
+    action: optIn ? 'opt_in' : 'opt_out', source,
+  })
+
+  if (optIn) await registerToNetwork(projectId, customerId, identifiers, true)
+  else await withdrawFromNetwork(identifiers)
 }

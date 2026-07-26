@@ -9,7 +9,7 @@ import { rateLimiter } from '../middleware/rateLimiter.js'
 import { eventsQueue, metricsQueue, identityMergeQueue, customerAggregateQueue } from '../services/queue.js'
 import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
 import { linkAnonymousSession } from '../services/anonymousSessionService.js'
-import { registerToNetwork } from '../services/globalIdentityService.js'
+import { setCrossBrandConsent } from '../services/globalIdentityService.js'
 import type { EventIngestionPayload } from '@storees/shared'
 
 const router = Router()
@@ -458,10 +458,13 @@ router.post('/customers', async (req: Request, res: Response) => {
         await linkAnonymousSession(projectId, session_id, existing.id, device_id)
       }
 
-      // 2d-2: register into the cross-brand network (no-op unless enabled +
-      // cross-brand consent present). Non-blocking — must not fail the upsert.
-      await registerToNetwork(projectId, existing.id, { phone, email }, attributes?.cross_brand_consent === true)
-        .catch(err => console.error('[cross-brand] register failed:', err))
+      // 2d-2/2d-4: record the cross-brand consent decision and act on it
+      // (opt-in registers, opt-out withdraws). Only when explicitly present;
+      // non-blocking. No-op unless the network is enabled.
+      if (typeof attributes?.cross_brand_consent === 'boolean') {
+        await setCrossBrandConsent(projectId, existing.id, { phone, email }, attributes.cross_brand_consent, 'sdk')
+          .catch(err => console.error('[cross-brand] consent failed:', err))
+      }
 
       res.json({ success: true, data: { id: existing.id, created: false } })
     } else {
@@ -505,9 +508,11 @@ router.post('/customers', async (req: Request, res: Response) => {
         await linkAnonymousSession(projectId, session_id, customer.id, device_id)
       }
 
-      // 2d-2: register into the cross-brand network (gated + consent-checked).
-      await registerToNetwork(projectId, customer.id, { phone, email }, attributes?.cross_brand_consent === true)
-        .catch(err => console.error('[cross-brand] register failed:', err))
+      // 2d-2/2d-4: record + act on cross-brand consent (opt-in registers).
+      if (typeof attributes?.cross_brand_consent === 'boolean') {
+        await setCrossBrandConsent(projectId, customer.id, { phone, email }, attributes.cross_brand_consent, 'sdk')
+          .catch(err => console.error('[cross-brand] consent failed:', err))
+      }
 
       res.status(201).json({ success: true, data: { id: customer.id, created: true } })
     }
