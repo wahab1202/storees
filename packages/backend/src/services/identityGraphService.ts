@@ -36,6 +36,14 @@ function hash(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
 
+/**
+ * Hash an identifier the same way everywhere (per-project edges AND the global
+ * cross-brand plane) so the same phone/email resolves consistently.
+ */
+export function hashIdentityKey(type: EdgeType, raw: string): string {
+  return hash(normalise(type, raw))
+}
+
 /** Build the edge rows for a set of identifiers (skips empty values). */
 function edgesFor(identifiers: Identifiers): Array<{ type: EdgeType; value: string; hash: string }> {
   const pairs: Array<[EdgeType, string | null | undefined]> = [

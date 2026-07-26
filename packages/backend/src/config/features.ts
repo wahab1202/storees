@@ -35,3 +35,13 @@ export function deviceStitchEnabled(): boolean {
 export function identityMergeEnabled(): boolean {
   return process.env.ENABLE_IDENTITY_MERGE === 'true'
 }
+
+/**
+ * Cross-brand recognition network (Phase 2, step 2d). When OFF, the global
+ * identity plane is never written or read — recognition/registration no-op.
+ * Storees owns this data and is a DPDP Data Fiduciary for it, so it stays OFF
+ * until the consent notice is signed off. Default OFF.
+ */
+export function crossBrandEnabled(): boolean {
+  return process.env.ENABLE_CROSS_BRAND === 'true'
+}
