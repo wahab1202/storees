@@ -1232,6 +1232,37 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   index('idx_webhook_subs_project').on(table.projectId, table.isActive),
 ])
 
+/* ── Cross-brand recognition network (Phase 2 · 2d). Storees-owned, cross-
+   tenant BY DESIGN; identity-only. A brand reads only its own links row. ── */
+export const globalIdentities = pgTable('global_identities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const globalIdentityKeys = pgTable('global_identity_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  keyType: varchar('key_type', { length: 20 }).notNull(),
+  keyHash: varchar('key_hash', { length: 64 }).notNull(),
+  globalId: uuid('global_id').notNull().references(() => globalIdentities.id, { onDelete: 'cascade' }),
+  consentAt: timestamp('consent_at', { withTimezone: true }),
+  withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_global_identity_keys_unique').on(table.keyType, table.keyHash),
+  index('idx_global_identity_keys_global').on(table.globalId),
+])
+
+export const globalIdentityLinks = pgTable('global_identity_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  globalId: uuid('global_id').notNull().references(() => globalIdentities.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  linkedAt: timestamp('linked_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_global_identity_links_unique').on(table.globalId, table.projectId),
+  index('idx_global_identity_links_project').on(table.projectId, table.customerId),
+])
+
 // Row-level record of a merge's re-pointed rows, for undo (Phase 2, step 2b).
 export const customerMergeRows = pgTable('customer_merge_rows', {
   id: uuid('id').primaryKey().defaultRandom(),
