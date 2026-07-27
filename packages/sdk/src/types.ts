@@ -22,7 +22,18 @@ export type StoreesSdkConfig = {
    *  durability against Safari/ITP eviction. Default true; requires apiUrl to
    *  be first-party (merchant CNAME) to actually persist — harmless otherwise. */
   serverDeviceId?: boolean
+  /** Enable Truecaller one-tap for cross-brand recognition. When on and no
+   *  phone is supplied to recognize(), the SDK asks a merchant-provided
+   *  `window.storeesTruecaller()` (returning a phone) for a one-tap number. */
+  truecaller?: boolean
   debug?: boolean
+}
+
+/** Result of a cross-brand recognition lookup. */
+export type RecognizeResult = {
+  recognized: boolean
+  returning?: boolean
+  customerId?: string
 }
 
 export type ConsentCategory = 'necessary' | 'analytics' | 'marketing' | 'personalization'

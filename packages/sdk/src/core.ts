@@ -1,5 +1,5 @@
-import type { StoreesSdkConfig, ConsentCategory } from './types'
-import { createLogger } from './utils'
+import type { StoreesSdkConfig, ConsentCategory, RecognizeResult } from './types'
+import { createLogger, type Logger } from './utils'
 import { IdentityManager } from './identity'
 import { ConsentManager } from './consent'
 import { EventBuilder } from './events'
@@ -36,6 +36,7 @@ class StoreesSdk {
   private autoTracker!: AutoTracker
   private widgetManager!: WidgetManager
   private config!: StoreesSdkConfig
+  private log!: Logger
 
   // Pre-init command queue (for async snippet)
   private preInitQueue: Array<[string, ...unknown[]]> = []
@@ -65,6 +66,7 @@ class StoreesSdk {
       consent: { ...DEFAULT_CONFIG.consent, ...config.consent },
     } as StoreesSdkConfig
     const log = createLogger(this.config.debug || false)
+    this.log = log
 
     // Initialize modules
     this.identity = new IdentityManager(log)
@@ -237,6 +239,50 @@ class StoreesSdk {
     this.queue.flush()
     this.identity.reset()
     this.autoTracker.destroy()
+  }
+
+  /**
+   * Cross-brand recognition / one-tap "login" (2d-5). Given a phone/email the
+   * visitor provided (or, with `truecaller` enabled, a one-tap number), asks
+   * the network whether they're a known person. On a hit it soft-identifies the
+   * browser (so activity attributes to them at THIS brand) and fires a
+   * `storees:recognized` window event + the callback. No behavioural data from
+   * other brands is ever exposed. Best-effort; never blocks the page.
+   */
+  recognize(identifiers?: { phone?: string; email?: string }, onRecognized?: (r: RecognizeResult) => void): void {
+    if (!this.ensureInit('recognize', identifiers, onRecognized)) return
+    void this.doRecognize(identifiers ?? {}, onRecognized)
+  }
+
+  private async doRecognize(ids: { phone?: string; email?: string }, onRecognized?: (r: RecognizeResult) => void): Promise<void> {
+    try {
+      let { phone, email } = ids
+      // Truecaller one-tap: if enabled and no key supplied, ask the merchant-
+      // provided provider for a number (their Truecaller SDK integration).
+      if (!phone && !email && this.config.truecaller && typeof window !== 'undefined') {
+        const provider = (window as unknown as Record<string, unknown>).storeesTruecaller
+        if (typeof provider === 'function') {
+          try { phone = await (provider as () => Promise<string>)() } catch { /* user dismissed */ }
+        }
+      }
+      if (!phone && !email) return
+
+      const result = await this.transport.recognize(phone, email)
+      if (result.recognized) {
+        // Soft-identify so subsequent events attribute to this person at THIS brand.
+        const attrs: Record<string, unknown> = {}
+        if (phone) attrs.phone = phone
+        if (email) attrs.email = email
+        this.setUserProperties(attrs)
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('storees:recognized', { detail: result }))
+        }
+        this.log.log('Recognized networked visitor', result)
+      }
+      onRecognized?.(result)
+    } catch (err) {
+      this.log.warn('[recognize] failed:', err)
+    }
   }
 
   // ─── Internal Helpers ───────────────────────────────────────

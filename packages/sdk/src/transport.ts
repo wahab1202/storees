@@ -136,4 +136,29 @@ export class Transport {
 
     this.log.error('Customer upsert failed after max retries:', customerId)
   }
+
+  /**
+   * Cross-brand recognition (2d-5). Asks the backend whether a visitor
+   * providing this phone/email is a known networked person. Returns
+   * { recognized:false } when the network is off, they're not a member, or on
+   * error — recognition is best-effort and never blocks the page.
+   */
+  async recognize(phone?: string, email?: string): Promise<{ recognized: boolean; returning?: boolean; customerId?: string }> {
+    try {
+      const response = await fetch(`${this.apiUrl}/api/v1/recognize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+        body: JSON.stringify({ phone, email }),
+      })
+      if (!response.ok) return { recognized: false }
+      const json = await response.json() as { data?: { recognized?: boolean; returning?: boolean; customerId?: string } }
+      return {
+        recognized: json.data?.recognized === true,
+        returning: json.data?.returning,
+        customerId: json.data?.customerId,
+      }
+    } catch {
+      return { recognized: false }
+    }
+  }
 }

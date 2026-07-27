@@ -291,6 +291,19 @@ class IdentityManager {
             // best-effort — durability degrades gracefully to the sync stores
         }
     }
+    /**
+     * Adopt an authoritative device id issued by the server-set first-party
+     * cookie (step 2c). Only changes state if it differs — the server prefers its
+     * durable cookie, so this heals an id evicted from the client stores.
+     */
+    adoptDeviceId(id) {
+        if (!id || id === this.deviceId)
+            return;
+        this.deviceId = id;
+        durableSetSync(DEVICE_ID_KEY, id);
+        void idbSet(DEVICE_ID_KEY, id);
+        this.log.log('Device id adopted from server', id);
+    }
     /** Get customer_email if available */
     getCustomerEmail() {
         var _a;
@@ -586,6 +599,33 @@ class Transport {
             }
         }
         this.log.error('Customer upsert failed after max retries:', customerId);
+    }
+    /**
+     * Cross-brand recognition (2d-5). Asks the backend whether a visitor
+     * providing this phone/email is a known networked person. Returns
+     * { recognized:false } when the network is off, they're not a member, or on
+     * error — recognition is best-effort and never blocks the page.
+     */
+    async recognize(phone, email) {
+        var _a, _b, _c;
+        try {
+            const response = await fetch(`${this.apiUrl}/api/v1/recognize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': this.apiKey },
+                body: JSON.stringify({ phone, email }),
+            });
+            if (!response.ok)
+                return { recognized: false };
+            const json = await response.json();
+            return {
+                recognized: ((_a = json.data) === null || _a === void 0 ? void 0 : _a.recognized) === true,
+                returning: (_b = json.data) === null || _b === void 0 ? void 0 : _b.returning,
+                customerId: (_c = json.data) === null || _c === void 0 ? void 0 : _c.customerId,
+            };
+        }
+        catch (_d) {
+            return { recognized: false };
+        }
     }
 }
 
@@ -1462,11 +1502,28 @@ class StoreesSdk {
             // Deep merge nested objects so partial overrides don't wipe defaults
             autoTrack: Object.assign(Object.assign({}, DEFAULT_CONFIG.autoTrack), config.autoTrack), consent: Object.assign(Object.assign({}, DEFAULT_CONFIG.consent), config.consent) });
         const log = createLogger(this.config.debug || false);
+        this.log = log;
         // Initialize modules
         this.identity = new IdentityManager(log);
         // Reconcile the durable device id against IndexedDB asynchronously — heals
         // the sync stores if they were evicted (Safari ITP / cleared cache).
         this.identity.hydrateDurableId().catch(err => log.warn('[identity] hydrate failed:', err));
+        // Reconcile against the server-set first-party cookie (2c). We send our
+        // current id, so a cross-origin call just echoes it (no churn); reached
+        // first-party via a merchant CNAME it returns the durable cookie id and
+        // heals an id evicted from the client stores.
+        if (this.config.serverDeviceId !== false) {
+            const base = this.config.apiUrl.replace(/\/$/, '');
+            const did = this.identity.getDeviceId();
+            fetch(`${base}/id?d=${encodeURIComponent(did)}`, { credentials: 'include' })
+                .then(r => (r.ok ? r.json() : null))
+                .then((j) => {
+                var _a;
+                if ((_a = j === null || j === void 0 ? void 0 : j.data) === null || _a === void 0 ? void 0 : _a.deviceId)
+                    this.identity.adoptDeviceId(j.data.deviceId);
+            })
+                .catch(() => { });
+        }
         this.consent = new ConsentManager(((_a = this.config.consent) === null || _a === void 0 ? void 0 : _a.required) || false, ((_b = this.config.consent) === null || _b === void 0 ? void 0 : _b.defaultCategories) || ['necessary', 'analytics'], log);
         this.transport = new Transport(this.config.apiUrl, this.config.apiKey, log);
         this.queue = new EventQueue(this.transport, this.consent, this.config.batchSize || 20, this.config.flushInterval || 30000, log);
@@ -1561,6 +1618,55 @@ class StoreesSdk {
         this.queue.flush();
         this.identity.reset();
         this.autoTracker.destroy();
+    }
+    /**
+     * Cross-brand recognition / one-tap "login" (2d-5). Given a phone/email the
+     * visitor provided (or, with `truecaller` enabled, a one-tap number), asks
+     * the network whether they're a known person. On a hit it soft-identifies the
+     * browser (so activity attributes to them at THIS brand) and fires a
+     * `storees:recognized` window event + the callback. No behavioural data from
+     * other brands is ever exposed. Best-effort; never blocks the page.
+     */
+    recognize(identifiers, onRecognized) {
+        if (!this.ensureInit('recognize', identifiers, onRecognized))
+            return;
+        void this.doRecognize(identifiers !== null && identifiers !== void 0 ? identifiers : {}, onRecognized);
+    }
+    async doRecognize(ids, onRecognized) {
+        try {
+            let { phone, email } = ids;
+            // Truecaller one-tap: if enabled and no key supplied, ask the merchant-
+            // provided provider for a number (their Truecaller SDK integration).
+            if (!phone && !email && this.config.truecaller && typeof window !== 'undefined') {
+                const provider = window.storeesTruecaller;
+                if (typeof provider === 'function') {
+                    try {
+                        phone = await provider();
+                    }
+                    catch ( /* user dismissed */_a) { /* user dismissed */ }
+                }
+            }
+            if (!phone && !email)
+                return;
+            const result = await this.transport.recognize(phone, email);
+            if (result.recognized) {
+                // Soft-identify so subsequent events attribute to this person at THIS brand.
+                const attrs = {};
+                if (phone)
+                    attrs.phone = phone;
+                if (email)
+                    attrs.email = email;
+                this.setUserProperties(attrs);
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('storees:recognized', { detail: result }));
+                }
+                this.log.log('Recognized networked visitor', result);
+            }
+            onRecognized === null || onRecognized === void 0 ? void 0 : onRecognized(result);
+        }
+        catch (err) {
+            this.log.warn('[recognize] failed:', err);
+        }
     }
     // ─── Internal Helpers ───────────────────────────────────────
     /** Ensure SDK is initialized, or queue the command */
