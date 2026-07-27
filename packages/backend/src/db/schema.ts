@@ -1306,6 +1306,21 @@ export const identityEdges = pgTable('identity_edges', {
   index('idx_identity_edges_customer').on(table.projectId, table.customerId),
 ])
 
+// Cross-sell / recommendation pairing config (Decisioning Step 1). Merchant
+// rules resolved by decisioningService for both flow content and onsite personalization.
+export const productRecommendations = pgTable('product_recommendations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  matchType: varchar('match_type', { length: 20 }).notNull(), // product | product_type | collection
+  matchValue: varchar('match_value', { length: 255 }).notNull(),
+  recommendProductId: varchar('recommend_product_id', { length: 255 }).notNull(),
+  rank: integer('rank').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_product_recs_unique').on(table.projectId, table.matchType, table.matchValue, table.recommendProductId),
+  index('idx_product_recs_match').on(table.projectId, table.matchType, table.matchValue, table.rank),
+])
+
 export const deadLetterEvents = pgTable('dead_letter_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
