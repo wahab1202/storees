@@ -1,8 +1,9 @@
 import { db } from '../db/connection.js'
-import { flows } from '../db/schema.js'
+import { flows, whatsappTemplates } from '../db/schema.js'
 import type {
   FlowNode, TriggerNode, DelayNode, ConditionNode, ActionNode, EndNode,
 } from '@storees/shared'
+import { WHATSAPP_FLOW_TEMPLATES } from './whatsappTemplateLibrary.js'
 
 /**
  * Pre-built journey templates installable via wizard, mapped per industry.
@@ -378,12 +379,45 @@ export async function installFlowTemplate(
   const tmpl = ALL_TEMPLATES[templateId]
   if (!tmpl) throw new Error(`Unknown flow template: ${templateId}`)
 
+  // Deep-copy so we can relink WhatsApp send nodes to the seeded template rows.
+  const nodes = JSON.parse(JSON.stringify(tmpl.nodes)) as FlowNode[]
+  for (const node of nodes) {
+    if (node.type !== 'action' || node.config.actionType !== 'send_whatsapp') continue
+    const key = node.config.templateId
+    const def = WHATSAPP_FLOW_TEMPLATES[key]
+    if (!def) continue
+
+    // Seed a draft WhatsApp template (PENDING — the merchant submits it for Meta
+    // approval), idempotently, and link the flow node to its uuid.
+    const [wa] = await db.insert(whatsappTemplates).values({
+      projectId,
+      provider: 'pinnacle',
+      providerTemplateId: key,
+      name: key,
+      language: def.language,
+      category: def.category,
+      status: 'PENDING',
+      bodyText: def.bodyText,
+      footer: def.footer ?? null,
+      buttons: (def.buttons ?? null) as object | null,
+      parameterCount: def.parameterCount,
+      variables: def.variables as object,
+    }).onConflictDoUpdate({
+      target: [whatsappTemplates.projectId, whatsappTemplates.provider, whatsappTemplates.name, whatsappTemplates.language],
+      set: { bodyText: def.bodyText, category: def.category, parameterCount: def.parameterCount, variables: def.variables as object, updatedAt: new Date() },
+    }).returning({ id: whatsappTemplates.id })
+
+    node.config.templateId = wa.id
+    node.config.templateName = key
+    node.config.variables = def.variables
+  }
+
   const [created] = await db.insert(flows).values({
     projectId,
     name: tmpl.name,
     description: tmpl.description,
     triggerConfig: tmpl.triggerConfig,
-    nodes: tmpl.nodes,
+    nodes,
     status: 'draft',
   }).returning({ id: flows.id, name: flows.name })
 
