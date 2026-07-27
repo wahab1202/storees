@@ -5,7 +5,7 @@ import { flows, flowTrips, customers, messages, scheduledJobs } from '../db/sche
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
-import { listFlowTemplates, installFlowTemplate, type FlowTemplateId } from '../services/flowTemplates.js'
+import { listFlowTemplates, installFlowTemplate, type FlowTemplateId, type TemplateIndustry } from '../services/flowTemplates.js'
 
 const router = Router()
 
@@ -468,9 +468,12 @@ router.post('/:id/clone', requireProjectId, async (req, res) => {
   }
 })
 
-// GET /api/flows/templates — list pre-built flow templates installable into a project
-router.get('/templates/list', requireProjectId, (_req, res) => {
-  res.json({ success: true, data: listFlowTemplates() })
+// GET /api/flows/templates/list?industry= — list pre-built journey templates.
+// Optional ?industry=ecommerce|nbfc|saas|edtech narrows to that industry (plus
+// the industry-agnostic "general" set).
+router.get('/templates/list', requireProjectId, (req, res) => {
+  const industry = req.query.industry as TemplateIndustry | undefined
+  res.json({ success: true, data: listFlowTemplates(industry) })
 })
 
 // POST /api/flows/templates/install?projectId=  body: { templateId }

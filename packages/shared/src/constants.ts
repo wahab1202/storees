@@ -96,6 +96,21 @@ export const SAAS_EVENTS = {
   EXITS_SEGMENT: 'exits_segment',
 } as const
 
+export const EDTECH_EVENTS = {
+  COURSE_VIEWED: 'course_viewed',
+  COURSE_ENROLLED: 'course_enrolled',
+  LESSON_STARTED: 'lesson_started',
+  LESSON_COMPLETED: 'lesson_completed',
+  COURSE_COMPLETED: 'course_completed',
+  // course_enrolled is the revenue event (paid enrolment); the rest are
+  // engagement/lifecycle markers that drive nudge + re-engagement flows.
+  CERTIFICATE_ISSUED: 'certificate_issued',
+  SUBSCRIPTION_STARTED: 'subscription_started',
+  SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
+  ENTERS_SEGMENT: 'enters_segment',
+  EXITS_SEGMENT: 'exits_segment',
+} as const
+
 export const SEGMENT_TEMPLATES = [
   'champion_customers',
   'loyal_customers',
@@ -121,6 +136,7 @@ export const EVENTS_BY_DOMAIN = {
   ecommerce: Object.values(STANDARD_EVENTS),
   fintech: Object.values(FINTECH_EVENTS),
   saas: Object.values(SAAS_EVENTS),
+  edtech: Object.values(EDTECH_EVENTS),
   sdk: Object.values(SDK_EVENTS),
 } as const
 

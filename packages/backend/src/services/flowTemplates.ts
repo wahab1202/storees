@@ -1,173 +1,298 @@
 import { db } from '../db/connection.js'
 import { flows } from '../db/schema.js'
-import type { FlowNode } from '@storees/shared'
+import type {
+  FlowNode, TriggerNode, DelayNode, ConditionNode, ActionNode, EndNode,
+} from '@storees/shared'
 
 /**
- * Pre-built flow templates installable via wizard (Phase F2a-5).
+ * Pre-built journey templates installable via wizard, mapped per industry.
  *
- * Each template returns the trigger + nodes JSON for a `flows` row. Created
- * in `draft` status so the merchant can review + activate. The merchant
- * customises the template id (welcome message body, offer code, delay) before
- * activating.
+ * Each returns the trigger + nodes JSON for a `flows` row, created in `draft`
+ * status so the merchant reviews + activates. Templates use REAL event names
+ * (see packages/shared constants) so the trigger fires; the send actions carry
+ * a placeholder templateId + templateName the merchant swaps for an approved
+ * channel template before activating.
  *
- * Templates are intentionally minimal: 2-3 nodes that demonstrate the
- * mechanic. Merchants extend them after seeing data.
+ * Templates are intentionally 2-5 nodes — they demonstrate the mechanic and
+ * are extended after the merchant sees data.
  */
 
-export type FlowTemplateId =
-  | 'ctwa_welcome'
-  | 'ctwa_browse_abandon_followup'
-  | 'widget_optin_welcome'
+export type TemplateIndustry = 'ecommerce' | 'nbfc' | 'saas' | 'edtech' | 'general'
+
+export type FlowTemplateId = string
 
 export type FlowTemplate = {
   id: FlowTemplateId
+  industry: TemplateIndustry
   name: string
   description: string
   triggerConfig: { event: string; filters: { logic: 'AND' | 'OR'; rules: [] } }
   nodes: FlowNode[]
 }
 
-/**
- * "CTWA Welcome" — fires the moment a CTWA-sourced lead's first inbound
- * arrives. Two nodes: trigger + a WhatsApp template send. The send action
- * uses templateId='ctwa_welcome' which the merchant must replace with a
- * real approved template id.
- *
- * Note: the welcome send fires within the 24h Meta customer-service window
- * automatically opened by the user's inbound, so it can use a session
- * (free-form) message technically — but the safer/replicable pattern is to
- * use an approved Utility template anyway. The merchant chooses at template
- * config time.
- */
-export const CTWA_WELCOME_TEMPLATE: FlowTemplate = {
-  id: 'ctwa_welcome',
-  name: 'CTWA Welcome',
-  description: 'Fires the moment a customer messages from your Click-to-WhatsApp ad. Sends an approved welcome template with a link to your catalog.',
-  triggerConfig: {
-    event: 'ctwa_lead_received',
-    filters: { logic: 'AND', rules: [] },
-  },
-  nodes: [
-    {
-      id: 'trigger',
-      type: 'trigger',
-      config: {
-        event: 'ctwa_lead_received',
-        filters: { logic: 'AND', rules: [] },
-      },
-    },
-    {
-      id: 'send_welcome',
-      type: 'action',
-      config: {
-        actionType: 'send_whatsapp',
-        templateId: 'ctwa_welcome', // merchant replaces with real approved template
-      },
-    },
-    { id: 'end', type: 'end', label: 'Welcome sent' },
-  ],
+type Channel = ActionNode['config']['actionType']
+
+/* ── Node builders (keep templates concise + valid) ── */
+const trig = (event: string): TriggerNode => ({ id: 'trigger', type: 'trigger', config: { event, filters: { logic: 'AND', rules: [] } } })
+const wait = (id: string, value: number, unit: DelayNode['config']['unit']): DelayNode => ({ id, type: 'delay', config: { value, unit } })
+const didEvent = (id: string, event: string, yes: string, no: string): ConditionNode =>
+  ({ id, type: 'condition', config: { check: 'event_occurred', event, since: 'trip_start', branches: { yes, no } } })
+const send = (id: string, channel: Channel, templateId: string, templateName: string): ActionNode =>
+  ({ id, type: 'action', config: { actionType: channel, templateId, templateName } })
+const stop = (id: string, label: string): EndNode => ({ id, type: 'end', label })
+
+function template(t: {
+  id: string
+  industry: TemplateIndustry
+  name: string
+  description: string
+  event: string
+  nodes: FlowNode[]
+}): FlowTemplate {
+  return {
+    id: t.id,
+    industry: t.industry,
+    name: t.name,
+    description: t.description,
+    triggerConfig: { event: t.event, filters: { logic: 'AND', rules: [] } },
+    nodes: [trig(t.event), ...t.nodes],
+  }
+}
+
+/* ══════════ GENERAL (acquisition-source, industry-agnostic) ══════════ */
+
+const GENERAL: FlowTemplate[] = [
+  template({
+    id: 'ctwa_welcome', industry: 'general', name: 'CTWA Welcome', event: 'ctwa_lead_received',
+    description: 'Fires the moment a customer messages from your Click-to-WhatsApp ad. Sends an approved welcome template with a link to your catalog.',
+    nodes: [send('send_welcome', 'send_whatsapp', 'ctwa_welcome', 'CTWA Welcome'), stop('end', 'Welcome sent')],
+  }),
+  template({
+    id: 'ctwa_browse_abandon_followup', industry: 'general', name: 'CTWA Browse-Abandon Follow-up', event: 'ctwa_lead_received',
+    description: 'Fires 24h after a CTWA lead arrives. Sends an offer if the customer has not placed an order yet.',
+    nodes: [
+      wait('wait_24h', 24, 'hours'),
+      didEvent('check_purchased', 'order_placed', 'end_purchased', 'send_offer'),
+      send('send_offer', 'send_whatsapp', 'ctwa_browse_abandon_offer', 'CTWA Offer'),
+      stop('end_offer_sent', 'Offer sent'), stop('end_purchased', 'Already purchased — exited'),
+    ],
+  }),
+  template({
+    id: 'widget_optin_welcome', industry: 'general', name: 'Widget Opt-in Welcome', event: 'optin_received',
+    description: 'Fires when a customer submits an on-site opt-in widget. Sends an approved welcome template within seconds.',
+    nodes: [send('send_welcome', 'send_whatsapp', 'widget_welcome', 'Widget Welcome'), stop('end', 'Welcome sent')],
+  }),
+]
+
+/* ══════════ ECOMMERCE ══════════ */
+
+const ECOMMERCE: FlowTemplate[] = [
+  template({
+    id: 'ecom_welcome_series', industry: 'ecommerce', name: 'Welcome Series', event: 'customer_created',
+    description: 'Greets a new customer, then follows up 2 days later with your bestsellers.',
+    nodes: [
+      send('welcome', 'send_email', 'ecom_welcome', 'Welcome Email'),
+      wait('wait_2d', 2, 'days'),
+      send('bestsellers', 'send_whatsapp', 'ecom_bestsellers', 'Bestsellers Nudge'),
+      stop('end', 'Series complete'),
+    ],
+  }),
+  template({
+    id: 'ecom_abandoned_cart', industry: 'ecommerce', name: 'Abandoned Cart Recovery', event: 'checkout_started',
+    description: 'Recovers a started-but-unfinished checkout: a 1h reminder, then an offer at 24h if still not purchased.',
+    nodes: [
+      wait('wait_1h', 1, 'hours'),
+      didEvent('check_1', 'order_placed', 'end_purchased', 'reminder'),
+      send('reminder', 'send_whatsapp', 'ecom_cart_reminder', 'Cart Reminder'),
+      wait('wait_23h', 23, 'hours'),
+      didEvent('check_2', 'order_placed', 'end_purchased', 'offer'),
+      send('offer', 'send_email', 'ecom_cart_offer', 'Cart Offer'),
+      stop('end_offer', 'Offer sent'), stop('end_purchased', 'Recovered — exited'),
+    ],
+  }),
+  template({
+    id: 'ecom_browse_abandon', industry: 'ecommerce', name: 'Browse Abandonment', event: 'product_viewed',
+    description: 'Nudges a shopper who viewed a product but did not buy within 4 hours.',
+    nodes: [
+      wait('wait_4h', 4, 'hours'),
+      didEvent('check', 'order_placed', 'end_purchased', 'nudge'),
+      send('nudge', 'send_whatsapp', 'ecom_browse_nudge', 'Still Thinking?'),
+      stop('end_nudge', 'Nudge sent'), stop('end_purchased', 'Purchased — exited'),
+    ],
+  }),
+  template({
+    id: 'ecom_post_purchase_review', industry: 'ecommerce', name: 'Post-Purchase & Review', event: 'order_fulfilled',
+    description: 'Thanks the customer after delivery and asks for a review 3 days later.',
+    nodes: [
+      send('thanks', 'send_whatsapp', 'ecom_thankyou', 'Thank You'),
+      wait('wait_3d', 3, 'days'),
+      send('review', 'send_email', 'ecom_review_request', 'Review Request'),
+      stop('end', 'Review requested'),
+    ],
+  }),
+  template({
+    id: 'ecom_winback', industry: 'ecommerce', name: 'Win-Back (At-Risk)', event: 'enters_segment',
+    description: 'Re-engages a customer who has entered your at-risk / lapsed segment with a comeback offer.',
+    nodes: [
+      send('miss_you', 'send_email', 'ecom_winback', 'We Miss You'),
+      wait('wait_5d', 5, 'days'),
+      didEvent('check', 'order_placed', 'end_back', 'final_offer'),
+      send('final_offer', 'send_whatsapp', 'ecom_winback_offer', 'Comeback Offer'),
+      stop('end_offer', 'Offer sent'), stop('end_back', 'Came back — exited'),
+    ],
+  }),
+]
+
+/* ══════════ NBFC / LENDING (fintech) ══════════ */
+
+const NBFC: FlowTemplate[] = [
+  template({
+    id: 'nbfc_application_dropoff', industry: 'nbfc', name: 'Application Drop-off', event: 'loan_applied',
+    description: 'Fires when a loan application starts; if not disbursed within 24h, nudges the applicant to complete it.',
+    nodes: [
+      wait('wait_24h', 24, 'hours'),
+      didEvent('check', 'loan_disbursed', 'end_done', 'nudge'),
+      send('nudge', 'send_whatsapp', 'nbfc_complete_application', 'Complete Application'),
+      stop('end_nudge', 'Nudge sent'), stop('end_done', 'Disbursed — exited'),
+    ],
+  }),
+  template({
+    id: 'nbfc_kyc_pending', industry: 'nbfc', name: 'KYC Pending Reminder', event: 'loan_approved',
+    description: 'After approval, reminds the customer to complete KYC if not verified within 6 hours.',
+    nodes: [
+      wait('wait_6h', 6, 'hours'),
+      didEvent('check', 'kyc_verified', 'end_done', 'remind'),
+      send('remind', 'send_whatsapp', 'nbfc_kyc_reminder', 'Complete KYC'),
+      stop('end_remind', 'Reminder sent'), stop('end_done', 'KYC done — exited'),
+    ],
+  }),
+  template({
+    id: 'nbfc_emi_overdue', industry: 'nbfc', name: 'EMI Overdue Recovery', event: 'emi_overdue',
+    description: 'On a missed EMI, sends a reminder, then a firmer follow-up 3 days later if still unpaid.',
+    nodes: [
+      send('remind', 'send_whatsapp', 'nbfc_emi_reminder', 'EMI Reminder'),
+      wait('wait_3d', 3, 'days'),
+      didEvent('check', 'emi_paid', 'end_paid', 'followup'),
+      send('followup', 'send_sms', 'nbfc_emi_followup', 'EMI Follow-up'),
+      stop('end_followup', 'Follow-up sent'), stop('end_paid', 'Paid — exited'),
+    ],
+  }),
+  template({
+    id: 'nbfc_disbursal_welcome', industry: 'nbfc', name: 'Disbursal Welcome', event: 'loan_disbursed',
+    description: 'Congratulates the customer on disbursal and shares their repayment schedule.',
+    nodes: [send('welcome', 'send_whatsapp', 'nbfc_disbursal', 'Disbursal Welcome'), stop('end', 'Welcome sent')],
+  }),
+  template({
+    id: 'nbfc_repeat_loan', industry: 'nbfc', name: 'Repeat Loan Offer', event: 'loan_closed',
+    description: 'A week after a loan closes, offers the customer a pre-approved top-up loan.',
+    nodes: [
+      wait('wait_7d', 7, 'days'),
+      send('offer', 'send_whatsapp', 'nbfc_preapproved', 'Pre-Approved Offer'),
+      stop('end', 'Offer sent'),
+    ],
+  }),
+]
+
+/* ══════════ SAAS ══════════ */
+
+const SAAS: FlowTemplate[] = [
+  template({
+    id: 'saas_trial_welcome', industry: 'saas', name: 'Trial Welcome & Activation', event: 'user_signup',
+    description: 'Onboards a new sign-up, then nudges activation 1 day later if no feature has been used.',
+    nodes: [
+      send('welcome', 'send_email', 'saas_welcome', 'Getting Started'),
+      wait('wait_1d', 1, 'days'),
+      didEvent('check', 'feature_used', 'end_active', 'nudge'),
+      send('nudge', 'send_email', 'saas_activation_nudge', 'Activation Nudge'),
+      stop('end_nudge', 'Nudge sent'), stop('end_active', 'Activated — exited'),
+    ],
+  }),
+  template({
+    id: 'saas_trial_expiring', industry: 'saas', name: 'Trial Expiring → Convert', event: 'trial_expiring',
+    description: 'Prompts an upgrade as the trial ends, with a discount offer 2 days later if not yet subscribed.',
+    nodes: [
+      send('upgrade', 'send_email', 'saas_upgrade', 'Upgrade Now'),
+      wait('wait_2d', 2, 'days'),
+      didEvent('check', 'subscription_started', 'end_converted', 'discount'),
+      send('discount', 'send_email', 'saas_discount', 'Last-Chance Discount'),
+      stop('end_discount', 'Discount sent'), stop('end_converted', 'Converted — exited'),
+    ],
+  }),
+  template({
+    id: 'saas_onboarding_stall', industry: 'saas', name: 'Onboarding Stall', event: 'user_signup',
+    description: 'If a user has not used a core feature 3 days after sign-up, offers help getting started.',
+    nodes: [
+      wait('wait_3d', 3, 'days'),
+      didEvent('check', 'feature_used', 'end_active', 'help'),
+      send('help', 'send_email', 'saas_help', 'Need a Hand?'),
+      stop('end_help', 'Help sent'), stop('end_active', 'Activated — exited'),
+    ],
+  }),
+  template({
+    id: 'saas_churn_winback', industry: 'saas', name: 'Cancellation Win-Back', event: 'subscription_cancelled',
+    description: 'Acknowledges a cancellation, then follows up in 14 days with a come-back offer.',
+    nodes: [
+      send('sorry', 'send_email', 'saas_cancel_ack', 'Sorry to See You Go'),
+      wait('wait_14d', 14, 'days'),
+      send('comeback', 'send_email', 'saas_comeback', 'Come Back Offer'),
+      stop('end', 'Win-back sent'),
+    ],
+  }),
+]
+
+/* ══════════ EDTECH ══════════ */
+
+const EDTECH: FlowTemplate[] = [
+  template({
+    id: 'edtech_enrollment_welcome', industry: 'edtech', name: 'Enrollment Welcome', event: 'course_enrolled',
+    description: 'Welcomes a new learner and points them to their first lesson.',
+    nodes: [send('welcome', 'send_email', 'edtech_welcome', 'Enrollment Welcome'), stop('end', 'Welcome sent')],
+  }),
+  template({
+    id: 'edtech_abandoned_enrollment', industry: 'edtech', name: 'Abandoned Enrollment', event: 'course_viewed',
+    description: 'A learner viewed a course but did not enroll within 6 hours — nudges them with a start offer.',
+    nodes: [
+      wait('wait_6h', 6, 'hours'),
+      didEvent('check', 'course_enrolled', 'end_enrolled', 'nudge'),
+      send('nudge', 'send_whatsapp', 'edtech_start_offer', 'Start Learning'),
+      stop('end_nudge', 'Nudge sent'), stop('end_enrolled', 'Enrolled — exited'),
+    ],
+  }),
+  template({
+    id: 'edtech_lesson_nudge', industry: 'edtech', name: 'Lesson Continuation', event: 'lesson_started',
+    description: 'If a learner starts a lesson but does not complete it within 2 days, nudges them to continue.',
+    nodes: [
+      wait('wait_2d', 2, 'days'),
+      didEvent('check', 'lesson_completed', 'end_done', 'nudge'),
+      send('nudge', 'send_whatsapp', 'edtech_continue', 'Continue Your Lesson'),
+      stop('end_nudge', 'Nudge sent'), stop('end_done', 'Completed — exited'),
+    ],
+  }),
+  template({
+    id: 'edtech_completion_congrats', industry: 'edtech', name: 'Course Completion', event: 'course_completed',
+    description: 'Congratulates the learner on finishing a course and recommends the next one.',
+    nodes: [send('congrats', 'send_email', 'edtech_congrats', 'Congratulations!'), stop('end', 'Sent')],
+  }),
+  template({
+    id: 'edtech_reengagement', industry: 'edtech', name: 'Inactive Learner Re-engagement', event: 'enters_segment',
+    description: 'Re-engages a learner who has entered your inactive segment with a reason to return.',
+    nodes: [send('comeback', 'send_email', 'edtech_reengage', 'Pick Up Where You Left Off'), stop('end', 'Sent')],
+  }),
+]
+
+const ALL: FlowTemplate[] = [...GENERAL, ...ECOMMERCE, ...NBFC, ...SAAS, ...EDTECH]
+const ALL_TEMPLATES: Record<string, FlowTemplate> = Object.fromEntries(ALL.map(t => [t.id, t]))
+
+/** List templates, optionally filtered to one industry (plus the general set). */
+export function listFlowTemplates(industry?: TemplateIndustry): FlowTemplate[] {
+  if (!industry) return ALL
+  return ALL.filter(t => t.industry === industry || t.industry === 'general')
 }
 
 /**
- * "CTWA Browse-Abandon Follow-up" — fires from the same ctwa_lead_received,
- * waits 24h, then checks if the customer has placed an order; if not, sends
- * a Marketing template with an offer code. Demonstrates the full
- * lead → conversation → conversion-attempt loop.
- */
-export const CTWA_BROWSE_ABANDON_TEMPLATE: FlowTemplate = {
-  id: 'ctwa_browse_abandon_followup',
-  name: 'CTWA Browse-Abandon Follow-up',
-  description: 'Fires 24h after a CTWA lead arrives. Sends an offer if the customer hasn\'t placed an order yet.',
-  triggerConfig: {
-    event: 'ctwa_lead_received',
-    filters: { logic: 'AND', rules: [] },
-  },
-  nodes: [
-    {
-      id: 'trigger',
-      type: 'trigger',
-      config: {
-        event: 'ctwa_lead_received',
-        filters: { logic: 'AND', rules: [] },
-      },
-    },
-    {
-      id: 'wait_24h',
-      type: 'delay',
-      config: { value: 24, unit: 'hours' },
-    },
-    {
-      id: 'check_purchased',
-      type: 'condition',
-      config: {
-        check: 'event_occurred',
-        event: 'order_placed',
-        since: 'trip_start',
-        branches: { yes: 'end_purchased', no: 'send_offer' },
-      },
-    },
-    {
-      id: 'send_offer',
-      type: 'action',
-      config: {
-        actionType: 'send_whatsapp',
-        templateId: 'ctwa_browse_abandon_offer', // merchant replaces with real approved Marketing template
-      },
-    },
-    { id: 'end_offer_sent', type: 'end', label: 'Offer sent' },
-    { id: 'end_purchased', type: 'end', label: 'Already purchased — exited' },
-  ],
-}
-
-/**
- * "Widget Opt-in Welcome" — fires when an on-site widget submission lands.
- * Trigger: optin_received event (emitted by POST /v1/optin). Sends an
- * approved welcome template to the new contact. Mirrors the CTWA welcome
- * structure so flows behave consistently regardless of acquisition source.
- */
-export const WIDGET_OPTIN_WELCOME_TEMPLATE: FlowTemplate = {
-  id: 'widget_optin_welcome',
-  name: 'Widget Opt-in Welcome',
-  description: 'Fires when a customer submits an on-site opt-in widget. Sends an approved welcome template within seconds.',
-  triggerConfig: {
-    event: 'optin_received',
-    filters: { logic: 'AND', rules: [] },
-  },
-  nodes: [
-    {
-      id: 'trigger',
-      type: 'trigger',
-      config: {
-        event: 'optin_received',
-        filters: { logic: 'AND', rules: [] },
-      },
-    },
-    {
-      id: 'send_welcome',
-      type: 'action',
-      config: {
-        actionType: 'send_whatsapp',
-        templateId: 'widget_welcome', // merchant replaces with real approved template
-      },
-    },
-    { id: 'end', type: 'end', label: 'Welcome sent' },
-  ],
-}
-
-const ALL_TEMPLATES: Record<FlowTemplateId, FlowTemplate> = {
-  ctwa_welcome: CTWA_WELCOME_TEMPLATE,
-  ctwa_browse_abandon_followup: CTWA_BROWSE_ABANDON_TEMPLATE,
-  widget_optin_welcome: WIDGET_OPTIN_WELCOME_TEMPLATE,
-}
-
-export function listFlowTemplates(): FlowTemplate[] {
-  return Object.values(ALL_TEMPLATES)
-}
-
-/**
- * Install a flow template into a project. Inserts a draft flow row and
- * returns the new flow id. Caller (route or wizard) is responsible for
- * directing the admin to the flow editor to fill in the template id.
+ * Install a flow template into a project. Inserts a draft flow row and returns
+ * the new flow id. Caller directs the admin to the editor to fill in the real
+ * channel template ids.
  */
 export async function installFlowTemplate(
   projectId: string,
