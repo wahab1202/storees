@@ -141,6 +141,83 @@ const ECOMMERCE: FlowTemplate[] = [
       stop('end_offer', 'Offer sent'), stop('end_back', 'Came back — exited'),
     ],
   }),
+  template({
+    id: 'ecom_cart_created_nudge', industry: 'ecommerce', name: 'Add-to-Cart Nudge', event: 'added_to_cart',
+    description: 'Catches a shopper earlier than checkout: if they add to cart but do not start checkout within 2 hours, nudges them.',
+    nodes: [
+      wait('wait_2h', 2, 'hours'),
+      didEvent('check', 'checkout_started', 'end_checkout', 'nudge'),
+      send('nudge', 'send_whatsapp', 'ecom_cart_nudge', 'Your Cart Is Waiting'),
+      stop('end_nudge', 'Nudge sent'), stop('end_checkout', 'Reached checkout — exited'),
+    ],
+  }),
+  template({
+    id: 'ecom_wishlist_reminder', industry: 'ecommerce', name: 'Wishlist Reminder', event: 'added_to_wishlist',
+    description: 'Reminds a shopper about a wishlisted item 2 days later if they have not bought it.',
+    nodes: [
+      wait('wait_2d', 2, 'days'),
+      didEvent('check', 'order_placed', 'end_bought', 'remind'),
+      send('remind', 'send_email', 'ecom_wishlist', 'Still On Your Wishlist'),
+      stop('end_remind', 'Reminder sent'), stop('end_bought', 'Purchased — exited'),
+    ],
+  }),
+  template({
+    id: 'ecom_payment_failed_recovery', industry: 'ecommerce', name: 'Payment-Failed Recovery', event: 'payment_failed',
+    description: 'On a failed payment, sends a retry link, then a follow-up 6 hours later if the order still has not gone through.',
+    nodes: [
+      send('retry', 'send_whatsapp', 'ecom_payment_retry', 'Payment Didn\'t Go Through'),
+      wait('wait_6h', 6, 'hours'),
+      didEvent('check', 'order_placed', 'end_done', 'followup'),
+      send('followup', 'send_email', 'ecom_payment_followup', 'Complete Your Order'),
+      stop('end_followup', 'Follow-up sent'), stop('end_done', 'Order placed — exited'),
+    ],
+  }),
+  template({
+    id: 'ecom_replenishment', industry: 'ecommerce', name: 'Replenishment Reminder', event: 'order_fulfilled',
+    description: 'For consumables — reminds the customer to reorder 30 days after delivery.',
+    nodes: [
+      wait('wait_30d', 30, 'days'),
+      send('reorder', 'send_whatsapp', 'ecom_reorder', 'Time to Restock?'),
+      stop('end', 'Reorder reminder sent'),
+    ],
+  }),
+  template({
+    id: 'ecom_second_order', industry: 'ecommerce', name: 'Second-Order Push', event: 'order_placed',
+    description: 'Turns a one-time buyer into a repeat one: 14 days after an order, nudges a second purchase if none has followed.',
+    nodes: [
+      wait('wait_14d', 14, 'days'),
+      didEvent('check', 'order_placed', 'end_repeat', 'nudge'),
+      send('nudge', 'send_email', 'ecom_second_order', 'Ready for Your Next Order?'),
+      stop('end_nudge', 'Nudge sent'), stop('end_repeat', 'Reordered — exited'),
+    ],
+  }),
+  template({
+    id: 'ecom_vip_reward', industry: 'ecommerce', name: 'VIP Reward', event: 'enters_segment',
+    description: 'Rewards a customer who enters your VIP / champion segment with early access or an exclusive perk.',
+    nodes: [
+      send('reward', 'send_email', 'ecom_vip', 'A Little Something for a VIP'),
+      stop('end', 'Reward sent'),
+    ],
+  }),
+  template({
+    id: 'ecom_review_thankyou', industry: 'ecommerce', name: 'Review Thank-You + Reorder', event: 'review_submitted',
+    description: 'Thanks a customer who left a review and gives them a discount toward their next order.',
+    nodes: [
+      send('thanks', 'send_whatsapp', 'ecom_review_thanks', 'Thanks for the Review'),
+      stop('end', 'Thank-you sent'),
+    ],
+  }),
+  template({
+    id: 'ecom_subscription_winback', industry: 'ecommerce', name: 'Subscription Win-Back', event: 'subscription_cancelled',
+    description: 'When a subscription is cancelled, acknowledges it and offers a reason to resubscribe a week later.',
+    nodes: [
+      send('ack', 'send_email', 'ecom_sub_cancel', 'Sorry to See You Cancel'),
+      wait('wait_7d', 7, 'days'),
+      didEvent('check', 'subscription_started', 'end_resub', 'offer'),
+      send('offer', 'send_whatsapp', 'ecom_sub_offer', 'Come Back — Here\'s an Offer'),
+      stop('end_offer', 'Offer sent'), stop('end_resub', 'Resubscribed — exited'),
+    ],
+  }),
 ]
 
 /* ══════════ NBFC / LENDING (fintech) ══════════ */
