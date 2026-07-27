@@ -97,3 +97,30 @@ export async function socialProof(projectId: string, productId: string, days = 3
     buyers: Number((b.rows[0] as { n?: string })?.n ?? 0),
   }
 }
+
+/**
+ * Build the decisioning template variables for a product in flow/message
+ * context — the dynamic content that makes one flow serve every product:
+ *   {{recommended_product}} / _image / _price / _id, {{social_proof_viewers}} /
+ *   {{social_proof_buyers}}.
+ * Returns only the keys it can resolve (missing rules → no recommended_* keys,
+ * so the template falls back to its default).
+ */
+export async function buildDecisionVars(projectId: string, productId: string): Promise<Record<string, string>> {
+  const [recs, proof] = await Promise.all([
+    recommendForProduct(projectId, productId, 1),
+    socialProof(projectId, productId),
+  ])
+  const vars: Record<string, string> = {
+    social_proof_viewers: String(proof.viewers),
+    social_proof_buyers: String(proof.buyers),
+  }
+  const rec = recs[0]
+  if (rec) {
+    vars.recommended_product = rec.title
+    vars.recommended_product_id = rec.productId
+    if (rec.imageUrl) vars.recommended_product_image = rec.imageUrl
+    if (rec.price) vars.recommended_product_price = rec.price
+  }
+  return vars
+}
