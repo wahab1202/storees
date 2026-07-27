@@ -5,6 +5,7 @@ import { filterToSql } from '@storees/segments'
 import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate, appendUtmParameters } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
+import { buildDecisionVars } from './decisioningService.js'
 import { createHash } from 'node:crypto'
 import { evaluateEventFilters, readPath } from '@storees/shared'
 import type {
@@ -649,6 +650,14 @@ async function executeAction(
   const eventProperties: Record<string, unknown> | undefined =
     nodeOutputs ? { ...triggerProps, node_outputs: nodeOutputs } : (context.triggerProperties as Record<string, unknown> | undefined)
 
+  // Decisioning content (Step 2): if the triggering event carries a product,
+  // resolve live {{recommended_product}} / {{social_proof_*}} vars so one flow
+  // serves every product. Merged as systemVars (available without a mapping).
+  const decisionProductId = String(triggerProps.product_id ?? triggerProps.productId ?? '')
+  const decisionVars = decisionProductId
+    ? await buildDecisionVars(projectId, decisionProductId).catch(() => ({} as Record<string, string>))
+    : {}
+
   // For email, use the existing direct send path (backward compatible)
   if (channel === 'email') {
     if (!customer.email) {
@@ -667,6 +676,7 @@ async function executeAction(
       customer: customerLike,
       project,
       eventProperties,
+      systemVars: decisionVars,
     })
 
     let subject: string
@@ -723,6 +733,7 @@ async function executeAction(
     customer: customerLike,
     project,
     eventProperties,
+    systemVars: decisionVars,
   })
 
   // Per-node UTM tagging — pre-interpolate values here (the delivery layer
