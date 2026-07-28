@@ -1131,6 +1131,29 @@ export const whatsappInboundMessages = pgTable('whatsapp_inbound_messages', {
   index('idx_wa_inbound_phone').on(table.projectId, table.fromPhone, table.receivedAt),
 ])
 
+// WhatsApp usage metering — one row per billable conversation window (Meta bills
+// per conversation, categorised marketing/utility/authentication/service).
+// See migration 0079_whatsapp_usage.sql for column-level docs.
+export const whatsappUsage = pgTable('whatsapp_usage', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  provider: varchar('provider', { length: 30 }).notNull(),
+  phoneNumberId: varchar('phone_number_id', { length: 255 }),
+  conversationId: varchar('conversation_id', { length: 255 }).notNull(),
+  category: varchar('category', { length: 20 }).notNull(),
+  pricingModel: varchar('pricing_model', { length: 30 }),
+  originType: varchar('origin_type', { length: 30 }),
+  billable: boolean('billable').notNull().default(true),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  expirationAt: timestamp('expiration_at', { withTimezone: true }),
+  raw: jsonb('raw'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_wa_usage_conversation').on(table.projectId, table.conversationId),
+  index('idx_wa_usage_project_cat').on(table.projectId, table.category, table.startedAt),
+])
+
 // ============ DATA SOURCE CONNECTORS ============
 // See migration 0043_data_source_connectors.sql for column-level docs.
 

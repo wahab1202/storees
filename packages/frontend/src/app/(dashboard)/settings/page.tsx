@@ -7,6 +7,7 @@ import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { PinnacleConnect } from './PinnacleConnect'
+import { MetaConnect } from './MetaConnect'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
@@ -480,6 +481,12 @@ function ChannelProviderSettings() {
             // not the generic save-fields form.
             if (activeChannel === 'whatsapp' && providerDef.value === 'pinnacle') {
               return <PinnacleConnect />
+            }
+            // Meta WhatsApp Cloud API uses a validated BYO-credentials connect
+            // flow (validate → subscribe webhooks → import templates), not the
+            // generic save-fields form.
+            if (activeChannel === 'whatsapp' && providerDef.value === 'meta') {
+              return <MetaConnect />
             }
 
             return (
