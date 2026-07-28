@@ -207,7 +207,7 @@ function applyFormat(raw: unknown, format: TemplateVariableFormat | undefined): 
 
   switch (format) {
     case 'money': {
-      const n = typeof raw === 'string' ? Number(raw) : Number(raw)
+      const n = Number(raw)
       if (!Number.isFinite(n)) return String(raw)
       // Decimal columns store rupees (not paise). Round to 2dp + Indian-locale grouping.
       return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

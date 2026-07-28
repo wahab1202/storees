@@ -1,4 +1,4 @@
-import { eq, and, inArray, gt, gte, sql, desc } from 'drizzle-orm'
+import { eq, and, inArray, gt, gte, sql, desc, isNull } from 'drizzle-orm'
 import crypto from 'node:crypto'
 import { db } from '../db/connection.js'
 import {
@@ -24,7 +24,7 @@ import { injectGmailAnnotation } from './gmailAnnotation.js'
 import { campaignQueue } from './queue.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
 import { computeOptimalSendTime, computeProjectDefaults, type SendTimeResult } from './sendTimeService.js'
-import { buildDecisionVarsForCustomer } from './decisioningService.js'
+import { buildDecisionVarsForCustomer, newDecisionCache, type DecisionCache } from './decisioningService.js'
 import { assertApprovedWhatsappCampaignTemplate } from './whatsappCampaignValidation.js'
 import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
@@ -36,7 +36,6 @@ const RECIPIENT_PAGE_SIZE = 1000
 const SEND_PAGE_SIZE = 500
 const SEND_INSERT_BATCH = 500           // Postgres parameter limit safety
 const PARALLEL_SENDS_PER_PAGE = 10      // bounded in-page concurrency to avoid provider rate-limit storms
-const EMPTY_FILTER: FilterConfig = { logic: 'AND', rules: [] }
 
 // Human-readable labels for a pre-send block (messages.block_reason), surfaced on
 // the campaign Recipients tab so a skipped recipient explains itself instead of a
@@ -217,6 +216,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
             .from(customers)
             .where(and(
               eq(customers.projectId, input.projectId),
+              isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
               filterToSql(audienceFilter),
               excludeClause,
@@ -236,6 +236,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
             .innerJoin(customers, eq(customers.id, customerSegments.customerId))
             .where(and(
               eq(customerSegments.segmentId, input.segmentId),
+              isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
               excludeClause,
             ))
@@ -252,6 +253,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
             .from(customers)
             .where(and(
               eq(customers.projectId, input.projectId),
+              isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
               excludeClause,
             ))
@@ -432,7 +434,7 @@ export async function getCampaignRecipients(
     })
     .from(customerSegments)
     .innerJoin(customers, eq(customers.id, customerSegments.customerId))
-    .where(eq(customerSegments.segmentId, segmentId))
+    .where(and(eq(customerSegments.segmentId, segmentId), isNull(customers.mergedInto)))
 
   // Filter customers who have a valid email
   return members.filter((m): m is typeof m & { email: string } => !!m.email)
@@ -457,6 +459,10 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
     throw new Error(`Campaign cannot be sent: current status is "${campaign.status}"`)
   }
   const channel = campaign.channel ?? 'email'
+  // WhatsApp UTILITY/AUTH templates can only reach recipients inside the 24h
+  // service window; MARKETING can't. Resolve the category ONCE — it's invariant
+  // for the whole dispatch — and reuse the boolean inside the page loop.
+  let whatsappRequiresServiceWindow = false
   if (channel === 'whatsapp') {
     await assertApprovedWhatsappCampaignTemplate(
       campaign.projectId,
@@ -472,7 +478,8 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
         eq(whatsappTemplates.projectId, campaign.projectId),
       ))
       .limit(1)
-    if (waTemplate.category && waTemplate.category !== 'MARKETING') {
+    whatsappRequiresServiceWindow = !!waTemplate.category && waTemplate.category !== 'MARKETING'
+    if (whatsappRequiresServiceWindow) {
       console.log(`[campaign ${campaignId}] WhatsApp ${waTemplate.category} template requires recent inbound service-window eligibility`)
     }
   }
@@ -524,6 +531,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
             .from(customers)
             .where(and(
               eq(customers.projectId, campaign.projectId),
+              isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
               filterToSql(audienceFilter),
               excludeClause,
@@ -543,8 +551,8 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
             .from(customerSegments)
             .innerJoin(customers, eq(customers.id, customerSegments.customerId))
             .where(cursor
-              ? and(eq(customerSegments.segmentId, campaign.segmentId), gt(customers.id, cursor), excludeClause)
-              : and(eq(customerSegments.segmentId, campaign.segmentId), excludeClause))
+              ? and(eq(customerSegments.segmentId, campaign.segmentId), isNull(customers.mergedInto), gt(customers.id, cursor), excludeClause)
+              : and(eq(customerSegments.segmentId, campaign.segmentId), isNull(customers.mergedInto), excludeClause))
             .orderBy(customers.id)
             .limit(pageLimit)
         : await db
@@ -558,8 +566,8 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
             })
             .from(customers)
             .where(cursor
-              ? and(eq(customers.projectId, campaign.projectId), gt(customers.id, cursor), excludeClause)
-              : and(eq(customers.projectId, campaign.projectId), excludeClause))
+              ? and(eq(customers.projectId, campaign.projectId), isNull(customers.mergedInto), gt(customers.id, cursor), excludeClause)
+              : and(eq(customers.projectId, campaign.projectId), isNull(customers.mergedInto), excludeClause))
             .orderBy(customers.id)
             .limit(pageLimit)
 
@@ -632,29 +640,22 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
       }
     }
 
-    if (channel === 'whatsapp' && campaign.templateId && allowed.length > 0) {
-      const [waTemplate] = await db
-        .select({ category: whatsappTemplates.category })
-        .from(whatsappTemplates)
-        .where(eq(whatsappTemplates.id, campaign.templateId))
-        .limit(1)
-      if (waTemplate?.category && waTemplate.category !== 'MARKETING') {
-        const customerIds = allowed.map(c => c.customerId)
-        const recentRows = await db
-          .select({ customerId: whatsappInboundMessages.customerId })
-          .from(whatsappInboundMessages)
-          .where(and(
-            eq(whatsappInboundMessages.projectId, campaign.projectId),
-            inArray(whatsappInboundMessages.customerId, customerIds),
-            sql`${whatsappInboundMessages.receivedAt} >= NOW() - INTERVAL '24 hours'`,
-          ))
-        const recentSet = new Set(recentRows.map(r => r.customerId).filter(Boolean))
-        const before = allowed.length
-        allowed = allowed.filter(c => recentSet.has(c.customerId))
-        const excluded = before - allowed.length
-        if (excluded > 0) {
-          console.log(`[campaign ${campaignId}] page-skip ${excluded} (outside_whatsapp_24h_service_window)`)
-        }
+    if (whatsappRequiresServiceWindow && allowed.length > 0) {
+      const customerIds = allowed.map(c => c.customerId)
+      const recentRows = await db
+        .select({ customerId: whatsappInboundMessages.customerId })
+        .from(whatsappInboundMessages)
+        .where(and(
+          eq(whatsappInboundMessages.projectId, campaign.projectId),
+          inArray(whatsappInboundMessages.customerId, customerIds),
+          sql`${whatsappInboundMessages.receivedAt} >= NOW() - INTERVAL '24 hours'`,
+        ))
+      const recentSet = new Set(recentRows.map(r => r.customerId).filter(Boolean))
+      const before = allowed.length
+      allowed = allowed.filter(c => recentSet.has(c.customerId))
+      const excluded = before - allowed.length
+      if (excluded > 0) {
+        console.log(`[campaign ${campaignId}] page-skip ${excluded} (outside_whatsapp_24h_service_window)`)
       }
     }
 
@@ -788,6 +789,11 @@ export async function processCampaign(campaignId: string): Promise<void> {
   let sentCount = campaign.sentCount
   let failedCount = campaign.failedCount
   let cursor: string | null = null
+  // One decisioning memo for the whole run — the top-seller list and social
+  // proof are invariant across recipients, so this collapses ~5-7 queries per
+  // recipient down to a per-product-once cost. Only touched when a decision
+  // source is bound (see sendOneRecipient).
+  const decisionCache = newDecisionCache()
   const emailAttachments = channel === 'email' ? await loadResendAttachments(campaign.id) : []
   const rateLimitPerMinute = campaign.deliveryLimit != null && campaign.deliveryLimit > 0
     ? campaign.deliveryLimit
@@ -851,7 +857,7 @@ export async function processCampaign(campaignId: string): Promise<void> {
       const chunkSize = await nextCampaignChunkSize(rateLimitPerMinute, rateState, PARALLEL_SENDS_PER_PAGE)
       const chunk = pageSends.slice(i, i + chunkSize)
       const chunkResults = await Promise.all(
-        chunk.map(send => sendOneRecipient(send, customerMap.get(send.customerId), campaign, channel, project, emailAttachments)),
+        chunk.map(send => sendOneRecipient(send, customerMap.get(send.customerId), campaign, channel, project, emailAttachments, decisionCache)),
       )
       results.push(...chunkResults)
       rateState.sentInWindow += chunk.length
@@ -904,6 +910,7 @@ async function sendOneRecipient(
   channel: string,
   project: ProjectLike,
   emailAttachments: ResendAttachment[],
+  decisionCache: DecisionCache,
 ): Promise<{ id: string; success: boolean }> {
   // Variable mapping declared on the campaign at save-time. Resolved against
   // this recipient's customer row + project row to produce the substitution
@@ -915,7 +922,7 @@ async function sendOneRecipient(
   // source is actually bound, so ordinary campaigns pay nothing.
   const campaignVariables = (campaign.variables as TemplateVariable[]) ?? []
   const decisionContext = campaignVariables.some(v => v.source?.kind === 'decision')
-    ? await buildDecisionVarsForCustomer(project.id, customerLike.id).catch(() => ({} as Record<string, string>))
+    ? await buildDecisionVarsForCustomer(project.id, customerLike.id, decisionCache).catch(() => ({} as Record<string, string>))
     : undefined
   const templateContext: Record<string, unknown> = resolveTemplateVariables({
     variables: campaignVariables,
@@ -930,7 +937,6 @@ async function sendOneRecipient(
   templateContext.customer_email = send.email
   templateContext.campaign_name = campaign.name
   templateContext.recipient_images = readRecipientImages(customerLike)
-  const deliveryScheduledAt = undefined
 
   if (channel === 'email') {
     const useVariantB = send.variant === 'B' && campaign.abTestEnabled
@@ -998,7 +1004,7 @@ async function sendOneRecipient(
       campaignId: campaign.id,
       ignoreFrequencyCap: campaign.ignoreFrequencyCap,
       countForFrequencyCap: campaign.countForFrequencyCap,
-      scheduledAt: deliveryScheduledAt,
+      scheduledAt: undefined,
     })
     if (msgId) {
       await db.update(campaignSends).set({
