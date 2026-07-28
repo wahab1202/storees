@@ -23,6 +23,7 @@ import { injectGmailAnnotation } from './gmailAnnotation.js'
 import { campaignQueue } from './queue.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
 import { computeOptimalSendTime, computeProjectDefaults, type SendTimeResult } from './sendTimeService.js'
+import { buildDecisionVarsForCustomer } from './decisioningService.js'
 import { assertApprovedWhatsappCampaignTemplate } from './whatsappCampaignValidation.js'
 import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
@@ -870,10 +871,18 @@ async function sendOneRecipient(
   // store_name } context — those three keys still come back automatically as
   // defaults inside the resolver.
   const customerLike: CustomerLike = customer ?? { id: send.customerId, email: send.email }
+  // Per-recipient decisioning (Klaviyo-style affinity): only when a decision
+  // source is actually bound, so ordinary campaigns pay nothing.
+  const campaignVariables = (campaign.variables as TemplateVariable[]) ?? []
+  const decisionContext = campaignVariables.some(v => v.source?.kind === 'decision')
+    ? await buildDecisionVarsForCustomer(project.id, customerLike.id).catch(() => ({} as Record<string, string>))
+    : undefined
   const templateContext: Record<string, unknown> = resolveTemplateVariables({
-    variables: (campaign.variables as TemplateVariable[]) ?? [],
+    variables: campaignVariables,
     customer: customerLike,
     project,
+    decisionContext,
+    systemVars: decisionContext,
   })
   // send.email is the authoritative recipient address — it may differ from
   // customer.email if the audience was overridden. Stamp it onto the context
