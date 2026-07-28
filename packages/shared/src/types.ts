@@ -1173,6 +1173,50 @@ export type WhatsappUsageSummary = {
   estimatedCost?: { currency: string; amount: number }
 }
 
+// ============ WHATSAPP PROVISIONING (Storees-as-provider) ============
+
+export type WhatsappProvisioningStatus = 'submitted' | 'provisioning' | 'active' | 'error' | 'cancelled'
+
+/** A Storees-provisioned WhatsApp onboarding request (mirrors the table). */
+export type WhatsappProvisioningRequest = {
+  id: string
+  projectId: string
+  status: WhatsappProvisioningStatus
+  requestedNumber: string | null
+  businessName: string | null
+  category: string | null
+  address: string | null
+  website: string | null
+  about: string | null
+  logoUrl: string | null
+  contactName: string | null
+  contactEmail: string | null
+  notes: string | null
+  opsNotes: string | null
+  assignedTo: string | null
+  phoneNumberId: string | null
+  wabaId: string | null
+  errorReason: string | null
+  submittedAt: string
+  provisionedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** Brand-supplied intake fields (create/update a provisioning request). */
+export type WhatsappProvisioningInput = {
+  requestedNumber?: string
+  businessName?: string
+  category?: string
+  address?: string
+  website?: string
+  about?: string
+  logoUrl?: string
+  contactName?: string
+  contactEmail?: string
+  notes?: string
+}
+
 // ============ GENERIC EVENT API TYPES ============
 
 export type EventIngestionPayload = {

@@ -1154,6 +1154,37 @@ export const whatsappUsage = pgTable('whatsapp_usage', {
   index('idx_wa_usage_project_cat').on(table.projectId, table.category, table.startedAt),
 ])
 
+// Storees-provisioned WhatsApp onboarding (ops-assisted). Intake + provisioning
+// lifecycle before Cloud API credentials exist. See migration
+// 0080_whatsapp_provisioning_requests.sql for column-level docs.
+export const whatsappProvisioningRequests = pgTable('whatsapp_provisioning_requests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 20 }).notNull().default('submitted'),
+  requestedNumber: varchar('requested_number', { length: 30 }),
+  businessName: varchar('business_name', { length: 200 }),
+  category: varchar('category', { length: 60 }),
+  address: text('address'),
+  website: varchar('website', { length: 300 }),
+  about: text('about'),
+  logoUrl: text('logo_url'),
+  contactName: varchar('contact_name', { length: 120 }),
+  contactEmail: varchar('contact_email', { length: 200 }),
+  notes: text('notes'),
+  opsNotes: text('ops_notes'),
+  assignedTo: uuid('assigned_to'),
+  phoneNumberId: varchar('phone_number_id', { length: 255 }),
+  wabaId: varchar('waba_id', { length: 255 }),
+  errorReason: text('error_reason'),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
+  provisionedAt: timestamp('provisioned_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_wa_provisioning_project').on(table.projectId),
+  index('idx_wa_provisioning_status').on(table.status, table.submittedAt),
+])
+
 // ============ DATA SOURCE CONNECTORS ============
 // See migration 0043_data_source_connectors.sql for column-level docs.
 
