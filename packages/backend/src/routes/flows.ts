@@ -1,13 +1,39 @@
 import { Router } from 'express'
 import { eq, and, sql, count, inArray, desc, or } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { flows, flowTrips, customers, messages, scheduledJobs } from '../db/schema.js'
+import { flows, flowTrips, customers, messages, scheduledJobs, whatsappTemplates } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
 import { listFlowTemplates, installFlowTemplate, type FlowTemplateId, type TemplateIndustry } from '../services/flowTemplates.js'
 
 const router = Router()
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * WhatsApp send nodes in a flow whose bound template is NOT an APPROVED row in
+ * this project. Returns the offending templateIds (raw library keys that were
+ * never seeded are non-uuids and count as unapproved). Used to block activation.
+ */
+async function unapprovedWhatsappNodes(projectId: string, nodes: unknown): Promise<string[]> {
+  const list = Array.isArray(nodes) ? (nodes as Array<Record<string, unknown>>) : []
+  const templateIds = list
+    .filter(n => n?.type === 'action' && (n?.config as Record<string, unknown> | undefined)?.actionType === 'send_whatsapp')
+    .map(n => (n?.config as Record<string, unknown> | undefined)?.templateId)
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+  if (templateIds.length === 0) return []
+
+  const uuids = templateIds.filter(id => UUID_RE.test(id))
+  const rows = uuids.length
+    ? await db
+        .select({ id: whatsappTemplates.id, status: whatsappTemplates.status })
+        .from(whatsappTemplates)
+        .where(and(eq(whatsappTemplates.projectId, projectId), inArray(whatsappTemplates.id, uuids)))
+    : []
+  const approved = new Set(rows.filter(r => r.status === 'APPROVED').map(r => r.id))
+  return templateIds.filter(id => !approved.has(id))
+}
 
 // Flows are admin-only. Sub-admins (manager/agent roles) are fenced out:
 // flows reference segments + customers across regions, so read-only would still leak.
@@ -178,6 +204,22 @@ router.patch('/:id/status', requireProjectId, async (req, res) => {
         success: false,
         error: `Cannot transition from '${existing.status}' to '${status}'`,
       })
+    }
+
+    // Activation gate: every send_whatsapp node must resolve to an APPROVED
+    // WhatsApp template in this project — otherwise the send path silently
+    // degrades to a broken plain-text message (or a Meta rejection). Mirrors
+    // assertApprovedWhatsappCampaignTemplate on the campaign side. Templates
+    // seeded by installFlowTemplate start PENDING (and dangling library keys
+    // aren't uuids at all), so both are caught here until Meta-approved.
+    if (status === 'active') {
+      const invalid = await unapprovedWhatsappNodes(projectId, existing.nodes)
+      if (invalid.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: `Cannot activate: ${invalid.length} WhatsApp step(s) reference a template that isn't approved yet — submit it for Meta approval and wire the approved template before activating.`,
+        })
+      }
     }
 
     const [updated] = await db
