@@ -72,21 +72,25 @@ class StoreesSdk {
     this.identity = new IdentityManager(log)
     // Reconcile the durable device id against IndexedDB asynchronously — heals
     // the sync stores if they were evicted (Safari ITP / cleared cache).
-    this.identity.hydrateDurableId().catch(err => log.warn('[identity] hydrate failed:', err))
+    const hydrated = this.identity.hydrateDurableId().catch(err => log.warn('[identity] hydrate failed:', err))
 
-    // Reconcile against the server-set first-party cookie (2c). We send our
-    // current id, so a cross-origin call just echoes it (no churn); reached
-    // first-party via a merchant CNAME it returns the durable cookie id and
-    // heals an id evicted from the client stores.
+    // Reconcile against the server-set first-party cookie (2c). MUST run AFTER
+    // hydrate: otherwise we'd send a freshly-generated id while IndexedDB still
+    // holds the original, and the cross-origin echo of that fresh id would
+    // adoptDeviceId() over the just-restored one — destroying continuity. By
+    // awaiting hydrate we send the restored id, so a cross-origin echo is a
+    // no-op; reached first-party via a merchant CNAME it returns the durable
+    // cookie id and heals an id evicted from the client stores.
     if (this.config.serverDeviceId !== false) {
       const base = this.config.apiUrl.replace(/\/$/, '')
-      const did = this.identity.getDeviceId()
-      fetch(`${base}/id?d=${encodeURIComponent(did)}`, { credentials: 'include' })
-        .then(r => (r.ok ? r.json() : null))
-        .then((j: { data?: { deviceId?: string } } | null) => {
-          if (j?.data?.deviceId) this.identity.adoptDeviceId(j.data.deviceId)
-        })
-        .catch(() => { /* best-effort */ })
+      void hydrated.then(() => {
+        const did = this.identity.getDeviceId()
+        return fetch(`${base}/id?d=${encodeURIComponent(did)}`, { credentials: 'include' })
+          .then(r => (r.ok ? r.json() : null))
+          .then((j: { data?: { deviceId?: string } } | null) => {
+            if (j?.data?.deviceId) this.identity.adoptDeviceId(j.data.deviceId)
+          })
+      }).catch(() => { /* best-effort */ })
     }
 
     this.consent = new ConsentManager(
