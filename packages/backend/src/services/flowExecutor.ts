@@ -676,6 +676,9 @@ async function executeAction(
       customer: customerLike,
       project,
       eventProperties,
+      // decisionContext: read by `decision`-kind sources. systemVars: shim so
+      // legacy raw {{recommended_product}} email tokens keep working.
+      decisionContext: decisionVars,
       systemVars: decisionVars,
     })
 
@@ -733,6 +736,7 @@ async function executeAction(
     customer: customerLike,
     project,
     eventProperties,
+    decisionContext: decisionVars,
     systemVars: decisionVars,
   })
 

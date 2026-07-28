@@ -495,6 +495,7 @@ function encodeSource(s: TemplateVariableSource): string {
     case 'project':   return `project::${s.field}`
     case 'event':     return `event::${s.key}`
     case 'literal':   return `literal::${s.value}`
+    case 'decision':  return `decision::${s.method}::${s.field}`
   }
 }
 
@@ -508,6 +509,10 @@ function decodeSource(encoded: string): TemplateVariableSource | null {
     case 'project':   return { kind: 'project',   field: value }
     case 'event':     return { kind: 'event',     key: value }
     case 'literal':   return { kind: 'literal',   value }
+    case 'decision': {
+      const [method, field] = value.split('::')
+      return { kind: 'decision', method: method as 'recommended_product' | 'social_proof' | 'next_best_action', field: field ?? 'title', basedOn: 'trigger_product' }
+    }
     default: return null
   }
 }
@@ -527,5 +532,6 @@ function describeSource(s: TemplateVariableSource, catalog: VariableSourceCatalo
     case 'project':   return `Project ▸ ${s.field}`
     case 'event':     return `Event ▸ ${s.key}`
     case 'literal':   return `Literal ▸ "${s.value}"`
+    case 'decision':  return `Smart content ▸ ${s.method}${s.field ? ' · ' + s.field : ''}`
   }
 }

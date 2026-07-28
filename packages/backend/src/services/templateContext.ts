@@ -75,6 +75,12 @@ export type ResolveOpts = {
    * caller pre-stuffing it into eventProperties.
    */
   systemVars?: Record<string, string>
+  /**
+   * Decisioning values (recommended product, live social proof, next-best-
+   * action) computed once per send. Read by `decision`-kind variable sources —
+   * so a WhatsApp positional {{1}} can carry a recommendation, not just email.
+   */
+  decisionContext?: Record<string, string>
 }
 
 export function resolveTemplateVariables({
@@ -84,6 +90,7 @@ export function resolveTemplateVariables({
   product,
   eventProperties,
   systemVars,
+  decisionContext,
 }: ResolveOpts): Record<string, string> {
   const out: Record<string, string> = {}
 
@@ -100,7 +107,7 @@ export function resolveTemplateVariables({
   out.customer_email = customer.email ?? ''
 
   for (const variable of variables ?? []) {
-    const raw = readSource(variable.source, customer, project, product, eventProperties)
+    const raw = readSource(variable.source, customer, project, product, eventProperties, decisionContext)
     const formatted = applyFormat(raw, variable.format)
     const final = nonEmpty(formatted) ?? variable.defaultValue ?? ''
     out[variable.key] = final
@@ -115,6 +122,7 @@ function readSource(
   project: ProjectLike,
   product: ProductLike | null | undefined,
   eventProperties: Record<string, unknown> | undefined,
+  decisionContext: Record<string, string> | undefined,
 ): unknown {
   switch (source.kind) {
     case 'literal':
@@ -131,7 +139,18 @@ function readSource(
     case 'event':
       // Dot-paths reach into nested event payloads — e.g. line_items.0.image
       return readPath(eventProperties, source.key)
+    case 'decision':
+      // Decisioning engine value, precomputed per send into decisionContext by
+      // the caller (buildDecisionVars). Maps method+field -> the flat key.
+      return decisionContext?.[decisionKey(source.method, source.field)]
   }
+}
+
+/** method+field → the flat key buildDecisionVars produces. */
+export function decisionKey(method: string, field: string): string {
+  if (method === 'recommended_product') return field === 'title' ? 'recommended_product' : `recommended_product_${field}`
+  if (method === 'social_proof') return `social_proof_${field}`
+  return method // next_best_action
 }
 
 function readProductField(
@@ -248,4 +267,12 @@ export const SYSTEM_VARIABLE_KEYS = new Set([
   'store_name',
   'campaign_name',
   'unsubscribe_url',
+  // Decisioning tokens — resolved via decisionContext at send time, so the
+  // linter must not flag {{recommended_product}} / {{social_proof_*}} as undefined.
+  'recommended_product',
+  'recommended_product_image',
+  'recommended_product_price',
+  'recommended_product_id',
+  'social_proof_viewers',
+  'social_proof_buyers',
 ])
