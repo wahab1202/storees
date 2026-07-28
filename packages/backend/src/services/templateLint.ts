@@ -22,6 +22,7 @@ export type LintIssue = {
     | 'unknown_customer_field'
     | 'unknown_project_field'
     | 'invalid_format'
+    | 'decision_needs_default'
   key?: string
   message: string
 }
@@ -73,6 +74,17 @@ export function lintTemplate(opts: {
         code: 'invalid_format',
         key: v.key,
         message: `Variable "${v.key}" uses unknown format "${v.format}"`,
+      })
+    }
+    // Meta rejects an empty positional param (#131008). A decision source
+    // routinely resolves empty (no matching recommendation), so a WhatsApp
+    // positional slot ({{1}}, {{2}}…) bound to one MUST carry a fallback.
+    if (v.source?.kind === 'decision' && /^\d+$/.test(v.key) && !v.defaultValue?.trim()) {
+      issues.push({
+        kind: 'error',
+        code: 'decision_needs_default',
+        key: v.key,
+        message: `Positional param {{${v.key}}} uses smart content, which can resolve empty — set a fallback value (WhatsApp rejects empty params)`,
       })
     }
   }

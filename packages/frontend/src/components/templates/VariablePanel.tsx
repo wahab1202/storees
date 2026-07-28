@@ -315,6 +315,13 @@ export function SourcePicker({
           )}
         </optgroup>
       )}
+      <optgroup label="Smart content">
+        <option value="decision::recommended_product::title">Recommended product — name</option>
+        <option value="decision::recommended_product::image">Recommended product — image URL</option>
+        <option value="decision::recommended_product::price">Recommended product — price</option>
+        <option value="decision::social_proof::buyers">Social proof — buyers count</option>
+        <option value="decision::social_proof::viewers">Social proof — viewers count</option>
+      </optgroup>
       <optgroup label="Other">
         <option value="event::__custom__">Event payload path… (e.g. line_items.0.image)</option>
         <option value={`literal::${source.kind === 'literal' ? source.value : ''}`}>
@@ -322,6 +329,16 @@ export function SourcePicker({
         </option>
       </optgroup>
     </select>
+    {source.kind === 'decision' && (
+      <select
+        value={typeof source.basedOn === 'string' ? source.basedOn : 'trigger_product'}
+        onChange={e => onChange({ ...source, basedOn: e.target.value as 'trigger_product' | 'last_viewed' })}
+        className="w-full h-8 px-2 text-xs border border-border rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent/30"
+      >
+        <option value="trigger_product">Based on the triggering product</option>
+        <option value="last_viewed">Based on last viewed product</option>
+      </select>
+    )}
     {customActive && source.kind === 'event' && (
       <input
         type="text"
