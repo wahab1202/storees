@@ -1138,6 +1138,39 @@ export type WhatsappTemplate = {
   updatedAt: string
 }
 
+// ============ WHATSAPP USAGE METERING ============
+
+/** Meta's billable conversation categories. */
+export type WhatsappUsageCategory = 'marketing' | 'utility' | 'authentication' | 'service'
+
+/** One billable conversation window (mirrors the `whatsapp_usage` table). */
+export type WhatsappUsageRecord = {
+  id: string
+  projectId: string
+  provider: string
+  phoneNumberId: string | null
+  conversationId: string
+  category: WhatsappUsageCategory | string
+  pricingModel: string | null
+  originType: string | null
+  billable: boolean
+  startedAt: string
+  expirationAt: string | null
+  createdAt: string
+}
+
+/** Per-brand usage rollup over a time range — powers the usage dashboard. */
+export type WhatsappUsageSummary = {
+  range: { from: string; to: string }
+  /** Billable conversations per category. */
+  byCategory: Record<WhatsappUsageCategory, number>
+  /** Messages sent per category (from the messages table), for context. */
+  messagesByCategory?: Partial<Record<WhatsappUsageCategory, number>>
+  totalConversations: number
+  /** Estimated spend, if a rate card is configured (smallest currency unit). */
+  estimatedCost?: { currency: string; amount: number }
+}
+
 // ============ GENERIC EVENT API TYPES ============
 
 export type EventIngestionPayload = {
