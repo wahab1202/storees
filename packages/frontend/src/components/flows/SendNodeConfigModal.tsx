@@ -42,6 +42,7 @@ function sourceToken(v: TemplateVariable): string {
     case 'project':   return `‹project.${s.field}›`
     case 'event':     return `‹event.${s.key}›`
     case 'literal':   return s.value || '‹literal›'
+    case 'decision':  return `‹${s.method}${s.field ? '.' + s.field : ''}›`
   }
 }
 

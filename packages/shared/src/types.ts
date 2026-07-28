@@ -1014,6 +1014,17 @@ export type TemplateVariableSource =
   | { kind: 'event'; key: string }            // event.properties[key] (flows only)
   | { kind: 'project'; field: string }        // projects.<field>
   | { kind: 'literal'; value: string }        // hardcoded string
+  // Storees decisioning engine — resolved per customer at send time. Same
+  // picker slot as every other source, so it can fill a WhatsApp positional
+  // {{1}} identically to an email token.
+  | {
+      kind: 'decision'
+      method: 'recommended_product' | 'social_proof' | 'next_best_action'
+      // recommended_product: 'title' | 'image' | 'price' | 'id'
+      // social_proof:       'viewers' | 'buyers'
+      field: string
+      basedOn?: 'trigger_product' | 'last_viewed' | { productId: string }
+    }
 
 export type TemplateVariableFormat =
   | 'money'                                   // 500000 → ₹5,000.00
