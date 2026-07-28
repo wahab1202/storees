@@ -113,11 +113,17 @@ export async function recognize(projectId: string, identifiers: NetworkIdentifie
   return { inNetwork: true, globalId: active.globalId, customerId: link?.customerId ?? null, returning: !!link }
 }
 
-/** Withdraw a person from the network — recognition stops everywhere immediately. */
+/**
+ * Withdraw a person from the network — recognition stops everywhere immediately.
+ * Resolves the global id from whatever key was supplied and withdraws ALL of the
+ * person's keys, not just the one they happened to unsubscribe with: a phone-only
+ * opt-out must also stop email recognition, or the right-to-withdraw is silently
+ * incomplete. Never gated on the feature flag — a withdrawal is always honoured.
+ */
 export async function withdrawFromNetwork(identifiers: NetworkIdentifiers): Promise<void> {
-  const match = keyMatch(keysFor(identifiers))
-  if (!match) return
-  await db.update(globalIdentityKeys).set({ withdrawnAt: new Date() }).where(match)
+  const globalId = await findGlobalId(keysFor(identifiers))
+  if (!globalId) return
+  await db.update(globalIdentityKeys).set({ withdrawnAt: new Date() }).where(eq(globalIdentityKeys.globalId, globalId))
 }
 
 /**
