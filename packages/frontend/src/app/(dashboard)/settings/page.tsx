@@ -8,6 +8,7 @@ import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { PinnacleConnect } from './PinnacleConnect'
 import { MetaConnect } from './MetaConnect'
+import { StoreesProvisioning } from './StoreesProvisioning'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
@@ -316,6 +317,8 @@ const CHANNEL_PROVIDERS: Record<string, ProviderDef[]> = {
       fields: [{ key: 'apiKey', label: 'API Key', type: 'password' }, { key: 'fromNumber', label: 'From Number', placeholder: '+1234567890' }] },
   ],
   whatsapp: [
+    { value: 'storees', label: 'Storees managed', description: "No WhatsApp yet? We provision a number and WABA for you", initials: 'St', color: 'bg-accent',
+      fields: [] },
     { value: 'meta', label: 'WhatsApp Cloud API', description: 'Direct Meta integration — official WhatsApp Business', initials: 'WA', color: 'bg-green-500',
       fields: [
         { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: '1234567890' },
@@ -487,6 +490,10 @@ function ChannelProviderSettings() {
             // generic save-fields form.
             if (activeChannel === 'whatsapp' && providerDef.value === 'meta') {
               return <MetaConnect />
+            }
+            // Storees-managed: ops-assisted provisioning (intake → queue → link).
+            if (activeChannel === 'whatsapp' && providerDef.value === 'storees') {
+              return <StoreesProvisioning />
             }
 
             return (
