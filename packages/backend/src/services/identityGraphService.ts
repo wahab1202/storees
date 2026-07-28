@@ -32,8 +32,19 @@ function normalise(type: EdgeType, raw: string): string {
   return v
 }
 
+// Cross-brand PII keys (phone/email) are stored hash-only, so hash
+// irreversibility IS the de-identification boundary. A bare SHA-256 over a
+// ~10^10 phone space is trivially reversible with a precomputed table, so when
+// a server-held pepper is configured we key the hash with HMAC — non-reversible
+// without the secret, while equality-matching still works. Unset (dev) falls
+// back to plain SHA-256 for behavioural parity; prod MUST set IDENTITY_PEPPER
+// before the cross-brand network is enabled (rotating it needs a rehash).
+const IDENTITY_PEPPER = process.env.IDENTITY_PEPPER || ''
+
 function hash(value: string): string {
-  return crypto.createHash('sha256').update(value).digest('hex')
+  return IDENTITY_PEPPER
+    ? crypto.createHmac('sha256', IDENTITY_PEPPER).update(value).digest('hex')
+    : crypto.createHash('sha256').update(value).digest('hex')
 }
 
 /**
@@ -93,8 +104,6 @@ export async function recordEdges(
   return edges.length
 }
 
-const BACKFILL_CHUNK = 500
-
 /**
  * Backfill identity_edges for a project from existing customers (phone / email /
  * external_id) and anonymous sessions (session_id / device_id). Idempotent —
@@ -107,20 +116,16 @@ export async function backfillIdentityEdges(projectId: string): Promise<{ custom
     .select({ id: customers.id, email: customers.email, phone: customers.phone, externalId: customers.externalId })
     .from(customers)
     .where(eq(customers.projectId, projectId))
-  for (let i = 0; i < custRows.length; i += BACKFILL_CHUNK) {
-    for (const c of custRows.slice(i, i + BACKFILL_CHUNK)) {
-      edgeCount += await recordEdges(projectId, c.id, { email: c.email, phone: c.phone, externalId: c.externalId }, 'backfill')
-    }
+  for (const c of custRows) {
+    edgeCount += await recordEdges(projectId, c.id, { email: c.email, phone: c.phone, externalId: c.externalId }, 'backfill')
   }
 
   const sessRows = await db
     .select({ customerId: anonymousSessions.customerId, sessionId: anonymousSessions.sessionId, deviceId: anonymousSessions.deviceId })
     .from(anonymousSessions)
     .where(eq(anonymousSessions.projectId, projectId))
-  for (let i = 0; i < sessRows.length; i += BACKFILL_CHUNK) {
-    for (const s of sessRows.slice(i, i + BACKFILL_CHUNK)) {
-      edgeCount += await recordEdges(projectId, s.customerId, { sessionId: s.sessionId, deviceId: s.deviceId }, 'backfill')
-    }
+  for (const s of sessRows) {
+    edgeCount += await recordEdges(projectId, s.customerId, { sessionId: s.sessionId, deviceId: s.deviceId }, 'backfill')
   }
 
   return { customers: custRows.length, sessions: sessRows.length, edges: edgeCount }
@@ -204,58 +209,74 @@ export async function mergeCustomers(
     }
   }
 
-  // Re-point identity-bearing rows and capture their ids so the merge can be undone.
-  const movedEvents = await db.update(events).set({ customerId: survivorId })
-    .where(and(eq(events.projectId, projectId), eq(events.customerId, loserId))).returning({ id: events.id })
-  const movedOrders = await db.update(orders).set({ customerId: survivorId })
-    .where(and(eq(orders.projectId, projectId), eq(orders.customerId, loserId))).returning({ id: orders.id })
-  const movedSessions = await db.update(anonymousSessions).set({ customerId: survivorId })
-    .where(and(eq(anonymousSessions.projectId, projectId), eq(anonymousSessions.customerId, loserId))).returning({ id: anonymousSessions.id })
+  // Re-point identity-bearing rows and write the audit atomically — a mid-way
+  // failure must not leave rows moved with no undoable record. Aggregates are
+  // derivable, so they're recomputed after the tx commits.
+  const moved = await db.transaction(async (tx) => {
+    const movedEvents = await tx.update(events).set({ customerId: survivorId })
+      .where(and(eq(events.projectId, projectId), eq(events.customerId, loserId))).returning({ id: events.id })
+    const movedOrders = await tx.update(orders).set({ customerId: survivorId })
+      .where(and(eq(orders.projectId, projectId), eq(orders.customerId, loserId))).returning({ id: orders.id })
+    const movedSessions = await tx.update(anonymousSessions).set({ customerId: survivorId })
+      .where(and(eq(anonymousSessions.projectId, projectId), eq(anonymousSessions.customerId, loserId))).returning({ id: anonymousSessions.id })
 
-  // Edges are derivable — drop loser edges the survivor already has (unique
-  // index), re-point the rest. Undo rebuilds edges for both, so no tracking.
-  await db.execute(sql`
-    DELETE FROM identity_edges le
-    WHERE le.project_id = ${projectId} AND le.customer_id = ${loserId}
-      AND EXISTS (
-        SELECT 1 FROM identity_edges se
-        WHERE se.project_id = ${projectId} AND se.customer_id = ${survivorId}
-          AND se.edge_type = le.edge_type AND se.edge_hash = le.edge_hash
-      )
-  `)
-  await db.update(identityEdges).set({ customerId: survivorId })
-    .where(and(eq(identityEdges.projectId, projectId), eq(identityEdges.customerId, loserId)))
+    // Edges are derivable — drop loser edges the survivor already has (unique
+    // index), re-point the rest. Undo rebuilds edges for both, so no tracking.
+    await tx.execute(sql`
+      DELETE FROM identity_edges le
+      WHERE le.project_id = ${projectId} AND le.customer_id = ${loserId}
+        AND EXISTS (
+          SELECT 1 FROM identity_edges se
+          WHERE se.project_id = ${projectId} AND se.customer_id = ${survivorId}
+            AND se.edge_type = le.edge_type AND se.edge_hash = le.edge_hash
+        )
+    `)
+    await tx.update(identityEdges).set({ customerId: survivorId })
+      .where(and(eq(identityEdges.projectId, projectId), eq(identityEdges.customerId, loserId)))
 
-  await db.update(customers).set({ mergedInto: survivorId, updatedAt: new Date() }).where(eq(customers.id, loserId))
+    await tx.update(customers).set({ mergedInto: survivorId, updatedAt: new Date() }).where(eq(customers.id, loserId))
+
+    const moved = { events: movedEvents.length, orders: movedOrders.length, sessions: movedSessions.length, edges: 0 }
+    const [audit] = await tx.insert(customerMerges).values({ projectId, survivorId, mergedId: loserId, reason, moved }).returning({ id: customerMerges.id })
+    const records = [
+      ...movedEvents.map(r => ({ mergeId: audit.id, entity: 'event', rowId: r.id })),
+      ...movedOrders.map(r => ({ mergeId: audit.id, entity: 'order', rowId: r.id })),
+      ...movedSessions.map(r => ({ mergeId: audit.id, entity: 'session', rowId: r.id })),
+    ]
+    for (let i = 0; i < records.length; i += 1000) {
+      const chunk = records.slice(i, i + 1000)
+      if (chunk.length) await tx.insert(customerMergeRows).values(chunk)
+    }
+    return moved
+  })
+
   await recalculateAggregates(survivorId)
-
-  const moved = { events: movedEvents.length, orders: movedOrders.length, sessions: movedSessions.length, edges: 0 }
-  const [audit] = await db.insert(customerMerges).values({ projectId, survivorId, mergedId: loserId, reason, moved }).returning({ id: customerMerges.id })
-  const records = [
-    ...movedEvents.map(r => ({ mergeId: audit.id, entity: 'event', rowId: r.id })),
-    ...movedOrders.map(r => ({ mergeId: audit.id, entity: 'order', rowId: r.id })),
-    ...movedSessions.map(r => ({ mergeId: audit.id, entity: 'session', rowId: r.id })),
-  ]
-  for (let i = 0; i < records.length; i += 1000) {
-    const chunk = records.slice(i, i + 1000)
-    if (chunk.length) await db.insert(customerMergeRows).values(chunk)
-  }
-
   return { survivorId, mergedId: loserId, moved, dryRun: false }
 }
 
-/** Re-point a set of row ids to a customer (chunked for the param limit). */
+/** A db handle or an open transaction — lets helpers run inside a tx. */
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+/**
+ * Re-point a set of row ids from `fromCustomer` to `toCustomer` (chunked for the
+ * param limit). The `fromCustomer` guard is essential for undo correctness: if a
+ * survivor was itself later merged into a third customer, its rows have moved on,
+ * and undoing the FIRST merge must NOT drag those rows out of the second — only
+ * rows still sitting on the survivor are reverted.
+ */
 async function repointRows(
+  tx: DbExecutor,
   table: typeof events | typeof orders | typeof anonymousSessions,
   projectId: string,
   ids: string[],
   toCustomer: string,
+  fromCustomer: string,
 ): Promise<void> {
   for (let i = 0; i < ids.length; i += 1000) {
     const chunk = ids.slice(i, i + 1000)
     if (chunk.length) {
-      await db.update(table).set({ customerId: toCustomer })
-        .where(and(eq(table.projectId, projectId), inArray(table.id, chunk)))
+      await tx.update(table).set({ customerId: toCustomer })
+        .where(and(eq(table.projectId, projectId), eq(table.customerId, fromCustomer), inArray(table.id, chunk)))
     }
   }
 }
@@ -288,18 +309,23 @@ export async function undoMerge(projectId: string, mergeId: string): Promise<{ s
   const orderIds = rows.filter(r => r.entity === 'order').map(r => r.rowId)
   const sessionIds = rows.filter(r => r.entity === 'session').map(r => r.rowId)
 
-  await repointRows(events, projectId, eventIds, merge.mergedId)
-  await repointRows(orders, projectId, orderIds, merge.mergedId)
-  await repointRows(anonymousSessions, projectId, sessionIds, merge.mergedId)
+  // Revert the repoints + audit atomically. Only rows still on the survivor are
+  // moved back (the fromCustomer guard in repointRows), so a survivor that was
+  // itself later merged doesn't get corrupted by undoing this earlier merge.
+  await db.transaction(async (tx) => {
+    await repointRows(tx, events, projectId, eventIds, merge.mergedId, merge.survivorId)
+    await repointRows(tx, orders, projectId, orderIds, merge.mergedId, merge.survivorId)
+    await repointRows(tx, anonymousSessions, projectId, sessionIds, merge.mergedId, merge.survivorId)
+    await tx.update(customers).set({ mergedInto: null, updatedAt: new Date() }).where(eq(customers.id, merge.mergedId))
+    await tx.update(customerMerges).set({ undoneAt: new Date() }).where(eq(customerMerges.id, mergeId))
+    await tx.delete(customerMergeRows).where(eq(customerMergeRows.mergeId, mergeId))
+  })
 
-  await db.update(customers).set({ mergedInto: null, updatedAt: new Date() }).where(eq(customers.id, merge.mergedId))
+  // Derivable state, recomputed after commit.
   await recalculateAggregates(merge.survivorId)
   await recalculateAggregates(merge.mergedId)
   await rederiveEdges(projectId, merge.survivorId)
   await rederiveEdges(projectId, merge.mergedId)
-
-  await db.update(customerMerges).set({ undoneAt: new Date() }).where(eq(customerMerges.id, mergeId))
-  await db.delete(customerMergeRows).where(eq(customerMergeRows.mergeId, mergeId))
 
   return { survivorId: merge.survivorId, restoredId: merge.mergedId, restored: { events: eventIds.length, orders: orderIds.length, sessions: sessionIds.length } }
 }
@@ -337,7 +363,9 @@ export async function applyMerges(
     for (const loserId of ids) {
       if (loserId === survivor) continue
       merges.push(await mergeCustomers(projectId, survivor, loserId, `${cluster.edgeType}:${cluster.edgeHash.slice(0, 8)}`, !live))
-      if (live) consumed.add(loserId)
+      // Consume in dry-run too, so the preview's cluster consumption (and thus
+      // its merge/row counts) matches what a live run would actually perform.
+      consumed.add(loserId)
     }
   }
   return { dryRun: !live, clusters: clusters.length, merges }
