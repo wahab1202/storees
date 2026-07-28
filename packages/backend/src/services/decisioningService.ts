@@ -124,3 +124,56 @@ export async function buildDecisionVars(projectId: string, productId: string): P
   }
   return vars
 }
+
+/**
+ * Per-recipient recommendation for campaigns/broadcasts (no triggering product):
+ * run the customer's most recent purchased product through the pairing rules;
+ * else fall back to the project's top-seller they didn't just buy. This is what
+ * makes a decision source work in a broadcast — each recipient gets their own.
+ */
+export async function recommendForCustomer(projectId: string, customerId: string, limit = 1): Promise<RecommendedProduct[]> {
+  const last = await db.execute(sql`
+    SELECT COALESCE(li->>'product_id', li->>'productId') AS pid
+    FROM orders o, jsonb_array_elements(o.line_items) li
+    WHERE o.project_id = ${projectId} AND o.customer_id = ${customerId}
+      AND COALESCE(li->>'product_id', li->>'productId') <> ''
+    ORDER BY o.created_at DESC
+    LIMIT 1
+  `)
+  const lastId = (last.rows[0] as { pid?: string })?.pid
+  if (lastId) {
+    const recs = await recommendForProduct(projectId, lastId, limit)
+    if (recs.length > 0) return recs
+  }
+
+  // Fallback: top-selling products overall, excluding what they just bought.
+  const top = await db.execute(sql`
+    SELECT COALESCE(li->>'product_id', li->>'productId') AS pid, COUNT(*) AS n
+    FROM orders o, jsonb_array_elements(o.line_items) li
+    WHERE o.project_id = ${projectId} AND COALESCE(li->>'product_id', li->>'productId') <> ''
+    GROUP BY 1 ORDER BY n DESC
+    LIMIT ${limit + 3}
+  `)
+  const ids = (top.rows as Array<{ pid: string }>).map(r => r.pid).filter(id => id && id !== lastId).slice(0, limit)
+  if (ids.length === 0) return []
+  const rows = await db.select({ productId: products.shopifyProductId, title: products.title, imageUrl: products.imageUrl, price: products.basePrice })
+    .from(products).where(and(eq(products.projectId, projectId), inArray(products.shopifyProductId, ids)))
+  const byId = new Map(rows.map(r => [r.productId, r]))
+  return ids.map(id => byId.get(id)).filter(Boolean) as RecommendedProduct[]
+}
+
+/** Decision vars for a campaign recipient (per-recipient affinity, no trigger product). */
+export async function buildDecisionVarsForCustomer(projectId: string, customerId: string): Promise<Record<string, string>> {
+  const rec = (await recommendForCustomer(projectId, customerId, 1))[0]
+  if (!rec) return {}
+  const proof = await socialProof(projectId, rec.productId)
+  const vars: Record<string, string> = {
+    recommended_product: rec.title,
+    recommended_product_id: rec.productId,
+    social_proof_viewers: String(proof.viewers),
+    social_proof_buyers: String(proof.buyers),
+  }
+  if (rec.imageUrl) vars.recommended_product_image = rec.imageUrl
+  if (rec.price) vars.recommended_product_price = rec.price
+  return vars
+}
