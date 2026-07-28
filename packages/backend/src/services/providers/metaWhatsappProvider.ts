@@ -12,6 +12,12 @@ import { customers, emailTemplates } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { countParameters, buildTemplateComponents, normalizeWhatsAppRecipient, normalizeQualityScore } from './whatsappUtils.js'
 import { shortLinkBaseUrl } from '../shortLinkService.js'
+import { decrypt } from '../encryption.js'
+
+/** The Cloud API token, decrypted on read. Safe for legacy plaintext configs
+ *  (decrypt passes non-`enc:` values through) — so this works whether or not
+ *  ENCRYPTION_KEY is set. */
+const tokenOf = (config: Record<string, string>): string => decrypt(config.accessToken ?? '')
 
 // Subset of Meta's message_templates response we care about
 type MetaComponent =
@@ -159,7 +165,8 @@ export function parseMetaTemplate(t: MetaTemplate): ProviderTemplate {
 export const metaWhatsappProvider: ChannelProvider = {
   name: 'meta',
   async send(command, config) {
-    const { phoneNumberId, accessToken } = config
+    const { phoneNumberId } = config
+    const accessToken = tokenOf(config)
 
     const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
     const template = command.templateId ? (await db.select({ bodyText: emailTemplates.bodyText, subject: emailTemplates.subject }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0] : undefined
@@ -195,7 +202,8 @@ export const metaWhatsappProvider: ChannelProvider = {
    * Sends an approved HSM template — required for messaging contacts outside the 24h session window.
    */
   async sendTemplate(command, config) {
-    const { phoneNumberId, accessToken } = config
+    const { phoneNumberId } = config
+    const accessToken = tokenOf(config)
     // Test-send path bypasses customer lookup and delivers to an admin-provided
     // phone number. Otherwise resolve from the customer row.
     let rawTo: string | null | undefined = command.phoneOverride
@@ -316,7 +324,8 @@ export const metaWhatsappProvider: ChannelProvider = {
    *   POST /<waba_id>/message_templates
    */
   async submitTemplate(input: SubmitTemplateInput, config: Record<string, string>): Promise<SubmitTemplateResult> {
-    const { wabaId, accessToken } = config
+    const { wabaId } = config
+    const accessToken = tokenOf(config)
     if (!wabaId || !accessToken) throw new Error('Meta submitTemplate: wabaId and accessToken required')
 
     const components = buildMetaComponents(input)
@@ -357,7 +366,8 @@ export const metaWhatsappProvider: ChannelProvider = {
    * status worker only polls templates we know are still PENDING.
    */
   async getTemplateStatus(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult> {
-    const { wabaId, accessToken } = config
+    const { wabaId } = config
+    const accessToken = tokenOf(config)
     if (!wabaId || !accessToken) throw new Error('Meta getTemplateStatus: wabaId and accessToken required')
 
     // providerTemplateId is the Meta template *name* (or numeric id depending on submit response).
@@ -392,7 +402,8 @@ export const metaWhatsappProvider: ChannelProvider = {
    * Requires `wabaId` (WhatsApp Business Account ID, distinct from phoneNumberId).
    */
   async syncTemplates(config) {
-    const { wabaId, accessToken } = config
+    const { wabaId } = config
+    const accessToken = tokenOf(config)
     if (!wabaId || !accessToken) throw new Error('Meta syncTemplates: wabaId and accessToken required')
 
     const all: ProviderTemplate[] = []

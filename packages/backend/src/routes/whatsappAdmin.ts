@@ -5,6 +5,7 @@ import { whatsappTemplates, ctwaAttributions, customers, projects, whatsappProvi
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { linkMetaWhatsappAccount } from '../services/whatsappMetaConnectService.js'
+import { getBusinessProfile, updateBusinessProfile, setProfilePhotoFromUrl, type BusinessProfilePatch } from '../services/whatsappProfileService.js'
 import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache, type SubmitTemplateInput } from '../services/channelProviderRegistry.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters, buildBodyParams } from '../services/providers/whatsappUtils.js'
@@ -884,6 +885,53 @@ router.post('/provisioning/link', requireProjectId, requireRole('admin'), async 
   } catch (err) {
     console.error('[whatsapp/provisioning] link error:', err)
     res.status(500).json({ success: false, error: 'Failed to link provisioned account' })
+  }
+})
+
+/* ── WhatsApp Business profile (the brand's public identity) ──────────────── */
+
+/** GET /api/whatsapp/profile — the brand's business profile + verified name. */
+router.get('/profile', requireProjectId, async (req, res) => {
+  try {
+    const profile = await getBusinessProfile(req.projectId!)
+    res.json({ success: true, data: profile })
+  } catch (err) {
+    // Not-connected / non-Meta is an expected state, not a 500.
+    res.status(400).json({ success: false, error: (err as Error).message })
+  }
+})
+
+/** PUT /api/whatsapp/profile — update editable profile fields (not the name). */
+router.put('/profile', requireProjectId, requireRole('admin'), async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const patch: BusinessProfilePatch = {}
+    for (const f of ['about', 'address', 'description', 'email', 'vertical'] as const) {
+      if (f in body) patch[f] = body[f] == null ? '' : String(body[f])
+    }
+    if ('websites' in body) {
+      patch.websites = Array.isArray(body.websites)
+        ? (body.websites as unknown[]).map(String).filter(Boolean)
+        : String(body.websites ?? '').split(',').map(s => s.trim()).filter(Boolean)
+    }
+    await updateBusinessProfile(req.projectId!, patch)
+    const profile = await getBusinessProfile(req.projectId!)
+    res.json({ success: true, data: profile })
+  } catch (err) {
+    res.status(400).json({ success: false, error: (err as Error).message })
+  }
+})
+
+/** POST /api/whatsapp/profile/photo — set the profile photo from an image URL. */
+router.post('/profile/photo', requireProjectId, requireRole('admin'), async (req, res) => {
+  try {
+    const imageUrl = String((req.body ?? {}).imageUrl ?? '').trim()
+    if (!imageUrl) return res.status(400).json({ success: false, error: 'imageUrl is required' })
+    await setProfilePhotoFromUrl(req.projectId!, imageUrl)
+    const profile = await getBusinessProfile(req.projectId!)
+    res.json({ success: true, data: profile })
+  } catch (err) {
+    res.status(400).json({ success: false, error: (err as Error).message })
   }
 })
 

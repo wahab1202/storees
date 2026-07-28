@@ -9,6 +9,7 @@ import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { PinnacleConnect } from './PinnacleConnect'
 import { MetaConnect } from './MetaConnect'
 import { StoreesProvisioning } from './StoreesProvisioning'
+import { WhatsappProfile } from './WhatsappProfile'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
@@ -599,6 +600,10 @@ function ChannelProviderSettings() {
               </div>
             )
           })()}
+
+          {/* Business-profile management — self-hides unless a Meta WhatsApp
+              account is connected (direct or Storees-provisioned). */}
+          {activeChannel === 'whatsapp' && <WhatsappProfile />}
         </div>
       )}
     </div>
