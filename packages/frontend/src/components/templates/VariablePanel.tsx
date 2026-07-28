@@ -471,6 +471,14 @@ function nextKey(base: string, existing: TemplateVariable[]): string {
  * field so the row arrives with a sensible default rather than blank.
  */
 function guessSourceForKey(key: string): TemplateVariableSource {
+  // Smart-content tokens bind to the decision engine, not a profile field.
+  if (key === 'recommended_product' || key.startsWith('recommended_product_')) {
+    const field = key === 'recommended_product' ? 'title' : key.replace('recommended_product_', '')
+    return { kind: 'decision', method: 'recommended_product', field, basedOn: 'trigger_product' }
+  }
+  if (key.startsWith('social_proof_')) {
+    return { kind: 'decision', method: 'social_proof', field: key.replace('social_proof_', ''), basedOn: 'trigger_product' }
+  }
   const productField = guessProductField(key)
   if (productField) return { kind: 'product', field: productField }
   return { kind: 'customer', field: guessCustomerField(key) ?? 'name' }

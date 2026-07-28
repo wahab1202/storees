@@ -14,6 +14,7 @@ import {
   type ProjectLike,
 } from '../services/templateContext.js'
 import { interpolateTemplate } from '../services/emailService.js'
+import { buildDecisionVars } from '../services/decisioningService.js'
 import type { TemplateVariable } from '@storees/shared'
 
 const router = Router()
@@ -240,12 +241,21 @@ router.post('/preview', requireProjectId, async (req, res) => {
       .limit(1)
     const product = productRow as ProductLike | undefined
 
+    // Decisioning preview: resolve real recommendation + live social proof for
+    // the sample product so `decision`-bound variables render actual content
+    // instead of blank while authoring. Falls back to the variable's default.
+    const decisionContext = product?.externalId
+      ? await buildDecisionVars(projectId, product.externalId).catch(() => ({} as Record<string, string>))
+      : {}
+
     const map = resolveTemplateVariables({
       variables: variables ?? [],
       customer,
       project,
       product,
       eventProperties,
+      decisionContext,
+      systemVars: decisionContext,
     })
 
     const issues = lintTemplate({ variables, subject, htmlBody, bodyText })
