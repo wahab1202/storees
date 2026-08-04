@@ -12,6 +12,7 @@ import {
   persistInboundMessages,
 } from '../services/whatsappInboundService.js'
 import { handleDeliveryReceipt } from '../services/messageStatusService.js'
+import { recordConversationUsage } from '../services/whatsappUsageService.js'
 import { handleMetaTemplateStatusEvent } from '../services/templateStatusService.js'
 
 const router = Router()
@@ -237,7 +238,12 @@ router.post('/whatsapp', async (req, res) => {
         changes?: Array<{
           field?: string  // 'messages' | 'message_template_status_update' | ...
           value?: {
-            statuses?: Array<{ id: string; status: string }>
+            statuses?: Array<{
+              id: string
+              status: string
+              conversation?: { id?: string; origin?: { type?: string }; expiration_timestamp?: string | number }
+              pricing?: { billable?: boolean; pricing_model?: string; category?: string }
+            }>
             messages?: unknown[]
             metadata?: { phone_number_id?: string }
             // template_status_update fields
@@ -253,18 +259,30 @@ router.post('/whatsapp', async (req, res) => {
       }>
     }
 
-    // Branch 1 — outbound delivery status updates (existing behavior)
+    // Branch 1 — outbound delivery status updates + usage metering. Meta attaches
+    // `conversation` + `pricing` (marketing/utility/authentication/service) to
+    // status events; we record one billable conversation per id for the usage
+    // dashboard. Project resolved once per change from metadata.phone_number_id.
+    const statusMap: Record<string, 'delivered' | 'read' | 'failed'> = {
+      delivered: 'delivered',
+      read: 'read',
+      failed: 'failed',
+    }
     for (const entry of body.entry ?? []) {
       for (const change of entry.changes ?? []) {
-        for (const status of change.value?.statuses ?? []) {
-          const statusMap: Record<string, 'delivered' | 'read' | 'failed'> = {
-            delivered: 'delivered',
-            read: 'read',
-            failed: 'failed',
-          }
+        const statuses = change.value?.statuses ?? []
+        if (statuses.length === 0) continue
+        const phoneNumberId = change.value?.metadata?.phone_number_id ?? null
+        let usageProjectId: string | null | undefined  // undefined = not yet resolved
+        for (const status of statuses) {
           const mapped = statusMap[status.status]
-          if (mapped) {
-            await handleDeliveryReceipt(status.id, mapped, 'whatsapp', 'meta')
+          if (mapped) await handleDeliveryReceipt(status.id, mapped, 'whatsapp', 'meta')
+
+          if (status.conversation || status.pricing) {
+            if (usageProjectId === undefined) {
+              usageProjectId = phoneNumberId ? await findProjectByMetaPhoneNumberId(phoneNumberId) : null
+            }
+            if (usageProjectId) await recordConversationUsage(usageProjectId, 'meta', phoneNumberId, status)
           }
         }
       }
