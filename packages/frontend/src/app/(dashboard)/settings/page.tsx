@@ -6,11 +6,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
-import { PinnacleConnect } from './PinnacleConnect'
-import { MetaConnect } from './MetaConnect'
-import { StoreesProvisioning } from './StoreesProvisioning'
-import { WhatsappProfile } from './WhatsappProfile'
-import { WhatsappUsage } from './WhatsappUsage'
+import { WhatsappChannelPanel } from './WhatsappChannelPanel'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
@@ -40,9 +36,17 @@ const DOMAIN_EVENTS: Record<string, Array<{ name: string; example: string }>> = 
   ],
 }
 
+const SETTINGS_SECTIONS = [
+  { id: 'setup', label: 'Setup' },
+  { id: 'channels', label: 'Channels' },
+  { id: 'ai', label: 'AI' },
+] as const
+type SettingsSection = typeof SETTINGS_SECTIONS[number]['id']
+
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('script')
   const [copied, setCopied] = useState<string | null>(null)
+  const [section, setSection] = useState<SettingsSection>('channels')
 
   let projectId: string | null = null
   try {
@@ -121,7 +125,25 @@ Storees.identify('user-123', {
     <div>
       <PageHeader title="Settings" />
 
-      <div className="max-w-3xl space-y-6">
+      <div className="max-w-3xl">
+        {/* Settings sub-navigation */}
+        <div className="flex gap-1 bg-surface rounded-lg p-1 mb-6 w-fit">
+          {SETTINGS_SECTIONS.map(s => (
+            <button
+              key={s.id}
+              onClick={() => setSection(s.id)}
+              className={cn(
+                'px-4 py-1.5 text-sm font-medium rounded-md transition-colors',
+                section === s.id ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary',
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        {section === 'setup' && (
+        <div className="space-y-6">
         {/* Project Info */}
         <div className="bg-surface-elevated border border-border rounded-lg p-6">
           <h3 className="font-semibold text-text-primary mb-4">Project</h3>
@@ -278,11 +300,14 @@ Storees.identify('user-123', {
             ))}
           </div>
         </div>
-        {/* Channel Provider Configuration */}
-        <ChannelProviderSettings />
+        </div>
+        )}
+
+        {/* Messaging channels — WhatsApp / Email / SMS / Push */}
+        {section === 'channels' && <ChannelProviderSettings />}
 
         {/* AI Provider Configuration */}
-        <AiProviderSettings />
+        {section === 'ai' && <AiProviderSettings />}
       </div>
     </div>
   )
@@ -352,7 +377,7 @@ const CHANNEL_META: Record<string, { label: string; description: string; icon: t
 }
 
 function ChannelProviderSettings() {
-  const [activeChannel, setActiveChannel] = useState<string | null>(null)
+  const [activeChannel, setActiveChannel] = useState<string>('whatsapp')
   const [selectedProvider, setSelectedProvider] = useState<Record<string, string>>({})
   const [configValues, setConfigValues] = useState<Record<string, Record<string, string>>>({})
   const [saveStatus, setSaveStatus] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({})
@@ -411,7 +436,7 @@ function ChannelProviderSettings() {
           return (
             <button
               key={channel}
-              onClick={() => setActiveChannel(isActive ? null : channel)}
+              onClick={() => setActiveChannel(channel)}
               className={cn(
                 'flex items-center gap-2.5 px-4 py-3 rounded-xl border transition-all text-left flex-1',
                 isActive
@@ -440,8 +465,11 @@ function ChannelProviderSettings() {
         })}
       </div>
 
-      {/* Provider Selection Panel */}
-      {activeChannel && (
+      {/* WhatsApp gets a dedicated, multi-section panel (status · connection ·
+          business profile · usage). Other channels use the generic form. */}
+      {activeChannel === 'whatsapp' ? (
+        <WhatsappChannelPanel />
+      ) : activeChannel ? (
         <div className="border border-border rounded-xl overflow-hidden">
           {/* Provider Grid */}
           <div className="p-4 border-b border-border bg-surface/30">
@@ -481,22 +509,6 @@ function ChannelProviderSettings() {
             const providerDef = CHANNEL_PROVIDERS[activeChannel]?.find(p => p.value === selectedProvider[activeChannel])
             if (!providerDef) return null
             const status = saveStatus[activeChannel] ?? 'idle'
-
-            // Pinnacle WhatsApp uses a connector flow (discover → pick → connect),
-            // not the generic save-fields form.
-            if (activeChannel === 'whatsapp' && providerDef.value === 'pinnacle') {
-              return <PinnacleConnect />
-            }
-            // Meta WhatsApp Cloud API uses a validated BYO-credentials connect
-            // flow (validate → subscribe webhooks → import templates), not the
-            // generic save-fields form.
-            if (activeChannel === 'whatsapp' && providerDef.value === 'meta') {
-              return <MetaConnect />
-            }
-            // Storees-managed: ops-assisted provisioning (intake → queue → link).
-            if (activeChannel === 'whatsapp' && providerDef.value === 'storees') {
-              return <StoreesProvisioning />
-            }
 
             return (
               <div className="p-4 space-y-4">
@@ -601,15 +613,8 @@ function ChannelProviderSettings() {
               </div>
             )
           })()}
-
-          {/* Business-profile management — self-hides unless a Meta WhatsApp
-              account is connected (direct or Storees-provisioned). */}
-          {activeChannel === 'whatsapp' && <WhatsappProfile />}
-
-          {/* Usage metering — billable conversations by category. */}
-          {activeChannel === 'whatsapp' && <WhatsappUsage />}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
