@@ -6,6 +6,7 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { linkMetaWhatsappAccount } from '../services/whatsappMetaConnectService.js'
 import { getBusinessProfile, updateBusinessProfile, setProfilePhotoFromUrl, type BusinessProfilePatch } from '../services/whatsappProfileService.js'
+import { getUsageSummary } from '../services/whatsappUsageService.js'
 import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache, type SubmitTemplateInput } from '../services/channelProviderRegistry.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters, buildBodyParams } from '../services/providers/whatsappUtils.js'
@@ -885,6 +886,24 @@ router.post('/provisioning/link', requireProjectId, requireRole('admin'), async 
   } catch (err) {
     console.error('[whatsapp/provisioning] link error:', err)
     res.status(500).json({ success: false, error: 'Failed to link provisioned account' })
+  }
+})
+
+/**
+ * GET /api/whatsapp/usage?projectId=...&days=30
+ * Per-brand billable-conversation usage by category (marketing / utility /
+ * authentication / service) + optional cost estimate.
+ */
+router.get('/usage', requireProjectId, async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
+    const to = new Date()
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
+    const summary = await getUsageSummary(req.projectId!, from, to)
+    res.json({ success: true, data: summary })
+  } catch (err) {
+    console.error('[whatsapp/usage] error:', err)
+    res.status(500).json({ success: false, error: 'Failed to load WhatsApp usage' })
   }
 })
 
