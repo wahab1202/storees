@@ -67,6 +67,7 @@ import { startScoringWorker } from './workers/scoringWorker.js'
 import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
 import { startIdentityMergeWorker } from './workers/identityMergeWorker.js'
 import { startCustomerAggregateWorker, runStartupCatchUp } from './workers/customerAggregateWorker.js'
+import { startAggregateReconcileWorker } from './workers/aggregateReconcileWorker.js'
 import { startDataSyncWorker } from './workers/dataSyncWorker.js'
 import { startWebhookDeliveryWorker } from './workers/webhookDeliveryWorker.js'
 import { startScoringScheduler } from './workers/scoringScheduler.js'
@@ -240,6 +241,7 @@ async function bootstrap() {
   startTemplateStatusWorker()
   startIdentityMergeWorker()
   startCustomerAggregateWorker()
+  startAggregateReconcileWorker()
   startDataSyncWorker()
   startWebhookDeliveryWorker()
 

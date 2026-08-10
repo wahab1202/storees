@@ -7,6 +7,7 @@ import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { WhatsappChannelPanel } from './WhatsappChannelPanel'
+import { DataMaintenance } from './DataMaintenance'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
@@ -300,6 +301,9 @@ Storees.identify('user-123', {
             ))}
           </div>
         </div>
+
+        {/* Admin data maintenance — recalculate aggregates on demand */}
+        <DataMaintenance />
         </div>
         )}
 
