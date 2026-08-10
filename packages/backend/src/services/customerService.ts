@@ -489,13 +489,39 @@ export async function updateCustomerAggregates(
       last_seen        = GREATEST(last_seen, NOW()),
       updated_at       = NOW()
     FROM (
-      SELECT
-        COUNT(*)::int AS cnt,
-        COALESCE(SUM(total::numeric), 0)::numeric(12,2) AS spent,
-        MIN(created_at) AS first_at,
-        MAX(created_at) AS last_at
-      FROM orders
-      WHERE customer_id = ${customerId} AND status != 'cancelled'
+      SELECT COUNT(*)::int AS cnt,
+             COALESCE(SUM(revenue), 0)::numeric(12,2) AS spent,
+             MIN(ts) AS first_at,
+             MAX(ts) AS last_at
+      FROM (
+        SELECT DISTINCT ON (order_key) order_key, revenue, ts
+        FROM (
+          SELECT COALESCE(NULLIF(external_order_id, ''), id::text) AS order_key,
+                 COALESCE(total::numeric, 0) AS revenue, created_at AS ts, 0 AS source_rank
+          FROM orders
+          WHERE customer_id = ${customerId} AND status IS DISTINCT FROM 'cancelled'
+          UNION ALL
+          SELECT COALESCE(
+                   NULLIF(e.properties->>'order_id', ''),
+                   CASE WHEN e.properties->>'display_id' IS NOT NULL THEN '#' || (e.properties->>'display_id') END,
+                   e.id::text
+                 ) AS order_key,
+                 COALESCE(
+                   NULLIF(e.properties->>'total', '')::numeric,
+                   (SELECT COALESCE(SUM(
+                      COALESCE(NULLIF(item->>'price', '')::numeric, NULLIF(item->>'unit_price', '')::numeric, 0)
+                      * COALESCE(NULLIF(item->>'quantity', '')::numeric, 1)
+                    ), 0)
+                    FROM jsonb_array_elements(e.properties->'line_items') item),
+                   0
+                 ) AS revenue,
+                 e.timestamp AS ts, 1 AS source_rank
+          FROM events e
+          WHERE e.customer_id = ${customerId}
+            AND e.event_name IN ('order_placed', 'order_completed')
+        ) u
+        ORDER BY order_key, source_rank
+      ) deduped
     ) agg
     WHERE c.id = ${customerId}
   `)
@@ -504,10 +530,11 @@ export async function updateCustomerAggregates(
 }
 
 /**
- * Recalculate aggregates after order cancellation.
- * Recomputes from the orders table (the order is already flagged cancelled) so
- * the result is idempotent — a duplicate order_cancelled webhook can't
- * double-decrement the totals.
+ * Recalculate one customer's aggregates from the deduped UNION of their order
+ * rows + order events (matching the Orders tab + recalculateAllAggregates), so
+ * a customer with a mix of table rows and connector-only events isn't
+ * undercounted. Idempotent — recomputes from source, so a duplicate
+ * order_cancelled webhook can't double-decrement.
  */
 export async function recalculateAggregates(
   customerId: string,
@@ -519,9 +546,36 @@ export async function recalculateAggregates(
       avg_order_value = CASE WHEN agg.cnt > 0 THEN agg.sum_total / agg.cnt ELSE 0 END,
       updated_at = NOW()
     FROM (
-      SELECT COUNT(*)::int AS cnt, COALESCE(SUM(total), 0) AS sum_total
-      FROM orders
-      WHERE customer_id = ${customerId} AND status != 'cancelled'
+      SELECT COUNT(*)::int AS cnt, COALESCE(SUM(revenue), 0) AS sum_total
+      FROM (
+        SELECT DISTINCT ON (order_key) order_key, revenue
+        FROM (
+          SELECT COALESCE(NULLIF(external_order_id, ''), id::text) AS order_key,
+                 COALESCE(total::numeric, 0) AS revenue, 0 AS source_rank
+          FROM orders
+          WHERE customer_id = ${customerId} AND status IS DISTINCT FROM 'cancelled'
+          UNION ALL
+          SELECT COALESCE(
+                   NULLIF(e.properties->>'order_id', ''),
+                   CASE WHEN e.properties->>'display_id' IS NOT NULL THEN '#' || (e.properties->>'display_id') END,
+                   e.id::text
+                 ) AS order_key,
+                 COALESCE(
+                   NULLIF(e.properties->>'total', '')::numeric,
+                   (SELECT COALESCE(SUM(
+                      COALESCE(NULLIF(item->>'price', '')::numeric, NULLIF(item->>'unit_price', '')::numeric, 0)
+                      * COALESCE(NULLIF(item->>'quantity', '')::numeric, 1)
+                    ), 0)
+                    FROM jsonb_array_elements(e.properties->'line_items') item),
+                   0
+                 ) AS revenue,
+                 1 AS source_rank
+          FROM events e
+          WHERE e.customer_id = ${customerId}
+            AND e.event_name IN ('order_placed', 'order_completed')
+        ) u
+        ORDER BY order_key, source_rank
+      ) deduped
     ) agg
     WHERE c.id = ${customerId}
   `)
@@ -542,82 +596,72 @@ export async function recalculateAggregates(
  * (e.g. a source that emits events without materialising orders).
  */
 export async function recalculateAllAggregates(projectId: string): Promise<number> {
-  // Primary: orders table — authoritative and deduped.
+  // A customer's orders live in TWO places: the orders table (native Shopify
+  // sync) and order_placed/order_completed EVENTS (the data-sync connector,
+  // which never materialises a row). The customer Orders tab MERGES both,
+  // deduped by order id — so the aggregate MUST too. The old two-pass version
+  // (orders-table primary + event fallback ONLY for customers with no rows)
+  // undercounted any customer with a MIX: 7 table rows hid ~33 connector-only
+  // orders (card showed 7, Orders tab showed 40). Union both sources, dedup by
+  // (customer, order_key) with the table row winning when an order is in both.
   const result = await db.execute(sql`
     UPDATE customers c SET
       total_orders     = agg.order_count,
       total_spent      = agg.total_spent,
       avg_order_value  = CASE WHEN agg.order_count > 0 THEN agg.total_spent / agg.order_count ELSE 0 END,
       clv              = agg.total_spent,
+      first_order_date = agg.first_at,
+      last_order_date  = agg.last_at,
       updated_at       = NOW()
     FROM (
-      SELECT
-        customer_id,
-        COUNT(*)::integer AS order_count,
-        COALESCE(SUM(total::numeric), 0)::numeric(12,2) AS total_spent
-      FROM orders
-      WHERE project_id = ${projectId} AND status != 'cancelled'
+      SELECT customer_id,
+             COUNT(*)::integer AS order_count,
+             COALESCE(SUM(revenue), 0)::numeric(12,2) AS total_spent,
+             MIN(ts) AS first_at,
+             MAX(ts) AS last_at
+      FROM (
+        SELECT DISTINCT ON (customer_id, order_key) customer_id, order_key, revenue, ts
+        FROM (
+          -- Materialised order rows (authoritative when shared with an event).
+          SELECT customer_id,
+                 COALESCE(NULLIF(external_order_id, ''), id::text) AS order_key,
+                 COALESCE(total::numeric, 0) AS revenue,
+                 created_at AS ts,
+                 0 AS source_rank
+          FROM orders
+          WHERE project_id = ${projectId} AND status IS DISTINCT FROM 'cancelled'
+          UNION ALL
+          -- Connector orders that only ever exist as events.
+          SELECT e.customer_id,
+                 COALESCE(
+                   NULLIF(e.properties->>'order_id', ''),
+                   CASE WHEN e.properties->>'display_id' IS NOT NULL THEN '#' || (e.properties->>'display_id') END,
+                   e.id::text
+                 ) AS order_key,
+                 COALESCE(
+                   NULLIF(e.properties->>'total', '')::numeric,
+                   (SELECT COALESCE(SUM(
+                      COALESCE(NULLIF(item->>'price', '')::numeric, NULLIF(item->>'unit_price', '')::numeric, 0)
+                      * COALESCE(NULLIF(item->>'quantity', '')::numeric, 1)
+                    ), 0)
+                    FROM jsonb_array_elements(e.properties->'line_items') item),
+                   0
+                 ) AS revenue,
+                 e.timestamp AS ts,
+                 1 AS source_rank
+          FROM events e
+          WHERE e.project_id = ${projectId}
+            AND e.customer_id IS NOT NULL
+            AND e.event_name IN ('order_placed', 'order_completed')
+        ) u
+        ORDER BY customer_id, order_key, source_rank
+      ) deduped
       GROUP BY customer_id
     ) agg
     WHERE c.id = agg.customer_id AND c.project_id = ${projectId}
   `)
 
   const ordersUpdated = Number((result as { rowCount?: number }).rowCount ?? 0)
-
-  // Fallback: customers with order EVENTS but NO order rows. DISTINCT ON
-  // order_id collapses duplicate events for the same order; those without an
-  // id fall back to the event id so they stay individually counted.
-  await db.execute(sql`
-    UPDATE customers c SET
-      total_orders     = agg.order_count,
-      total_spent      = agg.total_revenue,
-      avg_order_value  = CASE WHEN agg.order_count > 0 THEN agg.total_revenue / agg.order_count ELSE 0 END,
-      clv              = agg.total_revenue,
-      updated_at       = NOW()
-    FROM (
-      SELECT customer_id,
-             COUNT(*)::integer AS order_count,
-             COALESCE(SUM(order_revenue), 0)::numeric(12,2) AS total_revenue
-      FROM (
-        SELECT DISTINCT ON (e.customer_id, COALESCE(e.properties->>'order_id', e.properties->>'id', e.id::text))
-          e.customer_id,
-          COALESCE(
-            (e.properties->>'total')::numeric,
-            (SELECT COALESCE(SUM(COALESCE((item->>'price')::numeric, (item->>'unit_price')::numeric, 0)), 0)
-             FROM jsonb_array_elements(e.properties->'line_items') item),
-            0
-          ) AS order_revenue
-        FROM events e
-        WHERE e.project_id = ${projectId}
-          AND e.customer_id IS NOT NULL
-          AND e.event_name IN ('order_placed', 'order_completed')
-      ) per_order
-      GROUP BY customer_id
-      HAVING COUNT(*) > 0
-    ) agg
-    WHERE c.id = agg.customer_id
-      AND c.project_id = ${projectId}
-      -- only customers the orders-table pass did NOT already set
-      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.project_id = ${projectId})
-  `)
-
-  // Backfill first_order_date and last_order_date from orders table
-  await db.execute(sql`
-    UPDATE customers c SET
-      first_order_date = agg.first_order_at,
-      last_order_date = agg.last_order_at
-    FROM (
-      SELECT
-        customer_id,
-        MIN(created_at) AS first_order_at,
-        MAX(created_at) AS last_order_at
-      FROM orders
-      WHERE project_id = ${projectId} AND status != 'cancelled'
-      GROUP BY customer_id
-    ) agg
-    WHERE c.id = agg.customer_id
-      AND c.project_id = ${projectId}
-  `)
 
   // Zero out customers with no orders from either source
   await db.execute(sql`
@@ -635,7 +679,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
         WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed')
         UNION
         SELECT DISTINCT customer_id FROM orders
-        WHERE project_id = ${projectId} AND status != 'cancelled'
+        WHERE project_id = ${projectId} AND status IS DISTINCT FROM 'cancelled'
       )
       AND (total_orders != 0 OR total_spent::numeric != 0)
   `)
