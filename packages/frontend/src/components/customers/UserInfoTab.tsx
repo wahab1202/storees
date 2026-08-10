@@ -397,12 +397,12 @@ export function UserInfoTab({ customer, domain }: Props) {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Custom Attributes */}
           {customAttrEntries.length > 0 && (
-            <div className="bg-white border border-border rounded-xl p-5">
+            <div className="bg-white border border-border rounded-xl p-5 min-w-0">
               <h3 className="text-sm font-semibold text-text-primary mb-4">Custom Attributes</h3>
-              <table className="w-full text-sm">
+              <table className="w-full text-sm table-fixed">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-2 text-xs font-semibold text-text-muted uppercase tracking-wide">
+                    <th className="w-2/5 text-left py-2 text-xs font-semibold text-text-muted uppercase tracking-wide">
                       Property Name
                     </th>
                     <th className="text-right py-2 text-xs font-semibold text-text-muted uppercase tracking-wide">
@@ -413,8 +413,8 @@ export function UserInfoTab({ customer, domain }: Props) {
                 <tbody>
                   {customAttrEntries.map(([key, val]) => (
                     <tr key={key} className="border-b border-border/50">
-                      <td className="py-2 text-text-secondary">{snakeToTitle(key)}</td>
-                      <td className="py-2 text-right font-medium text-text-primary">
+                      <td className="py-2 pr-3 text-text-secondary align-top">{snakeToTitle(key)}</td>
+                      <td className="py-2 text-right font-medium text-text-primary align-top break-all">
                         {formatValue(val)}
                       </td>
                     </tr>
@@ -426,12 +426,12 @@ export function UserInfoTab({ customer, domain }: Props) {
 
           {/* Computed Metrics */}
           {metricEntries.length > 0 && (
-            <div className="bg-white border border-border rounded-xl p-5">
+            <div className="bg-white border border-border rounded-xl p-5 min-w-0">
               <h3 className="text-sm font-semibold text-text-primary mb-4">Computed Metrics</h3>
-              <table className="w-full text-sm">
+              <table className="w-full text-sm table-fixed">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-2 text-xs font-semibold text-text-muted uppercase tracking-wide">
+                    <th className="w-2/5 text-left py-2 text-xs font-semibold text-text-muted uppercase tracking-wide">
                       Property Name
                     </th>
                     <th className="text-right py-2 text-xs font-semibold text-text-muted uppercase tracking-wide">
@@ -442,8 +442,8 @@ export function UserInfoTab({ customer, domain }: Props) {
                 <tbody>
                   {metricEntries.map(([key, val]) => (
                     <tr key={key} className="border-b border-border/50">
-                      <td className="py-2 text-text-secondary">{snakeToTitle(key)}</td>
-                      <td className="py-2 text-right font-medium text-text-primary">
+                      <td className="py-2 pr-3 text-text-secondary align-top">{snakeToTitle(key)}</td>
+                      <td className="py-2 text-right font-medium text-text-primary align-top break-all">
                         {formatValue(val)}
                       </td>
                     </tr>
