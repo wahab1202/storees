@@ -104,6 +104,20 @@ export const templateStatusQueue = new Queue('template-status', {
   },
 })
 
+// Nightly reconciliation of customer aggregates (total_orders / total_spent /
+// clv) from the authoritative orders table. A self-healing net: any path that
+// adds or re-points orders without recomputing (historical sync, identity
+// stitch) can only leave the summary counters stale until the next tick.
+export const aggregateReconcileQueue = new Queue('aggregate-reconcile', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 10000 },
+    removeOnComplete: true,
+    removeOnFail: { count: 10 },
+  },
+})
+
 // Phase F3 — identity-merge job queue. Enqueued when an anonymous browser
 // session resolves to a known customer; the worker back-attributes prior
 // events and re-publishes them through the events queue with replayed=true.
