@@ -640,6 +640,12 @@ export type ActionNode = {
     variables?: TemplateVariable[]
     /** Per-node UTM tagging — same shape campaigns use. */
     utmParameters?: CampaignUtmParameters
+    /**
+     * Who receives this send: the customer (default), their dealer (agent), or
+     * both. Dealer sends are delivered to the dealer's WhatsApp while keeping
+     * the customer as the content context. WhatsApp only for now.
+     */
+    recipient?: MessageRecipient
   }
 }
 
@@ -916,7 +922,20 @@ export type SendCommand = {
    * are pre-interpolated by the caller.
    */
   utmParameters?: CampaignUtmParameter[]
+  /**
+   * Who this send is delivered to. 'dealer' redirects delivery to the customer's
+   * assigned dealer (agent) while keeping the CUSTOMER as the content/context —
+   * so the dealer gets a message ABOUT their customer. A single recipient per
+   * send; 'both' is expanded to two sends upstream. Defaults to the customer.
+   */
+  recipient?: 'customer' | 'dealer'
+  /** Resolved dealer address when recipient='dealer' (set by the delivery layer). */
+  deliverToPhone?: string
+  deliverToEmail?: string
 }
+
+/** Message/flow/campaign recipient choice (UI + config). */
+export type MessageRecipient = 'customer' | 'dealer' | 'both'
 
 export type Message = {
   id: string
