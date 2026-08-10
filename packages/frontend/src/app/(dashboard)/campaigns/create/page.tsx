@@ -444,6 +444,7 @@ function CreateCampaignContent() {
   // single-recipient mode — 'filter' on email is the precise equivalent).
   const [name, setName] = useState(searchParams.get('nbaName') ?? '')
   const [contentType, setContentType] = useState<CampaignContentType>('promotional')
+  const [recipient, setRecipient] = useState<'customer' | 'dealer' | 'both'>('customer')
   const [subscriptionCategoryIds, setSubscriptionCategoryIds] = useState<string[]>([])
   const [tags, setTags] = useState<string[]>([])
   const [segmentId, setSegmentId] = useState('')
@@ -596,6 +597,7 @@ function CreateCampaignContent() {
         channel,
         deliveryType,
         contentType,
+        recipient,
         // Email fields
         subject: isEmail || isInApp ? subject : (channel === 'push' ? pushTitle : undefined),
         htmlBody: isEmail ? htmlBody : undefined,
@@ -765,6 +767,7 @@ function CreateCampaignContent() {
             name={name} setName={setName}
             tags={tags} setTags={setTags}
             contentType={contentType} setContentType={setContentType}
+            recipient={recipient} setRecipient={setRecipient}
             subscriptionCategories={subscriptionCategories}
             subscriptionCategoryIds={subscriptionCategoryIds}
             setSubscriptionCategoryIds={setSubscriptionCategoryIds}
@@ -1014,6 +1017,7 @@ function CreateCampaignContent() {
 
 function Step1TargetUsers({
   channel, name, setName, tags, setTags, contentType, setContentType,
+  recipient, setRecipient,
   subscriptionCategories, subscriptionCategoryIds, setSubscriptionCategoryIds,
   audienceMode, setAudienceMode, segmentId, setSegmentId,
   audienceFilter, setAudienceFilter,
@@ -1029,6 +1033,7 @@ function Step1TargetUsers({
   name: string; setName: (v: string) => void
   tags: string[]; setTags: (v: string[]) => void
   contentType: CampaignContentType; setContentType: (v: CampaignContentType) => void
+  recipient: 'customer' | 'dealer' | 'both'; setRecipient: (v: 'customer' | 'dealer' | 'both') => void
   subscriptionCategories: Array<{ id: string; name: string; description: string | null; channel: CampaignChannel | 'whatsapp' | null }>
   subscriptionCategoryIds: string[]; setSubscriptionCategoryIds: (v: string[]) => void
   audienceMode: 'all' | 'segment' | 'filter'; setAudienceMode: (v: 'all' | 'segment' | 'filter') => void
@@ -1143,6 +1148,38 @@ function Step1TargetUsers({
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Recipient — send to the customer, their dealer, or both */}
+      <div className="bg-white border border-border rounded-xl p-6">
+        <label className="block text-sm font-medium text-text-primary mb-1.5">Send to</label>
+        <p className="text-xs text-text-muted mb-3">
+          Deliver to the customer, their dealer (the customer&apos;s assigned dealer), or both. Dealer copies go to the dealer&apos;s WhatsApp, about the customer. WhatsApp only for now; no dealer contact → skipped.
+        </p>
+        <div className="flex gap-2">
+          {([
+            { value: 'customer' as const, label: 'Customer' },
+            { value: 'dealer' as const, label: 'Dealer' },
+            { value: 'both' as const, label: 'Customer + Dealer' },
+          ]).map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setRecipient(opt.value)}
+              className={cn(
+                'flex-1 py-2 text-sm font-medium rounded-lg border transition-colors',
+                recipient === opt.value ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-secondary hover:bg-surface',
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {recipient !== 'customer' && (
+          <p className="mt-2 text-[11px] text-amber-600">
+            Heads-up: on a broadcast, each customer&apos;s dealer gets one message per customer — a dealer with many customers in the audience receives many messages.
+          </p>
+        )}
       </div>
 
       {/* Subscription categories */}

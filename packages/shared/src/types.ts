@@ -214,6 +214,8 @@ export type Campaign = {
   deliveryType: CampaignDeliveryType
   status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused'
   contentType: CampaignContentType
+  /** Who receives the campaign: the customer, their dealer, or both. */
+  recipient?: MessageRecipient
   segmentId: string | null
   segmentName?: string
   subject: string | null
