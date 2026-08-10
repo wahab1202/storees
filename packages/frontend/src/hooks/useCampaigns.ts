@@ -62,6 +62,7 @@ export function useCreateCampaign() {
 	      utmParameters?: CampaignUtmParameters | null
 	      scheduledAt?: string
       contentType?: CampaignContentType
+      recipient?: 'customer' | 'dealer' | 'both'
       previewText?: string
       templateId?: string
       conversionGoals?: ConversionGoal[]
@@ -120,6 +121,7 @@ export function useUpdateCampaign() {
 	      utmParameters?: CampaignUtmParameters | null
 	      scheduledAt?: string | null
       contentType?: CampaignContentType
+      recipient?: 'customer' | 'dealer' | 'both'
       previewText?: string | null
       templateId?: string | null
       conversionGoals?: ConversionGoal[]

@@ -393,6 +393,7 @@ export const campaigns = pgTable('campaigns', {
   deliveryType: varchar('delivery_type', { length: 20 }).notNull().default('one-time'), // one-time | periodic
   status: varchar('status', { length: 20 }).notNull().default('draft'), // draft | scheduled | sending | sent | paused
   contentType: varchar('content_type', { length: 20 }).notNull().default('promotional'), // promotional | transactional
+  recipient: varchar('recipient', { length: 20 }).notNull().default('customer'), // customer | dealer | both
   segmentId: uuid('segment_id').references(() => segments.id),
   subject: varchar('subject', { length: 500 }),
   previewText: varchar('preview_text', { length: 500 }),

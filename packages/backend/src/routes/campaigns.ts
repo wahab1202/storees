@@ -123,7 +123,7 @@ router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       name, channel, deliveryType, subject, htmlBody, emailBuilderTemplate, bodyText,
-      segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt, contentType, previewText,
+      segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt, contentType, recipient, previewText,
       gmailAnnotation,
       utmParameters,
       templateId, conversionGoals, goalTrackingHours, currency, pushPlatforms, pushContent, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
@@ -154,6 +154,7 @@ router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       utmParameters?: unknown
       scheduledAt?: string
       contentType?: string
+      recipient?: string
       previewText?: string
       templateId?: string
       conversionGoals?: unknown[]
@@ -267,6 +268,7 @@ router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       gmailAnnotation: normalizeGmailAnnotation(gmailAnnotation),
       utmParameters: normalizeUtmParameters(utmParameters),
       contentType: contentType ?? 'promotional',
+      recipient: recipient ?? 'customer',
       previewText: previewText?.trim() ?? null,
       templateId: templateId ?? null,
       conversionGoals: conversionGoals ?? [],
@@ -393,7 +395,7 @@ router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) =>
     const {
       name, subject, htmlBody, emailBuilderTemplate, bodyText, segmentId, fromName, fromEmail, replyToEmail, ccEmails, bccEmails, scheduledAt,
       gmailAnnotation, utmParameters, templateId,
-      contentType, previewText, conversionGoals, goalTrackingHours, currency, pushPlatforms, pushContent, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
+      contentType, recipient, previewText, conversionGoals, goalTrackingHours, currency, pushPlatforms, pushContent, deliveryLimit, ignoreFrequencyCap, countForFrequencyCap,
       sendTimeMode, scheduleTimezone,
       periodicSchedule, abTestEnabled, abSplitPct, abVariantBSubject, abVariantBHtmlBody,
       abVariantBBodyText, abWinnerMetric, abAutoSendWinner, abTestDurationHours,
@@ -420,6 +422,7 @@ router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) =>
       templateId?: string | null
       scheduledAt?: string | null
       contentType?: string
+      recipient?: string
       previewText?: string | null
       conversionGoals?: unknown[]
       goalTrackingHours?: number
@@ -530,6 +533,7 @@ router.patch('/:id', requireProjectId, async (req: AuthenticatedRequest, res) =>
     if (utmParameters !== undefined) updates.utmParameters = normalizeUtmParameters(utmParameters)
     if (templateId !== undefined) updates.templateId = templateId
     if (contentType !== undefined) updates.contentType = contentType
+    if (recipient !== undefined) updates.recipient = recipient
     if (previewText !== undefined) updates.previewText = previewText
     if (conversionGoals !== undefined) updates.conversionGoals = conversionGoals
     if (goalTrackingHours !== undefined) updates.goalTrackingHours = goalTrackingHours
