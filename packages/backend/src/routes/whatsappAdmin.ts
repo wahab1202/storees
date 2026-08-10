@@ -4,8 +4,8 @@ import { db } from '../db/connection.js'
 import { whatsappTemplates, ctwaAttributions, customers, projects, whatsappProvisioningRequests } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
-import { requireRole } from '../middleware/agentScope.js'
-import { linkMetaWhatsappAccount } from '../services/whatsappMetaConnectService.js'
+import { requireRole, requirePlatformAdmin } from '../middleware/agentScope.js'
+import { linkMetaWhatsappAccount, registerWhatsappNumber } from '../services/whatsappMetaConnectService.js'
 import { getBusinessProfile, updateBusinessProfile, setProfilePhotoFromUrl, type BusinessProfilePatch } from '../services/whatsappProfileService.js'
 import { getUsageSummary } from '../services/whatsappUsageService.js'
 import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache, type SubmitTemplateInput } from '../services/channelProviderRegistry.js'
@@ -905,6 +905,54 @@ router.post('/provisioning/link', requireProjectId, requireRole('admin'), async 
   } catch (err) {
     console.error('[whatsapp/provisioning] link error:', err)
     res.status(500).json({ success: false, error: 'Failed to link provisioned account' })
+  }
+})
+
+/**
+ * POST /api/whatsapp/provisioning/register — register the number for the Cloud
+ * API + set its 2-step PIN (the API-driven provisioning step, so ops doesn't do
+ * it in the Meta dashboard). Admin only.
+ */
+router.post('/provisioning/register', requireProjectId, requireRole('admin'), async (req, res) => {
+  try {
+    const { phoneNumberId, accessToken, pin } = (req.body ?? {}) as { phoneNumberId?: string; accessToken?: string; pin?: string }
+    const result = await registerWhatsappNumber(String(phoneNumberId ?? ''), String(accessToken ?? ''), String(pin ?? ''))
+    if (!result.ok) return res.status(400).json({ success: false, error: result.error })
+    res.json({ success: true, data: { registered: true } })
+  } catch (err) {
+    console.error('[whatsapp/provisioning/register] error:', err)
+    res.status(500).json({ success: false, error: 'Failed to register number' })
+  }
+})
+
+/**
+ * GET /api/whatsapp/provisioning-queue — EVERY brand's provisioning request in
+ * one list, for the onboarding team. Cross-tenant, so platform-admin only
+ * (STOREES_PLATFORM_ADMINS allowlist). Read-only; the actual link/register
+ * actions stay per-project (scoped by requireProjectId).
+ */
+router.get('/provisioning-queue', requirePlatformAdmin(), async (_req, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: whatsappProvisioningRequests.id,
+        projectId: whatsappProvisioningRequests.projectId,
+        projectName: projects.name,
+        status: whatsappProvisioningRequests.status,
+        businessName: whatsappProvisioningRequests.businessName,
+        requestedNumber: whatsappProvisioningRequests.requestedNumber,
+        contactEmail: whatsappProvisioningRequests.contactEmail,
+        assignedTo: whatsappProvisioningRequests.assignedTo,
+        submittedAt: whatsappProvisioningRequests.submittedAt,
+        updatedAt: whatsappProvisioningRequests.updatedAt,
+      })
+      .from(whatsappProvisioningRequests)
+      .innerJoin(projects, eq(projects.id, whatsappProvisioningRequests.projectId))
+      .orderBy(desc(whatsappProvisioningRequests.submittedAt))
+    res.json({ success: true, data: rows })
+  } catch (err) {
+    console.error('[whatsapp/provisioning-queue] error:', err)
+    res.status(500).json({ success: false, error: 'Failed to load provisioning queue' })
   }
 })
 
