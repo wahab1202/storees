@@ -40,6 +40,40 @@ export async function send(command: SendCommand): Promise<string | null> {
     }
   }
 
+  // Dealer-directed send: deliver to the customer's dealer (agent) instead of
+  // the customer. The content still personalises from the customer (variables
+  // were resolved upstream), so the dealer gets a message ABOUT their customer.
+  // Dealer alerts are internal business messages — they bypass the customer's
+  // marketing consent + frequency cap (WhatsApp template rules still apply). If
+  // the customer has no dealer / no dealer contact for this channel, skip + log
+  // rather than sending dealer-worded content to the customer.
+  if (command.recipient === 'dealer') {
+    // Only channels whose provider honours the address override can safely
+    // redirect to the dealer. WhatsApp is wired; sms/push aren't yet, so block
+    // rather than risk delivering dealer-worded content to the customer.
+    if (command.channel !== 'whatsapp') {
+      await recordMessage(command, 'blocked', 'dealer_channel_unsupported')
+      return null
+    }
+    const { resolveDealerContact, dealerReachableOn } = await import('./dealerContactService.js')
+    const contact = await resolveDealerContact(command.userId)
+    if (!dealerReachableOn(contact, command.channel)) {
+      await recordMessage(command, 'blocked', 'no_dealer_contact')
+      return null
+    }
+    command.deliverToPhone = contact!.phone ?? undefined
+    command.deliverToEmail = contact!.email ?? undefined
+    const messageId = await recordMessage(command, 'queued')
+    await deliveryQueue.add('send', {
+      messageId,
+      ...command,
+      scheduledAt: command.scheduledAt?.toISOString(),
+    }, {
+      delay: command.scheduledAt ? Math.max(0, command.scheduledAt.getTime() - Date.now()) : undefined,
+    })
+    return messageId
+  }
+
   // Gates 1-3 are independent reads — run them together, then evaluate in
   // priority order so the recorded block reason is unchanged. Frequency cap is
   // marketing-only; transactional sends bypass it by design.

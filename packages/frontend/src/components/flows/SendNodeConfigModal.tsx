@@ -148,6 +148,9 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
   const [utm, setUtm] = useState<CampaignUtmParameters>(
     initial.utmParameters ?? defaultUtm(CHANNEL_OF[initial.actionType], initial.templateName),
   )
+  const [recipient, setRecipient] = useState<'customer' | 'dealer' | 'both'>(
+    (initial as { recipient?: 'customer' | 'dealer' | 'both' }).recipient ?? 'customer',
+  )
   const [search, setSearch] = useState('')
 
   const channel = CHANNEL_OF[actionType]
@@ -205,6 +208,7 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
       templateName,
       variables: finalVariables.length > 0 ? finalVariables : undefined,
       utmParameters: utm,
+      recipient,
     })
   }
 
@@ -312,6 +316,30 @@ export function SendNodeConfigModal({ open, initial, onSave, onClose }: Props) {
                     </button>
                   )
                 })}
+              </div>
+              {/* Recipient — send to the customer, their dealer, or both. */}
+              <div>
+                <div className="text-[11px] font-medium text-text-muted mb-1.5">Send to</div>
+                <div className="flex gap-1.5">
+                  {(['customer', 'dealer', 'both'] as const).map(r => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setRecipient(r)}
+                      className={cn(
+                        'flex-1 py-1.5 text-xs font-medium rounded-lg border capitalize transition-colors',
+                        recipient === r ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-secondary hover:bg-surface',
+                      )}
+                    >
+                      {r === 'both' ? 'Customer + Dealer' : r}
+                    </button>
+                  ))}
+                </div>
+                {recipient !== 'customer' && (
+                  <p className="mt-1 text-[10px] text-text-muted">
+                    Dealer copies go to the customer&apos;s dealer (their WhatsApp), about the customer. WhatsApp only for now; no dealer contact → skipped.
+                  </p>
+                )}
               </div>
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-muted" />
