@@ -9,6 +9,7 @@ import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
+import { backfillOrdersFromEvents } from '../services/orderBackfillService.js'
 import { computeAndUpdateMetrics } from '../workers/metricsWorker.js'
 import { getConsentAuditLog, getConsentStatus } from '../services/consentService.js'
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
@@ -667,6 +668,25 @@ router.post('/recalculate', requireRole('admin'), requireProjectId, async (req, 
   } catch (err) {
     console.error('Recalculate error:', err)
     res.status(500).json({ success: false, error: 'Failed to recalculate aggregates' })
+  }
+})
+
+// Admin-only: materialise event-only orders (historical import / connector /
+// order_completed) into the orders table, so table-reading consumers stop
+// undercounting. Idempotent. Recomputes aggregates + segments afterwards.
+router.post('/backfill-orders', requireRole('admin'), requireProjectId, async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const { materialized } = await backfillOrdersFromEvents(projectId)
+    const updated = await recalculateAllAggregates(projectId)
+    await evaluateAllSegments(projectId)
+    res.json({
+      success: true,
+      data: { materialized, updated, message: `Materialised ${materialized} event-only orders; recalculated ${updated} customers; segments re-evaluated` },
+    })
+  } catch (err) {
+    console.error('Backfill orders error:', err)
+    res.status(500).json({ success: false, error: 'Failed to backfill orders from events' })
   }
 })
 
