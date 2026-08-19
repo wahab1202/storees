@@ -1187,6 +1187,24 @@ export const whatsappProvisioningRequests = pgTable('whatsapp_provisioning_reque
   index('idx_wa_provisioning_status').on(table.status, table.submittedAt),
 ])
 
+// Human-captured abandonment reasons (one per checkout_abandoned event).
+// See migration 0082_cart_abandonment_notes.sql for column-level docs.
+export const cartAbandonmentNotes = pgTable('cart_abandonment_notes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  eventId: uuid('event_id').notNull(),
+  reason: varchar('reason', { length: 40 }).notNull(),
+  remarks: text('remarks'),
+  markedBy: uuid('marked_by'),
+  markedByName: varchar('marked_by_name', { length: 160 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_cart_abandonment_notes_event').on(table.projectId, table.eventId),
+  index('idx_cart_abandonment_notes_reason').on(table.projectId, table.reason, table.createdAt),
+])
+
 // ============ DATA SOURCE CONNECTORS ============
 // See migration 0043_data_source_connectors.sql for column-level docs.
 

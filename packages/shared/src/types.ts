@@ -1236,6 +1236,44 @@ export type WhatsappProvisioningInput = {
   notes?: string
 }
 
+// ============ CART ABANDONMENT INSIGHT ============
+
+/** Human-captured reason for one abandonment (from the exec team's call). */
+export type CartAbandonmentNote = {
+  reason: string
+  remarks: string | null
+  markedByName: string | null
+  updatedAt: string
+}
+
+export type AbandonmentProduct = { productId: string; name: string; at: string }
+
+/** One abandonment instance (a checkout_abandoned event) + its captured reason. */
+export type AbandonmentInstance = {
+  eventId: string
+  abandonedAt: string
+  /** They bought after this abandon → recovered, no call needed. */
+  recovered: boolean
+  cart: {
+    productDetails?: string | null
+    totalPrice?: number | null
+    itemCount?: number | null
+    recoveryUrl?: string | null
+    image?: string | null
+  }
+  /** Products viewed/clicked in the window before this abandon. */
+  productsBefore: AbandonmentProduct[]
+  note: CartAbandonmentNote | null
+}
+
+export type CustomerAbandonments = {
+  total: number
+  recovered: number
+  /** System-inferred *likely* reason for the latest abandon (a hint, not truth). */
+  latestLikelyReason?: string | null
+  instances: AbandonmentInstance[]
+}
+
 // ============ GENERIC EVENT API TYPES ============
 
 export type EventIngestionPayload = {

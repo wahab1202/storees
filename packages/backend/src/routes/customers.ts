@@ -10,6 +10,7 @@ import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
 import { backfillOrdersFromEvents } from '../services/orderBackfillService.js'
+import { listAbandonments, saveAbandonmentReason } from '../services/abandonmentService.js'
 import { computeAndUpdateMetrics } from '../workers/metricsWorker.js'
 import { getConsentAuditLog, getConsentStatus } from '../services/consentService.js'
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
@@ -588,6 +589,50 @@ router.get('/:id/consent-history', requireProjectId, async (req: AuthenticatedRe
   } catch (err) {
     console.error('Consent history error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch consent history' })
+  }
+})
+
+// GET /api/customers/:id/abandonments?projectId=...
+// Abandonment instances (checkout_abandoned) with cart, products browsed before,
+// recovery status, and any human-captured reason.
+router.get('/:id/abandonments', requireProjectId, async (req: AuthenticatedRequest, res) => {
+  try {
+    const customerId = req.params.id as string
+    const projectId = req.projectId!
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
+    const data = await listAbandonments(projectId, customerId)
+    res.json({ success: true, data })
+  } catch (err) {
+    console.error('Abandonments error:', err)
+    res.status(500).json({ success: false, error: 'Failed to load abandonments' })
+  }
+})
+
+// POST /api/customers/:id/abandonments/reason?projectId=...
+// Record the exec team's reason + remarks for one abandonment. (Permissions will
+// be governed by the roles system when it lands; any project member can capture now.)
+router.post('/:id/abandonments/reason', requireProjectId, async (req: AuthenticatedRequest, res) => {
+  try {
+    const customerId = req.params.id as string
+    const projectId = req.projectId!
+    if (!(await assertCustomerVisible(req, customerId, projectId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' })
+    }
+    const { eventId, reason, remarks } = req.body as { eventId?: string; reason?: string; remarks?: string }
+    if (!eventId || !reason) {
+      return res.status(400).json({ success: false, error: 'eventId and reason are required' })
+    }
+    await saveAbandonmentReason({
+      projectId, customerId, eventId, reason, remarks,
+      markedBy: req.adminUser?.userId ?? null,
+      markedByName: req.adminUser?.email ?? null,
+    })
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Save abandonment reason error:', err)
+    res.status(500).json({ success: false, error: 'Failed to save reason' })
   }
 })
 

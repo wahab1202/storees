@@ -179,3 +179,28 @@ export const TRIP_STATUSES = ['active', 'waiting', 'completed', 'exited'] as con
 export const DEFAULT_PAGE_SIZE = 25 as const
 
 export const MAX_PAGE_SIZE = 100 as const
+
+/**
+ * Classified reasons a customer abandoned / cancelled a cart, recorded by the
+ * exec team after calling. Value is stored; label is shown in the dropdown.
+ * Feeds the Phase-2 abandonment-reason analytics.
+ */
+export const ABANDONMENT_REASONS = [
+  { value: 'price_too_high', label: 'Price too high / found cheaper elsewhere' },
+  { value: 'shipping_cost_high', label: 'Shipping cost too high' },
+  { value: 'discount_not_enough', label: 'Discount / offer not enough' },
+  { value: 'delivery_too_slow', label: 'Delivery time too long' },
+  { value: 'payment_failed', label: 'Payment failed / payment method issue' },
+  { value: 'cod_unavailable', label: 'Wanted COD (not available)' },
+  { value: 'checkout_difficulty', label: 'Checkout too difficult / technical issue' },
+  { value: 'just_browsing', label: 'Just browsing / comparing — not ready' },
+  { value: 'changed_mind', label: 'Changed mind / no longer needed' },
+  { value: 'out_of_stock', label: 'Out of stock / variant unavailable' },
+  { value: 'quality_trust', label: 'Product quality / trust concerns' },
+  { value: 'buying_later', label: 'Buying later (waiting for salary / occasion)' },
+  { value: 'bought_elsewhere', label: 'Already bought elsewhere' },
+  { value: 'no_response', label: 'Could not reach / no response' },
+  { value: 'other', label: 'Other (see remarks)' },
+] as const
+
+export type AbandonmentReasonCode = typeof ABANDONMENT_REASONS[number]['value']
