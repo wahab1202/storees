@@ -169,6 +169,7 @@ async function runDefinitionsForRow(
   const envelope = { body: withAttributeMaps(payload), headers } as Record<string, unknown>
   const matched: ProcessResult['matched'] = []
   let firstError: string | undefined
+  let resolvedCustomerId: string | null = null
 
   const definitions = await db
     .select({
@@ -187,7 +188,8 @@ async function runDefinitionsForRow(
       const filters = def.filters as FilterConfig | null
       if (filters && filters.rules?.length > 0 && !evaluateEventFilters(filters, envelope)) continue
 
-      await emitDefinedEvent(projectId, def, envelope, rawRowId)
+      const cid = await emitDefinedEvent(projectId, def, envelope, rawRowId)
+      if (!resolvedCustomerId && cid) resolvedCustomerId = cid
       matched.push({ definitionId: def.id, eventName: def.name })
     } catch (err) {
       firstError = firstError ?? (err instanceof Error ? err.message : String(err))
@@ -200,6 +202,7 @@ async function runDefinitionsForRow(
     matchedDefinitions: matched,
     status,
     error: firstError ?? null,
+    ...(resolvedCustomerId ? { customerId: resolvedCustomerId } : {}),
   }).where(eq(inboundWebhookEvents.id, rawRowId))
 
   return { matched, status, error: firstError }
@@ -307,7 +310,7 @@ async function emitDefinedEvent(
   def: DefinitionRow,
   envelope: Record<string, unknown>,
   rawRowId: string,
-): Promise<void> {
+): Promise<string | null> {
   const readStr = (path: string | undefined): string | null => {
     if (!path) return null
     const v = readPath(envelope, path)
@@ -404,7 +407,7 @@ async function emitDefinedEvent(
     timestamp,
   }).onConflictDoNothing().returning({ id: events.id })
 
-  if (inserted.length === 0 || !customerId) return
+  if (inserted.length === 0 || !customerId) return customerId
 
   const jobPayload = {
     projectId,
@@ -429,4 +432,6 @@ async function emitDefinedEvent(
   await db.update(customers)
     .set({ lastSeen: timestamp, updatedAt: new Date() })
     .where(eq(customers.id, customerId))
+
+  return customerId
 }

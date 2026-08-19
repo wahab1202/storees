@@ -1476,6 +1476,8 @@ export type InboundWebhookEvent = {
   matchedDefinitions: Array<{ definitionId: string; eventName: string }>
   status: 'processed' | 'no_match' | 'error' | 'received'
   error: string | null
+  /** Customer resolved when this row was processed — null for anonymous/no-match rows. */
+  customerId: string | null
   receivedAt: string
 }
 
