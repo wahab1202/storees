@@ -11,15 +11,15 @@ import { useSubscriptionCategories } from '@/hooks/useSubscriptionCategories'
 import { useEmailSenders } from '@/hooks/useEmailSenders'
 import {
   useRefreshTemplateStatus,
-  useSubmitWhatsappTemplate,
   useTestSendWhatsappTemplate,
   useWhatsappProviderStatus,
   useWhatsappTemplates,
   useSyncWhatsappTemplates,
-  type SubmitInput,
   type WhatsappTemplate,
 } from '@/hooks/useWhatsappTemplates'
 import { SlidePanel } from '@/components/shared/SlidePanel'
+import { Dialog } from '@/components/ui/Dialog'
+import { WhatsAppTemplateBuilder } from '@/components/whatsapp/WhatsAppTemplateBuilder'
 import { TemplatePreviewCard } from '@/components/shared/TemplatePreviewCard'
 import { CampaignAiCopywriter } from '@/components/campaigns/CampaignAiCopywriter'
 import { cn } from '@/lib/utils'
@@ -132,15 +132,6 @@ function getApiIssues(error: unknown): ValidationIssue[] {
   if (!(error instanceof ApiError)) return []
   const payload = error.payload as { issues?: ValidationIssue[] } | undefined
   return Array.isArray(payload?.issues) ? payload.issues : []
-}
-
-function countWhatsappTemplateParameters(body: string): number {
-  const matches = Array.from(body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)).map(match => Number(match[1]))
-  return matches.length > 0 ? Math.max(...matches) : 0
-}
-
-function whatsappSampleValue(idx: number): string {
-  return ['Wahab', 'ORD-1001', 'Storees', '20%'][idx] ?? `sample ${idx + 1}`
 }
 
 /* ─── Starter layout templates (email only) ─── */
@@ -2324,7 +2315,6 @@ function Step2WhatsappContent({
   inputClass: string
 }) {
   const providerStatus = useWhatsappProviderStatus()
-  const submitTemplate = useSubmitWhatsappTemplate()
   const refreshStatus = useRefreshTemplateStatus()
   const testSend = useTestSendWhatsappTemplate()
   const [testPhone, setTestPhone] = useState('')
@@ -2339,17 +2329,9 @@ function Step2WhatsappContent({
   const renderedPreview = usePreviewTemplate()
   const sampleCustomers = customers.data?.data ?? []
   const [sampleCustomerId, setSampleCustomerId] = useState('')
-  const [showTemplateForm, setShowTemplateForm] = useState(false)
-  const [draftTemplate, setDraftTemplate] = useState<SubmitInput>({
-    name: '',
-    language: 'en_US',
-    category: 'MARKETING',
-    bodyText: '',
-    footer: '',
-  })
+  const [showBuilder, setShowBuilder] = useState(false)
   const provider = providerStatus.data?.data
   const canSubmitTemplate = !!provider?.configured && !!provider.capabilities.submitTemplate
-  const draftParamCount = countWhatsappTemplateParameters(draftTemplate.bodyText)
   const previewBody = renderedPreview.data?.data.rendered.bodyText ?? selected?.bodyText ?? ''
   const tplQuery = tplSearch.trim().toLowerCase()
   const approvedVisible = tplQuery
@@ -2367,28 +2349,15 @@ function Step2WhatsappContent({
   const groupedEntries = Object.entries(grouped).sort(
     (a, b) => Math.max(...b[1].map(ts)) - Math.max(...a[1].map(ts)),
   )
-  const submitForApproval = () => {
-    submitTemplate.mutate({
-      ...draftTemplate,
-      bodyExample: draftParamCount > 0
-        ? Array.from({ length: draftParamCount }, (_, idx) => draftTemplate.bodyExample?.[idx]?.trim() || whatsappSampleValue(idx))
-        : undefined,
-    }, {
-      onSuccess: () => {
-        setShowTemplateForm(false)
-        setDraftTemplate({
-          name: '',
-          language: 'en_US',
-          category: 'MARKETING',
-          bodyText: '',
-          footer: '',
-        })
-      },
-    })
-  }
-
   return (
-    <div className="grid grid-cols-1 items-start lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
+    <div className="space-y-6">
+      {/* Reuse the real WhatsApp template builder (body/header/buttons/vars +
+          AI brief + live preview) in a modal — one component, no duplicate form. */}
+      <Dialog open={showBuilder} onClose={() => setShowBuilder(false)} size="full" title="Create WhatsApp template" disableBackdropClose>
+        <div className="p-4">
+          <WhatsAppTemplateBuilder onDone={() => { setShowBuilder(false); onSync() }} />
+        </div>
+      </Dialog>
       <div className="space-y-6 min-w-0">
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="flex items-center justify-between gap-4 px-5 py-3 bg-surface border-b border-border">
@@ -2422,115 +2391,25 @@ function Step2WhatsappContent({
               </div>
               <button
                 type="button"
-                onClick={() => setShowTemplateForm(v => !v)}
+                onClick={() => setShowBuilder(true)}
                 className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-accent/30 bg-white px-3 text-xs font-semibold text-accent hover:bg-accent/5"
               >
-                {showTemplateForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-                {showTemplateForm ? 'Close' : 'Create template'}
+                <Plus className="h-3.5 w-3.5" />
+                Create template
               </button>
             </div>
 
-            {showTemplateForm && (
-              <div className="mt-4 rounded-lg border border-border bg-white p-4">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-text-secondary">Name</label>
-                    <input
-                      value={draftTemplate.name}
-                      onChange={e => setDraftTemplate(t => ({ ...t, name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') }))}
-                      placeholder="campaign_offer"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-text-secondary">Language</label>
-                    <input
-                      value={draftTemplate.language}
-                      onChange={e => setDraftTemplate(t => ({ ...t, language: e.target.value }))}
-                      placeholder="en_US"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-text-secondary">Category</label>
-                    <select
-                      value={draftTemplate.category}
-                      onChange={e => setDraftTemplate(t => ({ ...t, category: e.target.value as SubmitInput['category'] }))}
-                      className={inputClass}
-                    >
-                      <option value="MARKETING">Marketing</option>
-                      <option value="UTILITY">Utility</option>
-                      <option value="AUTHENTICATION">Authentication</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="mt-3">
-                  <label className="mb-1 block text-xs font-medium text-text-secondary">Template body</label>
-                  <textarea
-                    value={draftTemplate.bodyText}
-                    onChange={e => setDraftTemplate(t => ({ ...t, bodyText: e.target.value }))}
-                    rows={5}
-                    placeholder="Hi {{1}}, your exclusive offer is ready."
-                    className={cn(inputClass, 'h-28 resize-none')}
-                  />
-                  <p className="mt-1 text-xs text-text-muted">Use numbered Meta parameters like {'{{1}}'}, {'{{2}}'}.</p>
-                </div>
-                <div className="mt-3">
-                  <label className="mb-1 block text-xs font-medium text-text-secondary">Footer</label>
-                  <input
-                    value={draftTemplate.footer ?? ''}
-                    onChange={e => setDraftTemplate(t => ({ ...t, footer: e.target.value }))}
-                    placeholder="Reply STOP to unsubscribe"
-                    className={inputClass}
-                  />
-                </div>
-                {draftParamCount > 0 && (
-                  <div className="mt-3 rounded-lg border border-border bg-surface/60 p-3">
-                    <p className="text-xs font-semibold text-text-primary">Meta review examples</p>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      {Array.from({ length: draftParamCount }, (_, idx) => (
-                        <div key={idx}>
-                          <label className="mb-1 block text-xs font-medium text-text-secondary">{`{{${idx + 1}}}`} example</label>
-                          <input
-                            value={draftTemplate.bodyExample?.[idx] ?? ''}
-                            onChange={e => setDraftTemplate(t => {
-                              const examples = Array.from({ length: draftParamCount }, (_, i) => t.bodyExample?.[i] ?? whatsappSampleValue(i))
-                              examples[idx] = e.target.value
-                              return { ...t, bodyExample: examples }
-                            })}
-                            placeholder={whatsappSampleValue(idx)}
-                            className={inputClass}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={submitForApproval}
-                    disabled={submitTemplate.isPending || !canSubmitTemplate || !draftTemplate.name.trim() || !draftTemplate.bodyText.trim()}
-                    className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-4 text-xs font-semibold text-white hover:bg-accent-hover disabled:opacity-60"
-                  >
-                    {submitTemplate.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                    Submit for approval
-                  </button>
-                  {!canSubmitTemplate && <span className="text-xs text-amber-700">Provider cannot submit templates or is missing required config.</span>}
-                </div>
-              </div>
-            )}
           </div>
 
           {pending.length > 0 && (
-            <div className="rounded-lg border border-border bg-surface/40 p-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-text-primary">Pending provider approval</p>
-                <button type="button" onClick={onSync} disabled={syncing} className="text-xs font-medium text-accent hover:text-accent-hover disabled:opacity-60">
+            <details className="rounded-lg border border-border bg-surface/40">
+              <summary className="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer select-none text-sm font-medium text-text-secondary">
+                <span>{pending.length} template{pending.length === 1 ? '' : 's'} awaiting approval</span>
+                <button type="button" onClick={e => { e.preventDefault(); onSync() }} disabled={syncing} className="text-xs font-medium text-accent hover:text-accent-hover disabled:opacity-60">
                   Sync all
                 </button>
-              </div>
-              <div className="space-y-2">
+              </summary>
+              <div className="space-y-2 px-4 pb-4">
                 {pending.map(template => (
                   <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-white px-3 py-2">
                     <div className="min-w-0">
@@ -2551,7 +2430,7 @@ function Step2WhatsappContent({
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
           {approved.length === 0 ? (
@@ -2717,18 +2596,6 @@ function Step2WhatsappContent({
       </div>
       </div>
 
-      <div className="lg:sticky lg:top-4">
-        <CampaignAiCopywriter
-          channel="whatsapp"
-          body={selected?.bodyText ?? draftTemplate.bodyText}
-          onApplyBody={(value) => {
-            setShowTemplateForm(true)
-            setDraftTemplate(template => ({ ...template, bodyText: value }))
-          }}
-          inputClass={inputClass}
-          lockedReason="WhatsApp sends only approved template text. Apply generated copy into the template form, submit for approval, then select it after approval."
-        />
-      </div>
     </div>
   )
 }
