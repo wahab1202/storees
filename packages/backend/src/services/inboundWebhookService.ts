@@ -137,6 +137,7 @@ export async function processInboundPayload(
   const envelope = { body: withAttributeMaps(payload), headers } as Record<string, unknown>
   const matched: ProcessResult['matched'] = []
   let firstError: string | undefined
+  let resolvedCustomerId: string | null = null
 
   // Log the raw receipt first — the detail page's history + schema source
   const [rawRow] = await db.insert(inboundWebhookEvents).values({
@@ -163,7 +164,8 @@ export async function processInboundPayload(
       const filters = def.filters as FilterConfig | null
       if (filters && filters.rules?.length > 0 && !evaluateEventFilters(filters, envelope)) continue
 
-      await emitDefinedEvent(webhook.projectId, def, envelope, rawRow.id)
+      const cid = await emitDefinedEvent(webhook.projectId, def, envelope, rawRow.id)
+      if (!resolvedCustomerId && cid) resolvedCustomerId = cid
       matched.push({ definitionId: def.id, eventName: def.name })
     } catch (err) {
       firstError = firstError ?? (err instanceof Error ? err.message : String(err))
@@ -176,6 +178,7 @@ export async function processInboundPayload(
     matchedDefinitions: matched,
     status,
     error: firstError ?? null,
+    ...(resolvedCustomerId ? { customerId: resolvedCustomerId } : {}),
   }).where(eq(inboundWebhookEvents.id, rawRow.id))
 
   await db.update(inboundWebhooks)
@@ -190,7 +193,7 @@ async function emitDefinedEvent(
   def: DefinitionRow,
   envelope: Record<string, unknown>,
   rawRowId: string,
-): Promise<void> {
+): Promise<string | null> {
   const readStr = (path: string | undefined): string | null => {
     if (!path) return null
     const v = readPath(envelope, path)
@@ -282,7 +285,7 @@ async function emitDefinedEvent(
     timestamp,
   }).onConflictDoNothing().returning({ id: events.id })
 
-  if (inserted.length === 0 || !customerId) return
+  if (inserted.length === 0 || !customerId) return customerId
 
   const jobPayload = {
     projectId,
@@ -307,4 +310,6 @@ async function emitDefinedEvent(
   await db.update(customers)
     .set({ lastSeen: timestamp, updatedAt: new Date() })
     .where(eq(customers.id, customerId))
+
+  return customerId
 }

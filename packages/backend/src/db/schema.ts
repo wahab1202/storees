@@ -1455,9 +1455,13 @@ export const inboundWebhookEvents = pgTable('inbound_webhook_events', {
   matchedDefinitions: jsonb('matched_definitions').notNull().default([]),
   status: varchar('status', { length: 20 }).notNull().default('received'),
   error: text('error'),
+  // Customer resolved when this row was processed (from its produced events row);
+  // lets the Data-tab rows click through to the customer detail page.
+  customerId: uuid('customer_id'),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_inbound_events_webhook').on(table.webhookId, table.receivedAt),
+  index('idx_inbound_events_customer').on(table.customerId),
 ])
 
 export const eventDefinitions = pgTable('event_definitions', {

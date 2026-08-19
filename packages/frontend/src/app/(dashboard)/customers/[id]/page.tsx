@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Loader2 } from 'lucide-react'
@@ -49,6 +49,13 @@ export default function CustomerProfilePage() {
   const params = useParams()
   const id = params.id as string
   const [activeTab, setActiveTab] = useState<Tab>('User Info')
+
+  // Deep-link a tab via ?tab= (e.g. Event Sources → customer → Abandonment).
+  // Read on mount to avoid the useSearchParams() prerender/Suspense coupling.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab')
+    if (t && (TABS as readonly string[]).includes(t)) setActiveTab(t as Tab)
+  }, [])
 
   const { data: customerRes, isLoading } = useCustomerDetail(id)
   const { data: ordersRes, isLoading: ordersLoading } = useCustomerOrders(id)

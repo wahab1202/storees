@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Plus, Loader2, Trash2, Pencil, ChevronDown, ChevronRight, Braces, X, ShieldCheck, KeyRound, Copy, Check } from 'lucide-react'
+import { ArrowLeft, Plus, Loader2, Trash2, Pencil, ChevronDown, ChevronRight, Braces, X, ShieldCheck, KeyRound, Copy, Check, ArrowUpRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { Dialog } from '@/components/ui/Dialog'
@@ -107,6 +107,7 @@ function DataTab({ webhookId, token }: { webhookId: string; token: string }) {
               <th className="px-4 py-2.5 w-8" />
               <th className="px-4 py-2.5">Data</th>
               <th className="px-4 py-2.5">Matched</th>
+              <th className="px-4 py-2.5">Customer</th>
               <th className="px-4 py-2.5">Status</th>
               <th className="px-4 py-2.5">Received at</th>
             </tr>
@@ -127,9 +128,20 @@ function DataTab({ webhookId, token }: { webhookId: string; token: string }) {
   )
 }
 
-function LogRow({ row }: { row: { id: string; payload: Record<string, unknown>; headers: Record<string, unknown>; matchedDefinitions: Array<{ eventName: string }>; status: string; error: string | null; receivedAt: string } }) {
+function payloadContact(payload: Record<string, unknown>): string | null {
+  const email = payload.email ?? (payload.customer as Record<string, unknown> | undefined)?.email
+  const phone = payload.phone ?? (payload.customer as Record<string, unknown> | undefined)?.phone
+  if (typeof email === 'string' && email.trim()) return email
+  if (typeof phone === 'string' && phone.trim()) return phone
+  return null
+}
+
+function LogRow({ row }: { row: { id: string; payload: Record<string, unknown>; headers: Record<string, unknown>; matchedDefinitions: Array<{ eventName: string }>; status: string; error: string | null; customerId: string | null; receivedAt: string } }) {
   const [open, setOpen] = useState(false)
   const preview = JSON.stringify(row.payload)
+  const isAbandon = row.matchedDefinitions.some(m => m.eventName === 'checkout_abandoned')
+  const customerHref = row.customerId ? `/customers/${row.customerId}${isAbandon ? '?tab=Abandonment' : ''}` : null
+  const contactLabel = payloadContact(row.payload)
   const statusStyle = row.status === 'processed' ? 'bg-emerald-50 text-emerald-700'
     : row.status === 'no_match' ? 'bg-amber-50 text-amber-700'
     : row.status === 'error' ? 'bg-red-50 text-red-700'
@@ -143,6 +155,21 @@ function LogRow({ row }: { row: { id: string; payload: Record<string, unknown>; 
         <td className="px-4 py-2.5 text-xs text-text-secondary">
           {row.matchedDefinitions.length > 0 ? row.matchedDefinitions.map(m => m.eventName).join(', ') : '—'}
         </td>
+        <td className="px-4 py-2.5 text-xs">
+          {customerHref ? (
+            <Link
+              href={customerHref}
+              onClick={e => e.stopPropagation()}
+              className="inline-flex max-w-[220px] items-center gap-1 text-accent hover:underline"
+              title={isAbandon ? 'Open customer — Abandonment' : 'Open customer'}
+            >
+              <span className="truncate">{contactLabel ?? 'View customer'}</span>
+              <ArrowUpRight className="h-3 w-3 shrink-0" />
+            </Link>
+          ) : (
+            <span className="text-text-muted">{contactLabel ?? '—'}</span>
+          )}
+        </td>
         <td className="px-4 py-2.5">
           <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold', statusStyle)}>{row.status}</span>
         </td>
@@ -150,7 +177,7 @@ function LogRow({ row }: { row: { id: string; payload: Record<string, unknown>; 
       </tr>
       {open && (
         <tr className="border-b border-border last:border-0 bg-surface/40">
-          <td colSpan={5} className="px-6 py-3">
+          <td colSpan={6} className="px-6 py-3">
             {row.error && <p className="mb-2 text-[11px] text-red-600">{row.error}</p>}
             <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted mb-1">Body</p>
             <pre className="max-h-64 overflow-auto rounded-md border border-border bg-white p-3 text-[11px] leading-relaxed">{JSON.stringify(row.payload, null, 2)}</pre>
