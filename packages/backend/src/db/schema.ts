@@ -1196,6 +1196,8 @@ export const cartAbandonmentNotes = pgTable('cart_abandonment_notes', {
   eventId: uuid('event_id').notNull(),
   reason: varchar('reason', { length: 40 }).notNull(),
   remarks: text('remarks'),
+  transcriptUrl: text('transcript_url'),
+  transcriptName: varchar('transcript_name', { length: 300 }),
   markedBy: uuid('marked_by'),
   markedByName: varchar('marked_by_name', { length: 160 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

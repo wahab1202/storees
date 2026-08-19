@@ -1242,6 +1242,9 @@ export type WhatsappProvisioningInput = {
 export type CartAbandonmentNote = {
   reason: string
   remarks: string | null
+  /** Optional uploaded call transcript/recording. */
+  transcriptUrl: string | null
+  transcriptName: string | null
   markedByName: string | null
   updatedAt: string
 }

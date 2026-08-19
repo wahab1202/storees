@@ -80,6 +80,8 @@ export async function listAbandonments(projectId: string, customerId: string): P
       note: note ? {
         reason: note.reason,
         remarks: note.remarks,
+        transcriptUrl: note.transcriptUrl,
+        transcriptName: note.transcriptName,
         markedByName: note.markedByName,
         updatedAt: String(note.updatedAt),
       } : null,
@@ -103,6 +105,8 @@ export async function saveAbandonmentReason(input: {
   eventId: string
   reason: string
   remarks?: string | null
+  transcriptUrl?: string | null
+  transcriptName?: string | null
   markedBy?: string | null
   markedByName?: string | null
 }): Promise<void> {
@@ -112,6 +116,8 @@ export async function saveAbandonmentReason(input: {
     eventId: input.eventId,
     reason: input.reason,
     remarks: input.remarks ?? null,
+    transcriptUrl: input.transcriptUrl ?? null,
+    transcriptName: input.transcriptName ?? null,
     markedBy: input.markedBy ?? null,
     markedByName: input.markedByName ?? null,
   }).onConflictDoUpdate({
@@ -119,6 +125,8 @@ export async function saveAbandonmentReason(input: {
     set: {
       reason: input.reason,
       remarks: input.remarks ?? null,
+      transcriptUrl: input.transcriptUrl ?? null,
+      transcriptName: input.transcriptName ?? null,
       markedBy: input.markedBy ?? null,
       markedByName: input.markedByName ?? null,
       updatedAt: new Date(),

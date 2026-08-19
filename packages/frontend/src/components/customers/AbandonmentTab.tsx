@@ -4,8 +4,10 @@ import { useState } from 'react'
 import { ABANDONMENT_REASONS } from '@storees/shared'
 import type { AbandonmentInstance } from '@storees/shared'
 import { useAbandonments, useSaveAbandonmentReason } from '@/hooks/useAbandonments'
+import { api } from '@/lib/api'
+import { withProject } from '@/lib/project'
 import { cn } from '@/lib/utils'
-import { Loader2, ShoppingCart, CheckCircle2, ExternalLink, Lightbulb } from 'lucide-react'
+import { Loader2, ShoppingCart, CheckCircle2, ExternalLink, Lightbulb, Paperclip, X } from 'lucide-react'
 
 function fmtDate(s: string): string {
   try { return new Date(s).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) } catch { return s }
@@ -63,11 +65,40 @@ function AbandonmentCard({ customerId, inst }: { customerId: string; inst: Aband
   const save = useSaveAbandonmentReason(customerId)
   const [reason, setReason] = useState(inst.note?.reason ?? '')
   const [remarks, setRemarks] = useState(inst.note?.remarks ?? '')
+  const [transcriptUrl, setTranscriptUrl] = useState(inst.note?.transcriptUrl ?? '')
+  const [transcriptName, setTranscriptName] = useState(inst.note?.transcriptName ?? '')
+  const [uploading, setUploading] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function onUpload(file: File) {
+    setUploading(true); setError(null); setSaved(false)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const resp = await api.upload<{ url: string; filename: string }>(withProject('/api/assets/transcript'), form)
+      if (resp.success && resp.data) {
+        setTranscriptUrl(resp.data.url)
+        setTranscriptName(resp.data.filename)
+      } else {
+        setError(resp.error ?? 'Upload failed')
+      }
+    } catch {
+      setError('Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   async function onSave() {
-    setSaved(false)
-    const resp = await save.mutateAsync({ eventId: inst.eventId, reason, remarks: remarks || undefined })
+    setSaved(false); setError(null)
+    const resp = await save.mutateAsync({
+      eventId: inst.eventId,
+      reason,
+      remarks: remarks || undefined,
+      transcriptUrl: transcriptUrl || undefined,
+      transcriptName: transcriptName || undefined,
+    })
     if (resp.success) setSaved(true)
   }
 
@@ -112,33 +143,62 @@ function AbandonmentCard({ customerId, inst }: { customerId: string; inst: Aband
       )}
 
       {/* Reason capture */}
-      <div className="border-t border-border pt-3 space-y-2">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1.5">Reason (after calling)</label>
-            <select
-              value={reason}
-              onChange={e => { setReason(e.target.value); setSaved(false) }}
-              className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
-            >
-              <option value="">Select a reason…</option>
-              {ABANDONMENT_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1.5">Remarks</label>
-            <input
-              value={remarks}
-              onChange={e => { setRemarks(e.target.value); setSaved(false) }}
-              placeholder="What the customer said…"
-              className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/50"
-            />
-          </div>
+      <div className="border-t border-border pt-3 space-y-3">
+        <div>
+          <label className="block text-xs font-medium text-text-secondary mb-1.5">Reason (after calling)</label>
+          <select
+            value={reason}
+            onChange={e => { setReason(e.target.value); setSaved(false) }}
+            className="w-full sm:w-1/2 h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+          >
+            <option value="">Select a reason…</option>
+            {ABANDONMENT_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
         </div>
+        <div>
+          <label className="block text-xs font-medium text-text-secondary mb-1.5">Remarks</label>
+          <textarea
+            value={remarks}
+            onChange={e => { setRemarks(e.target.value); setSaved(false) }}
+            rows={4}
+            placeholder="What the customer said on the call…"
+            className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/50 resize-y min-h-[88px]"
+          />
+        </div>
+
+        {/* Call transcript / recording */}
+        <div>
+          <label className="block text-xs font-medium text-text-secondary mb-1.5">Call transcript / recording (optional)</label>
+          {transcriptUrl ? (
+            <div className="inline-flex items-center gap-2 text-sm bg-surface border border-border rounded-lg pl-3 pr-2 py-1.5">
+              <Paperclip className="h-3.5 w-3.5 text-text-muted" />
+              <a href={transcriptUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline max-w-[280px] truncate">{transcriptName || 'Attachment'}</a>
+              <button onClick={() => { setTranscriptUrl(''); setTranscriptName(''); setSaved(false) }} className="text-text-muted hover:text-red-600" title="Remove">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <label className="inline-flex items-center gap-2 text-sm px-3 h-9 rounded-lg border border-dashed border-border text-text-secondary hover:border-accent/40 hover:bg-accent/[0.02] cursor-pointer transition-colors">
+              {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Paperclip className="h-3.5 w-3.5" />}
+              {uploading ? 'Uploading…' : 'Attach file'}
+              <input
+                type="file"
+                accept="audio/*,text/plain,application/pdf,.doc,.docx"
+                className="hidden"
+                disabled={uploading}
+                onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = '' }}
+              />
+            </label>
+          )}
+          <p className="mt-1 text-[10px] text-text-muted">Audio, text, PDF or Word — up to 50MB.</p>
+        </div>
+
+        {error && <div className="text-xs text-red-600 inline-flex items-center gap-1"><X className="h-3.5 w-3.5" /> {error}</div>}
+
         <div className="flex items-center gap-3">
           <button
             onClick={onSave}
-            disabled={save.isPending || !reason}
+            disabled={save.isPending || uploading || !reason}
             className="px-4 py-1.5 text-sm font-medium rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors inline-flex items-center gap-2"
           >
             {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
