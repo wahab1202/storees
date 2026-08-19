@@ -44,6 +44,28 @@ const waUpload = multer({
   fileFilter: (_req, file, cb) => cb(null, !!WA_MEDIA_EXT[file.mimetype]),
 })
 
+// ── Call-transcript upload (abandonment notes). Accepts audio recordings and
+// text/pdf/doc transcripts. Stored on the same public /uploads/email-assets root.
+const TRANSCRIPT_EXT: Record<string, string> = {
+  'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+  'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/ogg': 'ogg', 'audio/webm': 'weba', 'audio/aac': 'aac',
+  'text/plain': 'txt', 'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+}
+const TRANSCRIPT_MAX = 50 * 1024 * 1024 // 50MB — call recordings can be large
+const transcriptUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const dir = path.join(UPLOAD_ROOT, (req as Request).projectId ?? '_orphan')
+      mkdir(dir, { recursive: true }).then(() => cb(null, dir)).catch((e) => cb(e as Error, dir))
+    },
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${randomUUID()}.${TRANSCRIPT_EXT[file.mimetype] ?? 'bin'}`),
+  }),
+  limits: { fileSize: TRANSCRIPT_MAX },
+  fileFilter: (_req, file, cb) => cb(null, !!TRANSCRIPT_EXT[file.mimetype]),
+})
+
 const ALLOWED_IMAGE_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -189,6 +211,37 @@ router.post('/whatsapp-media', requireProjectId, (req: Request, res: Response) =
     } catch (error) {
       console.error('whatsapp media upload failed', error)
       res.status(500).json({ success: false, error: 'Failed to upload media' })
+    }
+  })
+})
+
+// POST /api/assets/transcript — multipart upload for a call transcript/recording.
+// Field name: "file". Returns a public URL + the original filename.
+router.post('/transcript', requireProjectId, (req: Request, res: Response) => {
+  transcriptUpload.single('file')(req, res, async (err: unknown) => {
+    try {
+      if (err) {
+        const msg = (err as { code?: string }).code === 'LIMIT_FILE_SIZE'
+          ? 'File exceeds the 50MB limit'
+          : (err instanceof Error ? err.message : 'Upload failed')
+        return res.status(400).json({ success: false, error: msg })
+      }
+      const file = req.file
+      if (!file) {
+        return res.status(400).json({ success: false, error: 'No file uploaded, or unsupported type (audio / text / pdf / doc only)' })
+      }
+      res.status(201).json({
+        success: true,
+        data: {
+          url: publicUrl(req, req.projectId!, file.filename),
+          filename: file.originalname,
+          mime: file.mimetype,
+          size: file.size,
+        },
+      })
+    } catch (error) {
+      console.error('transcript upload failed', error)
+      res.status(500).json({ success: false, error: 'Failed to upload transcript' })
     }
   })
 })

@@ -685,12 +685,16 @@ router.post('/:id/abandonments/reason', requireProjectId, async (req: Authentica
     if (!(await assertCustomerVisible(req, customerId, projectId))) {
       return res.status(404).json({ success: false, error: 'Customer not found' })
     }
-    const { eventId, reason, remarks } = req.body as { eventId?: string; reason?: string; remarks?: string }
+    const { eventId, reason, remarks, transcriptUrl, transcriptName } = req.body as {
+      eventId?: string; reason?: string; remarks?: string; transcriptUrl?: string; transcriptName?: string
+    }
     if (!eventId || !reason) {
       return res.status(400).json({ success: false, error: 'eventId and reason are required' })
     }
     await saveAbandonmentReason({
       projectId, customerId, eventId, reason, remarks,
+      transcriptUrl: transcriptUrl ?? null,
+      transcriptName: transcriptName ?? null,
       markedBy: req.adminUser?.userId ?? null,
       markedByName: req.adminUser?.email ?? null,
     })

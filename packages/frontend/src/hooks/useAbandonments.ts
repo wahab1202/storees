@@ -15,7 +15,7 @@ export function useAbandonments(customerId: string) {
 export function useSaveAbandonmentReason(customerId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: { eventId: string; reason: string; remarks?: string }) =>
+    mutationFn: (input: { eventId: string; reason: string; remarks?: string; transcriptUrl?: string; transcriptName?: string }) =>
       api.post(withProject(`/api/customers/${customerId}/abandonments/reason`), input),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['abandonments', customerId] }),
   })
