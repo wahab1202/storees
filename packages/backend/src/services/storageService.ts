@@ -1,6 +1,6 @@
 import path from 'node:path'
-import { mkdir, writeFile, unlink, readdir, stat } from 'node:fs/promises'
-import { S3Client, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
+import { mkdir, writeFile, unlink, readdir, stat, readFile, copyFile } from 'node:fs/promises'
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 
 /**
  * Object storage for uploaded assets (email images, WhatsApp media, call
@@ -30,6 +30,18 @@ const S3_ENABLED = !!BUCKET && !!ACCESS_KEY && !!SECRET_KEY
 /** Local fallback root — the same directory the app serves at /uploads/email-assets. */
 export const LOCAL_UPLOAD_ROOT = process.env.ASSET_UPLOAD_ROOT
   ?? path.resolve(process.cwd(), '.storees/uploads/email-assets')
+
+/**
+ * Local root for PRIVATE objects (campaign attachments) — never HTTP-served.
+ * Kept distinct from the public LOCAL_UPLOAD_ROOT and reading the same env the
+ * campaign-attachment service already used, so pre-existing local `s3Key`
+ * values resolve unchanged after this migration.
+ */
+export const PRIVATE_UPLOAD_ROOT = process.env.CAMPAIGN_ATTACHMENT_DIR
+  ?? path.resolve(process.cwd(), '.storees/uploads/campaign-attachments')
+
+/** S3 key prefix for private objects (under KEY_PREFIX). */
+const PRIVATE_PREFIX = (process.env.S3_ATTACHMENT_PREFIX ?? 'campaign-attachments').replace(/(^\/|\/$)/g, '')
 
 let client: S3Client | null = null
 function s3(): S3Client {
@@ -108,4 +120,57 @@ export async function listObjects(projectId: string, localBaseUrl: string): Prom
     return { filename, url: localUrl(`${projectId}/${filename}`, localBaseUrl), size: info.size, uploadedAt: info.mtime.toISOString() }
   }))
   return rows.filter((r): r is StoredAsset => r !== null)
+}
+
+// ── Private objects (campaign attachments) ────────────────────────────────────
+// These are read back as raw bytes at send time and base64-inlined into email
+// payloads — they are never HTTP-served, so they get their own key namespace and
+// (in local mode) their own root outside the public static mount. `key` is the
+// logical storage key stored in the DB (`<campaignId>/<uuid>-<filename>`).
+
+function privateKey(key: string): string { return `${KEY_PREFIX}/${PRIVATE_PREFIX}/${key}` }
+
+/** Store a private object at `key`. */
+export async function putPrivateObject(key: string, body: Buffer, contentType: string): Promise<void> {
+  if (S3_ENABLED) {
+    await s3().send(new PutObjectCommand({ Bucket: BUCKET, Key: privateKey(key), Body: body, ContentType: contentType }))
+    return
+  }
+  const full = path.join(PRIVATE_UPLOAD_ROOT, key)
+  await mkdir(path.dirname(full), { recursive: true })
+  await writeFile(full, body)
+}
+
+/** Read a private object's raw bytes. */
+export async function getPrivateObject(key: string): Promise<Buffer> {
+  if (S3_ENABLED) {
+    const out = await s3().send(new GetObjectCommand({ Bucket: BUCKET, Key: privateKey(key) }))
+    const bytes = await out.Body!.transformToByteArray()
+    return Buffer.from(bytes)
+  }
+  return readFile(path.join(PRIVATE_UPLOAD_ROOT, key))
+}
+
+/** Delete a private object (best-effort). */
+export async function deletePrivateObject(key: string): Promise<void> {
+  if (S3_ENABLED) {
+    await s3().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: privateKey(key) })).catch(() => {})
+    return
+  }
+  await unlink(path.join(PRIVATE_UPLOAD_ROOT, key)).catch(() => {})
+}
+
+/** Copy a private object (used when duplicating a campaign). */
+export async function copyPrivateObject(srcKey: string, destKey: string): Promise<void> {
+  if (S3_ENABLED) {
+    await s3().send(new CopyObjectCommand({
+      Bucket: BUCKET,
+      CopySource: `${BUCKET}/${privateKey(srcKey)}`,
+      Key: privateKey(destKey),
+    }))
+    return
+  }
+  const dest = path.join(PRIVATE_UPLOAD_ROOT, destKey)
+  await mkdir(path.dirname(dest), { recursive: true })
+  await copyFile(path.join(PRIVATE_UPLOAD_ROOT, srcKey), dest)
 }
