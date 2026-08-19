@@ -16,6 +16,7 @@
     "db:migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1113.0",
     "@storees/flows": "*",
     "@storees/segments": "*",
     "@storees/shared": "*",
