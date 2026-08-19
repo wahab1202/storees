@@ -11,12 +11,12 @@ import { useSubscriptionCategories } from '@/hooks/useSubscriptionCategories'
 import { useEmailSenders } from '@/hooks/useEmailSenders'
 import {
   useRefreshTemplateStatus,
-  useSubmitWhatsappTemplate,
   useSyncWhatsappTemplates,
   useWhatsappProviderStatus,
   useWhatsappTemplates,
-  type SubmitInput,
 } from '@/hooks/useWhatsappTemplates'
+import { Dialog } from '@/components/ui/Dialog'
+import { WhatsAppTemplateBuilder } from '@/components/whatsapp/WhatsAppTemplateBuilder'
 import { WhatsAppBubblePreview } from '@/components/whatsapp/WhatsAppBubblePreview'
 import { CampaignAiCopywriter } from '@/components/campaigns/CampaignAiCopywriter'
 import { SegmentFilterBuilder } from '@/components/segments/SegmentFilterBuilder'
@@ -57,7 +57,6 @@ import {
   Sun,
   Link2,
   RefreshCw,
-  Send,
 } from 'lucide-react'
 
 const inputClass = 'w-full h-10 px-3.5 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted/60 transition-colors duration-150'
@@ -94,15 +93,6 @@ function seedWhatsappTemplateVariables(template: WhatsappTemplateForEdit): Templ
     vars.push({ key: `wa_button_url_${idx + 1}`, source: { kind: 'literal', value: '' } })
   })
   return vars
-}
-
-function countWhatsappTemplateParameters(body: string): number {
-  const matches = Array.from(body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)).map(match => Number(match[1]))
-  return matches.length > 0 ? Math.max(...matches) : 0
-}
-
-function whatsappSampleValue(idx: number): string {
-  return ['Wahab', 'ORD-1001', 'Storees', '20%'][idx] ?? `sample ${idx + 1}`
 }
 
 function getApiIssues(error: unknown): ValidationIssue[] {
@@ -208,7 +198,6 @@ export default function EditCampaignPage() {
   const { data: whatsappTemplatesData } = useWhatsappTemplates()
   const whatsappProviderStatus = useWhatsappProviderStatus()
   const syncWhatsappTemplates = useSyncWhatsappTemplates()
-  const submitWhatsappTemplate = useSubmitWhatsappTemplate()
   const refreshWhatsappTemplateStatus = useRefreshTemplateStatus()
   const previewAudience = usePreviewCampaignAudience()
   const customers = useCustomers({ page: 1, pageSize: 20, sortBy: 'lastSeen', sortOrder: 'desc' })
@@ -222,14 +211,7 @@ export default function EditCampaignPage() {
   const [htmlBody, setHtmlBody] = useState('')
   const [bodyText, setBodyText] = useState('')
   const [templateId, setTemplateId] = useState<string | null>(null)
-  const [showWhatsappTemplateForm, setShowWhatsappTemplateForm] = useState(false)
-  const [draftWhatsappTemplate, setDraftWhatsappTemplate] = useState<SubmitInput>({
-    name: '',
-    language: 'en_US',
-    category: 'MARKETING',
-    bodyText: '',
-    footer: '',
-  })
+  const [showWhatsappBuilder, setShowWhatsappBuilder] = useState(false)
   const [fromName, setFromName] = useState('')
   const [fromEmail, setFromEmail] = useState('')
   const [replyToEmail, setReplyToEmail] = useState('')
@@ -424,7 +406,6 @@ export default function EditCampaignPage() {
   const selectedWhatsappUrlButtons = selectedWhatsappTemplate?.buttons?.filter(b => b.type?.toUpperCase() === 'URL') ?? []
   const whatsappProvider = whatsappProviderStatus.data?.data
   const canSubmitWhatsappTemplate = !!whatsappProvider?.configured && !!whatsappProvider.capabilities.submitTemplate
-  const draftWhatsappParamCount = countWhatsappTemplateParameters(draftWhatsappTemplate.bodyText)
   const sampleCustomers = customers.data?.data ?? []
   const rendered = renderedPreview.data?.data.rendered
   const previewHtml = rendered?.htmlBody ?? htmlBody
@@ -447,25 +428,6 @@ export default function EditCampaignPage() {
   }
 
   const canSave = name.trim() && (isEmail ? subject.trim() && htmlBody.trim() : isWhatsapp ? templateId && bodyText.trim() : bodyText.trim())
-  const submitWhatsappTemplateForApproval = () => {
-    submitWhatsappTemplate.mutate({
-      ...draftWhatsappTemplate,
-      bodyExample: draftWhatsappParamCount > 0
-        ? Array.from({ length: draftWhatsappParamCount }, (_, idx) => draftWhatsappTemplate.bodyExample?.[idx]?.trim() || whatsappSampleValue(idx))
-        : undefined,
-    }, {
-      onSuccess: () => {
-        setShowWhatsappTemplateForm(false)
-        setDraftWhatsappTemplate({
-          name: '',
-          language: 'en_US',
-          category: 'MARKETING',
-          bodyText: '',
-          footer: '',
-        })
-      },
-    })
-  }
   const buildAiGoal = (channel: CampaignChannel) => [
     `Rewrite copy for an existing ${channel} campaign.`,
     `Campaign name: ${name || campaign.name}`,
@@ -1016,6 +978,13 @@ export default function EditCampaignPage() {
                 <h2 className="text-sm font-semibold text-text-primary">WhatsApp Template</h2>
               </div>
               <div className="p-5 space-y-4">
+                {/* Reuse the real WhatsApp template builder in a modal — one
+                    component, no duplicate form. */}
+                <Dialog open={showWhatsappBuilder} onClose={() => setShowWhatsappBuilder(false)} size="full" title="Create WhatsApp template" disableBackdropClose>
+                  <div className="p-4">
+                    <WhatsAppTemplateBuilder onDone={() => { setShowWhatsappBuilder(false); syncWhatsappTemplates.mutate() }} />
+                  </div>
+                </Dialog>
                 <div className={cn('rounded-lg border p-4', canSubmitWhatsappTemplate ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/70')}>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
@@ -1031,120 +1000,30 @@ export default function EditCampaignPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setShowWhatsappTemplateForm(v => !v)}
+                      onClick={() => setShowWhatsappBuilder(true)}
                       className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-accent/30 bg-white px-3 text-xs font-semibold text-accent hover:bg-accent/5"
                     >
-                      {showWhatsappTemplateForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-                      {showWhatsappTemplateForm ? 'Close' : 'Create template'}
+                      <Plus className="h-3.5 w-3.5" />
+                      Create template
                     </button>
                   </div>
 
-                  {showWhatsappTemplateForm && (
-                    <div className="mt-4 rounded-lg border border-border bg-white p-4">
-                      <div className="grid gap-3 sm:grid-cols-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-text-secondary">Name</label>
-                          <input
-                            value={draftWhatsappTemplate.name}
-                            onChange={e => setDraftWhatsappTemplate(t => ({ ...t, name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') }))}
-                            placeholder="campaign_offer"
-                            className={inputClass}
-                          />
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-text-secondary">Language</label>
-                          <input
-                            value={draftWhatsappTemplate.language}
-                            onChange={e => setDraftWhatsappTemplate(t => ({ ...t, language: e.target.value }))}
-                            placeholder="en_US"
-                            className={inputClass}
-                          />
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-text-secondary">Category</label>
-                          <select
-                            value={draftWhatsappTemplate.category}
-                            onChange={e => setDraftWhatsappTemplate(t => ({ ...t, category: e.target.value as SubmitInput['category'] }))}
-                            className={inputClass}
-                          >
-                            <option value="MARKETING">Marketing</option>
-                            <option value="UTILITY">Utility</option>
-                            <option value="AUTHENTICATION">Authentication</option>
-                          </select>
-                        </div>
-                      </div>
-                      <div className="mt-3">
-                        <label className="mb-1 block text-xs font-medium text-text-secondary">Template body</label>
-                        <textarea
-                          value={draftWhatsappTemplate.bodyText}
-                          onChange={e => setDraftWhatsappTemplate(t => ({ ...t, bodyText: e.target.value }))}
-                          rows={5}
-                          placeholder="Hi {{1}}, your exclusive offer is ready."
-                          className={cn(inputClass, 'h-28 resize-none')}
-                        />
-                        <p className="mt-1 text-xs text-text-muted">Use numbered Meta parameters like {'{{1}}'}, {'{{2}}'}.</p>
-                      </div>
-                      <div className="mt-3">
-                        <label className="mb-1 block text-xs font-medium text-text-secondary">Footer</label>
-                        <input
-                          value={draftWhatsappTemplate.footer ?? ''}
-                          onChange={e => setDraftWhatsappTemplate(t => ({ ...t, footer: e.target.value }))}
-                          placeholder="Reply STOP to unsubscribe"
-                          className={inputClass}
-                        />
-                      </div>
-                      {draftWhatsappParamCount > 0 && (
-                        <div className="mt-3 rounded-lg border border-border bg-surface/60 p-3">
-                          <p className="text-xs font-semibold text-text-primary">Meta review examples</p>
-                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                            {Array.from({ length: draftWhatsappParamCount }, (_, idx) => (
-                              <div key={idx}>
-                                <label className="mb-1 block text-xs font-medium text-text-secondary">{`{{${idx + 1}}}`} example</label>
-                                <input
-                                  value={draftWhatsappTemplate.bodyExample?.[idx] ?? ''}
-                                  onChange={e => setDraftWhatsappTemplate(t => {
-                                    const examples = Array.from({ length: draftWhatsappParamCount }, (_, i) => t.bodyExample?.[i] ?? whatsappSampleValue(i))
-                                    examples[idx] = e.target.value
-                                    return { ...t, bodyExample: examples }
-                                  })}
-                                  placeholder={whatsappSampleValue(idx)}
-                                  className={inputClass}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={submitWhatsappTemplateForApproval}
-                          disabled={submitWhatsappTemplate.isPending || !canSubmitWhatsappTemplate || !draftWhatsappTemplate.name.trim() || !draftWhatsappTemplate.bodyText.trim()}
-                          className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-4 text-xs font-semibold text-white hover:bg-accent-hover disabled:opacity-60"
-                        >
-                          {submitWhatsappTemplate.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                          Submit for approval
-                        </button>
-                        {!canSubmitWhatsappTemplate && <span className="text-xs text-amber-700">Provider cannot submit templates or is missing required config.</span>}
-                      </div>
-                    </div>
-                  )}
                 </div>
 
                 {pendingWhatsappTemplates.length > 0 && (
-                  <div className="rounded-lg border border-border bg-surface/40 p-4">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-text-primary">Pending provider approval</p>
+                  <details className="rounded-lg border border-border bg-surface/40">
+                    <summary className="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer select-none text-sm font-medium text-text-secondary">
+                      <span>{pendingWhatsappTemplates.length} template{pendingWhatsappTemplates.length === 1 ? '' : 's'} awaiting approval</span>
                       <button
                         type="button"
-                        onClick={() => syncWhatsappTemplates.mutate()}
+                        onClick={e => { e.preventDefault(); syncWhatsappTemplates.mutate() }}
                         disabled={syncWhatsappTemplates.isPending}
                         className="text-xs font-medium text-accent hover:text-accent-hover disabled:opacity-60"
                       >
                         Sync all
                       </button>
-                    </div>
-                    <div className="space-y-2">
+                    </summary>
+                    <div className="space-y-2 px-4 pb-4">
                       {pendingWhatsappTemplates.map(template => (
                         <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-white px-3 py-2">
                           <div className="min-w-0">
@@ -1165,7 +1044,7 @@ export default function EditCampaignPage() {
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </details>
                 )}
 
                 <div>
@@ -1188,17 +1067,6 @@ export default function EditCampaignPage() {
                     ))}
                   </select>
                 </div>
-                <CampaignAiCopywriter
-                  channel="whatsapp"
-                  body={bodyText || draftWhatsappTemplate.bodyText}
-                  onApplyBody={(value) => {
-                    setShowWhatsappTemplateForm(true)
-                    setDraftWhatsappTemplate(template => ({ ...template, bodyText: value }))
-                  }}
-                  inputClass={inputClass}
-                  extraGoal={buildAiGoal('whatsapp')}
-                  lockedReason="WhatsApp sends only approved template text. Apply generated copy into the template form, submit for approval, then select it after approval."
-                />
                 <div className="rounded-lg border border-border bg-surface/60">
                   <div className="flex flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
                     <p className="text-sm font-semibold text-text-primary">Rendered preview</p>
