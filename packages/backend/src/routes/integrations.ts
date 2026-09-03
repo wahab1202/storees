@@ -19,10 +19,16 @@ import { encrypt } from '../services/encryption.js'
 import { redis } from '../services/redis.js'
 import { generateJwt, jwtPayloadFrom } from '../services/authService.js'
 import { requireAuth } from '../middleware/requireAuth.js'
+import { requireProjectAccess } from '../middleware/membership.js'
 import { instantiateDefaultSegments } from '../services/segmentService.js'
 import { instantiateDefaultFlows } from '../services/flowService.js'
 
 const router = Router()
+
+// These authenticated routes read projectId from ?projectId= (not requireProjectId),
+// so the tenant gate is applied explicitly. Super admins bypass; the check is a
+// pass-through while ENFORCE_PROJECT_MEMBERSHIP is off.
+const shopAccess = requireProjectAccess((r) => r.query.projectId as string | undefined)
 
 const NONCE_TTL = 600 // 10 minutes
 const NONCE_PREFIX = 'shopify-nonce:'
@@ -106,7 +112,7 @@ router.get('/shopify/callback', async (req, res) => {
 
     // Find or create admin user for the shop owner
     const [existingUser] = await db
-      .select({ id: adminUsers.id, projectId: adminUsers.projectId })
+      .select({ id: adminUsers.id, projectId: adminUsers.projectId, isSuperAdmin: adminUsers.isSuperAdmin })
       .from(adminUsers)
       .where(eq(adminUsers.email, ownerEmail))
       .limit(1)
@@ -147,7 +153,7 @@ router.get('/shopify/callback', async (req, res) => {
 
     // Generate JWT so the merchant is logged in immediately.
     // Shopify auto-install always creates an admin-role user, so role defaults apply.
-    const token = generateJwt(jwtPayloadFrom({ id: userId, email: ownerEmail, projectId }))
+    const token = generateJwt(jwtPayloadFrom({ id: userId, email: ownerEmail, projectId, isSuperAdmin: existingUser?.isSuperAdmin ?? false }))
 
     res.redirect(getCallbackRedirectUrl(token, projectId))
   } catch (err) {
@@ -167,7 +173,7 @@ function normalizeShopDomain(input: string): string {
 // The LIVE-store path: no OAuth redirect. The body carries the app's client_id +
 // secret; we mint a token (which validates the creds + that the app is installed),
 // store them encrypted on the project, register webhooks, and kick off the sync.
-router.post('/shopify/connect', requireAuth, async (req, res) => {
+router.post('/shopify/connect', requireAuth, shopAccess, async (req, res) => {
   try {
     const { shop: rawShop, client_id, client_secret } = req.body as { shop?: string; client_id?: string; client_secret?: string }
     const shop = normalizeShopDomain(rawShop ?? '')
@@ -245,7 +251,7 @@ router.post('/shopify/connect', requireAuth, async (req, res) => {
 // POST /api/integrations/shopify/disconnect?projectId=...
 // Clears the Shopify connection from the active project so the store can be
 // connected to a different project (the domain is unique per project).
-router.post('/shopify/disconnect', requireAuth, async (req, res) => {
+router.post('/shopify/disconnect', requireAuth, shopAccess, async (req, res) => {
   try {
     const projectId = req.query.projectId as string | undefined
     if (!projectId) return res.status(400).json({ success: false, error: 'No active project' })
@@ -271,7 +277,7 @@ router.post('/shopify/disconnect', requireAuth, async (req, res) => {
 
 // POST /api/integrations/shopify/sync?projectId=...
 // Manually trigger a re-sync of Shopify data
-router.post('/shopify/sync', requireAuth, async (req, res) => {
+router.post('/shopify/sync', requireAuth, shopAccess, async (req, res) => {
   const projectId = req.query.projectId as string
   if (!projectId) {
     res.status(400).json({ success: false, error: 'projectId is required' })
@@ -304,7 +310,7 @@ router.post('/shopify/sync', requireAuth, async (req, res) => {
 
 // GET /api/integrations/shopify/sync-status?projectId=...
 // Check progress of the most recent sync job
-router.get('/shopify/sync-status', requireAuth, async (req, res) => {
+router.get('/shopify/sync-status', requireAuth, shopAccess, async (req, res) => {
   const projectId = req.query.projectId as string
   if (!projectId) {
     res.status(400).json({ success: false, error: 'projectId is required' })
@@ -344,7 +350,7 @@ router.get('/shopify/sync-status', requireAuth, async (req, res) => {
 })
 
 // GET /api/integrations/shopify/status?projectId=...
-router.get('/shopify/status', requireAuth, async (req, res) => {
+router.get('/shopify/status', requireAuth, shopAccess, async (req, res) => {
   const projectId = req.query.projectId as string
   if (!projectId) {
     res.status(400).json({ success: false, error: 'projectId is required' })

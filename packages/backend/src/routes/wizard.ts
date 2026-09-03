@@ -3,6 +3,8 @@ import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { loadPack, getWizardQuestions, activatePack, listPacks } from '../services/verticalPackService.js'
+import { mayAccessProject, membershipEnforced } from '../middleware/membership.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 const router = Router()
 
@@ -131,6 +133,17 @@ router.post('/complete', async (req: Request, res: Response) => {
     const pack = loadPack(packId)
     if (!pack) {
       return res.status(400).json({ success: false, error: `Unknown pack: ${packId}` })
+    }
+
+    // Tenant gate (this route resolves projectId from the body, bypassing
+    // requireProjectId): configuring an existing project requires membership;
+    // creating a new one is a super-admin action. Both ride the enforce flag.
+    if (projectId) {
+      if (!(await mayAccessProject(req, projectId))) {
+        return res.status(403).json({ success: false, error: 'You do not have access to this project' })
+      }
+    } else if (membershipEnforced() && !(req as AuthenticatedRequest).adminUser?.isSuperAdmin) {
+      return res.status(403).json({ success: false, error: 'Forbidden: super admin only' })
     }
 
     // Resolve or create project

@@ -2,14 +2,20 @@ import { Router, Request, Response } from 'express'
 import crypto from 'crypto'
 import { db } from '../db/connection.js'
 import { projects, apiKeys, events, segments, consentAuditLog, customers, anonymousSessions } from '../db/schema.js'
-import { eq, and, count, gte, lte, sql, isNotNull } from 'drizzle-orm'
+import { eq, and, count, gte, lte, sql, isNotNull, inArray } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
+import { requireSuperAdminWhenEnforced, requireProjectAccess, accessibleProjectIds } from '../middleware/membership.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
 import { registerDomain, checkDomainStatus } from '../services/emailDomainService.js'
 import type { DomainType, IntegrationType } from '@storees/shared'
 
 const router = Router()
+
+// This router resolves the target project from req.params.id / body, NOT via
+// requireProjectId — so the tenant gate is applied here explicitly. Every
+// /projects/:id/* route must belong to the caller (super admin bypasses).
+router.use('/projects/:id', requireProjectAccess((r) => r.params.id as string))
 
 const VALID_DOMAINS: DomainType[] = ['ecommerce', 'fintech', 'saas', 'custom']
 
@@ -185,7 +191,7 @@ function getIntegrationGuide(domainType: DomainType, apiKey: string, apiSecret: 
  * For ecommerce: returns Shopify install URL
  * For fintech/saas/custom: auto-generates API key pair + returns integration guide
  */
-router.post('/projects', async (req: Request, res: Response) => {
+router.post('/projects', requireSuperAdminWhenEnforced(), async (req: Request, res: Response) => {
   try {
     const { name, domain_type } = req.body as {
       name?: string
@@ -482,8 +488,13 @@ router.get('/projects/:id/guide', async (req: Request, res: Response) => {
 /**
  * GET /api/onboarding/projects — List all projects (for admin/reset tooling)
  */
-router.get('/projects', async (_req: Request, res: Response) => {
+router.get('/projects', async (req: Request, res: Response) => {
   try {
+    // Super admin (or flag off) → all projects; client → only their memberships.
+    const allowedIds = await accessibleProjectIds(req)
+    if (allowedIds !== null && allowedIds.length === 0) {
+      return res.json({ success: true, data: [] })
+    }
     const rows = await db
       .select({
         id: projects.id,
@@ -495,6 +506,7 @@ router.get('/projects', async (_req: Request, res: Response) => {
         settings: projects.settings,
       })
       .from(projects)
+      .where(allowedIds !== null ? inArray(projects.id, allowedIds) : undefined)
       .orderBy(projects.createdAt)
 
     // Expose `archived` from settings; don't leak the rest of settings (it can
@@ -921,7 +933,7 @@ router.post('/projects/:id/unarchive', async (req: Request, res: Response) => {
   }
 })
 
-router.delete('/projects/:id', async (req: Request, res: Response) => {
+router.delete('/projects/:id', requireSuperAdminWhenEnforced(), async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 
