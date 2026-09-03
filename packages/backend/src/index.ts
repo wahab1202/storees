@@ -50,6 +50,7 @@ import inboundWebhookRoutes from './routes/inboundWebhooks.js'
 import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
+import superAdminRoutes from './routes/superAdmin.js'
 import logsRoutes from './routes/logs.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
@@ -194,6 +195,7 @@ app.use('/api/predictions', requireAuth, predictionRoutes)
 app.use('/api/send-time', requireAuth, sendTimeRoutes)
 app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
+app.use('/api/super-admin', requireAuth, superAdminRoutes)
 app.use('/api/logs', requireAuth, logsRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 app.use('/api/assets', requireAuth, assetRoutes)
@@ -220,6 +222,11 @@ async function bootstrap() {
     console.error('[bootstrap] Migration step failed; refusing to start.', err)
     process.exit(1)
   }
+
+  // Bootstrap cross-tenant super admins from STOREES_PLATFORM_ADMINS so existing
+  // platform operators keep access after the 0085 membership change. Idempotent.
+  const { seedSuperAdmins } = await import('./middleware/membership.js')
+  await seedSuperAdmins()
 
   // Start workers
   startSyncWorker()

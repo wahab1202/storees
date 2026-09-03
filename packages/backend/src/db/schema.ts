@@ -10,6 +10,7 @@ import {
   jsonb,
   uniqueIndex,
   index,
+  primaryKey,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
@@ -973,6 +974,9 @@ export const adminUsers = pgTable('admin_users', {
   name: varchar('name', { length: 255 }).notNull(),
   role: varchar('role', { length: 20 }).notNull().default('admin'),
   // 'admin' | 'manager' | 'agent' — only admin sees everything; manager/agent are scoped via agentId
+  // Cross-tenant super admin (platform operator). Explicit flag, NOT the role
+  // string — clients (super_admin=false) can only reach projects in user_projects.
+  isSuperAdmin: boolean('is_super_admin').notNull().default(false),
   agentId: uuid('agent_id').references(() => agents.id),
   projectId: uuid('project_id').references(() => projects.id),
   emailVerified: boolean('email_verified').notNull().default(false),
@@ -984,6 +988,19 @@ export const adminUsers = pgTable('admin_users', {
   uniqueIndex('idx_admin_users_email').on(table.email),
   index('idx_admin_users_project').on(table.projectId),
   index('idx_admin_users_agent').on(table.agentId),
+])
+
+// ============ USER ↔ PROJECT MEMBERSHIP ============
+// Which projects a (non-super-admin) user may operate on. One row per (user, project).
+// Enforced at requireProjectId; super admins bypass. See migration 0085.
+export const userProjects = pgTable('user_projects', {
+  userId: uuid('user_id').notNull().references(() => adminUsers.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  createdBy: uuid('created_by').references(() => adminUsers.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.projectId] }),
+  index('idx_user_projects_project').on(table.projectId),
 ])
 
 // ============ PASSWORD RESET TOKENS ============

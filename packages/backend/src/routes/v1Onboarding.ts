@@ -2,14 +2,20 @@ import { Router, Request, Response } from 'express'
 import crypto from 'crypto'
 import { db } from '../db/connection.js'
 import { projects, apiKeys, events, segments, consentAuditLog, customers, anonymousSessions } from '../db/schema.js'
-import { eq, and, count, gte, lte, sql, isNotNull } from 'drizzle-orm'
+import { eq, and, count, gte, lte, sql, isNotNull, inArray } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
+import { requireSuperAdminWhenEnforced, requireProjectAccess, accessibleProjectIds } from '../middleware/membership.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
 import { registerDomain, checkDomainStatus } from '../services/emailDomainService.js'
 import type { DomainType, IntegrationType } from '@storees/shared'
 
 const router = Router()
+
+// This router resolves the target project from req.params.id / body, NOT via
+// requireProjectId — so the tenant gate is applied here explicitly. Every
+// /projects/:id/* route must belong to the caller (super admin bypasses).
+router.use('/projects/:id', requireProjectAccess((r) => r.params.id as string))
 
 const VALID_DOMAINS: DomainType[] = ['ecommerce', 'fintech', 'saas', 'custom']
 
@@ -185,7 +191,7 @@ function getIntegrationGuide(domainType: DomainType, apiKey: string, apiSecret: 
  * For ecommerce: returns Shopify install URL
  * For fintech/saas/custom: auto-generates API key pair + returns integration guide
  */
-router.post('/projects', async (req: Request, res: Response) => {
+router.post('/projects', requireSuperAdminWhenEnforced(), async (req: Request, res: Response) => {
   try {
     const { name, domain_type } = req.body as {
       name?: string
@@ -482,8 +488,13 @@ router.get('/projects/:id/guide', async (req: Request, res: Response) => {
 /**
  * GET /api/onboarding/projects — List all projects (for admin/reset tooling)
  */
-router.get('/projects', async (_req: Request, res: Response) => {
+router.get('/projects', async (req: Request, res: Response) => {
   try {
+    // Super admin (or flag off) → all projects; client → only their memberships.
+    const allowedIds = await accessibleProjectIds(req)
+    if (allowedIds !== null && allowedIds.length === 0) {
+      return res.json({ success: true, data: [] })
+    }
     const rows = await db
       .select({
         id: projects.id,
@@ -494,6 +505,7 @@ router.get('/projects', async (_req: Request, res: Response) => {
         createdAt: projects.createdAt,
       })
       .from(projects)
+      .where(allowedIds !== null ? inArray(projects.id, allowedIds) : undefined)
       .orderBy(projects.createdAt)
 
     res.json({ success: true, data: rows })
@@ -880,7 +892,41 @@ router.get('/projects/:id/consent-export', requireRole('admin'), async (req: Req
  * Used by the resetToFintech script to clear the demo before re-seeding.
  * Relies on ON DELETE CASCADE in the DB schema.
  */
-router.delete('/projects/:id', async (req: Request, res: Response) => {
+// POST /projects/:id/archive — soft-remove (reversible). Hides the project from
+// the active list without touching its data. Preferred over delete, which FK-
+// fails on projects that have synced customers/orders/events.
+router.post('/projects/:id/archive', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string
+    const [p] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, id)).limit(1)
+    if (!p) return res.status(404).json({ success: false, error: 'Project not found' })
+    const settings = { ...((p.settings ?? {}) as Record<string, unknown>), archived: true, archivedAt: new Date().toISOString() }
+    await db.update(projects).set({ settings, updatedAt: new Date() }).where(eq(projects.id, id))
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Archive project error:', err)
+    res.status(500).json({ success: false, error: 'Failed to archive project' })
+  }
+})
+
+// POST /projects/:id/unarchive — restore an archived project.
+router.post('/projects/:id/unarchive', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string
+    const [p] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, id)).limit(1)
+    if (!p) return res.status(404).json({ success: false, error: 'Project not found' })
+    const settings = { ...((p.settings ?? {}) as Record<string, unknown>) }
+    delete settings.archived
+    delete settings.archivedAt
+    await db.update(projects).set({ settings, updatedAt: new Date() }).where(eq(projects.id, id))
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Unarchive project error:', err)
+    res.status(500).json({ success: false, error: 'Failed to restore project' })
+  }
+})
+
+router.delete('/projects/:id', requireSuperAdminWhenEnforced(), async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 

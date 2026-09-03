@@ -104,7 +104,7 @@ router.get('/shopify/callback', async (req, res) => {
 
     // Find or create admin user for the shop owner
     const [existingUser] = await db
-      .select({ id: adminUsers.id, projectId: adminUsers.projectId })
+      .select({ id: adminUsers.id, projectId: adminUsers.projectId, isSuperAdmin: adminUsers.isSuperAdmin })
       .from(adminUsers)
       .where(eq(adminUsers.email, ownerEmail))
       .limit(1)
@@ -145,7 +145,7 @@ router.get('/shopify/callback', async (req, res) => {
 
     // Generate JWT so the merchant is logged in immediately.
     // Shopify auto-install always creates an admin-role user, so role defaults apply.
-    const token = generateJwt(jwtPayloadFrom({ id: userId, email: ownerEmail, projectId }))
+    const token = generateJwt(jwtPayloadFrom({ id: userId, email: ownerEmail, projectId, isSuperAdmin: existingUser?.isSuperAdmin ?? false }))
 
     res.redirect(getCallbackRedirectUrl(token, projectId))
   } catch (err) {
