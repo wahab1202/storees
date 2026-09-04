@@ -19,9 +19,31 @@ export function membershipEnforced(): boolean {
   return process.env.ENFORCE_PROJECT_MEMBERSHIP === 'true'
 }
 
-// ── membership lookup (short-TTL cache; revocation is near-immediate) ──
+// ── membership lookup (short-TTL, size-bounded in-process cache) ──
+//
+// Warm path is a Map hit (no DB). Cold/expired path is ONE index-only PK lookup
+// on user_projects (PK = user_id, project_id). Cache is per-instance and bounded
+// (MAX_ENTRIES) with an expired-sweep + oldest-evict so it can't grow unbounded.
+//
+// NOTE ON REVOCATION: because the cache is per-process, an unlink invalidates the
+// serving instance immediately (invalidateMembership) but other instances keep a
+// stale grant until their entry expires — i.e. cross-instance revocation is
+// eventually-consistent within TTL_MS (≤30s). Acceptable for admin access control.
 const CACHE = new Map<string, { ok: boolean; exp: number }>()
 const TTL_MS = 30_000
+const MAX_ENTRIES = 50_000
+
+function cacheSet(key: string, ok: boolean, now: number): void {
+  if (CACHE.size >= MAX_ENTRIES) {
+    for (const [k, v] of CACHE) if (v.exp <= now) CACHE.delete(k) // drop expired first
+    while (CACHE.size >= MAX_ENTRIES) {                            // then evict oldest (FIFO)
+      const oldest = CACHE.keys().next().value
+      if (oldest === undefined) break
+      CACHE.delete(oldest)
+    }
+  }
+  CACHE.set(key, { ok, exp: now + TTL_MS })
+}
 
 export async function userInProject(userId: string, projectId: string): Promise<boolean> {
   const key = `${userId}:${projectId}`
@@ -34,7 +56,7 @@ export async function userInProject(userId: string, projectId: string): Promise<
     .where(and(eq(userProjects.userId, userId), eq(userProjects.projectId, projectId)))
     .limit(1)
   const ok = rows.length > 0
-  CACHE.set(key, { ok, exp: now + TTL_MS })
+  cacheSet(key, ok, now)
   return ok
 }
 
