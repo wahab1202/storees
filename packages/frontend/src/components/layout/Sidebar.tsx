@@ -43,7 +43,8 @@ type NavItem = {
   href: string
   label: string
   icon: typeof LayoutDashboard
-  adminOnly?: boolean
+  adminOnly?: boolean       // project-admin (role='admin') and up
+  superAdminOnly?: boolean  // cross-tenant platform operator only
 }
 
 const navItems: NavItem[] = [
@@ -64,17 +65,26 @@ const navItems: NavItem[] = [
 ]
 
 const bottomItems: NavItem[] = [
-  { href: '/projects', label: 'Projects', icon: FolderOpen, adminOnly: true },
-  { href: '/onboarding', label: 'New Project', icon: Plus, adminOnly: true },
-  // Settings holds admin-only config (SDK keys, channel providers, AI). Dealers
-  // reach Account + Security via the user menu, so the full Settings nav is admin-only.
+  { href: '/clients', label: 'Clients', icon: UserCircle, superAdminOnly: true },
+  { href: '/projects', label: 'Projects', icon: FolderOpen, superAdminOnly: true },
+  { href: '/onboarding', label: 'New Project', icon: Plus, superAdminOnly: true },
+  // GWM: Settings holds admin-only config; dealers reach Account + Security via
+  // the user menu, so the full Settings nav stays admin-only.
   { href: '/settings', label: 'Settings', icon: Settings, adminOnly: true },
   { href: '/integrations', label: 'Connected Stores', icon: Store, adminOnly: true },
 ]
 
-function visibleFor(role: AdminRole | undefined, items: NavItem[]): NavItem[] {
-  const isAdmin = !role || role === 'admin'
-  return isAdmin ? items : items.filter(i => !i.adminOnly)
+// Fail-CLOSED: an undefined role is NOT treated as admin (the backend always sets
+// role; the old fail-open let a role-less session see every admin surface). Nav
+// visibility is cosmetic — the backend enforces access — but it must not advertise
+// super-admin surfaces to clients.
+function visibleFor(role: AdminRole | undefined, isSuperAdmin: boolean, items: NavItem[]): NavItem[] {
+  const isAdmin = role === 'admin'
+  return items.filter(i => {
+    if (i.superAdminOnly) return isSuperAdmin
+    if (i.adminOnly) return isAdmin
+    return true
+  })
 }
 
 const DOMAIN_ICONS: Record<string, typeof Globe> = {
@@ -230,11 +240,12 @@ export function Sidebar() {
   const pathname = usePathname()
   const { data: session } = useSession()
   const role = session?.user?.role as AdminRole | undefined
+  const isSuperAdmin = session?.user?.isSuperAdmin === true
   const { data: countsData } = useSidebarCounts()
   const counts = countsData?.data
 
-  const visibleNavItems = visibleFor(role, navItems)
-  const visibleBottomItems = visibleFor(role, bottomItems)
+  const visibleNavItems = visibleFor(role, isSuperAdmin, navItems)
+  const visibleBottomItems = visibleFor(role, isSuperAdmin, bottomItems)
 
   // Close mobile drawer on route change
   useEffect(() => {
