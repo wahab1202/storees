@@ -44,6 +44,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             projectId: meData.data.projectId,
             role: meData.data.role,
             agentId: meData.data.agentId,
+            isSuperAdmin: meData.data.isSuperAdmin,
             totpEnabled: meData.data.totpEnabled,
           }
         }
@@ -79,6 +80,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           projectId: data.data.user.projectId,
           role: data.data.user.role,
           agentId: data.data.user.agentId,
+          isSuperAdmin: data.data.user.isSuperAdmin,
           totpEnabled: data.data.user.totpEnabled,
         }
       },
@@ -113,6 +115,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           ;(user as Record<string, unknown>).projectId = data.data.user.projectId
           ;(user as Record<string, unknown>).role = data.data.user.role
           ;(user as Record<string, unknown>).agentId = data.data.user.agentId
+          ;(user as Record<string, unknown>).isSuperAdmin = data.data.user.isSuperAdmin
           ;(user as Record<string, unknown>).totpEnabled = data.data.user.totpEnabled
           ;(user as Record<string, unknown>).id = data.data.user.id
         } catch {
@@ -129,6 +132,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.projectId = (user as Record<string, unknown>).projectId as string | null
         token.role = (user as Record<string, unknown>).role as 'admin' | 'manager' | 'agent' | undefined
         token.agentId = (user as Record<string, unknown>).agentId as string | null
+        token.isSuperAdmin = (user as Record<string, unknown>).isSuperAdmin as boolean | undefined
         token.totpEnabled = (user as Record<string, unknown>).totpEnabled as boolean
       }
       return token
@@ -141,6 +145,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         ;(session.user as unknown as Record<string, unknown>).projectId = token.projectId
         ;(session.user as unknown as Record<string, unknown>).role = token.role
         ;(session.user as unknown as Record<string, unknown>).agentId = token.agentId
+        ;(session.user as unknown as Record<string, unknown>).isSuperAdmin = token.isSuperAdmin
         ;(session.user as unknown as Record<string, unknown>).totpEnabled = token.totpEnabled
       }
       return session

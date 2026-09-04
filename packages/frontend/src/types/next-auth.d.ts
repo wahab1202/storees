@@ -13,6 +13,7 @@ declare module 'next-auth' {
       projectId?: string | null
       role?: AdminRole
       agentId?: string | null
+      isSuperAdmin?: boolean
       totpEnabled?: boolean
     }
   }
@@ -25,6 +26,7 @@ declare module 'next-auth/jwt' {
     projectId?: string | null
     role?: AdminRole
     agentId?: string | null
+    isSuperAdmin?: boolean
     totpEnabled?: boolean
   }
 }

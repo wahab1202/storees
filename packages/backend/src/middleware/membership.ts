@@ -77,6 +77,14 @@ export async function mayAccessProject(req: Request, projectId: string): Promise
   const user = (req as AuthenticatedRequest).adminUser
   if (!user) return true // no user context = not the JWT path (api-key routes gate themselves)
   if (user.isSuperAdmin) return true
+  // A user may ALWAYS access their home project (the JWT's projectId, set at
+  // creation and no longer self-mutable). This covers sub-users and Shopify-
+  // created accounts that have a home project but no explicit user_projects row,
+  // so they're never locked out of their own tenant. user_projects grants any
+  // ADDITIONAL projects. Note: this is NOT the reverted 2026-07-22 behaviour —
+  // we do not REJECT a differing projectId; we additionally allow membership rows
+  // and super-admins, so cross-project ops keep working.
+  if (user.projectId && projectId === user.projectId) return true
   return userInProject(user.userId, projectId)
 }
 
@@ -132,7 +140,10 @@ export async function accessibleProjectIds(req: Request): Promise<string[] | nul
     .select({ p: userProjects.projectId })
     .from(userProjects)
     .where(eq(userProjects.userId, user.userId))
-  return rows.map(r => r.p)
+  const ids = rows.map(r => r.p)
+  // Always include the user's home project (may have no explicit membership row).
+  if (user.projectId && !ids.includes(user.projectId)) ids.push(user.projectId)
+  return ids
 }
 
 /**
