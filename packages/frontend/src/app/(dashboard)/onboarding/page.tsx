@@ -12,6 +12,7 @@ import type { ProjectCreateResponse } from '@/hooks/useOnboarding'
 import type { DomainType } from '@storees/shared'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
+import { useSuperAdminGuard } from '@/components/auth/RequireSuperAdmin'
 import {
   Building2,
   TrendingUp,
@@ -123,6 +124,12 @@ const VOLUME_OPTIONS = [
 // ============ COMPONENT ============
 
 export default function OnboardingPage() {
+  const guard = useSuperAdminGuard()
+  if (guard) return guard
+  return <OnboardingPageInner />
+}
+
+function OnboardingPageInner() {
   const [step, setStep] = useState(0)
 
   // Step 0: Industry

@@ -1,31 +1,18 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useSession } from 'next-auth/react'
-import { Loader2, UserPlus, X, ShieldAlert, Check } from 'lucide-react'
+import { Loader2, UserPlus, X, Check } from 'lucide-react'
 import { useClients, useCreateClient, useLinkClientProject, useUnlinkClientProject } from '@/hooks/useClients'
 import { useProjects } from '@/hooks/useProjects'
+import { useSuperAdminGuard } from '@/components/auth/RequireSuperAdmin'
 
 function fmtDate(s: string): string {
   try { return new Date(s).toLocaleDateString(undefined, { dateStyle: 'medium' }) } catch { return s }
 }
 
 export default function ClientsPage() {
-  const { data: session, status } = useSession()
-  const isSuperAdmin = session?.user?.isSuperAdmin === true
-
-  if (status === 'loading') {
-    return <div className="flex items-center gap-2 text-sm text-text-muted p-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>
-  }
-  if (!isSuperAdmin) {
-    return (
-      <div className="max-w-md mx-auto text-center p-12">
-        <ShieldAlert className="h-8 w-8 text-amber-500 mx-auto mb-3" />
-        <h1 className="text-lg font-semibold text-text-primary">Super admins only</h1>
-        <p className="text-sm text-text-secondary mt-1">Client management is restricted to platform administrators.</p>
-      </div>
-    )
-  }
+  const guard = useSuperAdminGuard()
+  if (guard) return guard
   return <ClientsAdmin />
 }
 

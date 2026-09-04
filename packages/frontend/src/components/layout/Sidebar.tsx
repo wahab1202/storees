@@ -114,22 +114,28 @@ function ProjectSwitcher() {
 
   if (projects.length === 0) return null
 
-  const DomainIcon = currentProject ? (DOMAIN_ICONS[currentProject.domainType] || Globe) : Globe
+  // A client with a single project doesn't need a switcher — show it as a label.
+  const single = projects.length <= 1
+  const display = currentProject ?? projects[0]
+  const DomainIcon = display ? (DOMAIN_ICONS[display.domainType] || Globe) : Globe
 
   return (
     <div ref={ref} className="relative px-3 pb-3">
       <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-left"
+        onClick={single ? undefined : () => setOpen(!open)}
+        className={cn(
+          'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-white/5 text-left',
+          single ? 'cursor-default' : 'hover:bg-white/10 transition-colors',
+        )}
       >
         <DomainIcon size={14} className="text-sidebar-active flex-shrink-0" />
         <span className="flex-1 text-xs font-medium text-white truncate">
-          {currentProject?.name ?? 'Select Project'}
+          {display?.name ?? 'Select Project'}
         </span>
-        <ChevronDown size={12} className={cn('text-sidebar-muted transition-transform', open && 'rotate-180')} />
+        {!single && <ChevronDown size={12} className={cn('text-sidebar-muted transition-transform', open && 'rotate-180')} />}
       </button>
 
-      {open && (
+      {!single && open && (
         <div className="absolute left-3 right-3 top-full mt-1 bg-[#1e293b] border border-white/10 rounded-lg shadow-xl overflow-hidden z-50 max-h-64 overflow-y-auto">
           {projects.map(project => {
             const Icon = DOMAIN_ICONS[project.domainType] || Globe
