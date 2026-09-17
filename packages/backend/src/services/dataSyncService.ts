@@ -20,6 +20,7 @@ import { bulkUpsertProducts, type ProductImport } from './productCatalogService.
 import { upsertDealer, type DealerInput } from './dealerImport.js'
 import { agentRbacEnabled } from '../config/features.js'
 import { customerAggregateQueue } from './queue.js'
+import { projectVocabulary } from './projectVocabulary.js'
 
 // Sync orchestrator. The BullMQ worker calls runSync(syncId) — everything
 // else (pagination, mapping, calling import services, writing logs) lives
@@ -228,6 +229,10 @@ async function importOrderBatch(
   type Pending = { rawCustomerId: string; row: ReturnType<typeof buildOrderRow> }
   const pending: Pending[] = []
 
+  // Resolved once for the batch — the lookup is cached, but a sync walks thousands of
+  // records and there is no reason to ask per row.
+  const syncVocab = await projectVocabulary(projectId)
+
   for (const raw of records) {
     stats.fetched += 1
     const mapped = mapRecord(raw, template.fieldMap.orders)
@@ -337,7 +342,7 @@ async function importOrderBatch(
       .limit(1)
     const isRevival = priorComp != null
 
-    const row = buildOrderRow(projectId, mapped, { isRevival })
+    const row = buildOrderRow(projectId, mapped, { isRevival }, syncVocab)
     if (!row) {
       stats.failed += 1
       await log(syncId, 'error', `Order ${orderId} skipped — invalid timestamp value: ${String(mapped.timestamp)}`, {
@@ -500,9 +505,23 @@ async function buildCompensatingCancellation(
     cancelTimestamp = new Date()
   }
 
+  // Under THIS project's word for a reversal, not the retail one.
+  //
+  // The compensation is how a synced order that turns out to be cancelled gets its
+  // revenue taken back off. Written as the literal `order_cancelled`, a shop whose
+  // reversal slot says something else received an event its own vocabulary does not
+  // recognise: the row lands in the ledger, every money path looks for the shop's word,
+  // finds nothing, and the cancelled order keeps counting as revenue for ever.
+  //
+  // The idempotency KEY deliberately stays `order_cancelled_compensation:<orderId>`.
+  // It is bookkeeping, not vocabulary — it exists so a re-sync cannot write the same
+  // compensation twice. Translating it would make every compensation already emitted
+  // look new, and the next sync would double every reversal.
+  const vocab = await projectVocabulary(projectId)
+
   return {
     projectId,
-    eventName: 'order_cancelled',
+    eventName: vocab.cancellationEvents[0] ?? 'order_cancelled',
     platform: 'api',
     source: 'connector_sync',
     timestamp: cancelTimestamp,
@@ -534,6 +553,19 @@ function buildOrderRow(
   projectId: string,
   mapped: Record<string, unknown>,
   opts: { isRevival?: boolean } = {},
+  // What this project calls a purchase, and where it puts the id and the money.
+  //
+  // A connector's job is to translate an external feed into Storees' shape, and this
+  // wrote retail's shape specifically: `order_placed` carrying `order_id` and `total`.
+  // For a lender pulling loans through a connector that produces events its OWN mapping
+  // does not recognise — the pack says `loan_disbursed` / `loan_id` / `amount` — so the
+  // rows land, match nothing, and the loans are invisible to the aggregator, the orders
+  // table and every model.
+  //
+  // Retail's names are the default, so a shop's sync is unchanged.
+  vocab: { purchaseEvents: string[]; orderIdKey: string; amountKey: string; currencyKey: string } = {
+    purchaseEvents: ['order_placed'], orderIdKey: 'order_id', amountKey: 'total', currencyKey: 'currency',
+  },
 ) {
   const orderId = mapped.order_id as string
   // Caller already gates on mapped.timestamp presence; treat invalid date as
@@ -558,7 +590,7 @@ function buildOrderRow(
 
   return {
     projectId,
-    eventName: 'order_placed',
+    eventName: vocab.purchaseEvents[0] ?? 'order_placed',
     platform: 'api',
     source: 'connector_sync',
     timestamp,
@@ -566,13 +598,13 @@ function buildOrderRow(
     sessionId: null,
     customerId: null as string | null,
     properties: {
-      order_id: orderId,
-      total: mapped.total,
+      [vocab.orderIdKey]: orderId,
+      [vocab.amountKey]: mapped.total,
       // Connector-derived per-order discount (e.g. VirpanAI subtract:
       // summary.original_order_total - summary.current_order_total). Read by
       // discount_order_percentage in metricsWorker + segment evaluator.
       discount: typeof mapped.discount === 'number' ? mapped.discount : 0,
-      currency: mapped.currency ?? 'INR',
+      [vocab.currencyKey]: mapped.currency ?? 'INR',
       line_items: Array.isArray(mapped.line_items) ? mapped.line_items : [],
       // Carry source-side state so future queries / segments can filter on it.
       status: mapped.order_status ?? null,

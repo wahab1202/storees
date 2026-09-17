@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useEvents, useEventNames, useEventSessions, type SessionSummary } from '@/hooks/useEvents'
 import { Loader2, ChevronDown, ChevronRight, Radio, Search, X, Link2, UserX, CheckCircle2, Fingerprint } from 'lucide-react'
@@ -270,7 +271,15 @@ function SessionRow({ s, active, onPick }: { s: SessionSummary; active: boolean;
       <td className="px-3 py-2">
         {linked ? (
           <span className="inline-flex items-center gap-1 text-emerald-700">
-            <Link2 className="h-3 w-3" /> {s.customerLabel ?? s.customerId}
+            <Link2 className="h-3 w-3" />
+            <Link
+              href={`/customers/${s.customerId}`}
+              onClick={e => e.stopPropagation()}
+              className="hover:underline"
+              title="Open this customer"
+            >
+              {s.customerLabel ?? s.customerId}
+            </Link>
             {backAttributed && (
               <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-600" title={`${s.eventsBackAttributed ?? 0} earlier events re-attributed to this customer`}>
                 <CheckCircle2 className="h-3 w-3" /> {s.eventsBackAttributed ?? 0} back-attributed

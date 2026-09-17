@@ -59,12 +59,16 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
     const { phoneNumberId } = config
     if (!phoneNumberId) return { messageId: '', status: 'failed', error: 'Pinnacle: phoneNumberId not configured' }
 
-    const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
     const template = command.templateId
       ? (await db.select({ bodyText: emailTemplates.bodyText }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0]
       : undefined
 
-    const to = normalizeWhatsAppRecipient(customer?.phone)
+    let rawTo: string | null | undefined = command.deliverToPhone
+    if (!rawTo) {
+      const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
+      rawTo = customer?.phone
+    }
+    const to = normalizeWhatsAppRecipient(rawTo)
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     let body = template?.bodyText ?? ''
@@ -94,7 +98,7 @@ export const pinnacleWhatsappProvider: ChannelProvider = {
     const { phoneNumberId } = config
     if (!phoneNumberId) return { messageId: '', status: 'failed', error: 'Pinnacle: phoneNumberId not configured' }
 
-    let rawTo: string | null | undefined = command.phoneOverride
+    let rawTo: string | null | undefined = command.deliverToPhone ?? command.phoneOverride
     if (!rawTo) {
       const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
       rawTo = customer?.phone

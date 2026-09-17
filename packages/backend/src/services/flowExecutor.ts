@@ -8,6 +8,7 @@ import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from '.
 import { buildDecisionVars } from './decisioningService.js'
 import { createHash } from 'node:crypto'
 import { evaluateEventFilters, readPath } from '@storees/shared'
+import { filterSqlForProject } from './projectVocabulary.js'
 import type {
   FilterConfig,
   FlowNode,
@@ -517,7 +518,7 @@ async function evaluateCondition(
     const [row] = await db
       .select({ one: sql`1` })
       .from(customers)
-      .where(and(eq(customers.id, customerId), filterToSql(config.attributeFilter)))
+      .where(and(eq(customers.id, customerId), await filterSqlForProject(String((trip as Record<string, unknown>).projectId), config.attributeFilter)))
       .limit(1)
     return !!row
   }
@@ -658,9 +659,15 @@ async function executeAction(
     ? await buildDecisionVars(projectId, decisionProductId).catch(() => ({} as Record<string, string>))
     : {}
 
+  // Recipient targeting: deliver to the customer, their dealer (agent), or both.
+  // Dealer sends keep the CUSTOMER as the content context — the dealer receives
+  // a message about their customer. 'both' fans out to two sends.
+  const recipientMode = (node.config as { recipient?: 'customer' | 'dealer' | 'both' }).recipient ?? 'customer'
+  const recipients: Array<'customer' | 'dealer'> = recipientMode === 'both' ? ['customer', 'dealer'] : [recipientMode]
+
   // For email, use the existing direct send path (backward compatible)
   if (channel === 'email') {
-    if (!customer.email) {
+    if (recipients.length === 1 && recipients[0] === 'customer' && !customer.email) {
       console.warn(`Cannot send email: customer ${customerId} has no email`)
       return
     }
@@ -705,8 +712,22 @@ async function executeAction(
       html = appendUtmParameters(html, utm.params, templateContext)
     }
 
-    await sendEmail({ to: customer.email, subject, html, projectId, contentType: 'promotional' })
-    console.log(`Action executed: sent email to ${customer.email} (template: ${templateId})`)
+    // Resolve the actual address(es): the customer, their dealer, or both.
+    const emailTargets: string[] = []
+    for (const r of recipients) {
+      if (r === 'customer') {
+        if (customer.email) emailTargets.push(customer.email)
+      } else {
+        const { resolveDealerContact } = await import('./dealerContactService.js')
+        const contact = await resolveDealerContact(customerId)
+        if (contact?.email) emailTargets.push(contact.email)
+        else console.warn(`Flow email: no dealer email for customer ${customerId} — dealer copy skipped`)
+      }
+    }
+    for (const to of emailTargets) {
+      await sendEmail({ to, subject, html, projectId, contentType: 'promotional' })
+    }
+    console.log(`Action executed: sent email to ${emailTargets.join(', ') || '(no targets)'} (template: ${templateId})`)
     return
   }
 
@@ -749,18 +770,22 @@ async function executeAction(
         .filter(p => p.key && p.value)
     : undefined
 
-  const messageId = await send({
-    projectId,
-    userId: customerId,
-    channel: channel as 'sms' | 'push' | 'whatsapp',
-    templateId,
-    variables,
-    messageType: 'promotional',
-    flowTripId: trip.id as string,
-    utmParameters,
-  })
+  let messageId: string | null = null
+  for (const r of recipients) {
+    messageId = await send({
+      projectId,
+      userId: customerId,
+      channel: channel as 'sms' | 'push' | 'whatsapp',
+      templateId,
+      variables,
+      messageType: 'promotional',
+      flowTripId: trip.id as string,
+      utmParameters,
+      recipient: r,
+    })
+  }
 
-  console.log(`Action executed: ${actionType} for customer ${customerId} (message: ${messageId ?? 'blocked'})`)
+  console.log(`Action executed: ${actionType} for customer ${customerId} (recipients: ${recipients.join('+')}, last message: ${messageId ?? 'blocked'})`)
 }
 
 

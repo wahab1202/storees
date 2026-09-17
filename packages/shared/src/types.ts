@@ -1,6 +1,6 @@
 // ============ DATABASE MODELS ============
 
-export type DomainType = 'ecommerce' | 'fintech' | 'saas' | 'custom'
+export type DomainType = 'ecommerce' | 'fintech' | 'saas' | 'edtech' | 'custom'
 export type IntegrationType = 'shopify' | 'api_key' | 'stripe' | 'custom'
 
 export type Project = {
@@ -214,6 +214,8 @@ export type Campaign = {
   deliveryType: CampaignDeliveryType
   status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused'
   contentType: CampaignContentType
+  /** Who receives the campaign: the customer, their dealer, or both. */
+  recipient?: MessageRecipient
   segmentId: string | null
   segmentName?: string
   subject: string | null
@@ -640,6 +642,12 @@ export type ActionNode = {
     variables?: TemplateVariable[]
     /** Per-node UTM tagging — same shape campaigns use. */
     utmParameters?: CampaignUtmParameters
+    /**
+     * Who receives this send: the customer (default), their dealer (agent), or
+     * both. Dealer sends are delivered to the dealer's WhatsApp while keeping
+     * the customer as the content context. WhatsApp only for now.
+     */
+    recipient?: MessageRecipient
   }
 }
 
@@ -916,7 +924,20 @@ export type SendCommand = {
    * are pre-interpolated by the caller.
    */
   utmParameters?: CampaignUtmParameter[]
+  /**
+   * Who this send is delivered to. 'dealer' redirects delivery to the customer's
+   * assigned dealer (agent) while keeping the CUSTOMER as the content/context —
+   * so the dealer gets a message ABOUT their customer. A single recipient per
+   * send; 'both' is expanded to two sends upstream. Defaults to the customer.
+   */
+  recipient?: 'customer' | 'dealer'
+  /** Resolved dealer address when recipient='dealer' (set by the delivery layer). */
+  deliverToPhone?: string
+  deliverToEmail?: string
 }
+
+/** Message/flow/campaign recipient choice (UI + config). */
+export type MessageRecipient = 'customer' | 'dealer' | 'both'
 
 export type Message = {
   id: string
@@ -964,8 +985,16 @@ export type PredictionGoal = {
   targetEvent: string
   observationWindowDays: number
   predictionWindowDays: number
+  /** true when these two windows were set by hand and training must use them as given
+   *  rather than deriving its own. The resulting score was not selected on held-out
+   *  rounds, so any screen showing it alongside a derived goal's must say which. */
+  windowsPinned: boolean
   minPositiveLabels: number
-  status: 'active' | 'paused' | 'insufficient_data'
+  /** `training` is transient — set when a retrain is queued, replaced by whatever the
+   *  run produces. The worker clears it on every exit, including the failure paths, and
+   *  anything left over an hour is treated as finished (a worker killed mid-run cannot
+   *  clear its own status, and a spinner that never stops is worse than none). */
+  status: 'active' | 'paused' | 'insufficient_data' | 'training'
   lastTrainedAt: Date | null
   currentMetric: number | null
   origin: 'pack' | 'user'
@@ -1215,6 +1244,47 @@ export type WhatsappProvisioningInput = {
   notes?: string
 }
 
+// ============ CART ABANDONMENT INSIGHT ============
+
+/** Human-captured reason for one abandonment (from the exec team's call). */
+export type CartAbandonmentNote = {
+  reason: string
+  remarks: string | null
+  /** Optional uploaded call transcript/recording. */
+  transcriptUrl: string | null
+  transcriptName: string | null
+  markedByName: string | null
+  updatedAt: string
+}
+
+export type AbandonmentProduct = { productId: string; name: string; at: string }
+
+/** One abandonment instance (a checkout_abandoned event) + its captured reason. */
+export type AbandonmentInstance = {
+  eventId: string
+  abandonedAt: string
+  /** They bought after this abandon → recovered, no call needed. */
+  recovered: boolean
+  cart: {
+    productDetails?: string | null
+    totalPrice?: number | null
+    itemCount?: number | null
+    recoveryUrl?: string | null
+    image?: string | null
+  }
+  /** Products viewed/clicked in the window before this abandon. */
+  productsBefore: AbandonmentProduct[]
+  note: CartAbandonmentNote | null
+}
+
+export type CustomerAbandonments = {
+  total: number
+  recovered: number
+  /** System-inferred *likely* reason for the latest abandon (a hint, not truth). */
+  latestLikelyReason?: string | null
+  instances: AbandonmentInstance[]
+}
+
 // ============ GENERIC EVENT API TYPES ============
 
 export type EventIngestionPayload = {
@@ -1414,6 +1484,8 @@ export type InboundWebhookEvent = {
   matchedDefinitions: Array<{ definitionId: string; eventName: string }>
   status: 'processed' | 'no_match' | 'error' | 'received'
   error: string | null
+  /** Customer resolved when this row was processed — null for anonymous/no-match rows. */
+  customerId: string | null
   receivedAt: string
 }
 

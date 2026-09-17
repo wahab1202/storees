@@ -12,6 +12,7 @@ import type { ProjectCreateResponse } from '@/hooks/useOnboarding'
 import type { DomainType } from '@storees/shared'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
+import { useSuperAdminGuard } from '@/components/auth/RequireSuperAdmin'
 import {
   Building2,
   TrendingUp,
@@ -123,6 +124,12 @@ const VOLUME_OPTIONS = [
 // ============ COMPONENT ============
 
 export default function OnboardingPage() {
+  const guard = useSuperAdminGuard()
+  if (guard) return guard
+  return <OnboardingPageInner />
+}
+
+function OnboardingPageInner() {
   const [step, setStep] = useState(0)
 
   // Step 0: Industry
@@ -258,7 +265,7 @@ export default function OnboardingPage() {
       // 1. Create the project first
       const projectRes = await createProject.mutateAsync({
         name: projectName.trim(),
-        domain_type: (selectedPack === 'nbfc' ? 'fintech' : selectedPack === 'edtech' ? 'custom' : selectedPack) as DomainType,
+        domain_type: (selectedPack === 'nbfc' ? 'fintech' : selectedPack) as DomainType,
       })
       setProjectData(projectRes.data)
 

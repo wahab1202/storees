@@ -34,7 +34,10 @@ export function useFlowDetail(id: string) {
 export function useCreateFlow() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: { name: string; description?: string; triggerEvent?: string; triggerFilters?: FilterConfig }) =>
+    // `nodes` / `exitConfig` carry a TEMPLATE'S journey. Without them the gallery's
+    // 7-step template was created as a bare 2-node flow — see the create route.
+    mutationFn: (data: { name: string; description?: string; triggerEvent?: string
+                         triggerFilters?: FilterConfig; nodes?: unknown[]; exitConfig?: unknown }) =>
       api.post<Flow>(withProject('/api/flows'), data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['flows'] })

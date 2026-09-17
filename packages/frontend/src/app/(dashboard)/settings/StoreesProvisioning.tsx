@@ -173,15 +173,29 @@ function Field(props: { label: string; value: string; onChange: (e: React.Change
   )
 }
 
-/** Ops-only: link the WABA created for this brand by pasting its Cloud API ids. */
+/** Ops-only: register the number (Cloud API + PIN), then link the WABA. */
 function OpsLinkPanel() {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [phoneNumberId, setPhoneNumberId] = useState('')
   const [wabaId, setWabaId] = useState('')
   const [accessToken, setAccessToken] = useState('')
+  const [pin, setPin] = useState('')
   const [busy, setBusy] = useState(false)
+  const [regBusy, setRegBusy] = useState(false)
+  const [regDone, setRegDone] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  async function register() {
+    setRegBusy(true); setError(null); setRegDone(false)
+    try {
+      const resp = await api.post(withProject('/api/whatsapp/provisioning/register'), {
+        phoneNumberId: phoneNumberId.trim(), accessToken: accessToken.trim(), pin: pin.trim(),
+      })
+      if (!resp.success) { setError(resp.error ?? 'Could not register the number'); return }
+      setRegDone(true)
+    } catch { setError('Could not register the number') } finally { setRegBusy(false) }
+  }
 
   async function link() {
     setBusy(true); setError(null)
@@ -190,7 +204,7 @@ function OpsLinkPanel() {
         phoneNumberId: phoneNumberId.trim(), wabaId: wabaId.trim(), accessToken: accessToken.trim(),
       })
       if (!resp.success) { setError(resp.error ?? 'Could not link the account'); return }
-      setAccessToken('')
+      setAccessToken(''); setPin('')
       qc.invalidateQueries({ queryKey: ['whatsapp-provisioning'] })
       qc.invalidateQueries({ queryKey: ['whatsapp-provider-status'] })
     } catch { setError('Could not link the account') } finally { setBusy(false) }
@@ -199,10 +213,10 @@ function OpsLinkPanel() {
   return (
     <details open={open} onToggle={e => setOpen((e.target as HTMLDetailsElement).open)} className="rounded-lg border border-border bg-surface/50">
       <summary className="px-3 py-2 text-xs font-medium text-text-secondary cursor-pointer inline-flex items-center gap-1.5">
-        <ShieldCheck className="h-3.5 w-3.5" /> Onboarding team — link the provisioned account
+        <ShieldCheck className="h-3.5 w-3.5" /> Onboarding team — register &amp; link the provisioned account
       </summary>
       <div className="p-3 pt-1 space-y-3">
-        <p className="text-[11px] text-text-muted">After creating the WABA + registering the number on Meta, paste its Cloud API ids to go live.</p>
+        <p className="text-[11px] text-text-muted">After creating the WABA + verifying the number&apos;s OTP on Meta, paste its Cloud API ids here.</p>
         <div className="grid grid-cols-3 gap-2">
           <Field label="Phone number ID" value={phoneNumberId} onChange={e => setPhoneNumberId(e.target.value)} />
           <Field label="WABA ID" value={wabaId} onChange={e => setWabaId(e.target.value)} />
@@ -212,7 +226,28 @@ function OpsLinkPanel() {
               className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent" />
           </div>
         </div>
+
+        {/* Step 1 — register for the Cloud API + set the 2-step PIN (API-driven). */}
+        <div className="flex items-end gap-2">
+          <div className="w-40">
+            <label className="block text-xs font-medium text-text-secondary mb-1.5">2-step PIN (6 digits)</label>
+            <input value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setRegDone(false) }}
+              inputMode="numeric" placeholder="e.g. 483920"
+              className="w-full h-9 px-3 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent" />
+          </div>
+          <button
+            onClick={register} disabled={regBusy || !phoneNumberId.trim() || !accessToken.trim() || pin.length !== 6}
+            className="px-4 h-9 text-sm font-medium rounded-lg border border-border text-text-primary hover:bg-surface disabled:opacity-50 transition-colors inline-flex items-center gap-2"
+          >
+            {regBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+            Register &amp; set PIN
+          </button>
+          {regDone && <span className="text-xs text-green-600 inline-flex items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5" /> Registered</span>}
+        </div>
+
         {error && <div className="flex items-center gap-1.5 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> {error}</div>}
+
+        {/* Step 2 — link + go live. */}
         <button
           onClick={link} disabled={busy || !phoneNumberId.trim() || !wabaId.trim() || !accessToken.trim()}
           className="px-4 py-2 text-sm font-medium rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors inline-flex items-center gap-2"

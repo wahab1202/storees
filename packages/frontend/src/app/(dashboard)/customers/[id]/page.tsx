@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Loader2 } from 'lucide-react'
@@ -12,12 +12,13 @@ import { OrdersTab } from '@/components/customers/OrdersTab'
 import { JourneysTab } from '@/components/customers/JourneysTab'
 import { MessagesTab } from '@/components/customers/MessagesTab'
 import { PredictionsTab } from '@/components/customers/PredictionsTab'
+import { AbandonmentTab } from '@/components/customers/AbandonmentTab'
 import { ConsentTab } from '@/components/customers/ConsentTab'
 import { JourneyTimelineTab } from '@/components/customers/JourneyTimelineTab'
 import { NextBestActionCard } from '@/components/customers/NextBestActionCard'
 import { cn } from '@/lib/utils'
 
-const TABS = ['User Info', 'CDP Moat', 'Activity', 'Orders', 'Journeys', 'Messages', 'Predictions', 'Consent'] as const
+const TABS = ['User Info', 'CDP Moat', 'Activity', 'Orders', 'Abandonment', 'Journeys', 'Messages', 'Predictions', 'Consent'] as const
 type Tab = (typeof TABS)[number]
 
 function getInitials(name: string | null, email: string | null): string {
@@ -48,6 +49,13 @@ export default function CustomerProfilePage() {
   const params = useParams()
   const id = params.id as string
   const [activeTab, setActiveTab] = useState<Tab>('User Info')
+
+  // Deep-link a tab via ?tab= (e.g. Event Sources → customer → Abandonment).
+  // Read on mount to avoid the useSearchParams() prerender/Suspense coupling.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab')
+    if (t && (TABS as readonly string[]).includes(t)) setActiveTab(t as Tab)
+  }, [])
 
   const { data: customerRes, isLoading } = useCustomerDetail(id)
   const { data: ordersRes, isLoading: ordersLoading } = useCustomerOrders(id)
@@ -169,6 +177,9 @@ export default function CustomerProfilePage() {
       )}
       {activeTab === 'Orders' && (
         <OrdersTab orders={ordersRes?.data ?? []} isLoading={ordersLoading} />
+      )}
+      {activeTab === 'Abandonment' && (
+        <AbandonmentTab customerId={id} />
       )}
       {activeTab === 'Journeys' && (
         <JourneysTab trips={tripsRes?.data ?? []} isLoading={tripsLoading} />

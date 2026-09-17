@@ -3,6 +3,8 @@ import { db } from '../db/connection.js'
 import { projects } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { loadPack, getWizardQuestions, activatePack, listPacks } from '../services/verticalPackService.js'
+import { mayAccessProject, membershipEnforced } from '../middleware/membership.js'
+import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 const router = Router()
 
@@ -133,6 +135,17 @@ router.post('/complete', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: `Unknown pack: ${packId}` })
     }
 
+    // Tenant gate (this route resolves projectId from the body, bypassing
+    // requireProjectId): configuring an existing project requires membership;
+    // creating a new one is a super-admin action. Both ride the enforce flag.
+    if (projectId) {
+      if (!(await mayAccessProject(req, projectId))) {
+        return res.status(403).json({ success: false, error: 'You do not have access to this project' })
+      }
+    } else if (membershipEnforced() && !(req as AuthenticatedRequest).adminUser?.isSuperAdmin) {
+      return res.status(403).json({ success: false, error: 'Forbidden: super admin only' })
+    }
+
     // Resolve or create project
     let resolvedProjectId = projectId
     if (!resolvedProjectId) {
@@ -140,12 +153,13 @@ router.post('/complete', async (req: Request, res: Response) => {
         return res.status(400).json({ success: false, error: 'projectId or projectName required' })
       }
 
-      // Map pack ID to domain type
+      // Map pack ID to domain type. The two names differ where the pack is named
+      // after the business ("nbfc") and the domain after the sector ("fintech").
       const domainMap: Record<string, string> = {
         ecommerce: 'ecommerce',
         nbfc: 'fintech',
         saas: 'saas',
-        edtech: 'custom',
+        edtech: 'edtech',
       }
 
       const [project] = await db.insert(projects).values({

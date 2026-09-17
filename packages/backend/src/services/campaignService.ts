@@ -30,6 +30,7 @@ import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
 import type { CampaignUtmParameters, GmailAnnotation } from '@storees/shared'
 import { normalizeEmailList } from '@storees/shared'
+import { filterSqlForProject } from './projectVocabulary.js'
 
 // Page sizes tuned for 100K-recipient campaigns: bounded heap, bounded round-trips.
 const RECIPIENT_PAGE_SIZE = 1000
@@ -202,7 +203,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
     : null
 
   while (true) {
-    const excludeClause = excludeAudienceFilter ? sql`NOT (${filterToSql(excludeAudienceFilter)})` : undefined
+    const excludeClause = excludeAudienceFilter ? sql`NOT (${await filterSqlForProject(input.projectId, excludeAudienceFilter)})` : undefined
     const page: Array<{ customerId: string; email: string | null; phone: string | null; pushSubscribed: boolean; customAttributes: unknown }>
       = audienceFilter
         ? await db
@@ -218,7 +219,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
               eq(customers.projectId, input.projectId),
               isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
-              filterToSql(audienceFilter),
+              await filterSqlForProject(input.projectId, audienceFilter),
               excludeClause,
             ))
             .orderBy(customers.id)
@@ -516,7 +517,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
     // order: inline filter > saved segment > all-users.
     const remaining = audienceCap == null ? RECIPIENT_PAGE_SIZE : Math.min(RECIPIENT_PAGE_SIZE, audienceCap - totalRecipients)
     const pageLimit = Math.max(1, remaining)
-    const excludeClause = hasRules(excludeAudienceFilter) ? sql`NOT (${filterToSql(excludeAudienceFilter)})` : undefined
+    const excludeClause = hasRules(excludeAudienceFilter) ? sql`NOT (${await filterSqlForProject(campaign.projectId, excludeAudienceFilter)})` : undefined
     const page: Array<{ customerId: string; email: string | null; name: string | null; phone: string | null; pushSubscribed: boolean; customAttributes: unknown }>
       = hasRules(audienceFilter)
         ? await db
@@ -533,7 +534,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
               eq(customers.projectId, campaign.projectId),
               isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
-              filterToSql(audienceFilter),
+              await filterSqlForProject(campaign.projectId, audienceFilter),
               excludeClause,
             ))
             .orderBy(customers.id)
@@ -938,6 +939,11 @@ async function sendOneRecipient(
   templateContext.campaign_name = campaign.name
   templateContext.recipient_images = readRecipientImages(customerLike)
 
+  // Recipient targeting: deliver to the customer, their dealer (agent), or both.
+  // Dealer sends keep the customer as content context. 'both' fans out.
+  const campaignRecipient = ((campaign as { recipient?: string }).recipient ?? 'customer') as 'customer' | 'dealer' | 'both'
+  const recipients: Array<'customer' | 'dealer'> = campaignRecipient === 'both' ? ['customer', 'dealer'] : [campaignRecipient]
+
   if (channel === 'email') {
     const useVariantB = send.variant === 'B' && campaign.abTestEnabled
     const rawSubject = useVariantB && campaign.abVariantBSubject ? campaign.abVariantBSubject : campaign.subject ?? ''
@@ -956,29 +962,46 @@ async function sendOneRecipient(
     )
     const from = formatCampaignFrom(campaign, project)
 
-    try {
-      const messageId = await sendEmail({
-        to: send.email,
-        subject,
-        html,
-        projectId: campaign.projectId,
-        contentType: campaign.contentType === 'transactional' ? 'transactional' : 'promotional',
-        from,
-        replyTo: campaign.replyToEmail,
-        cc: normalizeEmailList(campaign.ccEmails),
-        bcc: normalizeEmailList(campaign.bccEmails),
-        attachments: emailAttachments,
-      })
-      if (messageId) {
-        await db.update(campaignSends).set({
-          status: 'sent', sentAt: new Date(), resendMessageId: messageId,
-        }).where(eq(campaignSends.id, send.id))
-        return { id: send.id, success: true }
+    // Resolve target address(es): the customer, their dealer, or both.
+    const emailTargets: Array<{ to: string; isCustomer: boolean }> = []
+    for (const r of recipients) {
+      if (r === 'customer') {
+        if (send.email) emailTargets.push({ to: send.email, isCustomer: true })
+      } else {
+        const { resolveDealerContact } = await import('./dealerContactService.js')
+        const contact = await resolveDealerContact(send.customerId)
+        if (contact?.email) emailTargets.push({ to: contact.email, isCustomer: false })
       }
-    } catch (err) {
-      console.error(`Campaign email send failed for ${send.customerId}:`, err)
     }
-    return { id: send.id, success: false }
+
+    let anySent = false
+    for (const target of emailTargets) {
+      try {
+        const messageId = await sendEmail({
+          to: target.to,
+          subject,
+          html,
+          projectId: campaign.projectId,
+          contentType: campaign.contentType === 'transactional' ? 'transactional' : 'promotional',
+          from,
+          replyTo: campaign.replyToEmail,
+          cc: normalizeEmailList(campaign.ccEmails),
+          bcc: normalizeEmailList(campaign.bccEmails),
+          attachments: emailAttachments,
+        })
+        if (messageId) {
+          anySent = true
+          // Track the customer-address send on the campaign_sends row.
+          await db.update(campaignSends).set({
+            status: 'sent', sentAt: new Date(),
+            ...(target.isCustomer ? { resendMessageId: messageId } : {}),
+          }).where(eq(campaignSends.id, send.id))
+        }
+      } catch (err) {
+        console.error(`Campaign email send failed for ${send.customerId} (${target.isCustomer ? 'customer' : 'dealer'}):`, err)
+      }
+    }
+    return { id: send.id, success: anySent }
   }
 
   // SMS, Push, WhatsApp via delivery service
@@ -994,18 +1017,23 @@ async function sendOneRecipient(
       title: interpolateTemplate(campaign.subject ?? '', templateContext),
       ...(campaign.previewText ? { image: interpolateTemplate(imageWithImages, templateContext) } : {}),
     }
-    const msgId = await deliverySend({
-      projectId: campaign.projectId,
-      userId: send.customerId,
-      channel: channel as 'sms' | 'push' | 'whatsapp',
-      templateId: campaign.templateId ?? '',
-      variables,
-      messageType: (campaign.contentType ?? 'promotional') as 'promotional' | 'transactional',
-      campaignId: campaign.id,
-      ignoreFrequencyCap: campaign.ignoreFrequencyCap,
-      countForFrequencyCap: campaign.countForFrequencyCap,
-      scheduledAt: undefined,
-    })
+    let msgId: string | null = null
+    for (const r of recipients) {
+      const id = await deliverySend({
+        projectId: campaign.projectId,
+        userId: send.customerId,
+        channel: channel as 'sms' | 'push' | 'whatsapp',
+        templateId: campaign.templateId ?? '',
+        variables,
+        messageType: (campaign.contentType ?? 'promotional') as 'promotional' | 'transactional',
+        campaignId: campaign.id,
+        ignoreFrequencyCap: campaign.ignoreFrequencyCap,
+        countForFrequencyCap: campaign.countForFrequencyCap,
+        scheduledAt: undefined,
+        recipient: r,
+      })
+      if (id) msgId = id
+    }
     if (msgId) {
       await db.update(campaignSends).set({
         status: 'sent', sentAt: new Date(),

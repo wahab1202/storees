@@ -1,5 +1,7 @@
 import { eq, and, desc, sql, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
+import { projectVocabulary, eventIn, type ProjectVocabulary } from './projectVocabulary.js'
+import { LIVE_ORDERS } from '../db/orderStatus.js'
 import {
   customers,
   events,
@@ -286,7 +288,70 @@ export async function getCustomerJourney(
 
 /* ─── Activity Summary ─── */
 
+/**
+ * How many orders this customer actually has, by the same rule every other screen uses.
+ *
+ * TWO SOURCES, CHOSEN BETWEEN — never raced. The orders table is authoritative and
+ * deduplicated, so if it holds anything at all for this customer it answers. Only a
+ * customer with no rows there falls through to the event ledger, which is the case the
+ * old `Math.max` was reaching for.
+ *
+ * Both sources apply the same test: cancelled, returned and refunded do not count.
+ * `pending` does — an order placed and not yet shipped is a real order.
+ */
+async function countOrdersForCustomer(
+  customerId: string,
+  projectId: string,
+  vocab: ProjectVocabulary,
+): Promise<number> {
+  const [row] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      live: sql<number>`count(*) FILTER (WHERE ${LIVE_ORDERS})::int`,
+    })
+    .from(orders)
+    .where(eq(orders.customerId, customerId))
+
+  if ((row?.total ?? 0) > 0) return row.live ?? 0
+
+  // Fallback: rebuild from events. Distinct order ids, minus any the project's own
+  // reversal words have undone — the same reconstruction the revenue tile uses, for
+  // the same reason. Counting raw purchase events here would report a cancelled order
+  // as an order, and count it twice if it arrived through two doors.
+  const orderId = sql`COALESCE(
+    NULLIF(properties->>${vocab.orderIdKey}, ''),
+    NULLIF(properties->>'order_id', ''),
+    NULLIF(properties->>'id', ''),
+    id::text)`
+
+  const [fallback] = (await db.execute(sql`
+    SELECT COUNT(*)::int AS count FROM (
+      SELECT DISTINCT ${orderId} AS oid
+      FROM events
+      WHERE customer_id = ${customerId}
+        AND ${eventIn(sql`event_name`, vocab.purchaseEvents)}
+    ) p
+    WHERE p.oid NOT IN (
+      SELECT ${orderId} FROM events
+      WHERE project_id = ${projectId}
+        AND ${eventIn(sql`event_name`, vocab.cancellationEvents)}
+        AND ${orderId} IS NOT NULL
+    )
+  `)).rows as Array<{ count: number }>
+
+  return Number(fallback?.count ?? 0)
+}
+
 export async function getActivitySummary(customerId: string): Promise<ActivitySummary> {
+  // This function is handed a customer, not a project, so the project has to be looked
+  // up before the vocabulary can be. Worth the extra query: without it the conversion
+  // is filtered on retail's event names and a borrower's activity summary counts zero
+  // orders while their loans sit in the same table.
+  const [owner] = await db
+    .select({ projectId: customers.projectId })
+    .from(customers).where(eq(customers.id, customerId)).limit(1)
+  const journeyVocab = await projectVocabulary(owner?.projectId ?? '')
+
   const [
     customer,
     eventCount,
@@ -307,18 +372,20 @@ export async function getActivitySummary(customerId: string): Promise<ActivitySu
       .from(events).where(eq(events.customerId, customerId))
       .then(r => r[0]?.count ?? 0),
 
-    // Total orders — check orders table first, fall back to order events
-    Promise.all([
-      db.select({ count: sql<number>`count(*)::int` })
-        .from(orders).where(eq(orders.customerId, customerId))
-        .then(r => r[0]?.count ?? 0),
-      db.select({ count: sql<number>`count(*)::int` })
-        .from(events).where(and(
-          eq(events.customerId, customerId),
-          sql`${events.eventName} IN ('order_placed', 'order_completed')`,
-        ))
-        .then(r => r[0]?.count ?? 0),
-    ]).then(([orderTableCount, orderEventCount]) => Math.max(orderTableCount, orderEventCount)),
+    // Total orders — the ones that still stand.
+    //
+    // This counted every order row whatever its status, so the tile disagreed with the
+    // Orders tab beside it and the Customers list behind it: one customer with five
+    // orders, three of them cancelled, returned and refunded, read 5 here and 2
+    // everywhere else. Same screen, two answers, nothing explaining the gap.
+    //
+    // The old `Math.max(table, events)` made it unfixable on its own. It existed to
+    // cover connector-only customers whose orders never became rows, but max means the
+    // larger number always wins — so filtering the table count would have changed
+    // nothing while the unfiltered event count sat beside it. The two sources are
+    // chosen between now rather than raced: the table when it has anything for this
+    // customer, the event ledger only when it has nothing.
+    countOrdersForCustomer(customerId, owner?.projectId ?? '', journeyVocab),
 
     // Total campaign sends
     db.select({ count: sql<number>`count(*)::int` })

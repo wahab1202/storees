@@ -19,6 +19,9 @@ export type JwtPayload = {
   projectId: string | null
   role: AdminRole
   agentId: string | null
+  /** Cross-tenant platform operator. Defaults false on any legacy/missing claim
+   *  (fail-CLOSED) so a stripped claim can never grant cross-tenant access. */
+  isSuperAdmin: boolean
   pending2FA?: boolean
 }
 
@@ -49,6 +52,7 @@ export function verifyJwt(token: string): JwtPayload | null {
       projectId: decoded.projectId ?? null,
       role: (decoded.role as AdminRole) ?? 'admin',
       agentId: decoded.agentId ?? null,
+      isSuperAdmin: decoded.isSuperAdmin === true, // fail-closed: only an explicit true grants it
       pending2FA: decoded.pending2FA,
     }
   } catch {
@@ -66,6 +70,7 @@ export function jwtPayloadFrom(user: {
   projectId: string | null
   role?: string | null
   agentId?: string | null
+  isSuperAdmin: boolean | null
 }): Omit<JwtPayload, 'pending2FA'> {
   return {
     userId: user.id,
@@ -73,6 +78,7 @@ export function jwtPayloadFrom(user: {
     projectId: user.projectId,
     role: (user.role as AdminRole) ?? 'admin',
     agentId: user.agentId ?? null,
+    isSuperAdmin: user.isSuperAdmin === true,
   }
 }
 

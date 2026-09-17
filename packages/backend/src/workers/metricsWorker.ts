@@ -3,7 +3,9 @@ import { eq, and, sql, count, max, min } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { customers, events, entities } from '../db/schema.js'
-import { computeClv } from '../services/customerService.js'
+import { LIVE_ORDERS } from '../db/orderStatus.js'
+import { computeClv, mlChurnScore } from '../services/customerService.js'
+import { projectVocabulary, eventIn } from '../services/projectVocabulary.js'
 import type { DomainType } from '@storees/shared'
 
 type EventJob = {
@@ -115,6 +117,9 @@ export async function computeAndUpdateMetrics(
     case 'saas':
       metrics = await computeSaasMetrics(projectId, customerId)
       break
+    case 'edtech':
+      metrics = await computeEdtechMetrics(projectId, customerId)
+      break
     default:
       metrics = await computeGenericMetrics(projectId, customerId)
       break
@@ -137,6 +142,14 @@ async function computeEcommerceMetrics(
   projectId: string,
   customerId: string,
 ): Promise<Record<string, unknown>> {
+  // What THIS project calls a purchase and a cart. Hardcoding `order_placed` here
+  // silently zeroed every windowed count for a tenant using its own event names —
+  // measured on two identical shops, 2/1/1 orders became 0/0/0 purely because one
+  // said `sales_order_placed`. The segment evaluator already resolves these per
+  // project; this query has to agree with it or the same field means two things.
+  const vocab = await projectVocabulary(projectId)
+  const isPurchase = eventIn(sql`event_name`, vocab.purchaseEvents)
+
   // Query 1: Event aggregates. The time-windowed order counts live here
   // (not on the orders table) so they're correct for event-driven tenants
   // whose orders table is mostly empty. Mirrors the segment evaluator.
@@ -145,23 +158,23 @@ async function computeEcommerceMetrics(
       COUNT(*) AS total_events,
       MAX(timestamp) AS last_event_at,
       MIN(timestamp) AS first_event_at,
-      COUNT(*) FILTER (WHERE event_name IN ('order_placed', 'order_completed')) AS order_event_count,
-      COUNT(*) FILTER (WHERE event_name = 'cart_created') AS cart_count,
+      COUNT(*) FILTER (WHERE ${isPurchase}) AS order_event_count,
+      COUNT(*) FILTER (WHERE ${eventIn(sql`event_name`, vocab.cartEvents)}) AS cart_count,
       COUNT(*) FILTER (
-        WHERE event_name IN ('order_placed', 'order_completed')
+        WHERE ${isPurchase}
           AND timestamp > NOW() - INTERVAL '30 days'
       ) AS orders_last_30d,
       COUNT(*) FILTER (
-        WHERE event_name IN ('order_placed', 'order_completed')
+        WHERE ${isPurchase}
           AND timestamp > NOW() - INTERVAL '90 days'
       ) AS orders_last_90d,
       COALESCE(ROUND(100.0 *
         COUNT(*) FILTER (
-          WHERE event_name IN ('order_placed', 'order_completed')
-            AND (properties->>'discount')::numeric > 0
+          WHERE ${isPurchase}
+            AND (properties->>${vocab.discountKey})::numeric > 0
         )
         / NULLIF(
-          COUNT(*) FILTER (WHERE event_name IN ('order_placed', 'order_completed')),
+          COUNT(*) FILTER (WHERE ${isPurchase}),
           0
         )
       ), 0) AS discount_pct
@@ -178,7 +191,7 @@ async function computeEcommerceMetrics(
       MIN(created_at) AS first_order_at,
       MAX(created_at) AS last_order_at
     FROM orders
-    WHERE project_id = ${projectId} AND customer_id = ${customerId} AND status != 'cancelled'
+    WHERE project_id = ${projectId} AND customer_id = ${customerId} AND ${LIVE_ORDERS}
   `)
 
   const eRow = eventAgg.rows[0] as Record<string, unknown> | undefined
@@ -221,7 +234,7 @@ async function computeEcommerceMetrics(
     firstOrderDate: firstOrderAt,
     lastOrderDate: lastOrderAt,
     lastSeenDate: custRow?.lastSeen ?? null,
-    churnRiskScore: existingMetrics.churn_risk ? Number(existingMetrics.churn_risk) : undefined,
+    churnRiskScore: mlChurnScore(existingMetrics),
   })
 
   // Only patch the date columns / clv when we actually have something to
@@ -282,6 +295,20 @@ async function computeFintechMetrics(
       COALESCE(SUM((properties->>'amount')::numeric) FILTER (WHERE event_name = 'transaction_completed' AND properties->>'type' = 'debit'), 0) AS total_debit,
       COALESCE(SUM((properties->>'amount')::numeric) FILTER (WHERE event_name = 'transaction_completed' AND properties->>'type' = 'credit'), 0) AS total_credit,
       COUNT(*) FILTER (WHERE event_name = 'emi_overdue') AS emi_overdue_count,
+      -- HOW LATE, not merely whether. The three collections segments and NPA Risk all
+      -- ask "more than N days past due" and there was nothing to answer with, so each
+      -- reported zero borrowers at risk, which is reassuring and wrong. days_overdue
+      -- rides on the emi_overdue event (see eventSchemas); the WORST outstanding one is
+      -- what a collections bucket is graded on, so MAX rather than an average.
+      COALESCE(MAX((properties->>'days_overdue')::numeric)
+        FILTER (WHERE event_name IN ('emi_overdue', 'emi_missed')), 0) AS days_past_due,
+      -- How far through the schedule the borrower is. "Top-up Eligible" asks for more
+      -- than half repaid and had nothing to answer with. Instalments paid over the
+      -- longest tenure this borrower has taken: approximate for someone running two
+      -- loans at once, and the right shape for the one question the segment asks.
+      COUNT(*) FILTER (WHERE event_name = 'emi_paid') AS emis_paid,
+      COALESCE(MAX((properties->>'tenure_months')::numeric)
+        FILTER (WHERE event_name = 'loan_disbursed'), 0) AS loan_tenure_months,
       COUNT(*) FILTER (WHERE event_name = 'app_login' AND timestamp > NOW() - INTERVAL '7 days') AS logins_last_7d,
       COUNT(*) FILTER (WHERE event_name = 'bill_payment_completed') AS bill_payments,
       (SELECT event_name FROM events
@@ -348,6 +375,15 @@ async function computeFintechMetrics(
   const activeSips = Number(ent.active_sips ?? 0) || Number(attrs.active_sips ?? 0)
 
   return {
+    // Fall back to a value the lender may have set directly via identify() — some
+    // report a computed bucket rather than emitting per-instalment events.
+    days_past_due: Number(e.days_past_due ?? 0) || Number(attrs.days_past_due ?? 0) || 0,
+    emis_paid: Number(e.emis_paid ?? 0),
+    // Capped at 100: a borrower who keeps paying past the stated tenure (a top-up, a
+    // restructured loan) must not read as 130% repaid.
+    emi_completion_pct: Number(e.loan_tenure_months ?? 0) > 0
+      ? Math.min(100, Math.round((Number(e.emis_paid ?? 0) / Number(e.loan_tenure_months)) * 100))
+      : Number(attrs.emi_completion_pct ?? 0) || 0,
     total_transactions: totalTransactions,
     total_debit: totalDebit,
     total_credit: totalCredit,
@@ -405,6 +441,25 @@ async function computeSaasMetrics(
 
   const subProps = (subEvent?.properties ?? {}) as Record<string, unknown>
 
+  // Is the subscription live right now? The "Paying Customers" and "Churned" templates
+  // both filter on this and there was nothing to answer with, so a SaaS client's two
+  // most basic segments reported nobody. Derived from the lifecycle rather than stored:
+  // the LATEST of started / renewed / upgraded / cancelled decides the current state.
+  const [lastLifecycle] = await db
+    .select({ eventName: events.eventName })
+    .from(events)
+    .where(and(
+      eq(events.projectId, projectId),
+      eq(events.customerId, customerId),
+      sql`event_name IN ('subscription_started', 'subscription_renewed', 'subscription_upgraded', 'subscription_cancelled')`,
+    ))
+    .orderBy(sql`timestamp DESC`)
+    .limit(1)
+
+  const subscriptionStatus = !lastLifecycle
+    ? 'none'
+    : lastLifecycle.eventName === 'subscription_cancelled' ? 'cancelled' : 'active'
+
   return {
     feature_usage_count: Number(row.feature_usage_count ?? 0),
     login_count: Number(row.login_count ?? 0),
@@ -412,6 +467,69 @@ async function computeSaasMetrics(
     plan: subProps.plan ?? 'free',
     mrr: subProps.mrr ?? 0,
     trial_status: subProps.trial_status ?? 'no_trial',
+    subscription_status: subscriptionStatus,
+  }
+}
+
+/**
+ * EdTech metrics.
+ *
+ * There was no edtech branch at all — a course platform fell through to the generic
+ * function, so `courses_completed`, `certificates_earned`, `days_since_last_lesson`
+ * and `subscription_status` were never computed and the four templates filtering on
+ * them reported nobody. Enrolments themselves are already covered: they are orders, so
+ * `total_orders` counts them.
+ */
+async function computeEdtechMetrics(
+  projectId: string,
+  customerId: string,
+): Promise<Record<string, unknown>> {
+  const result = await db.execute(sql`
+    SELECT
+      COUNT(*) FILTER (WHERE event_name = 'course_completed') AS courses_completed,
+      COUNT(*) FILTER (WHERE event_name = 'certificate_issued') AS certificates_earned,
+      COUNT(*) FILTER (WHERE event_name = 'lesson_completed') AS lessons_completed,
+      COUNT(*) FILTER (WHERE event_name = 'quiz_attempted') AS quizzes_attempted,
+      COUNT(*) FILTER (WHERE event_name = 'course_dropped') AS courses_dropped,
+      MAX(timestamp) FILTER (WHERE event_name = 'lesson_completed') AS last_lesson_at
+    FROM events
+    WHERE project_id = ${projectId} AND customer_id = ${customerId}
+  `)
+  const row = result.rows[0] as Record<string, unknown>
+
+  const lastLesson = row.last_lesson_at ? new Date(row.last_lesson_at as string) : null
+  // 999 when they have never completed a lesson — the same "a very long time ago"
+  // convention the fintech recency fields use, rather than reading as "today".
+  const daysSinceLastLesson = lastLesson
+    ? Math.floor((Date.now() - lastLesson.getTime()) / (1000 * 60 * 60 * 24))
+    : 999
+
+  // Same lifecycle rule as SaaS: a course platform may also sell subscriptions.
+  const [lastLifecycle] = await db
+    .select({ eventName: events.eventName })
+    .from(events)
+    .where(and(
+      eq(events.projectId, projectId),
+      eq(events.customerId, customerId),
+      sql`event_name IN ('subscription_started', 'subscription_renewed', 'subscription_cancelled')`,
+    ))
+    .orderBy(sql`timestamp DESC`)
+    .limit(1)
+
+  const finished = Number(row.courses_completed ?? 0)
+  const resolved = finished + Number(row.courses_dropped ?? 0)
+
+  return {
+    courses_completed: finished,
+    certificates_earned: Number(row.certificates_earned ?? 0),
+    lessons_completed: Number(row.lessons_completed ?? 0),
+    quizzes_attempted: Number(row.quizzes_attempted ?? 0),
+    courses_dropped: Number(row.courses_dropped ?? 0),
+    days_since_last_lesson: daysSinceLastLesson,
+    completion_rate: resolved > 0 ? Math.round((finished / resolved) * 100) : 0,
+    subscription_status: !lastLifecycle
+      ? 'none'
+      : lastLifecycle.eventName === 'subscription_cancelled' ? 'cancelled' : 'active',
   }
 }
 

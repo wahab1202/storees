@@ -9,6 +9,36 @@ const GRAPH_BASE = 'https://graph.facebook.com/v23.0'
 
 export type MetaWaCreds = { phoneNumberId: string; wabaId: string; accessToken: string }
 
+/**
+ * Register a number for the Cloud API and set its 2-step-verification PIN
+ * (`POST /{phone_number_id}/register`). This is the API-driven step of
+ * provisioning — cuts out the manual dashboard step. The OTP verification that
+ * precedes it stays interactive (Meta sends the code to the number).
+ */
+export async function registerWhatsappNumber(
+  phoneNumberId: string,
+  accessToken: string,
+  pin: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const pnid = String(phoneNumberId ?? '').trim()
+  const token = String(accessToken ?? '').trim()
+  if (!pnid || !token) return { ok: false, error: 'phoneNumberId and accessToken are required' }
+  if (!/^\d{6}$/.test(String(pin ?? '').trim())) return { ok: false, error: 'PIN must be exactly 6 digits' }
+
+  try {
+    const resp = await fetch(`${GRAPH_BASE}/${pnid}/register`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin: String(pin).trim() }),
+    })
+    const data = await resp.json() as { success?: boolean; error?: { message: string } }
+    if (!resp.ok) return { ok: false, error: data.error?.message ?? `Meta rejected registration (HTTP ${resp.status})` }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+}
+
 export type MetaLinkResult = {
   provider: 'meta'
   number: {

@@ -18,12 +18,17 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
     slug: 'abandoned_cart',
     description: 'Send recovery email when a customer adds to cart but doesn\'t checkout',
     domainTypes: ['ecommerce'],
+    // Triggers on `added_to_cart`, which is what the ecommerce pack actually maps.
+    // This waited on `cart_created` — a name defined in the event dictionary but
+    // mapped by no pack and sent by no shop, so the flagship ecommerce flow could
+    // never fire for anyone. `cart_value` went with it: `added_to_cart` carries
+    // `price`, per its schema.
     triggerConfig: {
-      event: 'cart_created',
+      event: 'added_to_cart',
       filters: {
         logic: 'AND',
         rules: [
-          { field: 'properties.cart_value', operator: 'greater_than', value: 0 },
+          { field: 'properties.price', operator: 'greater_than', value: 0 },
         ],
       },
       inactivityTime: { value: 30, unit: 'minutes' },
@@ -70,7 +75,7 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
       filters: { logic: 'AND', rules: [{ field: 'days_overdue', operator: 'greater_than', value: 0 }] },
     },
     exitConfig: {
-      event: 'order_completed',
+      event: 'order_placed',
       scope: 'any',
     },
     nodes: [
@@ -90,7 +95,7 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
         type: 'condition',
         config: {
           check: 'event_occurred',
-          event: 'order_completed',
+          event: 'order_placed',
           since: 'trip_start',
           branches: { yes: 'end_reordered', no: 'send_discount' },
         },
@@ -110,7 +115,7 @@ export const FLOW_TEMPLATE_DEFINITIONS: FlowTemplate[] = [
         type: 'condition',
         config: {
           check: 'event_occurred',
-          event: 'order_completed',
+          event: 'order_placed',
           since: 'trip_start',
           branches: { yes: 'end_reordered', no: 'send_whatsapp' },
         },

@@ -1,6 +1,8 @@
 import { db } from '../db/connection.js'
 import { events, customers } from '../db/schema.js'
 import { eq, and, gte, lte, sql, count, inArray } from 'drizzle-orm'
+import { projectVocabulary, eventIn } from './projectVocabulary.js'
+import { liveOrders, LIVE_ORDERS } from '../db/orderStatus.js'
 
 // ============ FUNNEL ANALYTICS ============
 
@@ -391,6 +393,16 @@ export async function computeTimeSeries(
     : table === 'orders' ? 'created_at'
     : 'timestamp'
 
+  // Reversed orders are not revenue, and not orders either.
+  //
+  // The `revenue` and `orders` metrics read the orders table straight, with no test on
+  // status — so the chart counted cancelled, returned and refunded sales while every
+  // tile, segment and customer total beside it had learned not to. Two lines built from
+  // the same table, disagreeing, with nothing on screen to explain the gap.
+  //
+  // Only applies to the orders table. Event and customer metrics have no such column.
+  const liveOnly = table === 'orders' ? sql` AND ${LIVE_ORDERS}` : sql``
+
   // Current period. Zero-fill every bucket in range (LEFT JOIN a generated
   // series) so the series shows true time progression — empty periods were
   // previously omitted, compressing the line into a misleading flat-then-spike.
@@ -409,7 +421,7 @@ export async function computeTimeSeries(
       FROM ${sql.raw(table)}
       WHERE project_id = ${projectId}
         AND ${sql.raw(dateCol)} >= ${startDate}
-        AND ${sql.raw(dateCol)} <= ${endDate}
+        AND ${sql.raw(dateCol)} <= ${endDate}${liveOnly}
       GROUP BY 1
     )
     SELECT b.date AS date, COALESCE(d.value, 0) AS value
@@ -446,7 +458,7 @@ export async function computeTimeSeries(
         FROM ${sql.raw(table)}
         WHERE project_id = ${projectId}
           AND ${sql.raw(dateCol)} >= ${opts.compareStartDate}
-          AND ${sql.raw(dateCol)} <= ${opts.compareEndDate}
+          AND ${sql.raw(dateCol)} <= ${opts.compareEndDate}${liveOnly}
         GROUP BY 1
       )
       SELECT b.date AS date, COALESCE(d.value, 0) AS value
@@ -680,12 +692,16 @@ export async function computeProductAnalytics(
   //   name/type   ← the synced products table (Shopify sync / VirpanAI catalog)
   // product_id is normalized (strip any Shopify GID prefix, accept product_id
   // OR productId) so events, line-items and the catalog key on the same id.
+  // The funnel's three stages, in this project's words. Hardcoded to a shop's
+  // `product_viewed` / `added_to_cart`, every non-retail vertical saw an empty chart —
+  // a lender browses `loan_page_viewed` and applies with `loan_application_started`.
+  const vocab = await projectVocabulary(projectId)
   const result = await db.execute(sql`
     WITH product_views AS (
       SELECT regexp_replace(COALESCE(properties->>'product_id', properties->>'productId', ''), '^.*/', '') AS pid,
              COUNT(*) AS views
       FROM events
-      WHERE project_id = ${projectId} AND event_name = 'product_viewed'
+      WHERE project_id = ${projectId} AND ${eventIn(sql`event_name`, vocab.viewEvents)}
         AND timestamp >= ${startDate} AND timestamp <= ${endDate}
         AND COALESCE(properties->>'product_id', properties->>'productId', '') <> ''
       GROUP BY 1
@@ -694,7 +710,7 @@ export async function computeProductAnalytics(
       SELECT regexp_replace(COALESCE(properties->>'product_id', properties->>'productId', ''), '^.*/', '') AS pid,
              COUNT(*) AS carts
       FROM events
-      WHERE project_id = ${projectId} AND event_name = 'added_to_cart'
+      WHERE project_id = ${projectId} AND ${eventIn(sql`event_name`, vocab.cartEvents)}
         AND timestamp >= ${startDate} AND timestamp <= ${endDate}
         AND COALESCE(properties->>'product_id', properties->>'productId', '') <> ''
       GROUP BY 1
@@ -708,6 +724,12 @@ export async function computeProductAnalytics(
         CASE WHEN jsonb_typeof(o.line_items) = 'array' THEN o.line_items ELSE '[]'::jsonb END
       ) AS li
       WHERE o.project_id = ${projectId}
+        -- Reversed orders are not sales. Views and carts above already read this
+        -- project's own vocabulary; only the revenue half forgot to ask about status,
+        -- so "top products" ranked partly on money that came back. Measured on
+        -- Girinacart: Rs1,02,865 reported against Rs38,987 actually kept — 2.6x. The
+        -- product a client would stock more of could be the one being returned most.
+        AND ${liveOrders('o')}
         AND o.created_at >= ${startDate} AND o.created_at <= ${endDate}
         AND COALESCE(li->>'product_id', li->>'productId', '') <> ''
       GROUP BY 1

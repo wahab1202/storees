@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   UserCircle,
   PlugsConnected as Webhook,
+  ArrowsLeftRight as EventMapIcon,
 } from '@phosphor-icons/react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -44,7 +45,8 @@ type NavItem = {
   href: string
   label: string
   icon: typeof LayoutDashboard
-  adminOnly?: boolean
+  adminOnly?: boolean       // project-admin (role='admin') and up
+  superAdminOnly?: boolean  // cross-tenant platform operator only
 }
 
 const navItems: NavItem[] = [
@@ -56,21 +58,31 @@ const navItems: NavItem[] = [
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
   { href: '/event-sources', label: 'Event Sources', icon: Webhook, adminOnly: true },
+  { href: '/event-sources/mapping', label: 'Event Mapping', icon: EventMapIcon, adminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
   { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]
 
 const bottomItems: NavItem[] = [
-  { href: '/projects', label: 'Projects', icon: FolderOpen, adminOnly: true },
-  { href: '/onboarding', label: 'New Project', icon: Plus, adminOnly: true },
+  { href: '/clients', label: 'Clients', icon: UserCircle, superAdminOnly: true },
+  { href: '/projects', label: 'Projects', icon: FolderOpen, superAdminOnly: true },
+  { href: '/onboarding', label: 'New Project', icon: Plus, superAdminOnly: true },
   { href: '/settings', label: 'Settings', icon: Settings },
   // Connected Stores retired — store connections now live per-project in the
   // Projects → Data Sources panel (unified with all data connectors).
 ]
 
-function visibleFor(role: AdminRole | undefined, items: NavItem[]): NavItem[] {
-  const isAdmin = !role || role === 'admin'
-  return isAdmin ? items : items.filter(i => !i.adminOnly)
+// Fail-CLOSED: an undefined role is NOT treated as admin (the backend always sets
+// role; the old fail-open let a role-less session see every admin surface). Nav
+// visibility is cosmetic — the backend enforces access — but it must not advertise
+// super-admin surfaces to clients.
+function visibleFor(role: AdminRole | undefined, isSuperAdmin: boolean, items: NavItem[]): NavItem[] {
+  const isAdmin = role === 'admin'
+  return items.filter(i => {
+    if (i.superAdminOnly) return isSuperAdmin
+    if (i.adminOnly) return isAdmin
+    return true
+  })
 }
 
 const DOMAIN_ICONS: Record<string, typeof Globe> = {
@@ -104,22 +116,28 @@ function ProjectSwitcher() {
 
   if (projects.length === 0) return null
 
-  const DomainIcon = currentProject ? (DOMAIN_ICONS[currentProject.domainType] || Globe) : Globe
+  // A client with a single project doesn't need a switcher — show it as a label.
+  const single = projects.length <= 1
+  const display = currentProject ?? projects[0]
+  const DomainIcon = display ? (DOMAIN_ICONS[display.domainType] || Globe) : Globe
 
   return (
     <div ref={ref} className="relative px-3 pb-3">
       <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-left"
+        onClick={single ? undefined : () => setOpen(!open)}
+        className={cn(
+          'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-white/5 text-left',
+          single ? 'cursor-default' : 'hover:bg-white/10 transition-colors',
+        )}
       >
         <DomainIcon size={14} className="text-sidebar-active flex-shrink-0" />
         <span className="flex-1 text-xs font-medium text-white truncate">
-          {currentProject?.name ?? 'Select Project'}
+          {display?.name ?? 'Select Project'}
         </span>
-        <ChevronDown size={12} className={cn('text-sidebar-muted transition-transform', open && 'rotate-180')} />
+        {!single && <ChevronDown size={12} className={cn('text-sidebar-muted transition-transform', open && 'rotate-180')} />}
       </button>
 
-      {open && (
+      {!single && open && (
         <div className="absolute left-3 right-3 top-full mt-1 bg-[#1e293b] border border-white/10 rounded-lg shadow-xl overflow-hidden z-50 max-h-64 overflow-y-auto">
           {projects.map(project => {
             const Icon = DOMAIN_ICONS[project.domainType] || Globe
@@ -226,11 +244,16 @@ export function Sidebar() {
   const pathname = usePathname()
   const { data: session } = useSession()
   const role = session?.user?.role as AdminRole | undefined
+  const isSuperAdmin = session?.user?.isSuperAdmin === true
   const { data: countsData } = useSidebarCounts()
   const counts = countsData?.data
 
-  const visibleNavItems = visibleFor(role, navItems)
-  const visibleBottomItems = visibleFor(role, bottomItems)
+  const visibleNavItems = visibleFor(role, isSuperAdmin, navItems)
+  const visibleBottomItems = visibleFor(role, isSuperAdmin, bottomItems)
+
+  // Every href on screen, so each item can tell whether a deeper one owns the current
+  // page. Without it a parent and its nested child both highlight — see SidebarItem.
+  const allHrefs = [...visibleNavItems, ...visibleBottomItems].map(i => i.href)
 
   // Close mobile drawer on route change
   useEffect(() => {
@@ -249,7 +272,7 @@ export function Sidebar() {
 
   const sidebarContent = (
     <>
-      <div className="px-4 py-5 flex items-center justify-between">
+      <div className="shrink-0 px-4 py-5 flex items-center justify-between">
         <img
           src="https://cdn.waioz.com/webpimg/imgi_19_image.webp"
           alt="Storees"
@@ -266,9 +289,22 @@ export function Sidebar() {
       </div>
 
       {/* Project Switcher */}
-      <ProjectSwitcher />
+      <div className="shrink-0"><ProjectSwitcher /></div>
 
-      <nav className="flex-1 flex flex-col gap-1 py-2">
+      {/*
+        THE NAV SCROLLS; EVERYTHING ELSE STAYS PUT.
+
+        `flex-1` alone does not make a flex child shrink — its default `min-height:auto`
+        keeps it at least as tall as its content. So once the item list outgrew the
+        viewport the nav simply pushed the footer off the bottom of the screen, and the
+        signed-in account disappeared with no way to reach it. Three super-admin items
+        were enough to do it on a laptop.
+
+        `min-h-0` lets it shrink, `overflow-y-auto` gives the overflow somewhere to go,
+        and the blocks above and below are pinned with `shrink-0` so the account and
+        Settings are reachable at any window height.
+      */}
+      <nav className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1 py-2">
         {visibleNavItems.map((item) => {
           const countMap: Record<string, number | undefined> = {
             '/customers': counts?.customers,
@@ -278,18 +314,18 @@ export function Sidebar() {
             '/flows': counts?.flows,
           }
           return (
-            <SidebarItem key={item.href} {...item} count={countMap[item.href]} />
+            <SidebarItem key={item.href} {...item} allHrefs={allHrefs} count={countMap[item.href]} />
           )
         })}
       </nav>
 
-      <div className="border-t border-white/10 py-2">
+      <div className="shrink-0 border-t border-white/10 py-2">
         {visibleBottomItems.map((item) => (
-          <SidebarItem key={item.href} {...item} />
+          <SidebarItem key={item.href} {...item} allHrefs={allHrefs} />
         ))}
       </div>
 
-      <UserMenu />
+      <div className="shrink-0"><UserMenu /></div>
     </>
   )
 

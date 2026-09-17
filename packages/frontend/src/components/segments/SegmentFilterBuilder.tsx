@@ -820,9 +820,12 @@ function AggregateCard({ rule, onChange, onRemove }: { rule: AggregateRule; onCh
           </>
         )}
         <span>for</span>
-        <select value={rule.source} onChange={e => patch({ source: e.target.value as 'order_fulfilled' })} className={cn(selectClass, 'min-w-[150px]')}>
-          <option value="order_fulfilled">Order fulfilled</option>
-        </select>
+        {/* The evaluator never reads `rule.source` — it counts this project's
+            PURCHASE events and orders, through the slots. This dropdown had one
+            option and it said "Order fulfilled", so a shop building "total spent
+            on X" believed it was measuring deliveries while the figure came from
+            purchases. Say what it does; offer no choice that does not exist. */}
+        <span className="text-text-secondary">orders</span>
       </div>
 
       <div className="pl-3 border-l-2 border-violet-200 space-y-2">

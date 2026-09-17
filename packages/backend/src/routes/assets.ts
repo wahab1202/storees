@@ -1,14 +1,14 @@
 import path from 'path'
 import { randomUUID } from 'crypto'
-import { mkdir, readdir, stat, unlink, writeFile } from 'fs/promises'
 import { Router, type Request, type Response } from 'express'
 import multer from 'multer'
 import { requireProjectId } from '../middleware/projectId.js'
+import { putObject, deleteObject, listObjects } from '../services/storageService.js'
 
 const router = Router()
 
-const UPLOAD_ROOT = process.env.ASSET_UPLOAD_ROOT
-  ?? path.resolve(process.cwd(), '.storees/uploads/email-assets')
+/** Base URL for building local-mode asset URLs. */
+const reqBase = (req: Request): string => `${req.protocol}://${req.get('host')}`
 
 // ── WhatsApp header media (image/video/document). Uses multipart streaming so we
 // can accept large files (video 16MB, document 100MB) that the base64/JSON path
@@ -30,18 +30,25 @@ function waMediaKind(mime: string): 'image' | 'video' | 'document' | null {
   return null
 }
 const waUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, _file, cb) => {
-      const dir = path.join(UPLOAD_ROOT, (req as Request).projectId ?? '_orphan')
-      mkdir(dir, { recursive: true }).then(() => cb(null, dir)).catch((e) => cb(e as Error, dir))
-    },
-    filename: (_req, file, cb) => {
-      const ext = WA_MEDIA_EXT[file.mimetype] ?? 'bin'
-      cb(null, `${Date.now()}-${randomUUID()}.${ext}`)
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: WA_MEDIA_MAX.document },  // hard ceiling; per-type checked after
   fileFilter: (_req, file, cb) => cb(null, !!WA_MEDIA_EXT[file.mimetype]),
+})
+
+// ── Call-transcript upload (abandonment notes). Accepts audio recordings and
+// text/pdf/doc transcripts. Stored on the same public /uploads/email-assets root.
+const TRANSCRIPT_EXT: Record<string, string> = {
+  'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+  'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/ogg': 'ogg', 'audio/webm': 'weba', 'audio/aac': 'aac',
+  'text/plain': 'txt', 'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+}
+const TRANSCRIPT_MAX = 50 * 1024 * 1024 // 50MB — call recordings can be large
+const transcriptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: TRANSCRIPT_MAX },
+  fileFilter: (_req, file, cb) => cb(null, !!TRANSCRIPT_EXT[file.mimetype]),
 })
 
 const ALLOWED_IMAGE_TYPES = new Set([
@@ -63,10 +70,6 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 function decodeBase64(contentBase64: string): Buffer {
   const raw = contentBase64.includes(',') ? contentBase64.split(',').pop() ?? '' : contentBase64
   return Buffer.from(raw, 'base64')
-}
-
-function publicUrl(req: Request, projectId: string, filename: string): string {
-  return `${req.protocol}://${req.get('host')}/uploads/email-assets/${projectId}/${filename}`
 }
 
 function safeAssetFilename(value: string): string | null {
@@ -103,18 +106,11 @@ router.post('/email-image', requireProjectId, async (req: Request, res: Response
 
     const ext = EXTENSIONS[mime]
     const filename = `${Date.now()}-${randomUUID()}.${ext}`
-    const dir = path.join(UPLOAD_ROOT, projectId)
-    await mkdir(dir, { recursive: true })
-    await writeFile(path.join(dir, filename), bytes)
+    const url = await putObject(`${projectId}/${filename}`, bytes, mime, reqBase(req))
 
     res.status(201).json({
       success: true,
-      data: {
-        url: publicUrl(req, projectId, filename),
-        filename,
-        mime,
-        size: bytes.length,
-      },
+      data: { url, filename, mime, size: bytes.length },
     })
   } catch (error) {
     console.error('email image upload failed', error)
@@ -129,23 +125,10 @@ router.get('/email-images', requireProjectId, async (req: Request, res: Response
       return res.status(400).json({ success: false, error: 'projectId is required' })
     }
 
-    const dir = path.join(UPLOAD_ROOT, projectId)
-    const files = await readdir(dir).catch(() => [])
-    const rows = await Promise.all(files.map(async (filename) => {
-      const info = await stat(path.join(dir, filename)).catch(() => null)
-      if (!info?.isFile()) return null
-      return {
-        filename,
-        url: publicUrl(req, projectId, filename),
-        size: info.size,
-        uploadedAt: info.mtime.toISOString(),
-      }
-    }))
-
+    const rows = await listObjects(projectId, reqBase(req))
     res.json({
       success: true,
       data: rows
-        .filter((row): row is NonNullable<typeof row> => row !== null)
         .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
         .slice(0, 60),
     })
@@ -172,23 +155,46 @@ router.post('/whatsapp-media', requireProjectId, (req: Request, res: Response) =
       }
       const kind = waMediaKind(file.mimetype)
       if (!kind || file.size > WA_MEDIA_MAX[kind]) {
-        await unlink(file.path).catch(() => {})
         const cap = kind ? Math.round(WA_MEDIA_MAX[kind] / (1024 * 1024)) : 0
         return res.status(400).json({ success: false, error: `${kind ?? 'File'} exceeds the ${cap}MB limit for that media type` })
       }
+      const filename = `${Date.now()}-${randomUUID()}.${WA_MEDIA_EXT[file.mimetype] ?? 'bin'}`
+      const url = await putObject(`${req.projectId!}/${filename}`, file.buffer, file.mimetype, reqBase(req))
       res.status(201).json({
         success: true,
-        data: {
-          url: publicUrl(req, req.projectId!, file.filename),
-          filename: file.filename,
-          mime: file.mimetype,
-          size: file.size,
-          kind,
-        },
+        data: { url, filename, mime: file.mimetype, size: file.size, kind },
       })
     } catch (error) {
       console.error('whatsapp media upload failed', error)
       res.status(500).json({ success: false, error: 'Failed to upload media' })
+    }
+  })
+})
+
+// POST /api/assets/transcript — multipart upload for a call transcript/recording.
+// Field name: "file". Returns a public URL + the original filename.
+router.post('/transcript', requireProjectId, (req: Request, res: Response) => {
+  transcriptUpload.single('file')(req, res, async (err: unknown) => {
+    try {
+      if (err) {
+        const msg = (err as { code?: string }).code === 'LIMIT_FILE_SIZE'
+          ? 'File exceeds the 50MB limit'
+          : (err instanceof Error ? err.message : 'Upload failed')
+        return res.status(400).json({ success: false, error: msg })
+      }
+      const file = req.file
+      if (!file) {
+        return res.status(400).json({ success: false, error: 'No file uploaded, or unsupported type (audio / text / pdf / doc only)' })
+      }
+      const filename = `${Date.now()}-${randomUUID()}.${TRANSCRIPT_EXT[file.mimetype] ?? 'bin'}`
+      const url = await putObject(`${req.projectId!}/${filename}`, file.buffer, file.mimetype, reqBase(req))
+      res.status(201).json({
+        success: true,
+        data: { url, filename: file.originalname, mime: file.mimetype, size: file.size },
+      })
+    } catch (error) {
+      console.error('transcript upload failed', error)
+      res.status(500).json({ success: false, error: 'Failed to upload transcript' })
     }
   })
 })
@@ -204,10 +210,7 @@ router.delete('/email-images/:filename', requireProjectId, async (req: Request, 
       return res.status(400).json({ success: false, error: 'Invalid image filename' })
     }
 
-    await unlink(path.join(UPLOAD_ROOT, projectId, filename)).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return
-      throw error
-    })
+    await deleteObject(`${projectId}/${filename}`)
 
     res.json({ success: true, data: { filename } })
   } catch (error) {

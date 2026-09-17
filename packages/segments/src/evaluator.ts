@@ -21,9 +21,20 @@ import type {
  */
 export function scopedFilterToSql(
   filters: FilterConfig,
-  scopedAgentIds: string[] | null
+  scopedAgentIds: string[] | null,
+  // REQUIRED IN PRACTICE, optional in the signature only so existing callers compile.
+  //
+  // Omitting it silently falls back to retail's words, and this is the function behind
+  // the Segments screen's Preview. A shop whose browse event is `item_opened` built a
+  // rule, pressed Preview, and was told nobody matched — because the preview looked for
+  // `product_viewed`. Saving the same rule went through `filterSqlForProject`, which
+  // does pass the vocabulary, so the segment then filled up. Measured on Viranacart:
+  // preview 0, saved segment 2 members, same filter, same second.
+  //
+  // Prefer `scopedFilterSqlForProject`, which cannot forget.
+  vocab: SegmentVocabulary = RETAIL_SEGMENT_VOCABULARY,
 ): SQL {
-  const userSql = filterToSql(filters)
+  const userSql = filterToSql(filters, vocab)
 
   if (scopedAgentIds === null) return sql`FALSE`
   if (scopedAgentIds.length === 0) return userSql
@@ -42,7 +53,141 @@ export function scopedFilterToSql(
  * Translates a FilterConfig into a Drizzle SQL WHERE clause.
  * Supports nested groups, product-based filters, and date filters.
  */
-export function filterToSql(filters: FilterConfig): SQL {
+/**
+ * What the project being evaluated calls the things these filters ask about.
+ *
+ * Every event name below was hardcoded to a shop's vocabulary, so a lender filtering
+ * "borrowers who took a Gold Loan" produced `WHERE event_name IN ('order_placed',
+ * 'order_completed')` — no rows, a segment showing 0, and nothing to distinguish that
+ * from "nobody took one". The other surfaces were fixed by populating the `orders`
+ * table; this file reads `events` directly, because product-level filters need detail
+ * the order summary does not carry.
+ */
+export type SegmentVocabulary = {
+  purchaseEvents: string[]
+  /** every event that undoes a sale — cancellations, returns and refunds together */
+  cancellationEvents: string[]
+  viewEvents: string[]
+  cartEvents: string[]
+  wishlistEvents: string[]
+  amountKey: string
+  /** the property on a purchase event holding the discount applied */
+  discountKey: string
+  /** the property holding the transaction's own id — how a reversal finds its sale */
+  orderIdKey: string
+}
+
+export const RETAIL_SEGMENT_VOCABULARY: SegmentVocabulary = {
+  // `order_placed` alone. This listed `order_completed` too and drifted out of step
+  // with the backend's default when that name was retired — the same word meaning two
+  // things in two packages, which is the drift this shared vocabulary exists to end.
+  purchaseEvents: ['order_placed'],
+  cancellationEvents: ['order_cancelled', 'order_returned', 'order_refunded'],
+  viewEvents: ['product_viewed'],
+  cartEvents: ['added_to_cart'],
+  wishlistEvents: ['added_to_wishlist'],
+  amountKey: 'total',
+  discountKey: 'discount',
+  orderIdKey: 'order_id',
+}
+
+/**
+ * A CANCELLED SALE IS NOT A SALE.
+ *
+ * Nothing in this file knew that. The word `cancelled` did not appear in it once, so
+ * every rule that counts purchases counted the ones that came back — and the rest of
+ * the product had already been taught otherwise. Measured on Girinacart: a rule for
+ * "spent more than ₹27,000" matched a customer whose Customers page, dashboard tile and
+ * order history all agree spent ₹9,947. Ten of her thirteen orders were cancelled,
+ * returned or refunded, and the segment added them all back.
+ *
+ * That is how a refunded order earns a thank-you campaign, and it is worse than a wrong
+ * total on a screen: the number is not displayed anywhere, it just quietly decides who
+ * gets messaged.
+ *
+ * Segments read two sources for the same facts, so both need the test:
+ *   ORDERS TABLE — the status column says it outright.
+ *   EVENT LEDGER — no status to read, so a purchase is excluded when a reversal event
+ *                  exists carrying the same order id.
+ */
+const REVERSED_STATUSES = sql`('cancelled', 'returned', 'refunded')`
+
+/** Orders-table rows that still stand. `pending` counts — placed and not yet shipped
+ *  is real. */
+function ordersStillStand(alias: string): SQL {
+  return sql`${sql.raw(alias)}.status NOT IN ${REVERSED_STATUSES}`
+}
+
+/** The order id on an event, under this project's key — the same three-way fallback
+ *  the aggregate worker uses, so both agree on what "the same order" means. */
+function eventOrderId(alias: string): SQL {
+  const a = sql.raw(alias)
+  return sql`COALESCE(
+    NULLIF(${a}.properties->>${VOCAB.orderIdKey}, ''),
+    NULLIF(${a}.properties->>'order_id', ''),
+    NULLIF(${a}.properties->>'id', ''))`
+}
+
+/** True when this purchase event's order has NOT been undone.
+ *
+ *  An event with no order id cannot be matched to a reversal and is kept: a shop that
+ *  sends no reference has no way to reverse anything either, and dropping those would
+ *  empty the segment for a tenant whose data is merely thin. */
+/** "this row is one of the project's purchase events, and it still stands" — the test
+ *  every event-sourced purchase rule in this file needs, in one place so none can be
+ *  updated without the others. */
+function isLivePurchase(alias: string): SQL {
+  return sql`(${isAnyOf(sql`${sql.raw(alias)}.event_name`, VOCAB.purchaseEvents)}
+              AND ${eventNotReversed(alias)})`
+}
+
+function eventNotReversed(alias: string): SQL {
+  const a = sql.raw(alias)
+  if (!VOCAB.cancellationEvents.length) return sql`TRUE`
+  return sql`(${eventOrderId(alias)} IS NULL OR NOT EXISTS (
+    SELECT 1 FROM events rev
+    WHERE rev.project_id = ${a}.project_id
+      AND rev.customer_id = ${a}.customer_id
+      AND ${isAnyOf(sql`rev.event_name`, VOCAB.cancellationEvents)}
+      AND ${eventOrderId('rev')} = ${eventOrderId(alias)}
+  ))`
+}
+
+// Set for the duration of one filterToSql call rather than threaded through the ten
+// nested builders below. Safe because every builder here is SYNCHRONOUS — they return
+// SQL fragments and never await — so no second evaluation can interleave. Restored in
+// a finally block so a throw cannot leak one project's vocabulary into the next.
+let VOCAB: SegmentVocabulary = RETAIL_SEGMENT_VOCABULARY
+
+/** `event_name` matches any of the project's names for this meaning.
+ *
+ *  Written as OR-ed equality rather than `= ANY(array)` deliberately: passing a JS
+ *  array into a raw template builds a row constructor, and Postgres refuses to cast a
+ *  record to an array — the same failure that took the session debugger down. Each
+ *  name here is its own bound parameter.
+ *
+ *  An industry with no such event — a lender has no wishlist — yields a never-true
+ *  test rather than silently falling back to a shop's name. */
+function isAnyOf(col: SQL, names: string[]): SQL {
+  if (!names.length) return sql`FALSE`
+  if (names.length === 1) return sql`${col} = ${names[0]}`
+  return or(...names.map(n => sql`${col} = ${n}`))!
+}
+
+export function filterToSql(
+  filters: FilterConfig,
+  vocab: SegmentVocabulary = RETAIL_SEGMENT_VOCABULARY,
+): SQL {
+  const previous = VOCAB
+  VOCAB = vocab
+  try {
+    return buildFilterSql(filters)
+  } finally {
+    VOCAB = previous
+  }
+}
+
+function buildFilterSql(filters: FilterConfig): SQL {
   const clauses = filters.rules.map(ruleOrGroupToSql)
 
   if (clauses.length === 0) return sql`TRUE`
@@ -140,7 +285,7 @@ function groupToSql(group: FilterGroup): SQL {
 function orderScopedPredicate(rule: FilterRule, source: 'orders' | 'events'): SQL {
   const value = rule.value
   const lineItems = source === 'orders' ? sql`o.line_items::jsonb` : sql`e.properties->'line_items'`
-  const total = source === 'orders' ? sql`o.total` : sql`(e.properties->>'total')::numeric`
+  const total = source === 'orders' ? sql`o.total` : sql`(e.properties->>${VOCAB.amountKey})::numeric`
   const dateCol = source === 'orders' ? sql`o.created_at` : sql`e.timestamp`
 
   switch (rule.field) {
@@ -224,11 +369,12 @@ function sameOrderGroupToSql(group: FilterGroup): SQL {
     EXISTS (
       SELECT 1 FROM orders o
       WHERE o.customer_id = customers.id
+      AND ${ordersStillStand('o')}
       AND ${ordersWhere}
     ) OR EXISTS (
       SELECT 1 FROM events e
       WHERE e.project_id = customers.project_id AND e.customer_id = customers.id
-      AND e.event_name IN ('order_placed', 'order_completed')
+      AND ${isLivePurchase('e')}
       AND ${eventsWhere}
     )
   )`
@@ -366,7 +512,7 @@ function aggSourceExists(rule: AggregateRule, source: 'events' | 'orders'): SQL 
     const where: SQL[] = [
       sql`e.project_id = customers.project_id`,
       sql`e.customer_id = customers.id`,
-      sql`e.event_name IN ('order_placed', 'order_completed')`,
+      sql`${isLivePurchase('e')}`,
     ]
     const tf = aggTimeframePredicate(rule.timeframe, sql`e.timestamp`)
     if (tf) where.push(tf)
@@ -379,7 +525,7 @@ function aggSourceExists(rule: AggregateRule, source: 'events' | 'orders'): SQL 
       HAVING ${aggHavingCompare(aggMetricExpr(rule, sql`e.id`), rule.operator, rule.value)}
     )`
   }
-  const where: SQL[] = [sql`o.customer_id = customers.id`]
+  const where: SQL[] = [sql`o.customer_id = customers.id`, ordersStillStand('o')]
   const tf = aggTimeframePredicate(rule.timeframe, sql`o.created_at`)
   if (tf) where.push(tf)
   where.push(...scopePreds)
@@ -442,11 +588,12 @@ function ruleToSql(rule: FilterRule): SQL {
       EXISTS (
         SELECT 1 FROM orders o
         WHERE o.customer_id = customers.id
+        AND ${ordersStillStand('o')}
         AND ${orderScopedPredicate(rule, 'orders')}
       ) OR EXISTS (
         SELECT 1 FROM events e
         WHERE e.project_id = customers.project_id AND e.customer_id = customers.id
-        AND e.event_name IN ('order_placed', 'order_completed')
+        AND ${isLivePurchase('e')}
         AND ${orderScopedPredicate(rule, 'events')}
       )
     )`
@@ -461,6 +608,7 @@ function ruleToSql(rule: FilterRule): SQL {
           SELECT 1 FROM orders o
           JOIN products p ON p.project_id = o.project_id
           WHERE o.customer_id = customers.id
+          AND ${ordersStillStand('o')}
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
             WHERE COALESCE(item->>'product_id', item->>'productId') = p.shopify_product_id
@@ -481,6 +629,7 @@ function ruleToSql(rule: FilterRule): SQL {
         EXISTS (
           SELECT 1 FROM orders
           WHERE orders.customer_id = customers.id
+          AND ${ordersStillStand('orders')}
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(orders.line_items::jsonb) item
             WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
@@ -488,7 +637,7 @@ function ruleToSql(rule: FilterRule): SQL {
         ) OR EXISTS (
           SELECT 1 FROM events
           WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-          AND events.event_name IN ('order_placed', 'order_completed')
+          AND ${isLivePurchase('events')}
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(events.properties->'line_items') item
             WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
@@ -502,6 +651,7 @@ function ruleToSql(rule: FilterRule): SQL {
           SELECT 1 FROM orders o
           JOIN products p ON p.project_id = o.project_id
           WHERE o.customer_id = customers.id
+          AND ${ordersStillStand('o')}
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(o.line_items::jsonb) item
             WHERE COALESCE(item->>'product_id', item->>'productId') = p.shopify_product_id
@@ -518,6 +668,7 @@ function ruleToSql(rule: FilterRule): SQL {
         NOT EXISTS (
           SELECT 1 FROM orders
           WHERE orders.customer_id = customers.id
+          AND ${ordersStillStand('orders')}
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(orders.line_items::jsonb) item
             WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
@@ -525,7 +676,7 @@ function ruleToSql(rule: FilterRule): SQL {
         ) AND NOT EXISTS (
           SELECT 1 FROM events
           WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-          AND events.event_name IN ('order_placed', 'order_completed')
+          AND ${isLivePurchase('events')}
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(events.properties->'line_items') item
             WHERE COALESCE(item->>${snakeKey}, item->>${camelKey}) = ${value}
@@ -539,14 +690,14 @@ function ruleToSql(rule: FilterRule): SQL {
         return sql`EXISTS (
           SELECT 1 FROM events
           WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-          AND events.event_name = 'product_viewed'
+          AND ${isAnyOf(sql`events.event_name`, VOCAB.viewEvents)}
           AND events.properties->>'product_type' = ${value}
         )`
       }
       return sql`EXISTS (
         SELECT 1 FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name = 'product_viewed'
+        AND ${isAnyOf(sql`events.event_name`, VOCAB.viewEvents)}
         AND events.properties->>'product_name' = ${value}
       )`
     case 'has_not_viewed':
@@ -554,28 +705,28 @@ function ruleToSql(rule: FilterRule): SQL {
         return sql`NOT EXISTS (
           SELECT 1 FROM events
           WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-          AND events.event_name = 'product_viewed'
+          AND ${isAnyOf(sql`events.event_name`, VOCAB.viewEvents)}
           AND events.properties->>'product_type' = ${value}
         )`
       }
       return sql`NOT EXISTS (
         SELECT 1 FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name = 'product_viewed'
+        AND ${isAnyOf(sql`events.event_name`, VOCAB.viewEvents)}
         AND events.properties->>'product_name' = ${value}
       )`
     case 'has_wishlisted':
       return sql`EXISTS (
         SELECT 1 FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name = 'added_to_wishlist'
+        AND ${isAnyOf(sql`events.event_name`, VOCAB.wishlistEvents)}
         AND events.properties->>'product_name' = ${value}
       )`
     case 'has_not_wishlisted':
       return sql`NOT EXISTS (
         SELECT 1 FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name = 'added_to_wishlist'
+        AND ${isAnyOf(sql`events.event_name`, VOCAB.wishlistEvents)}
         AND events.properties->>'product_name' = ${value}
       )`
     case 'in_month': {
@@ -583,6 +734,7 @@ function ruleToSql(rule: FilterRule): SQL {
       return sql`EXISTS (
         SELECT 1 FROM orders
         WHERE orders.customer_id = customers.id
+        AND ${ordersStillStand('orders')}
         AND EXTRACT(MONTH FROM orders.created_at) = ${value}
       )`
     }
@@ -591,6 +743,7 @@ function ruleToSql(rule: FilterRule): SQL {
       return sql`EXISTS (
         SELECT 1 FROM orders
         WHERE orders.customer_id = customers.id
+        AND ${ordersStillStand('orders')}
         AND EXTRACT(YEAR FROM orders.created_at) = ${value}
       )`
     }
@@ -688,11 +841,29 @@ function ruleToSql(rule: FilterRule): SQL {
 
   const column = fieldToSqlExpression(rule.field)
 
+  // A field the evaluator does not recognise falls through to a TEXT expression
+  // (`metrics->>field`). Comparing that to a boolean or a number asks Postgres for an
+  // operator that does not exist — `text = boolean` — and the whole query throws
+  // rather than matching nobody.
+  //
+  // That was not a contained failure: `evaluateAllSegments` runs segments in a loop
+  // with no isolation, so ONE malformed segment aborted membership updates for every
+  // other segment in the project. A lending project's "Pre-Approved Leads" template,
+  // filtering on a field nothing supplies, stopped all twelve of its segments from
+  // ever recalculating.
+  //
+  // Booleans and numbers are bound as text here so the comparison is valid whatever
+  // the expression's type; JSONB `->>` yields 'true'/'false' and numeric strings, so
+  // text comparison is the correct reading of the stored value.
+  const scalar = typeof value === 'boolean' || typeof value === 'number'
+    ? String(value)
+    : value
+
   switch (rule.operator) {
     case 'is':
-      return sql`${column} = ${value}`
+      return sql`${column}::text = ${String(scalar)}`
     case 'is_not':
-      return sql`${column} != ${value}`
+      return sql`${column}::text IS DISTINCT FROM ${String(scalar)}`
     case 'greater_than':
       return sql`${column} > ${value}`
     case 'less_than':
@@ -759,21 +930,52 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`city`
 
     // Computed fields
+    // NULL when there is no last order, never a substitute date.
+    //
+    // This read `COALESCE(last_order_date, first_seen)`: no order, so use the day they
+    // first appeared. The number that came back was not an approximation, it was the
+    // opposite of the truth — the longer someone had been signed up WITHOUT buying, the
+    // more overdue they looked. Someone who has never bought anything read as a loyal
+    // customer who had gone quiet.
+    //
+    // The cost is not a wrong figure on a screen; nothing displays this. It decides who
+    // gets messaged. "Hasn't ordered in 90 days — send 10% off your next order" matched
+    // 12,606 of GoWelmart's 16,322 customers, and 77% of them had never placed a first
+    // order to have a next one after. It is also why a customer with zero orders carried
+    // `Dormant` and `Zero Order Customers` at the same time.
+    //
+    // NULL compares false against every operator, so a customer with no order simply
+    // does not match a question about their last order — which is the honest answer.
+    // "Never ordered" is a different question and `total_orders = 0` already asks it.
     case 'days_since_last_order':
-      return sql`EXTRACT(DAY FROM NOW() - COALESCE(last_order_date, first_seen))`
+      return sql`CASE WHEN last_order_date IS NULL THEN NULL
+                      ELSE EXTRACT(DAY FROM NOW() - last_order_date) END`
     case 'days_since_first_seen':
       return sql`EXTRACT(DAY FROM NOW() - first_seen)`
+    // Four seeded segments across four verticals filter on this -- ecommerce's
+    // "Dormant", NBFC's "Dormant Leads", EdTech's "At Risk of Dropping" and SaaS's
+    // "Inactive Trial" -- and none of them worked, because the field was never
+    // translated here. A rule naming an unknown field matches nobody, so each of those
+    // segments has been reporting zero members since the day it was seeded, which
+    // reads exactly like "no dormant customers" rather than "this filter is broken".
+    //
+    // `last_seen` is a real column and already handled just above, so the computed
+    // form is the same shape as `days_since_first_seen`. Deliberately NOT the same as
+    // `days_since_last_order`: someone browsing weekly without buying is active, and
+    // the order-based field would call them dormant.
+    case 'days_since_last_seen':
+      return sql`EXTRACT(DAY FROM NOW() - last_seen)`
     case 'discount_order_percentage':
-      // Source: order events' properties.discount, like the rest of the
-      // event-driven order metrics. Negative or non-numeric values are
-      // treated as no-discount via the > 0 filter on the cast.
+      // Source: the discount property on order events, under whatever this project
+      // calls it, like the rest of the event-driven order metrics. Negative or
+      // non-numeric values are treated as no-discount via the > 0 filter on the cast.
       return sql`COALESCE((
         SELECT ROUND(100.0 * COUNT(*) FILTER (
-          WHERE (events.properties->>'discount')::numeric > 0
+          WHERE (events.properties->>${VOCAB.discountKey})::numeric > 0
         ) / NULLIF(COUNT(*), 0))
         FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name IN ('order_placed', 'order_completed')
+        AND ${isLivePurchase('events')}
       ), 0)`
     case 'product_purchase_count':
       // Total distinct products the customer has bought. Pulls from BOTH the
@@ -789,7 +991,7 @@ function fieldToSqlExpression(field: string): SQL {
           SELECT COALESCE(elem->>'product_name', elem->>'productName') AS name
           FROM events, jsonb_array_elements(events.properties->'line_items') AS elem
           WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-          AND events.event_name IN ('order_placed', 'order_completed')
+          AND ${isLivePurchase('events')}
         ) names
         WHERE name IS NOT NULL AND name <> ''
       ), 0)`
@@ -800,21 +1002,21 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`COALESCE((
         SELECT COUNT(*) FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name IN ('order_placed', 'order_completed')
+        AND ${isLivePurchase('events')}
         AND events.timestamp > NOW() - INTERVAL '30 days'
       ), 0)`
     case 'orders_in_last_90_days':
       return sql`COALESCE((
         SELECT COUNT(*) FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name IN ('order_placed', 'order_completed')
+        AND ${isLivePurchase('events')}
         AND events.timestamp > NOW() - INTERVAL '90 days'
       ), 0)`
     case 'orders_in_last_365_days':
       return sql`COALESCE((
         SELECT COUNT(*) FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
-        AND events.event_name IN ('order_placed', 'order_completed')
+        AND ${isLivePurchase('events')}
         AND events.timestamp > NOW() - INTERVAL '365 days'
       ), 0)`
 
@@ -832,6 +1034,16 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`COALESCE((metrics->>'days_since_last_txn')::numeric, 999)`
     case 'emi_overdue':
       return sql`COALESCE((metrics->>'emi_overdue')::boolean, false)`
+    // Days past due on the worst outstanding instalment. Collection Bucket 1 & 2 and
+    // NPA Risk all filter on this and it resolved to nothing, so a lender's collections
+    // views reported zero borrowers regardless of the book.
+    case 'days_past_due':
+      return sql`COALESCE((metrics->>'days_past_due')::numeric, 0)`
+    // Share of the schedule repaid, 0-100. "Top-up Eligible" filters on it.
+    case 'emi_completion_pct':
+      return sql`COALESCE((metrics->>'emi_completion_pct')::numeric, 0)`
+    case 'emis_paid':
+      return sql`COALESCE((metrics->>'emis_paid')::numeric, 0)`
     case 'active_loans':
       return sql`COALESCE((metrics->>'active_loans')::numeric, 0)`
     case 'active_sips':
@@ -852,6 +1064,20 @@ function fieldToSqlExpression(field: string): SQL {
       return sql`COALESCE((metrics->>'mrr')::numeric, 0)`
     case 'trial_status':
       return sql`COALESCE(metrics->>'trial_status', 'no_trial')`
+    // Live subscription state, derived from the latest lifecycle event. Both "Paying
+    // Customers" and "Churned" filter on it and it resolved to nothing.
+    case 'subscription_status':
+      return sql`COALESCE(metrics->>'subscription_status', 'none')`
+    // EdTech. Enrolments are orders, so `total_orders` already counts them; these are
+    // the progress measures no metrics function used to produce.
+    case 'courses_completed':
+      return sql`COALESCE((metrics->>'courses_completed')::numeric, 0)`
+    case 'certificates_earned':
+      return sql`COALESCE((metrics->>'certificates_earned')::numeric, 0)`
+    case 'days_since_last_lesson':
+      return sql`COALESCE((metrics->>'days_since_last_lesson')::numeric, 999)`
+    case 'completion_rate':
+      return sql`COALESCE((metrics->>'completion_rate')::numeric, 0)`
 
     // Customer attribute fields (from custom_attributes JSONB)
     case 'account_type':
@@ -1097,6 +1323,8 @@ function getFieldValue(field: string, customer: Customer): unknown {
       return customer.lastOrderDate ? daysSince(customer.lastOrderDate) : daysSince(customer.firstSeen)
     case 'days_since_first_seen':
       return daysSince(customer.firstSeen)
+    case 'days_since_last_seen':
+      return customer.lastSeen ? daysSince(customer.lastSeen) : daysSince(customer.firstSeen)
     case 'discount_order_percentage':
     case 'product_purchase_count':
     case 'orders_in_last_30_days':

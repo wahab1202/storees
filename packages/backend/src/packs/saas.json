@@ -1,39 +1,163 @@
 {
   "id": "saas",
   "name": "SaaS",
-  "icon": "☁️",
-  "description": "Software-as-a-Service — feature adoption, retention, expansion revenue",
+  "icon": "\u2601\ufe0f",
+  "description": "Software-as-a-Service \u2014 feature adoption, retention, expansion revenue",
   "catalogue": {
     "name": "Plans & Features",
     "item_type_label": "Plan",
     "attribute_schema": [
-      { "name": "tier", "type": "select", "values": ["Free", "Starter", "Pro", "Enterprise"], "weight": 0.3 },
-      { "name": "price_monthly", "type": "number", "weight": 0.2 },
-      { "name": "price_annual", "type": "number", "weight": 0.1 },
-      { "name": "seat_limit", "type": "number", "weight": 0.15 },
-      { "name": "feature_flags", "type": "text", "weight": 0.15 },
-      { "name": "trial_days", "type": "number", "weight": 0.1 }
+      {
+        "name": "tier",
+        "type": "select",
+        "values": [
+          "Free",
+          "Starter",
+          "Pro",
+          "Enterprise"
+        ],
+        "weight": 0.3
+      },
+      {
+        "name": "price_monthly",
+        "type": "number",
+        "weight": 0.2
+      },
+      {
+        "name": "price_annual",
+        "type": "number",
+        "weight": 0.1
+      },
+      {
+        "name": "seat_limit",
+        "type": "number",
+        "weight": 0.15
+      },
+      {
+        "name": "feature_flags",
+        "type": "text",
+        "weight": 0.15
+      },
+      {
+        "name": "trial_days",
+        "type": "number",
+        "weight": 0.1
+      }
     ],
     "default_items": [
-      { "name": "Free Plan", "type": "plan", "attributes": { "tier": "Free", "price_monthly": 0, "seat_limit": 1, "trial_days": 0 } },
-      { "name": "Pro Plan", "type": "plan", "attributes": { "tier": "Pro", "price_monthly": 49, "seat_limit": 10, "trial_days": 14 } },
-      { "name": "Enterprise Plan", "type": "plan", "attributes": { "tier": "Enterprise", "price_monthly": 199, "seat_limit": -1, "trial_days": 30 } }
+      {
+        "name": "Free Plan",
+        "type": "plan",
+        "attributes": {
+          "tier": "Free",
+          "price_monthly": 0,
+          "seat_limit": 1,
+          "trial_days": 0
+        }
+      },
+      {
+        "name": "Pro Plan",
+        "type": "plan",
+        "attributes": {
+          "tier": "Pro",
+          "price_monthly": 49,
+          "seat_limit": 10,
+          "trial_days": 14
+        }
+      },
+      {
+        "name": "Enterprise Plan",
+        "type": "plan",
+        "attributes": {
+          "tier": "Enterprise",
+          "price_monthly": 199,
+          "seat_limit": -1,
+          "trial_days": 30
+        }
+      }
     ]
   },
   "interaction_config": [
-    { "event_name": "feature_used", "interaction_type": "engage", "weight": 1.0, "decay_half_life_days": 14 },
-    { "event_name": "pricing_page_viewed", "interaction_type": "intent", "weight": 3.0, "decay_half_life_days": 7 },
-    { "event_name": "plan_compared", "interaction_type": "intent", "weight": 2.5, "decay_half_life_days": 7 },
-    { "event_name": "trial_started", "interaction_type": "strong_intent", "weight": 4.0, "decay_half_life_days": 14 },
-    { "event_name": "subscription_created", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 90 },
-    { "event_name": "subscription_upgraded", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 90 },
-    { "event_name": "invite_sent", "interaction_type": "engage", "weight": 2.0, "decay_half_life_days": 30 },
-    { "event_name": "api_key_created", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 60 }
+    {
+      "event_name": "pricing_page_viewed",
+      "interaction_type": "view",
+      "weight": 3.0,
+      "decay_half_life_days": 7
+    },
+    {
+      "event_name": "plan_compared",
+      "interaction_type": "intent",
+      "weight": 2.5,
+      "decay_half_life_days": 7
+    },
+    {
+      "event_name": "trial_started",
+      "interaction_type": "engage",
+      "weight": 4.0,
+      "decay_half_life_days": 14
+    },
+    {
+      "event_name": "trial_expired",
+      "interaction_type": "engage",
+      "weight": 3.0,
+      "decay_half_life_days": 30
+    },
+    {
+      "event_name": "subscription_started",
+      "interaction_type": "conversion",
+      "weight": 5.0,
+      "decay_half_life_days": 90
+    },
+    {
+      "event_name": "subscription_renewed",
+      "interaction_type": "engage",
+      "weight": 3.0,
+      "decay_half_life_days": 60
+    },
+    {
+      "event_name": "subscription_upgraded",
+      "interaction_type": "engage",
+      "weight": 5.0,
+      "decay_half_life_days": 90
+    },
+    {
+      "event_name": "subscription_cancelled",
+      "interaction_type": "cancellation",
+      "weight": 5.0,
+      "decay_half_life_days": 180
+    },
+    {
+      "event_name": "feature_used",
+      "interaction_type": "engage",
+      "weight": 1.0,
+      "decay_half_life_days": 14
+    },
+    {
+      "event_name": "user_invited",
+      "interaction_type": "engage",
+      "weight": 2.0,
+      "decay_half_life_days": 30
+    },
+    {
+      "event_name": "api_key_created",
+      "interaction_type": "engage",
+      "weight": 1.5,
+      "decay_half_life_days": 60
+    }
   ],
+  "field_defaults": {
+    "order": {
+      "order_id": "subscription_id",
+      "amount": "total",
+      "currency": "currency",
+      "discount": "discount"
+    }
+  },
+  "cadence_signal": "event:subscription_renewed",
   "prediction_goals": [
     {
       "name": "Trial to Paid Conversion",
-      "target_event": "subscription_created",
+      "target_event": "purchase",
       "observation_window_days": 14,
       "prediction_window_days": 7,
       "min_positive_labels": 100,
@@ -42,14 +166,14 @@
       "description": "Predict which trial users are likely to convert to paid"
     },
     {
-      "name": "Churn Risk",
+      "name": "Subscription Churn Risk",
       "target_event": "subscription_cancelled",
       "observation_window_days": 60,
       "prediction_window_days": 14,
       "min_positive_labels": 80,
       "priority": 2,
       "default_status": "active",
-      "description": "Predict which paid customers are likely to cancel their subscription"
+      "description": "Paying customers likely to cancel. Targets the stated `subscription_cancelled` event, not inferred silence. Do NOT rename this to plain 'Churn Risk': that wording is in the resolver's name table and outranks the target event, which switched this goal to the purchase-based churn label \u2014 'did they buy another subscription', true of nearly every healthy customer."
     },
     {
       "name": "Predict Dormancy",
@@ -96,66 +220,163 @@
     {
       "name": "Trial Users",
       "description": "Currently in trial period",
-      "icon": "⏳",
-      "filter": { "logic": "AND", "rules": [{ "field": "trial_status", "operator": "is", "value": "in_trial" }] }
+      "icon": "\u23f3",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "trial_status",
+            "operator": "is",
+            "value": "in_trial"
+          }
+        ]
+      }
     },
     {
       "name": "Paying Customers",
       "description": "Active paid subscription",
-      "icon": "💳",
-      "filter": { "logic": "AND", "rules": [{ "field": "subscription_status", "operator": "is", "value": "active" }] }
+      "icon": "\ud83d\udcb3",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "subscription_status",
+            "operator": "is",
+            "value": "active"
+          }
+        ]
+      }
     },
     {
       "name": "Enterprise Accounts",
       "description": "On enterprise plan",
-      "icon": "🏢",
-      "filter": { "logic": "AND", "rules": [{ "field": "plan", "operator": "is", "value": "enterprise" }] }
+      "icon": "\ud83c\udfe2",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "plan",
+            "operator": "is",
+            "value": "enterprise"
+          }
+        ]
+      }
     },
     {
       "name": "Low Engagement",
       "description": "Less than 5 feature uses in last 14 days",
-      "icon": "📉",
-      "filter": { "logic": "AND", "rules": [{ "field": "feature_usage_count", "operator": "less_than", "value": 5 }] }
+      "icon": "\ud83d\udcc9",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "feature_usage_count",
+            "operator": "less_than",
+            "value": 5
+          }
+        ]
+      }
     },
     {
       "name": "Power Users",
       "description": "50+ feature uses in last 14 days",
-      "icon": "⚡",
-      "filter": { "logic": "AND", "rules": [{ "field": "feature_usage_count", "operator": "greater_than", "value": 50 }] }
+      "icon": "\u26a1",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "feature_usage_count",
+            "operator": "greater_than",
+            "value": 50
+          }
+        ]
+      }
     },
     {
       "name": "Churned",
       "description": "Cancelled subscription",
-      "icon": "🚪",
-      "filter": { "logic": "AND", "rules": [{ "field": "subscription_status", "operator": "is", "value": "cancelled" }] }
-    },
-    {
-      "name": "Expansion Candidates",
-      "description": "Nearing plan limits",
-      "icon": "📈",
-      "filter": { "logic": "AND", "rules": [{ "field": "seat_usage_pct", "operator": "greater_than", "value": 80 }] }
+      "icon": "\ud83d\udeaa",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "subscription_status",
+            "operator": "is",
+            "value": "cancelled"
+          }
+        ]
+      }
     },
     {
       "name": "Inactive Trial",
       "description": "In trial but no activity in 3+ days",
-      "icon": "💤",
-      "filter": { "logic": "AND", "rules": [{ "field": "trial_status", "operator": "is", "value": "in_trial" }, { "field": "days_since_last_seen", "operator": "greater_than", "value": 3 }] }
+      "icon": "\ud83d\udca4",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "trial_status",
+            "operator": "is",
+            "value": "in_trial"
+          },
+          {
+            "field": "days_since_last_seen",
+            "operator": "greater_than",
+            "value": 3
+          }
+        ]
+      }
     }
   ],
   "flow_templates": [],
   "dashboard_templates": [],
   "wizard_questions": {
     "products_label": "What plans do you offer?",
-    "products_options": ["Free Tier", "Starter/Basic", "Pro/Growth", "Enterprise", "Custom/Usage-Based"],
-    "journey_steps": ["Sign Up", "Onboarding", "First Value", "Feature Discovery", "Team Invite", "Upgrade", "Renewal"],
+    "products_options": [
+      "Free Tier",
+      "Starter/Basic",
+      "Pro/Growth",
+      "Enterprise",
+      "Custom/Usage-Based"
+    ],
+    "journey_steps": [
+      "Sign Up",
+      "Onboarding",
+      "First Value",
+      "Feature Discovery",
+      "Team Invite",
+      "Upgrade",
+      "Renewal"
+    ],
     "priorities": [
-      { "label": "Convert trial users to paid", "maps_to": "Trial to Paid Conversion" },
-      { "label": "Reduce churn", "maps_to": "Churn Risk" },
-      { "label": "Prevent user dormancy", "maps_to": "Predict Dormancy" },
-      { "label": "Drive plan upgrades", "maps_to": "Expansion Revenue" },
-      { "label": "Reduce trial expiration", "maps_to": "Trial Expiration Risk" },
-      { "label": "Improve feature adoption", "maps_to": "Feature Adoption" },
-      { "label": "Increase team seat usage", "maps_to": null }
+      {
+        "label": "Convert trial users to paid",
+        "maps_to": "Trial to Paid Conversion"
+      },
+      {
+        "label": "Reduce churn",
+        "maps_to": "Churn Risk"
+      },
+      {
+        "label": "Prevent user dormancy",
+        "maps_to": "Predict Dormancy"
+      },
+      {
+        "label": "Drive plan upgrades",
+        "maps_to": "Expansion Revenue"
+      },
+      {
+        "label": "Reduce trial expiration",
+        "maps_to": "Trial Expiration Risk"
+      },
+      {
+        "label": "Improve feature adoption",
+        "maps_to": "Feature Adoption"
+      },
+      {
+        "label": "Increase team seat usage",
+        "maps_to": null
+      }
     ]
   }
 }

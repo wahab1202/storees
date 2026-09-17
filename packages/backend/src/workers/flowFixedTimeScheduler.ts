@@ -17,6 +17,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { flowActionsQueue } from '../services/queue.js'
 import { filterToSql } from '@storees/segments'
 import type { FlowNode, FilterConfig, TriggerConfig } from '@storees/shared'
+import { filterSqlForProject } from '../services/projectVocabulary.js'
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -54,7 +55,7 @@ async function fireFixedTimeFlow(flow: {
   }
 
   // Resolve customer IDs via the segment evaluator
-  const sqlCond = filterToSql(audience)
+  const sqlCond = await filterSqlForProject(flow.projectId, audience)
   const customerRows = await db
     .select({ id: customers.id })
     .from(customers)

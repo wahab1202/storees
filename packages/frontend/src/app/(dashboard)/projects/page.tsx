@@ -8,6 +8,7 @@ import { useProjects, useProjectApiKeys, useArchiveProject, useUnarchiveProject,
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { useSwitchProject } from '@/lib/projectContext'
+import { useSuperAdminGuard } from '@/components/auth/RequireSuperAdmin'
 import {
   FolderOpen,
   Key,
@@ -144,6 +145,12 @@ function ApiKeysSection({ projectId }: { projectId: string }) {
 }
 
 export default function ProjectsPage() {
+  const guard = useSuperAdminGuard()
+  if (guard) return guard
+  return <ProjectsPageInner />
+}
+
+function ProjectsPageInner() {
   const router = useRouter()
   const { data, isLoading, isError } = useProjects()
   const [expandedId, setExpandedId] = useState<string | null>(null)

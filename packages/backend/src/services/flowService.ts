@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { flows, emailTemplates, projects } from '../db/schema.js'
 import { FLOW_TEMPLATE_DEFINITIONS } from '@storees/flows'
+import { resolveTriggerEvent } from './flowTemplates.js'
 import type { DomainType } from '@storees/shared'
 
 const abandonedCartEmailHtml = `<!DOCTYPE html>
@@ -110,14 +111,67 @@ export async function instantiateDefaultFlows(projectId: string, domainType?: Do
       htmlBody: getTemplateHtml(template.slug),
     }).onConflictDoNothing()
 
+    // TRANSLATED into this project's vocabulary before it is written.
+    //
+    // These flows are created automatically the moment a store connects — nobody picks
+    // them, so nobody checks them. Written with the template's literal names, a shop
+    // whose purchase slot says something other than `order_placed` got a set of
+    // journeys that could never work: the Abandoned Cart flow's "have they bought
+    // yet?" check looks for a name that shop never sends, answers NO every time, and
+    // keeps sending reminder, then offer, then final offer to a customer who has
+    // already placed the order. The trigger fires correctly, which is precisely why
+    // it does not look broken.
+    //
+    // Three of these templates also trigger on `order_completed` — a name no longer in
+    // any vocabulary and one no shop is asked to send. Routing them through the slots
+    // resolves those to the project's real purchase event as well.
+    //
+    // Names that map to no slot are returned unchanged, so `enters_segment`,
+    // `checkout_started` and the other signals pass through untouched.
+    const triggerCfg = template.triggerConfig as { event?: string } | null
+    const nodes = JSON.parse(JSON.stringify(template.nodes)) as unknown[]
+    for (const node of nodes) {
+      const cfg = (node as { config?: Record<string, unknown> }).config
+      if (typeof cfg?.event === 'string') {
+        cfg.event = await resolveTriggerEvent(projectId, cfg.event)
+      }
+      if (typeof cfg?.exitEvent === 'string') {
+        cfg.exitEvent = await resolveTriggerEvent(projectId, cfg.exitEvent)
+      }
+    }
+
+    // The EXIT rule too — "stop this journey the moment they buy".
+    //
+    // Missed on the first pass, and it is the one that keeps sending. A Win-Back
+    // journey exits when the customer comes back; if that rule names an event the shop
+    // never sends, the exit never fires and the journey runs to its end regardless —
+    // so the customer who just bought still receives the comeback offer and the
+    // discount after it. The trigger and the checks can all be correct and this alone
+    // will still message someone who has already converted.
+    //
+    // `flowExecutor` accepts either a single object or an array here, so both shapes
+    // are handled rather than assuming the one the templates happen to use today.
+    const translateExit = async (x: unknown): Promise<unknown> => {
+      const e = x as { event?: string } | null
+      return typeof e?.event === 'string'
+        ? { ...e, event: await resolveTriggerEvent(projectId, e.event) }
+        : x
+    }
+    const rawExit = template.exitConfig as unknown
+    const exitConfig = Array.isArray(rawExit)
+      ? await Promise.all(rawExit.map(translateExit))
+      : rawExit ? await translateExit(rawExit) : rawExit
+
     // Create flow (starts as draft — must be manually activated)
     await db.insert(flows).values({
       projectId,
       name: template.name,
       description: template.description,
-      triggerConfig: template.triggerConfig,
-      exitConfig: template.exitConfig,
-      nodes: template.nodes,
+      triggerConfig: triggerCfg?.event
+        ? { ...triggerCfg, event: await resolveTriggerEvent(projectId, triggerCfg.event) }
+        : template.triggerConfig,
+      exitConfig: exitConfig as typeof template.exitConfig,
+      nodes,
       status: 'draft',
     })
   }

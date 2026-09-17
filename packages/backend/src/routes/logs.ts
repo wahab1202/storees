@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, and, or, desc, ilike, gte, lte, isNull, isNotNull, count, sql } from 'drizzle-orm'
+import { eq, and, or, desc, ilike, gte, lte, isNull, isNotNull, count, sql, asc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { messages, customers, campaigns, flowTrips, flows } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -87,7 +87,13 @@ router.get('/notifications', async (req, res) => {
       .leftJoin(flowTrips, eq(flowTrips.id, messages.flowTripId))
       .leftJoin(flows, eq(flows.id, flowTrips.flowId))
       .where(where)
-      .orderBy(desc(messages.createdAt))
+      // A tie-break, so LIMIT/OFFSET has a total order to page through.
+      // Without it, rows sharing the sort value come back in whatever order the
+      // planner chooses per query, and paging then repeats some rows while hiding
+      // others — measured at 132 duplicates in 1,250 customer rows before the
+      // same fix was applied there. Scores tie far harder than that: calibration
+      // lands 3,406 customers on 266 distinct values.
+      .orderBy(desc(messages.createdAt), asc(messages.id))
       .limit(pageSize)
       .offset(offset)
 

@@ -4,6 +4,7 @@ import type {
   FlowNode, TriggerNode, DelayNode, ConditionNode, ActionNode, EndNode,
 } from '@storees/shared'
 import { WHATSAPP_FLOW_TEMPLATES } from './whatsappTemplateLibrary.js'
+import { projectVocabulary, type ProjectVocabulary } from './projectVocabulary.js'
 
 /**
  * Pre-built journey templates installable via wizard, mapped per industry.
@@ -372,6 +373,51 @@ export function listFlowTemplates(industry?: TemplateIndustry): FlowTemplate[] {
  * the new flow id. Caller directs the admin to the editor to fill in the real
  * channel template ids.
  */
+/** The template words the vocabulary has a slot for -> the slot that answers them.
+ *
+ *  Only these. `enters_segment` is Storees' own event, and `loan_disbursed` or
+ *  `lesson_started` are industry words no slot describes — translating either would be
+ *  inventing an answer. */
+const TEMPLATE_EVENT_SLOT: Record<string, keyof ProjectVocabulary> = {
+  order_placed: 'purchaseEvents',
+  order_fulfilled: 'fulfilmentEvents',
+  order_cancelled: 'cancellationEvents',
+  product_viewed: 'viewEvents',
+  added_to_cart: 'cartEvents',
+  added_to_wishlist: 'wishlistEvents',
+}
+
+/**
+ * A template's trigger word, in the words THIS PROJECT actually sends.
+ *
+ * The trigger worker matches the event name as plain text — `triggerConfig.event !==
+ * event.eventName`. So a template that says `order_fulfilled` is watching for a word a
+ * shop calling delivery `purchase_delivered` never sends, and the flow sits there
+ * forever. Two shipped templates trigger on delivery, and neither could fire for any
+ * shop that did not happen to use our spelling.
+ *
+ * Resolved at INSTALL time and written onto the flow row, which is where the trigger
+ * lives from then on. Flows already installed keep the word they were created with —
+ * this cannot reach into a running journey and change what fires it.
+ */
+export async function resolveTriggerEvent(projectId: string, event: string): Promise<string> {
+  const slot = TEMPLATE_EVENT_SLOT[event]
+  if (!slot) return event
+
+  const vocab = await projectVocabulary(projectId)
+  const names = vocab[slot] as string[]
+  if (!Array.isArray(names) || names.length === 0) return event
+
+  // Already one of the project's words — the shop uses our spelling, so there is
+  // nothing to translate and the flow is left byte-identical to the template.
+  if (names.includes(event)) return event
+
+  // The first name, not all of them: a trigger is one event, and a project listing
+  // several purchase words has no way through this to say which starts the journey.
+  // Picking the first is the same rule the flow-creation route already applies.
+  return names[0]
+}
+
 export async function installFlowTemplate(
   projectId: string,
   templateId: FlowTemplateId,
@@ -381,6 +427,38 @@ export async function installFlowTemplate(
 
   // Deep-copy so we can relink WhatsApp send nodes to the seeded template rows.
   const nodes = JSON.parse(JSON.stringify(tmpl.nodes)) as FlowNode[]
+
+  // TRANSLATE THE EVENT NAMES INSIDE THE FLOW, not only the one that starts it.
+  //
+  // The trigger has always been resolved through the slots. The nodes were copied
+  // verbatim — and the nodes are where a template asks its questions. Every one of
+  // these journeys contains a check shaped like:
+  //
+  //     { check: 'event_occurred', event: 'order_placed', since: 'trip_start' }
+  //
+  //     "has this customer bought since the journey began?"
+  //
+  // For a shop whose purchase slot says `purchase_confirmed`, that check looks for a
+  // name they never send, finds nothing, and answers NO every time. The journey then
+  // behaves as though the customer never bought: Abandoned Cart keeps going —
+  // reminder, then offer, then final offer — to somebody who already placed the order.
+  // The trigger fired correctly, which is exactly why it would not look broken.
+  //
+  // `resolveTriggerEvent` returns the input unchanged when a name maps to no slot, so
+  // `checkout_started` and every other signal passes through untouched.
+  for (const node of nodes) {
+    // An EndNode has no config at all, which is why this reads the field defensively
+    // rather than narrowing on `node.type` — a future node kind carrying an event name
+    // is then translated for free instead of being silently missed.
+    const cfg = (node as { config?: Record<string, unknown> }).config
+    if (typeof cfg?.event === 'string') {
+      cfg.event = await resolveTriggerEvent(projectId, cfg.event)
+    }
+    // Exit conditions carry a name too, under a different key.
+    if (typeof cfg?.exitEvent === 'string') {
+      cfg.exitEvent = await resolveTriggerEvent(projectId, cfg.exitEvent)
+    }
+  }
   for (const node of nodes) {
     if (node.type !== 'action' || node.config.actionType !== 'send_whatsapp') continue
     const key = node.config.templateId
@@ -416,7 +494,10 @@ export async function installFlowTemplate(
     projectId,
     name: tmpl.name,
     description: tmpl.description,
-    triggerConfig: tmpl.triggerConfig,
+    triggerConfig: {
+      ...tmpl.triggerConfig,
+      event: await resolveTriggerEvent(projectId, tmpl.triggerConfig.event),
+    },
     nodes,
     status: 'draft',
   }).returning({ id: flows.id, name: flows.name })

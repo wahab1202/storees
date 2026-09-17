@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { withProject } from '@/lib/project'
+import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, ShieldCheck, Image as ImageIcon } from 'lucide-react'
 
 type Profile = {
@@ -16,6 +17,18 @@ type Profile = {
   profilePictureUrl: string | null
   verifiedName: string | null
   displayNumber: string | null
+  nameStatus: string | null
+  codeVerificationStatus: string | null
+}
+
+/** Map Meta's name_status to a tone + label for the badge. */
+function nameStatusBadge(status: string | null): { label: string; cls: string } | null {
+  if (!status) return null
+  const s = status.toUpperCase()
+  if (s === 'APPROVED') return { label: 'Name approved', cls: 'bg-green-500/10 text-green-600' }
+  if (s.includes('PENDING')) return { label: 'Name pending review', cls: 'bg-amber-500/10 text-amber-600' }
+  if (s === 'DECLINED' || s === 'REJECTED') return { label: 'Name declined', cls: 'bg-red-500/10 text-red-600' }
+  return { label: `Name: ${status}`, cls: 'bg-surface text-text-muted' }
 }
 
 // Meta's business verticals (whatsapp_business_profile.vertical enum).
@@ -108,10 +121,14 @@ export function WhatsappProfile() {
             )}
           </div>
           <div className="min-w-0 flex-1 space-y-1">
-            <div className="flex items-center gap-1.5 text-sm">
+            <div className="flex items-center flex-wrap gap-1.5 text-sm">
               <ShieldCheck className="h-3.5 w-3.5 text-green-600" />
               <span className="font-medium text-text-primary">{profile.verifiedName || 'Name pending'}</span>
               {profile.displayNumber && <span className="text-text-muted">· {profile.displayNumber}</span>}
+              {(() => {
+                const b = nameStatusBadge(profile.nameStatus)
+                return b ? <span className={cn('ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium', b.cls)}>{b.label}</span> : null
+              })()}
             </div>
             <p className="text-[11px] text-text-muted">The display name is Meta-approved — changing it requires a name-change review, so it&apos;s not editable here.</p>
           </div>

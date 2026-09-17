@@ -27,6 +27,13 @@ const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:3000'
 
 router.post('/register', rateLimiter(5), async (req: Request, res: Response) => {
   try {
+    // Phase 1: public self-serve registration is CLOSED — accounts are created
+    // only by a super admin (who links the client to a project). Opt back in with
+    // ALLOW_PUBLIC_REGISTRATION=true if a public sign-up funnel is ever wanted.
+    if (process.env.ALLOW_PUBLIC_REGISTRATION !== 'true') {
+      return res.status(403).json({ success: false, error: 'Registration is closed. Contact your administrator for access.' })
+    }
+
     const { email, password, name } = req.body
 
     if (!email || !password || !name) {
@@ -65,6 +72,7 @@ router.post('/register', rateLimiter(5), async (req: Request, res: Response) => 
         projectId: adminUsers.projectId,
         role: adminUsers.role,
         agentId: adminUsers.agentId,
+        isSuperAdmin: adminUsers.isSuperAdmin,
       })
 
     const token = generateJwt(jwtPayloadFrom(user))
@@ -136,6 +144,7 @@ router.post('/login', rateLimiter(10), async (req: Request, res: Response) => {
           projectId: user.projectId,
           role: user.role,
           agentId: user.agentId,
+          isSuperAdmin: user.isSuperAdmin,
           totpEnabled: user.totpEnabled,
         },
       },
@@ -189,6 +198,7 @@ router.post('/verify-2fa', rateLimiter(5), async (req: Request, res: Response) =
           projectId: user.projectId,
           role: user.role,
           agentId: user.agentId,
+          isSuperAdmin: user.isSuperAdmin,
           totpEnabled: user.totpEnabled,
         },
       },
@@ -475,6 +485,7 @@ router.post('/oauth-callback', async (req: Request, res: Response) => {
         role: adminUsers.role,
         agentId: adminUsers.agentId,
         totpEnabled: adminUsers.totpEnabled,
+        isSuperAdmin: adminUsers.isSuperAdmin,
       })
       .from(adminUsers)
       .where(eq(adminUsers.id, userId))
@@ -509,6 +520,7 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
         role: adminUsers.role,
         agentId: adminUsers.agentId,
         projectId: adminUsers.projectId,
+        isSuperAdmin: adminUsers.isSuperAdmin,
         emailVerified: adminUsers.emailVerified,
         totpEnabled: adminUsers.totpEnabled,
         createdAt: adminUsers.createdAt,
@@ -545,10 +557,11 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
 router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.adminUser!.userId
-    const { projectId, name } = req.body
+    // NOTE: projectId is deliberately NOT updatable here. A user must not be able
+    // to self-assign their tenant — membership is granted only by a super admin.
+    const { name } = req.body
 
     const updates: Record<string, unknown> = { updatedAt: new Date() }
-    if (projectId !== undefined) updates.projectId = projectId
     if (name !== undefined) updates.name = name
 
     const [user] = await db
@@ -562,6 +575,7 @@ router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res: Response
         projectId: adminUsers.projectId,
         role: adminUsers.role,
         agentId: adminUsers.agentId,
+        isSuperAdmin: adminUsers.isSuperAdmin,
       })
 
     // Return a fresh JWT with updated projectId

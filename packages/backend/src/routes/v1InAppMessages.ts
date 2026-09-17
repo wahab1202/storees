@@ -5,6 +5,7 @@ import { campaigns, emailTemplates, customers, campaignSends } from '../db/schem
 import { filterToSql } from '@storees/segments'
 import type { FilterConfig } from '@storees/shared'
 import { requirePublicKeyAuth, type ApiKeyAuthRequest } from '../middleware/apiKeyAuth.js'
+import { filterSqlForProject } from '../services/projectVocabulary.js'
 
 // Gap 1: public SDK endpoints for in-app messages. After the 0049
 // refactor, in-app messages are just campaigns with channel='in_app'
@@ -150,7 +151,7 @@ router.get('/in-app-messages', async (req: ApiKeyAuthRequest, res: Response) => 
       }
 
       if (c.audienceFilter) {
-        const filterSql = filterToSql(c.audienceFilter as FilterConfig)
+        const filterSql = await filterSqlForProject(projectId, c.audienceFilter as FilterConfig)
         const [match] = await db
           .select({ id: customers.id })
           .from(customers)

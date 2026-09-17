@@ -1,13 +1,10 @@
-import { copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
-import path from 'node:path'
 import crypto from 'node:crypto'
 import { eq, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { campaignAttachments } from '../db/schema.js'
+import { putPrivateObject, getPrivateObject, deletePrivateObject, copyPrivateObject } from './storageService.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-const ATTACHMENT_DIR = process.env.CAMPAIGN_ATTACHMENT_DIR
-  ?? path.resolve(process.cwd(), '.storees/uploads/campaign-attachments')
 
 const ALLOWED_MIME_PREFIXES = ['image/']
 const ALLOWED_MIME_TYPES = new Set([
@@ -54,31 +51,21 @@ function assertAllowedAttachment(upload: CampaignAttachmentUpload, bytes: Buffer
   if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error('Attachments must be 25MB or smaller')
 }
 
-async function ensureAttachmentDir() {
-  await mkdir(ATTACHMENT_DIR, { recursive: true })
-}
-
-function attachmentPath(storageKey: string) {
-  return path.join(ATTACHMENT_DIR, storageKey)
-}
-
 export async function persistCampaignAttachments(campaignId: string, uploads: CampaignAttachmentUpload[] = []): Promise<AttachmentRow[]> {
   if (uploads.length === 0) return []
-  await ensureAttachmentDir()
 
   const rows: Array<typeof campaignAttachments.$inferInsert> = []
   for (const upload of uploads) {
     const bytes = decodeBase64(upload.contentBase64)
     assertAllowedAttachment(upload, bytes)
     const filename = safeFilename(upload.filename)
+    const mime = upload.mime.trim().toLowerCase()
     const storageKey = `${campaignId}/${crypto.randomUUID()}-${filename}`
-    const fullPath = attachmentPath(storageKey)
-    await mkdir(path.dirname(fullPath), { recursive: true })
-    await writeFile(fullPath, bytes)
+    await putPrivateObject(storageKey, bytes, mime)
     rows.push({
       campaignId,
       filename,
-      mime: upload.mime.trim().toLowerCase(),
+      mime,
       sizeBytes: bytes.byteLength,
       s3Key: storageKey,
     })
@@ -104,7 +91,7 @@ export async function deleteCampaignAttachments(campaignId: string, attachmentId
   const owned = rows.filter(row => row.campaignId === campaignId)
   if (owned.length === 0) return
   await db.delete(campaignAttachments).where(inArray(campaignAttachments.id, owned.map(row => row.id)))
-  await Promise.all(owned.map(row => unlink(attachmentPath(row.s3Key)).catch(() => undefined)))
+  await Promise.all(owned.map(row => deletePrivateObject(row.s3Key)))
 }
 
 export async function loadResendAttachments(campaignId: string): Promise<ResendAttachment[]> {
@@ -112,22 +99,19 @@ export async function loadResendAttachments(campaignId: string): Promise<ResendA
   return Promise.all(rows.map(async row => ({
     filename: row.filename,
     contentType: row.mime,
-    content: (await readFile(attachmentPath(row.s3Key))).toString('base64'),
+    content: (await getPrivateObject(row.s3Key)).toString('base64'),
   })))
 }
 
 export async function copyCampaignAttachments(sourceCampaignId: string, targetCampaignId: string): Promise<AttachmentRow[]> {
   const rows = await listCampaignAttachments(sourceCampaignId)
   if (rows.length === 0) return []
-  await ensureAttachmentDir()
 
   const inserts: Array<typeof campaignAttachments.$inferInsert> = []
   for (const row of rows) {
     const filename = safeFilename(row.filename)
     const storageKey = `${targetCampaignId}/${crypto.randomUUID()}-${filename}`
-    const fullPath = attachmentPath(storageKey)
-    await mkdir(path.dirname(fullPath), { recursive: true })
-    await copyFile(attachmentPath(row.s3Key), fullPath)
+    await copyPrivateObject(row.s3Key, storageKey)
     inserts.push({
       campaignId: targetCampaignId,
       filename,

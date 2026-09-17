@@ -66,6 +66,23 @@ export function requireRole(...allowed: AdminRole[]) {
 }
 
 /**
+ * Platform-admin gate for CROSS-TENANT ops screens (e.g. the WhatsApp
+ * provisioning queue that spans all projects). Deliberately NOT a per-project
+ * role — it reads across the project boundary, so it's gated by an explicit
+ * allowlist of admin emails in `STOREES_PLATFORM_ADMINS` (comma-separated).
+ * Denies by default (empty allowlist → nobody), keeping tenant isolation intact.
+ */
+export function requirePlatformAdmin() {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const allow = (process.env.STOREES_PLATFORM_ADMINS ?? '')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    const email = req.adminUser?.email?.toLowerCase()
+    if (req.adminUser?.role === 'admin' && email && allow.includes(email)) return next()
+    return res.status(403).json({ success: false, error: 'Forbidden: platform admin only' })
+  }
+}
+
+/**
  * Raw-SQL scope fragment for aggregation queries that don't use Drizzle's
  * typed `customers` table reference (e.g. dashboard stats issuing db.execute).
  *

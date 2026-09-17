@@ -152,7 +152,7 @@ function initialState(editing: WhatsappTemplate | null): BuilderState {
 
 const AUTH_BODY = '{{1}} is your verification code.'
 
-export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplate | null }) {
+export function WhatsAppTemplateBuilder({ editing, onDone }: { editing?: WhatsappTemplate | null; onDone?: () => void }) {
   const router = useRouter()
   const { data: catalogResp } = useVariableSources()
   const catalog: VariableSourceCatalog | null = catalogResp?.data ?? null
@@ -291,7 +291,9 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
 
   const handleLint = () => lint.mutate(buildInput())
 
-  const done = () => router.push('/templates?channel=whatsapp')
+  // Embedded (in the campaign modal) → hand back to the host; standalone (the
+  // Templates page) → navigate back to the list. One component, two hosts.
+  const done = () => { if (onDone) onDone(); else router.push('/templates?channel=whatsapp') }
 
   const handleSaveDraft = () => {
     if (isEditing) editDraft.mutate({ id: editing!.id, input: buildInput() }, { onSuccess: done })
@@ -544,7 +546,7 @@ export function WhatsAppTemplateBuilder({ editing }: { editing?: WhatsappTemplat
           <div className="flex-1" />
           <button
             type="button"
-            onClick={() => router.push('/templates?channel=whatsapp')}
+            onClick={done}
             className="inline-flex h-10 items-center rounded-lg border border-border bg-white px-4 text-sm font-medium text-text-secondary hover:bg-surface"
           >
             Cancel

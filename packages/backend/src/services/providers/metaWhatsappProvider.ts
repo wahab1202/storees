@@ -168,10 +168,15 @@ export const metaWhatsappProvider: ChannelProvider = {
     const { phoneNumberId } = config
     const accessToken = tokenOf(config)
 
-    const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
     const template = command.templateId ? (await db.select({ bodyText: emailTemplates.bodyText, subject: emailTemplates.subject }).from(emailTemplates).where(eq(emailTemplates.id, command.templateId)).limit(1))[0] : undefined
 
-    const to = normalizeWhatsAppRecipient(customer?.phone)
+    // Dealer-directed sends carry a resolved address; otherwise the customer's.
+    let rawTo: string | null | undefined = command.deliverToPhone
+    if (!rawTo) {
+      const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
+      rawTo = customer?.phone
+    }
+    const to = normalizeWhatsAppRecipient(rawTo)
     if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
 
     let body = template?.bodyText ?? ''
@@ -204,9 +209,9 @@ export const metaWhatsappProvider: ChannelProvider = {
   async sendTemplate(command, config) {
     const { phoneNumberId } = config
     const accessToken = tokenOf(config)
-    // Test-send path bypasses customer lookup and delivers to an admin-provided
-    // phone number. Otherwise resolve from the customer row.
-    let rawTo: string | null | undefined = command.phoneOverride
+    // Test-send (phoneOverride) or dealer-directed (deliverToPhone) bypass the
+    // customer lookup; otherwise resolve from the customer row.
+    let rawTo: string | null | undefined = command.deliverToPhone ?? command.phoneOverride
     if (!rawTo) {
       const [customer] = await db.select({ phone: customers.phone }).from(customers).where(eq(customers.id, command.userId)).limit(1)
       rawTo = customer?.phone

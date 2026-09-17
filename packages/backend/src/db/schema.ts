@@ -7,9 +7,11 @@ import {
   boolean,
   integer,
   decimal,
+  doublePrecision,
   jsonb,
   uniqueIndex,
   index,
+  primaryKey,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
@@ -174,8 +176,16 @@ export const orders = pgTable('orders', {
   lineItems: jsonb('line_items').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+  /** Which door created this row — see migration 0082.
+   *
+   *  A purchase event name means the row was built from the event ledger and can be
+   *  rebuilt from it, so a mapping change may safely remove it. 'shopify_sync' and
+   *  'historical_import' have no event behind them and must never be deleted. NULL is
+   *  a row written before this column existed: provenance unknown, so untouchable. */
+  sourceEvent: varchar('source_event', { length: 100 }),
 }, (table) => [
   index('idx_orders_customer').on(table.projectId, table.customerId, table.createdAt),
+  index('idx_orders_source_event').on(table.projectId, table.sourceEvent),
   uniqueIndex('idx_orders_external').on(table.projectId, table.externalOrderId),
   index('idx_orders_status').on(table.projectId, table.status),
 ])
@@ -385,6 +395,7 @@ export const campaigns = pgTable('campaigns', {
   deliveryType: varchar('delivery_type', { length: 20 }).notNull().default('one-time'), // one-time | periodic
   status: varchar('status', { length: 20 }).notNull().default('draft'), // draft | scheduled | sending | sent | paused
   contentType: varchar('content_type', { length: 20 }).notNull().default('promotional'), // promotional | transactional
+  recipient: varchar('recipient', { length: 20 }).notNull().default('customer'), // customer | dealer | both
   segmentId: uuid('segment_id').references(() => segments.id),
   subject: varchar('subject', { length: 500 }),
   previewText: varchar('preview_text', { length: 500 }),
@@ -844,7 +855,31 @@ export const predictionGoals = pgTable('prediction_goals', {
   name: varchar('name', { length: 255 }).notNull(),
   targetEvent: varchar('target_event', { length: 100 }).notNull(),
   observationWindowDays: integer('observation_window_days').notNull().default(90),
-  predictionWindowDays: integer('prediction_window_days').notNull().default(14),
+  /** How far ahead the goal is asked to see, IN DAYS — and days can be fractional.
+   *
+   *  This was `integer`, which is right for every goal whose answer plays out over
+   *  weeks. It is wrong for carts. GoWelmart's own data says half of all adds convert
+   *  within 4.19 hours; as an integer that stores as 0, the label window collapses,
+   *  every cart comes out "abandoned" (measured: 99.7% positive) and the goal cannot
+   *  train at all.
+   *
+   *  `doublePrecision`, not `numeric`: Drizzle types `numeric` as a STRING, so every
+   *  reader — `predictionLiveEvalScheduler` does arithmetic on this — would need a
+   *  cast, and the one place that forgot would be a silent bug. `doublePrecision`
+   *  types as `number`, so nothing that reads this column changes.
+   *
+   *  Widening is lossless: 14 stays 14, 90 stays 90. Narrowing back is NOT — a
+   *  fractional window rounds to 0 — so this migration is one-way in practice. */
+  predictionWindowDays: doublePrecision('prediction_window_days').notNull().default(14),
+  /** Use the two windows above AS GIVEN instead of deriving them.
+   *
+   *  Off for everything by default. The pipeline normally works the windows out from
+   *  the project's own data and picks a look-back by scoring candidates on held-out
+   *  rounds — better than a typed guess, and the reason the two columns above were
+   *  overwritten after every run. This lets one goal opt out and assert its own,
+   *  which is a real need (a client who knows their buying cycle is six weeks may
+   *  well be right) at the cost of a score nobody validated. */
+  windowsPinned: boolean('windows_pinned').notNull().default(false),
   minPositiveLabels: integer('min_positive_labels').notNull().default(200),
   status: varchar('status', { length: 20 }).notNull().default('active'),
   // 'active' | 'paused' | 'insufficient_data'
@@ -977,6 +1012,9 @@ export const adminUsers = pgTable('admin_users', {
   name: varchar('name', { length: 255 }).notNull(),
   role: varchar('role', { length: 20 }).notNull().default('admin'),
   // 'admin' | 'manager' | 'agent' — only admin sees everything; manager/agent are scoped via agentId
+  // Cross-tenant super admin (platform operator). Explicit flag, NOT the role
+  // string — clients (super_admin=false) can only reach projects in user_projects.
+  isSuperAdmin: boolean('is_super_admin').notNull().default(false),
   agentId: uuid('agent_id').references(() => agents.id),
   projectId: uuid('project_id').references(() => projects.id),
   emailVerified: boolean('email_verified').notNull().default(false),
@@ -988,6 +1026,19 @@ export const adminUsers = pgTable('admin_users', {
   uniqueIndex('idx_admin_users_email').on(table.email),
   index('idx_admin_users_project').on(table.projectId),
   index('idx_admin_users_agent').on(table.agentId),
+])
+
+// ============ USER ↔ PROJECT MEMBERSHIP ============
+// Which projects a (non-super-admin) user may operate on. One row per (user, project).
+// Enforced at requireProjectId; super admins bypass. See migration 0085.
+export const userProjects = pgTable('user_projects', {
+  userId: uuid('user_id').notNull().references(() => adminUsers.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  createdBy: uuid('created_by').references(() => adminUsers.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.projectId] }),
+  index('idx_user_projects_project').on(table.projectId),
 ])
 
 // ============ PASSWORD RESET TOKENS ============
@@ -1184,6 +1235,26 @@ export const whatsappProvisioningRequests = pgTable('whatsapp_provisioning_reque
 }, (table) => [
   uniqueIndex('idx_wa_provisioning_project').on(table.projectId),
   index('idx_wa_provisioning_status').on(table.status, table.submittedAt),
+])
+
+// Human-captured abandonment reasons (one per checkout_abandoned event).
+// See migration 0082_cart_abandonment_notes.sql for column-level docs.
+export const cartAbandonmentNotes = pgTable('cart_abandonment_notes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  eventId: uuid('event_id').notNull(),
+  reason: varchar('reason', { length: 40 }).notNull(),
+  remarks: text('remarks'),
+  transcriptUrl: text('transcript_url'),
+  transcriptName: varchar('transcript_name', { length: 300 }),
+  markedBy: uuid('marked_by'),
+  markedByName: varchar('marked_by_name', { length: 160 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_cart_abandonment_notes_event').on(table.projectId, table.eventId),
+  index('idx_cart_abandonment_notes_reason').on(table.projectId, table.reason, table.createdAt),
 ])
 
 // ============ DATA SOURCE CONNECTORS ============
@@ -1435,9 +1506,13 @@ export const inboundWebhookEvents = pgTable('inbound_webhook_events', {
   matchedDefinitions: jsonb('matched_definitions').notNull().default([]),
   status: varchar('status', { length: 20 }).notNull().default('received'),
   error: text('error'),
+  // Customer resolved when this row was processed (from its produced events row);
+  // lets the Data-tab rows click through to the customer detail page.
+  customerId: uuid('customer_id'),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_inbound_events_webhook').on(table.webhookId, table.receivedAt),
+  index('idx_inbound_events_customer').on(table.customerId),
 ])
 
 export const eventDefinitions = pgTable('event_definitions', {

@@ -27,6 +27,10 @@ export type WhatsappProfileView = WhatsappBusinessProfile & {
   /** Meta-approved verified business name (read-only). */
   verifiedName: string | null
   displayNumber: string | null
+  /** Display-name review state: APPROVED / PENDING_REVIEW / DECLINED / … */
+  nameStatus: string | null
+  /** Number verification state (OTP): VERIFIED / NOT_VERIFIED / … */
+  codeVerificationStatus: string | null
 }
 
 type MetaCtx = { phoneNumberId: string; token: string; appId: string | null }
@@ -63,10 +67,11 @@ export async function getBusinessProfile(projectId: string): Promise<WhatsappPro
   )
   const p = profileResp.data?.[0] ?? {}
 
-  const numberResp = await graph<{ verified_name?: string; display_phone_number?: string }>(
-    `${GRAPH_BASE}/${phoneNumberId}?fields=verified_name,display_phone_number`,
+  type NumberResp = { verified_name?: string; display_phone_number?: string; name_status?: string; code_verification_status?: string }
+  const numberResp = await graph<NumberResp>(
+    `${GRAPH_BASE}/${phoneNumberId}?fields=verified_name,display_phone_number,name_status,code_verification_status`,
     token,
-  ).catch(() => ({} as { verified_name?: string; display_phone_number?: string }))
+  ).catch(() => ({} as NumberResp))
 
   return {
     about: (p.about as string) ?? null,
@@ -78,6 +83,8 @@ export async function getBusinessProfile(projectId: string): Promise<WhatsappPro
     profilePictureUrl: (p.profile_picture_url as string) ?? null,
     verifiedName: numberResp.verified_name ?? null,
     displayNumber: numberResp.display_phone_number ?? null,
+    nameStatus: numberResp.name_status ?? null,
+    codeVerificationStatus: numberResp.code_verification_status ?? null,
   }
 }
 

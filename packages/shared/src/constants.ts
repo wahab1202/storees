@@ -24,6 +24,12 @@ export const STANDARD_EVENTS = {
   SEARCH_PERFORMED: 'search_performed',
   COUPON_APPLIED: 'coupon_applied',
   REVIEW_SUBMITTED: 'review_submitted',
+  // Mapped by the ecommerce pack and absent from this list until now, which is how
+  // the pack drifted to `product_reviewed` and `remove_from_cart` -- neither name
+  // existed anywhere else, and the review flow template triggers on
+  // `review_submitted`, so a client following the pack would never have fired it.
+  PRODUCT_SHARED: 'product_shared',
+  REMOVED_FROM_CART: 'removed_from_cart',
 
   // Subscription lifecycle — each renewal is recurring revenue, so
   // subscription_started + subscription_renewed are counted as revenue
@@ -85,7 +91,18 @@ export const FINTECH_EVENTS = {
   EXITS_SEGMENT: 'exits_segment',
 } as const
 
+// Mapped by the saas pack and missing from this list, which is how the pack came to
+// carry `subscription_created` for its PURCHASE event and `invite_sent` for an invite —
+// two names that appear in no other file. `subscription_renewed` is the recurring
+// revenue event and the vertical's real rhythm; the pack never mapped it at all.
 export const SAAS_EVENTS = {
+  PRICING_PAGE_VIEWED: 'pricing_page_viewed',
+  PLAN_COMPARED: 'plan_compared',
+  TRIAL_STARTED: 'trial_started',
+  TRIAL_EXPIRED: 'trial_expired',
+  SUBSCRIPTION_RENEWED: 'subscription_renewed',
+  SUBSCRIPTION_UPGRADED: 'subscription_upgraded',
+  API_KEY_CREATED: 'api_key_created',
   FEATURE_USED: 'feature_used',
   TRIAL_EXPIRING: 'trial_expiring',
   SUBSCRIPTION_STARTED: 'subscription_started',
@@ -105,6 +122,15 @@ export const EDTECH_EVENTS = {
   // course_enrolled is the revenue event (paid enrolment); the rest are
   // engagement/lifecycle markers that drive nudge + re-engagement flows.
   CERTIFICATE_ISSUED: 'certificate_issued',
+  // Mapped by the edtech pack and missing from this list, which is how the pack came
+  // to carry `certificate_earned` — a name in no other file. The refund event is the
+  // vertical's cancellation; `course_dropped` is a learner giving up, not money
+  // returning, and is a signal rather than a revenue reversal.
+  COURSE_PREVIEW_WATCHED: 'course_preview_watched',
+  COURSE_ADDED_TO_LIST: 'course_added_to_list',
+  QUIZ_ATTEMPTED: 'quiz_attempted',
+  COURSE_DROPPED: 'course_dropped',
+  ENROLLMENT_REFUNDED: 'enrollment_refunded',
   SUBSCRIPTION_STARTED: 'subscription_started',
   SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
   ENTERS_SEGMENT: 'enters_segment',
@@ -179,3 +205,28 @@ export const TRIP_STATUSES = ['active', 'waiting', 'completed', 'exited'] as con
 export const DEFAULT_PAGE_SIZE = 25 as const
 
 export const MAX_PAGE_SIZE = 100 as const
+
+/**
+ * Classified reasons a customer abandoned / cancelled a cart, recorded by the
+ * exec team after calling. Value is stored; label is shown in the dropdown.
+ * Feeds the Phase-2 abandonment-reason analytics.
+ */
+export const ABANDONMENT_REASONS = [
+  { value: 'price_too_high', label: 'Price too high / found cheaper elsewhere' },
+  { value: 'shipping_cost_high', label: 'Shipping cost too high' },
+  { value: 'discount_not_enough', label: 'Discount / offer not enough' },
+  { value: 'delivery_too_slow', label: 'Delivery time too long' },
+  { value: 'payment_failed', label: 'Payment failed / payment method issue' },
+  { value: 'cod_unavailable', label: 'Wanted COD (not available)' },
+  { value: 'checkout_difficulty', label: 'Checkout too difficult / technical issue' },
+  { value: 'just_browsing', label: 'Just browsing / comparing — not ready' },
+  { value: 'changed_mind', label: 'Changed mind / no longer needed' },
+  { value: 'out_of_stock', label: 'Out of stock / variant unavailable' },
+  { value: 'quality_trust', label: 'Product quality / trust concerns' },
+  { value: 'buying_later', label: 'Buying later (waiting for salary / occasion)' },
+  { value: 'bought_elsewhere', label: 'Already bought elsewhere' },
+  { value: 'no_response', label: 'Could not reach / no response' },
+  { value: 'other', label: 'Other (see remarks)' },
+] as const
+
+export type AbandonmentReasonCode = typeof ABANDONMENT_REASONS[number]['value']

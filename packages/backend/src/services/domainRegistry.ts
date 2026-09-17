@@ -20,6 +20,10 @@ const ecommerceFields: DomainFieldDef[] = [
   { field: 'first_order_date', label: 'First Order Date', type: 'date', category: 'Engagement', operators: ['before_date', 'after_date'] as FilterOperator[] },
   { field: 'last_order_date', label: 'Last Order Date', type: 'date', category: 'Engagement', operators: ['before_date', 'after_date'] as FilterOperator[] },
   { field: 'days_since_first_seen', label: 'Days Since First Seen', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than'] as FilterOperator[] },
+  // Distinct from Days Since Last Order: a shopper browsing weekly without buying is
+  // active, and the order-based field would call them dormant. The seeded "Dormant"
+  // segment filters on this one.
+  { field: 'days_since_last_seen', label: 'Days Since Last Seen', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[] },
   { field: 'orders_in_last_30_days', label: 'Orders in Last 30 Days', type: 'number', category: 'Engagement', operators: ['is', 'greater_than', 'less_than'] as FilterOperator[] },
   { field: 'orders_in_last_90_days', label: 'Orders in Last 90 Days', type: 'number', category: 'Engagement', operators: ['is', 'greater_than', 'less_than'] as FilterOperator[] },
   { field: 'discount_order_percentage', label: 'Discount Order %', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than'] as FilterOperator[] },
@@ -114,6 +118,32 @@ const saasDomain: DomainConfig = {
   channels: ['email', 'push'],
 }
 
+// ============ EDTECH DOMAIN ============
+
+const edtechFields: DomainFieldDef[] = [
+  { field: 'email', label: 'Email', type: 'string', category: 'Customer Info', operators: ['is', 'is_not', 'contains'] as FilterOperator[] },
+  { field: 'name', label: 'Name', type: 'string', category: 'Customer Info', operators: ['is', 'is_not', 'contains'] as FilterOperator[] },
+  // Both of these named fields the evaluator has never had a case for, so a marketer
+  // could pick "Enrolled Courses" from this menu, build a segment and get nobody —
+  // the menu offering something the engine cannot run.
+  //
+  // An enrolment IS an order: the orders table holds one row per enrolment, so
+  // `total_orders` counts them and no separate field is needed. Completions are
+  // genuinely their own measure and the metrics worker computes them under the name
+  // used here.
+  { field: 'total_orders', label: 'Enrolled Courses', type: 'number', category: 'Learning', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'total_orders' },
+  { field: 'courses_completed', label: 'Completed Courses', type: 'number', category: 'Learning', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'courses_completed' },
+  { field: 'completion_rate', label: 'Completion Rate', type: 'number', category: 'Learning', operators: ['greater_than', 'less_than', 'between'] as FilterOperator[], metricKey: 'completion_rate' },
+  { field: 'days_since_last_lesson', label: 'Days Since Last Lesson', type: 'number', category: 'Engagement', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'days_since_last_lesson' },
+  { field: 'certificates_earned', label: 'Certificates Earned', type: 'number', category: 'Learning', operators: ['greater_than', 'less_than'] as FilterOperator[], metricKey: 'certificates_earned' },
+]
+
+const edtechDomain: DomainConfig = {
+  domainType: 'edtech',
+  fields: edtechFields,
+  channels: ['email', 'push'],
+}
+
 // ============ CUSTOM DOMAIN ============
 
 const customFields: DomainFieldDef[] = [
@@ -156,6 +186,7 @@ const reachabilityFields: DomainFieldDef[] = [
 ecommerceDomain.fields = [...ecommerceFields, ...predictionFields, ...reachabilityFields]
 fintechDomain.fields = [...fintechFields, ...predictionFields, ...reachabilityFields]
 saasDomain.fields = [...saasFields, ...predictionFields, ...reachabilityFields]
+edtechDomain.fields = [...edtechFields, ...predictionFields, ...reachabilityFields]
 customDomain.fields = [...customFields, ...predictionFields, ...reachabilityFields]
 
 // ============ REGISTRY ============
@@ -164,6 +195,7 @@ const DOMAIN_REGISTRY: Record<DomainType, DomainConfig> = {
   ecommerce: ecommerceDomain,
   fintech: fintechDomain,
   saas: saasDomain,
+  edtech: edtechDomain,
   custom: customDomain,
 }
 

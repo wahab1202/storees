@@ -10,14 +10,18 @@ import {
   useRetrainPredictionGoal,
   useRetrainAllPredictionGoals,
   useMlServiceHealth,
+  useTrainingStatus,
   useGoalTrainingHistory,
   useGoalModelVersions,
   usePromoteModelVersion,
 } from '@/hooks/usePredictions'
 import { useEventNames } from '@/hooks/useAnalytics'
+import { useEventMapping } from '@/hooks/useEventMapping'
 import { useProjects } from '@/hooks/useProjects'
 import { useProjectContext } from '@/lib/projectContext'
-import { getAucQuality, isBehaviorBasedGoal } from '@/lib/predictionQuality'
+import { getAucQuality, isBehaviorBasedGoal, isPseudoGoal, PSEUDO_GOAL_EVENTS } from '@/lib/predictionQuality'
+import { formatWindow, isEventDriven, toDays } from '@/lib/predictionCadence'
+import type { WindowUnit } from '@/lib/predictionCadence'
 import type { PredictionGoal } from '@storees/shared'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -40,31 +44,41 @@ import {
   RefreshCw,
 } from 'lucide-react'
 
-// Domain-aware prediction presets
+// Domain-aware prediction presets.
+//
+// A goal that means "this vertical's sale" targets the MEANING `purchase`, never that
+// vertical's default event name — the same rule the packs follow. The resolver maps
+// `purchase` through the project's own mapping, so the preset is correct whether a shop
+// calls it `order_placed`, `sales_order_placed` or anything else. Naming the event here
+// only worked for tenants who happened to use our spelling.
+//
+// Two of these named events that exist nowhere in Storees — not in any pack, not in
+// `eventSchemas.ts`: `order_completed` and `subscription_created` (the real one is
+// `subscription_started`). A goal created from those presets had nothing to learn from.
 const PREDICTION_PRESETS: Record<string, Array<{ value: string; label: string; event: string; desc: string }>> = {
   ecommerce: [
-    { value: 'conversion', label: 'Predict Conversion', event: 'order_completed', desc: 'Which customers are likely to purchase soon' },
+    { value: 'conversion', label: 'Predict Conversion', event: 'purchase', desc: 'Which customers are likely to purchase soon' },
     { value: 'dormancy', label: 'Predict Dormancy', event: 'dormancy', desc: 'Which active customers will become inactive' },
     { value: 'cart_abandon', label: 'Predict Cart Abandonment', event: 'cart_abandoned', desc: 'Which customers will add to cart but not buy' },
-    { value: 'repeat', label: 'Repeat Purchase', event: 'order_completed', desc: 'Which existing buyers will purchase again' },
+    { value: 'repeat', label: 'Repeat Purchase', event: 'repeat_purchase', desc: 'Which existing buyers will purchase again' },
   ],
   fintech: [
-    { value: 'loan_conv', label: 'Loan Conversion', event: 'loan_disbursed', desc: 'Which leads are likely to get loans disbursed' },
+    { value: 'loan_conv', label: 'Loan Conversion', event: 'purchase', desc: 'Which leads are likely to get loans disbursed' },
     { value: 'emi_default', label: 'EMI Default Risk', event: 'emi_missed', desc: 'Which borrowers will miss EMI payments' },
     { value: 'app_churn', label: 'App Churn Risk', event: 'churn', desc: 'Which customers will stop using the app' },
     { value: 'cross_sell', label: 'Cross-sell Propensity', event: 'loan_application_started', desc: 'Which customers will apply for new loan products' },
   ],
   saas: [
-    { value: 'trial_conv', label: 'Trial to Paid', event: 'subscription_created', desc: 'Which trial users will convert to paid' },
+    { value: 'trial_conv', label: 'Trial to Paid', event: 'purchase', desc: 'Which trial users will convert to paid' },
     { value: 'churn', label: 'Churn Risk', event: 'subscription_cancelled', desc: 'Which customers will cancel their subscription' },
     { value: 'dormancy', label: 'Predict Dormancy', event: 'dormancy', desc: 'Which active users will become inactive' },
     { value: 'expansion', label: 'Expansion Revenue', event: 'subscription_upgraded', desc: 'Which customers will upgrade their plan' },
   ],
   edtech: [
-    { value: 'enrollment', label: 'Enrollment Propensity', event: 'course_enrolled', desc: 'Which learners are likely to enroll in a course' },
+    { value: 'enrollment', label: 'Enrollment Propensity', event: 'purchase', desc: 'Which learners are likely to enroll in a course' },
     { value: 'completion_risk', label: 'Completion Risk', event: 'course_dropped', desc: 'Which enrolled learners will drop out' },
-    { value: 'next_course', label: 'Next Course', event: 'course_enrolled', desc: 'Which learners will enroll in another course' },
-    { value: 'sub_conv', label: 'Subscription Conversion', event: 'subscription_created', desc: 'Which free learners will convert to paid' },
+    { value: 'next_course', label: 'Next Course', event: 'repeat_purchase', desc: 'Which learners will enroll in another course' },
+    { value: 'sub_conv', label: 'Subscription Conversion', event: 'subscription_started', desc: 'Which free learners will convert to paid' },
   ],
 }
 
@@ -78,6 +92,14 @@ export default function PredictionsPage() {
   const retrainAll = useRetrainAllPredictionGoals()
   const mlHealth = useMlServiceHealth()
   const mlDown = mlHealth.data?.data?.mlServiceUp === false
+
+  // What is training RIGHT NOW. The Re-train request returns as soon as the job is
+  // queued, so the button's own spinner stops within milliseconds while the work runs
+  // for minutes — leaving a page that looks untouched. This is what says otherwise.
+  const training = useTrainingStatus()
+  const trainingGoals = training.data?.data?.goals ?? []
+  const isTraining = (goalId: string) => trainingGoals.some(g => g.id === goalId)
+  const trainingFailures = training.data?.data?.failures ?? []
   // Show the bulk retrain whenever ≥1 goal needs help: either flagged as
   // insufficient_data, OR has no usable AUC (training failed silently in
   // an earlier run, so goal.status stayed 'active' but currentMetric is 0).
@@ -135,6 +157,44 @@ export default function PredictionsPage() {
         </div>
       )}
 
+      {/* Something is training — the page is otherwise identical before and after a
+          click, which reads as "nothing happened" and invites a second click. */}
+      {trainingGoals.length > 0 && (
+        <div className="flex items-start gap-3 mb-4 px-4 py-3 bg-accent/5 border border-accent/20 rounded-lg">
+          <RefreshCw className="w-4 h-4 text-accent mt-0.5 shrink-0 animate-spin" />
+          <div className="text-xs text-text-secondary">
+            <p className="font-medium text-text-primary">
+              Training {trainingGoals.length} model{trainingGoals.length > 1 ? 's' : ''}
+            </p>
+            <p className="mt-0.5">
+              {trainingGoals.map(g => g.name).join(', ')} — this takes a few minutes on a
+              large history. Scores update here when it finishes.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* A recent attempt that produced no model. The goal stays `active` on failure so
+          its existing model keeps scoring customers — which also means the card looks
+          exactly as it did before the click. Without this, a failed retrain is
+          indistinguishable from one that was never pressed. */}
+      {trainingFailures.length > 0 && trainingGoals.length === 0 && (
+        <div className="flex items-start gap-3 mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+          <div className="text-xs text-amber-800 min-w-0">
+            <p className="font-medium">
+              Last training didn&apos;t finish for {trainingFailures.map(f => f.name).join(', ')}
+            </p>
+            {trainingFailures.map(f => (
+              <p key={f.goalId} className="mt-0.5 text-amber-700/90 break-words">{f.reason}</p>
+            ))}
+            <p className="mt-1 text-amber-700/80">
+              The previous model is still scoring customers — these numbers are from that one.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Wizard */}
       {showWizard && <CreateWizard onClose={() => setShowWizard(false)} />}
 
@@ -172,6 +232,9 @@ export default function PredictionsPage() {
 }
 
 function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
+  // The project's event mapping, so a derived goal can name the shop's OWN events.
+  // Cached by TanStack across every card on the page — one request, not one per goal.
+  const mapping = useEventMapping()
   const updateStatus = useUpdatePredictionGoalStatus()
   const deleteGoal = useDeletePredictionGoal()
   const retrain = useRetrainPredictionGoal()
@@ -180,12 +243,53 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
     active: { bg: 'bg-green-50', text: 'text-green-700', icon: CheckCircle2 },
     paused: { bg: 'bg-amber-50', text: 'text-amber-700', icon: Pause },
     insufficient_data: { bg: 'bg-red-50', text: 'text-red-600', icon: AlertTriangle },
+    untrained: { bg: 'bg-surface', text: 'text-text-muted', icon: Clock },
+    training: { bg: 'bg-accent/10', text: 'text-accent', icon: RefreshCw },
   }
 
-  const style = statusStyles[goal.status] ?? statusStyles.paused
+  // A GOAL THAT HAS NEVER TRAINED IS NOT ACTIVE.
+  //
+  // `status` is set to 'active' the moment a goal is created and means "not paused" —
+  // but a green tick reading "active" says "this is running for you". Measured on both
+  // demo projects: five goals each, all green, and between them zero training runs and
+  // zero scores ever produced. Someone reads that page and believes five models are
+  // working. The page already knows better — `hasGoalsNeedingRetrain` above tests this
+  // exact condition to decide whether to offer "Re-train all"; the card just never said
+  // so. Paused and insufficient_data still show themselves: those are states somebody
+  // chose or the pipeline reported, and hiding them behind "not trained" would lose
+  // information.
+  const neverTrained = !goal.lastTrainedAt && goal.status === 'active'
+  // Training outranks every other label while it runs: whatever the last run produced
+  // is about to be replaced, and saying "active" or "insufficient data" during a
+  // retrain describes a state that is already being rewritten.
+  const isTrainingNow = goal.status === 'training'
+  const statusKey = isTrainingNow ? 'training' : neverTrained ? 'untrained' : goal.status
+  const statusLabel = isTrainingNow ? 'training…'
+    : neverTrained ? 'not trained yet' : goal.status.replace('_', ' ')
+
+  const style = statusStyles[statusKey] ?? statusStyles.paused
   const StatusIcon = style.icon
 
-  const metric = goal.currentMetric ? Number(goal.currentMetric) : null
+  // The card shows the GLOBAL AUC — the model's score over the whole base, and the
+  // measure the previous pipeline reported, so the two are comparable at a glance.
+  // The active-segment figure sits on the detail page beneath it, because a global
+  // score is flattered by customers who were never going to convert and the pair
+  // tells the honest story. Falls back to the stored headline for a goal whose run
+  // predates the split.
+  const g = goal as typeof goal & { globalAuc?: number | null; activeAuc?: number | null }
+  const metric = g.globalAuc != null ? Number(g.globalAuc)
+    : goal.currentMetric ? Number(goal.currentMetric) : null
+  const activeMetric = g.activeAuc != null ? Number(g.activeAuc) : null
+
+  // The project's OWN event names behind a derived goal. Read from the mapping, so a
+  // shop calling its cart `cart_updated` sees `cart_updated` here, not our word for it.
+  const meanings = mapping.data?.data?.meanings ?? []
+  const derivedFrom = isPseudoGoal(goal.targetEvent)
+    ? [...new Set(
+        (PSEUDO_GOAL_EVENTS[goal.targetEvent].from)
+          .flatMap(k => meanings.find(m => m.key === k)?.events ?? []),
+      )]
+    : []
 
   // Quality bucket — single source of truth in lib/predictionQuality.
   const isBehaviorBased = isBehaviorBasedGoal(goal.targetEvent, goal.name)
@@ -216,27 +320,78 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
         <div className="flex items-center gap-1">
           <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1', style.bg, style.text)}>
             <StatusIcon className="w-3 h-3" />
-            {goal.status.replace('_', ' ')}
+            {statusLabel}
           </span>
         </div>
       </div>
 
       <div className="space-y-2 mb-4">
-        <div className="flex items-center gap-2 text-xs text-text-secondary">
-          <BarChart3 className="w-3 h-3" />
-          <span>Target: <span className="font-medium text-text-primary">{goal.targetEvent}</span></span>
+        {/* WHAT THIS GOAL WATCHES — a real event, or a question derived from meanings.
+            Both used to read "Target: <word>", so `cart_abandoned` sat beside
+            `order_placed` as though the shop were expected to send it. Nobody sends it:
+            the pipeline works it out from a cart with no order after it. Saying which
+            of the shop's OWN events feed it is the honest version, and it comes from
+            the project's mapping rather than a hardcoded name. */}
+        <div className="flex items-start gap-2 text-xs text-text-secondary">
+          <BarChart3 className="w-3 h-3 mt-0.5 shrink-0" />
+          {isPseudoGoal(goal.targetEvent) ? (
+            <span>
+              Goal: <span className="font-medium text-text-primary">
+                {PSEUDO_GOAL_EVENTS[goal.targetEvent].label}
+              </span>
+              {derivedFrom.length > 0 && (
+                <span className="text-text-muted"> · worked out from {derivedFrom.join(', ')}</span>
+              )}
+            </span>
+          ) : (
+            <span>Target event: <span className="font-medium text-text-primary">{goal.targetEvent}</span></span>
+          )}
         </div>
         <div className="flex items-center gap-2 text-xs text-text-secondary">
           <Clock className="w-3 h-3" />
-          <span>{goal.observationWindowDays}d observation / {goal.predictionWindowDays}d prediction</span>
+          <span>{formatWindow(goal.observationWindowDays)} observation / {formatWindow(goal.predictionWindowDays)} prediction</span>
+          {goal.windowsPinned && (
+            // Says so wherever the score is shown. A pinned model's windows were not
+            // chosen by testing candidates, and its prediction window moves the test
+            // period — so its AUC is not comparable with the derived goals beside it.
+            <span
+              title="Windows were set by hand, not chosen from your data. This model's score was not selected on held-out rounds, so it is not comparable with the others."
+              className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+            >
+              windows set manually
+            </span>
+          )}
         </div>
         {metric !== null && (
           <div className="space-y-0.5">
-            <div className="flex items-center gap-2 text-xs">
-              <Brain className="w-3 h-3 text-text-secondary" />
-              <span className="text-text-secondary">AUC: <span className="font-semibold text-heading">{metric.toFixed(3)}</span></span>
+            {/* BOTH NUMBERS. Global leads on the card, at the owner's request — it is
+                the figure the product has always quoted, and the list is for comparing
+                goals against each other rather than judging one. Active sits beside it
+                so the pair is never separated: global includes dormant customers, who
+                are trivially easy to tell apart, and on Purchase that is the difference
+                between 0.965 and 0.805 from the same run. The detail page leads with
+                active, where the question is "is this model good enough to act on". */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+              <Brain className="w-3 h-3 shrink-0 text-text-secondary" />
+              {activeMetric !== null ? (
+                <>
+                  <span className="text-text-secondary">
+                    Global AUC: <span className="font-semibold text-heading tabular-nums">{metric.toFixed(3)}</span>
+                  </span>
+                  <span className="text-text-muted tabular-nums">Active {activeMetric.toFixed(3)}</span>
+                </>
+              ) : (
+                <span className="text-text-secondary">
+                  Global AUC: <span className="font-semibold text-heading tabular-nums">{metric.toFixed(3)}</span>
+                </span>
+              )}
               <span className={cn('font-medium', qualityColor)}>({qualityLabel})</span>
             </div>
+            {activeMetric === null && (
+              <div className="ml-5 text-[10px] text-text-muted">
+                Active-only score arrives with the next re-train
+              </div>
+            )}
             {modelTypeLabel && (
               <div className="flex items-center gap-1.5 ml-5">
                 <span className={cn(
@@ -325,7 +480,12 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('')
   const [targetEvent, setTargetEvent] = useState('')
   const [observationDays, setObservationDays] = useState('90')
-  const [predictionDays, setPredictionDays] = useState('14')
+  const [predictionValue, setPredictionValue] = useState('14')
+  // Days by default: four of the five goal types think in weeks. Hours exist because
+  // the fifth does, and pinning should be able to say what deriving can say.
+  const [predictionUnit, setPredictionUnit] = useState<WindowUnit>('days')
+  /** opt out of the derived windows for THIS goal only — off by default */
+  const [pinWindows, setPinWindows] = useState(false)
   const [minLabels, setMinLabels] = useState('200')
 
   const { data: eventNamesData } = useEventNames()
@@ -351,6 +511,9 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
     setStep(1)
   }
 
+  // One conversion, read by the hint and by what gets saved, so they cannot drift.
+  const pinnedIsEventDriven = isEventDriven(toDays(Number(predictionValue), predictionUnit))
+
   const handleCreate = async () => {
     if (!name || !targetEvent) return
     try {
@@ -358,7 +521,8 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
         name,
         targetEvent,
         observationWindowDays: Number(observationDays),
-        predictionWindowDays: Number(predictionDays),
+        predictionWindowDays: toDays(Number(predictionValue), predictionUnit),
+        windowsPinned: pinWindows,
         minPositiveLabels: Number(minLabels),
       })
       toast.success('Prediction goal created')
@@ -431,24 +595,73 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                 <ChevronDown className="w-4 h-4 text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-text-secondary mb-1.5">Observation Window (days)</label>
-              <input
-                type="number"
-                value={observationDays}
-                onChange={(e) => setObservationDays(e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded-lg text-sm"
-              />
+            {/* The windows are DERIVED by default: the pipeline measures this
+                project's rhythm, tries several look-backs on held-out rounds and keeps
+                the one that scores best. These two boxes used to be shown
+                unconditionally, collected, and then silently overwritten by that
+                result — the form asked a question whose answer it discarded. Now the
+                boxes only appear when someone deliberately opts out. */}
+            <div className="sm:col-span-2 rounded-lg border border-border bg-surface px-3 py-2.5">
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pinWindows}
+                  onChange={(e) => setPinWindows(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent"
+                />
+                <span className="text-xs">
+                  <span className="font-medium text-heading">Set the windows myself</span>
+                  <span className="block text-text-muted mt-0.5">
+                    Off by default: Storees works the windows out from your data and
+                    tests several before choosing. Tick this only if you know the cycle
+                    you want — the score you get back will not have been checked the
+                    same way.
+                  </span>
+                </span>
+              </label>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-text-secondary mb-1.5">Prediction Window (days)</label>
-              <input
-                type="number"
-                value={predictionDays}
-                onChange={(e) => setPredictionDays(e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded-lg text-sm"
-              />
-            </div>
+            {pinWindows && (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">Observation Window (days)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={observationDays}
+                    onChange={(e) => setObservationDays(e.target.value)}
+                    className="w-full px-3 py-2 border border-border rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">Prediction Window</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      step="any"
+                      value={predictionValue}
+                      onChange={(e) => setPredictionValue(e.target.value)}
+                      className="flex-1 min-w-0 px-3 py-2 border border-border rounded-lg text-sm"
+                    />
+                    <select
+                      value={predictionUnit}
+                      onChange={(e) => setPredictionUnit(e.target.value as WindowUnit)}
+                      className="px-2 py-2 border border-border rounded-lg text-sm bg-white text-text-secondary"
+                    >
+                      <option value="days">days</option>
+                      <option value="hours">hours</option>
+                    </select>
+                  </div>
+                  {/* Reads the window, not the goal — the same rule the rest of the page
+                      follows, so a short goal nobody has invented yet gets this for free. */}
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-text-muted">
+                    {pinnedIsEventDriven
+                      ? 'Under a day: scored on the customer\u2019s own events as they arrive, and each score expires when its window runs out.'
+                      : 'A day or more: scored by the nightly batch.'}
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-3 pt-4 border-t border-border">

@@ -2,16 +2,26 @@ import { Router, Request, Response } from 'express'
 import crypto from 'crypto'
 import { db } from '../db/connection.js'
 import { projects, apiKeys, events, segments, consentAuditLog, customers, anonymousSessions } from '../db/schema.js'
-import { eq, and, count, gte, lte, sql, isNotNull } from 'drizzle-orm'
+import { eq, and, count, gte, lte, sql, isNotNull, inArray } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
+import { requireSuperAdminWhenEnforced, requireProjectAccess, accessibleProjectIds } from '../middleware/membership.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
 import { registerDomain, checkDomainStatus } from '../services/emailDomainService.js'
 import type { DomainType, IntegrationType } from '@storees/shared'
+import { activatePack } from '../services/verticalPackService.js'
 
 const router = Router()
 
-const VALID_DOMAINS: DomainType[] = ['ecommerce', 'fintech', 'saas', 'custom']
+// This router resolves the target project from req.params.id / body, NOT via
+// requireProjectId — so the tenant gate is applied here explicitly. Every
+// /projects/:id/* route must belong to the caller (super admin bypasses).
+router.use('/projects/:id', requireProjectAccess((r) => r.params.id as string))
+
+// `edtech` stays: it has a pack (packs/edtech.json), worker handling and test
+// coverage, so removing it here would refuse onboarding for a vertical the rest
+// of the product supports.
+const VALID_DOMAINS: DomainType[] = ['ecommerce', 'fintech', 'saas', 'edtech', 'custom']
 
 // ============ SEGMENT TEMPLATES PER DOMAIN ============
 
@@ -83,6 +93,23 @@ const DOMAIN_SEGMENT_TEMPLATES: Record<DomainType, SegmentTemplate[]> = {
       filters: { logic: 'AND', rules: [{ field: 'feature_usage_count', operator: 'less_than', value: 5 }] },
     },
   ],
+  edtech: [
+    {
+      name: 'Active Learners',
+      description: 'Studied in the last 7 days',
+      filters: { logic: 'AND', rules: [{ field: 'days_since_last_lesson', operator: 'less_than', value: 7 }] },
+    },
+    {
+      name: 'At Risk of Dropping',
+      description: 'Enrolled but no lesson in 14+ days',
+      filters: { logic: 'AND', rules: [{ field: 'days_since_last_lesson', operator: 'greater_than', value: 14 }] },
+    },
+    {
+      name: 'Course Completers',
+      description: 'Finished at least one course',
+      filters: { logic: 'AND', rules: [{ field: 'completed_courses', operator: 'greater_than', value: 0 }] },
+    },
+  ],
   custom: [
     {
       name: 'All Customers',
@@ -98,33 +125,76 @@ function getIntegrationGuide(domainType: DomainType, apiKey: string, apiSecret: 
   const domain = getDomainConfig(domainType)
 
   const sampleEvents: Record<DomainType, Record<string, unknown>> = {
+    // This sample IS the spec in practice — an integrator copies its shape. It named
+    // an event Storees does not write (`order_completed`; the Shopify webhook and the
+    // SDK both emit `order_placed`) and put the basket under `items`, while every
+    // feature that reads a basket reads `line_items`. A client following it exactly
+    // would have their purchases unmatched and lose fifteen basket features, and
+    // nothing would report either. `session_id` is shown because it is a real column
+    // on every event and eight features depend on it.
     ecommerce: {
-      event_name: 'order_completed',
+      event_name: 'order_placed',
       customer_id: 'CUST_001',
+      session_id: 'sess_8f2a',
       properties: {
         order_id: 'ORD_123',
         total: 250000,
         currency: 'INR',
-        items: [{ name: 'Widget', quantity: 1, price: 250000 }],
+        line_items: [
+          { product_id: 'P_77', product_name: 'Widget', quantity: 1, price: 250000 },
+        ],
       },
     },
+    // Shows the event this vertical's pack treats as the purchase, not a generic
+    // transaction: `loan_disbursed` is what every lending model is built from, and an
+    // integrator copying `transaction_completed` would send the one event nothing
+    // reads. Note the id is `loan_id` and the money is `amount` — lending's own words,
+    // which the pack now declares so the pipeline reads them without anyone intervening.
     fintech: {
-      event_name: 'transaction_completed',
+      event_name: 'loan_disbursed',
       customer_id: 'CUST_001',
+      session_id: 'sess_8f2a',
       properties: {
-        transaction_id: 'TXN_123',
-        type: 'debit',
-        channel: 'upi',
+        loan_id: 'LN_123',
         amount: 500000,
         currency: 'INR',
+        tenure_months: 36,
+        product_type: 'personal_loan',
       },
     },
+    // Every other vertical's sample shows its PURCHASE. This one showed `feature_used`,
+    // a usage ping — so an integrator copying it learned nothing about how to report
+    // revenue, and `subscription_id` is exactly the field whose absence makes every
+    // subscription get discarded.
     saas: {
-      event_name: 'feature_used',
+      event_name: 'subscription_started',
       customer_id: 'CUST_001',
+      session_id: 'sess_8f2a',
       properties: {
-        feature: 'dashboard_export',
+        subscription_id: 'SUB_123',
         plan: 'pro',
+        total: 4999,
+        currency: 'INR',
+        interval: 'monthly',
+      },
+    },
+    // `enrollment_id` is the addition that matters. The sample carried only
+    // `course_id`, which is the PRODUCT, not the transaction: a learner enrolling in
+    // three courses produced three rows the deduplicator could not tell apart from one
+    // course enrolled three times, and re-enrolling after a break collapsed into the
+    // original. The pack now declares `enrollment_id` as the order id, so the sample
+    // has to show it or an integrator copies the shape that breaks it.
+    edtech: {
+      event_name: 'course_enrolled',
+      customer_id: 'CUST_001',
+      session_id: 'sess_8f2a',
+      properties: {
+        enrollment_id: 'ENR_123',
+        course_id: 'CRS_123',
+        course_name: 'Intro to Data Science',
+        category: 'Data Science',
+        price: 4990,
+        currency: 'INR',
       },
     },
     custom: {
@@ -185,7 +255,7 @@ function getIntegrationGuide(domainType: DomainType, apiKey: string, apiSecret: 
  * For ecommerce: returns Shopify install URL
  * For fintech/saas/custom: auto-generates API key pair + returns integration guide
  */
-router.post('/projects', async (req: Request, res: Response) => {
+router.post('/projects', requireSuperAdminWhenEnforced(), async (req: Request, res: Response) => {
   try {
     const { name, domain_type } = req.body as {
       name?: string
@@ -218,24 +288,57 @@ router.post('/projects', async (req: Request, res: Response) => {
       settings: {},
     }).returning()
 
-    // Seed domain-specific segment templates. Skip any name that already
-    // exists for the project so re-seeding / a later vertical pack can't
-    // create duplicate "Repeat Buyers" rows (there is no unique constraint
-    // on (project_id, name) — the check has to be explicit).
-    const templates = DOMAIN_SEGMENT_TEMPLATES[domain_type]
-    for (const template of templates) {
-      const [dup] = await db.select({ id: segments.id }).from(segments)
-        .where(and(eq(segments.projectId, project.id), eq(segments.name, template.name)))
-        .limit(1)
-      if (dup) continue
-      await db.insert(segments).values({
-        projectId: project.id,
-        name: template.name,
-        description: template.description,
-        type: 'template',
-        filters: template.filters,
-        isActive: true,
-      })
+    // THE INDUSTRY PACK, same as the setup wizard runs.
+    //
+    // This is the third of three doors into Storees and the last one still skipping it.
+    // It used to seed a handful of segment templates and nothing else: no event
+    // meanings, no prediction goals, no field paths, no cadence signal. A project
+    // created here looked created and was a shell — the pipeline had no idea which
+    // event was a purchase, so no model could train and, since the vocabulary helper
+    // falls back to retail, a lender's figures would quietly read like a shop's.
+    //
+    // The pack is keyed by BUSINESS ("nbfc") and this API by SECTOR ("fintech"), the
+    // same split the wizard maps across. `custom` has no pack and keeps the old
+    // template seeding.
+    //
+    // Safe to call: `activatePack` finds-or-creates rather than inserting blindly, so
+    // a project created twice through this endpoint no longer collides.
+    const packForDomain: Record<string, string> = {
+      ecommerce: 'ecommerce', fintech: 'nbfc', saas: 'saas', edtech: 'edtech',
+    }
+    const packId = packForDomain[domain_type]
+
+    if (packId) {
+      // The project row is already committed by this point, so letting a pack failure
+      // escape returns 500 to the caller AND leaves an orphan project behind — the
+      // worst of both. Better to hand back the project and record loudly that its
+      // industry setup did not complete, which is recoverable: `activatePack` is
+      // idempotent, so re-running it later finishes the job.
+      try {
+        await activatePack(project.id, packId)
+      } catch (err) {
+        console.error(
+          `[onboarding] project ${project.id} created but the ${packId} pack failed to ` +
+          `activate — it has no event mapping, goals or field paths until the pack is ` +
+          `re-run:`, (err as Error).message)
+      }
+    } else {
+      // `custom` — no vertical pack exists, so fall back to the generic templates.
+      const templates = DOMAIN_SEGMENT_TEMPLATES[domain_type]
+      for (const template of templates) {
+        const [dup] = await db.select({ id: segments.id }).from(segments)
+          .where(and(eq(segments.projectId, project.id), eq(segments.name, template.name)))
+          .limit(1)
+        if (dup) continue
+        await db.insert(segments).values({
+          projectId: project.id,
+          name: template.name,
+          description: template.description,
+          type: 'template',
+          filters: template.filters,
+          isActive: true,
+        })
+      }
     }
 
     // Every project gets an API key — Shopify (or any vertical integration)
@@ -482,8 +585,13 @@ router.get('/projects/:id/guide', async (req: Request, res: Response) => {
 /**
  * GET /api/onboarding/projects — List all projects (for admin/reset tooling)
  */
-router.get('/projects', async (_req: Request, res: Response) => {
+router.get('/projects', async (req: Request, res: Response) => {
   try {
+    // Super admin (or flag off) → all projects; client → only their memberships.
+    const allowedIds = await accessibleProjectIds(req)
+    if (allowedIds !== null && allowedIds.length === 0) {
+      return res.json({ success: true, data: [] })
+    }
     const rows = await db
       .select({
         id: projects.id,
@@ -495,6 +603,7 @@ router.get('/projects', async (_req: Request, res: Response) => {
         settings: projects.settings,
       })
       .from(projects)
+      .where(allowedIds !== null ? inArray(projects.id, allowedIds) : undefined)
       .orderBy(projects.createdAt)
 
     // Expose `archived` from settings; don't leak the rest of settings (it can
@@ -921,7 +1030,7 @@ router.post('/projects/:id/unarchive', async (req: Request, res: Response) => {
   }
 })
 
-router.delete('/projects/:id', async (req: Request, res: Response) => {
+router.delete('/projects/:id', requireSuperAdminWhenEnforced(), async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
 

@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { db } from '../db/connection.js'
-import { projects, segments } from '../db/schema.js'
+import { projects, segments, dataSourceConnectors, catalogues, predictionGoals } from '../db/schema.js'
 import { eq, and } from 'drizzle-orm'
 import { createCatalogue } from './catalogueService.js'
 import { bulkCreateItems } from './itemService.js'
@@ -29,6 +29,22 @@ export type VerticalPack = {
     weight: number
     decay_half_life_days: number
   }[]
+  /** Where the money sits inside this vertical's events. The pipeline defaults to a
+   *  shop's vocabulary — `order_id` and `total` — which is right for retail and wrong
+   *  everywhere else: a lender sends `loan_id` and `amount`, so every loan would be
+   *  discarded and four of its five models could not train. Absent means the retail
+   *  defaults are correct for this vertical. */
+  field_defaults?: {
+    order?: { order_id?: string; amount?: string; currency?: string }
+  }
+  /** Which event's gaps measure how fast this vertical's relationship moves. Window
+   *  sizes are scaled by that pace, and it is read off the purchase by default — right
+   *  for a shop whose customers buy repeatedly, unmeasurable for a lender whose
+   *  customers take one loan. With nothing to measure the ML uses a fixed 14 days, and
+   *  a churn goal then asks "quiet for 42 days?" of borrowers who are normally quiet
+   *  for months. Lending's real clock is the monthly EMI. Absent means the purchase is
+   *  the right clock. Format: `order`, or `event:<event_name>`. */
+  cadence_signal?: string
   prediction_goals: {
     name: string
     target_event: string
@@ -124,20 +140,40 @@ export async function activatePack(
   const pack = loadPack(packId)
   if (!pack) throw new Error(`Pack not found: ${packId}`)
 
-  // 1. Create catalogue
-  const catalogue = await createCatalogue(
+  // THIS WHOLE FUNCTION HAS TO SURVIVE BEING RUN TWICE.
+  //
+  // It could not. Step 5 checked for existing segments before inserting, but the
+  // catalogue and the goals went straight to INSERT — and `prediction_goals` carries a
+  // unique index on (project_id, name). So a second activation built a duplicate
+  // catalogue, then threw on the first goal and abandoned the rest: no field paths, no
+  // cadence signal, two catalogues, half the goals missing, and an error at the caller.
+  //
+  // Re-activation is not exotic. A merchant reinstalling a Shopify app hits it, so does
+  // changing a project's industry, and so does re-running a pack to pick up pack
+  // changes — which is exactly what an existing project needs after the packs are
+  // edited. Every step below now checks before it writes.
+
+  // 1. Catalogue — find or create
+  const [existingCatalogue] = await db
+    .select()
+    .from(catalogues)
+    .where(and(eq(catalogues.projectId, projectId), eq(catalogues.name, pack.catalogue.name)))
+    .limit(1)
+
+  const catalogue = existingCatalogue ?? await createCatalogue(
     projectId,
     pack.catalogue.name,
     pack.catalogue.item_type_label,
     pack.catalogue.attribute_schema,
   )
 
-  // 2. Create items — use wizard answers if provided, otherwise use default_items
+  // 2. Items — only for a NEW catalogue. Re-adding them to one that already exists
+  // duplicates every product the project has, which is worse than skipping.
   const items = answers?.selectedProducts?.length
     ? answers.selectedProducts
     : pack.catalogue.default_items
 
-  if (items.length > 0) {
+  if (!existingCatalogue && items.length > 0) {
     await bulkCreateItems(projectId, catalogue.id, items.map(item => ({
       type: item.type,
       name: item.name,
@@ -161,6 +197,16 @@ export async function activatePack(
   const topGoals = answers?.rankedPriorities?.slice(0, 3) ?? []
   for (const goalDef of pack.prediction_goals) {
     const isTopPriority = topGoals.some(p => p.maps_to === goalDef.name)
+    // (project_id, name) is UNIQUE — inserting a second time throws and takes the rest
+    // of the activation with it. A goal that already exists is left alone rather than
+    // overwritten: its windows and metrics were rewritten by training, and the pack's
+    // numbers are only seeds.
+    const [existingGoal] = await db
+      .select({ id: predictionGoals.id })
+      .from(predictionGoals)
+      .where(and(eq(predictionGoals.projectId, projectId), eq(predictionGoals.name, goalDef.name)))
+      .limit(1)
+    if (existingGoal) continue
     await createPredictionGoal(projectId, {
       name: goalDef.name,
       targetEvent: goalDef.target_event,
@@ -193,7 +239,60 @@ export async function activatePack(
     })
   }
 
-  // 6. Update project vertical setting
+  // 6. Field paths — which keys inside `properties` carry the id and the amount —
+  // and the cadence signal, which names the event whose gaps measure how fast this
+  // industry's relationship moves. Written here because this is the one moment the
+  // industry is known; after this the project carries its own answers and nothing
+  // downstream needs to know the vertical.
+  //
+  // The cadence signal exists because "how often does a customer do this?" is read off
+  // the purchase everywhere, and a borrower purchases once. With no gaps to measure the
+  // ML falls back to a fixed 14 days, and the goals sized off it ask the wrong-sized
+  // question. Lending's real clock is the monthly EMI. Only the ANSWER is per-industry;
+  // the code that reads it is the same for everyone.
+  //
+  // Stored on the connector config, which is the first place the pipeline looks.
+  if (pack.field_defaults || pack.cadence_signal) {
+    const [existing] = await db
+      .select({ id: dataSourceConnectors.id, config: dataSourceConnectors.config })
+      .from(dataSourceConnectors)
+      .where(eq(dataSourceConnectors.projectId, projectId))
+      .limit(1)
+
+    const prev = (existing?.config ?? {}) as Record<string, any>
+    // only fill what is not already set — a mapping corrected by hand outranks a default
+    const nextConfig = {
+      ...prev,
+      mapping: {
+        ...(prev.mapping ?? {}),
+        fields: { ...(pack.field_defaults), ...(prev.mapping?.fields ?? {}) },
+        ...(pack.cadence_signal && !prev.mapping?.cadence_signal
+          ? { cadence_signal: pack.cadence_signal }
+          : {}),
+      },
+    }
+
+    if (existing) {
+      await db.update(dataSourceConnectors)
+        .set({ config: nextConfig, updatedAt: new Date() })
+        .where(eq(dataSourceConnectors.id, existing.id))
+    } else {
+      // No connector for this project, so one is created purely to hold the setting.
+      // NOT active: the sync worker fans out over active rows and would try to pull
+      // from a base URL that does not exist.
+      await db.insert(dataSourceConnectors).values({
+        projectId,
+        template: 'event_mapping',
+        name: 'Event mapping',
+        baseUrl: '',
+        authConfig: '{}',
+        config: nextConfig,
+        status: 'inactive',
+      })
+    }
+  }
+
+  // 7. Update project vertical setting
   await db.update(projects).set({
     settings: { vertical: packId },
     updatedAt: new Date(),

@@ -19,10 +19,14 @@ function formatDate(date: Date | string): string {
   })
 }
 
+// All five states an order can be in. `returned` was missing, and the fallback is
+// `pending` — so a returned order was shown as awaiting fulfilment, in yellow, next to
+// a total that had already been taken back off the customer's spend.
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-800',
   fulfilled: 'bg-green-100 text-green-800',
   cancelled: 'bg-red-100 text-red-800',
+  returned: 'bg-orange-100 text-orange-800',
   refunded: 'bg-gray-100 text-gray-800',
 }
 

@@ -6,7 +6,20 @@ import {
   CreditCard, Shield, Briefcase, X, Zap, Workflow,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useEventMapping } from '@/hooks/useEventMapping'
 import type { FlowNode } from '@storees/shared'
+
+/** Which published name belongs to which meaning, so a template written in Storees'
+ *  vocabulary can be handed over in the SHOP's. */
+const SLOT_FOR_NAME: Record<string, string> = {
+  order_placed: 'purchase',
+  product_viewed: 'product_viewed',
+  added_to_cart: 'add_to_cart',
+  order_fulfilled: 'fulfilment',
+  order_cancelled: 'cancellation',
+  order_returned: 'return',
+  order_refunded: 'refund',
+}
 
 type FlowTemplate = {
   id: string
@@ -28,10 +41,10 @@ const TEMPLATES: FlowTemplate[] = [
     icon: ShoppingCart,
     color: 'text-orange-600 bg-orange-50',
     domain: ['ecommerce'],
-    triggerEvent: 'cart_created',
+    triggerEvent: 'added_to_cart',
     exitEvent: 'order_placed',
     nodes: [
-      { id: 'trigger_1', type: 'trigger', config: { event: 'cart_created', filters: { logic: 'AND', rules: [] } } },
+      { id: 'trigger_1', type: 'trigger', config: { event: 'added_to_cart', filters: { logic: 'AND', rules: [] } } },
       { id: 'delay_1', type: 'delay', config: { value: 1, unit: 'hours' } },
       { id: 'cond_1', type: 'condition', config: { check: 'event_occurred', event: 'order_placed', since: 'trip_start', branches: { yes: 'end_1', no: 'action_1' } } },
       { id: 'action_1', type: 'action', config: { actionType: 'send_email', templateId: '' } },
@@ -156,6 +169,34 @@ type Props = {
 export function FlowTemplateGallery({ domainType, onSelect, onClose }: Props) {
   const [filter, setFilter] = useState<string>('all')
 
+  // These templates are written in Storees' vocabulary. The shop opening this gallery
+  // may not use it — and the builder saves whatever lands in it, so a template handed
+  // over untranslated becomes a flow that waits for an event the shop never sends. The
+  // server-side install path already translates; this one is reached through the
+  // builder instead, and did not.
+  //
+  // A name with no slot is passed through unchanged, so `checkout_started` and every
+  // other signal is untouched.
+  const { data: mapping } = useEventMapping()
+  const translate = (name: string): string => {
+    const slot = SLOT_FOR_NAME[name]
+    if (!slot) return name
+    const events = mapping?.data?.meanings?.find(m => m.key === slot)?.events
+    return events?.[0] ?? name
+  }
+  const localise = (t: {
+    name: string; description: string; triggerEvent: string; nodes: FlowNode[]; exitEvent?: string
+  }) => ({
+    ...t,
+    triggerEvent: translate(t.triggerEvent),
+    exitEvent: t.exitEvent ? translate(t.exitEvent) : t.exitEvent,
+    nodes: t.nodes.map(n => {
+      const cfg = (n as { config?: Record<string, unknown> }).config
+      if (!cfg || typeof cfg.event !== 'string') return n
+      return { ...n, config: { ...cfg, event: translate(cfg.event) } } as FlowNode
+    }),
+  })
+
   const filtered = TEMPLATES.filter(t =>
     filter === 'all' || t.domain.includes(filter)
   )
@@ -208,7 +249,7 @@ export function FlowTemplateGallery({ domainType, onSelect, onClose }: Props) {
               </h3>
               <div className="grid grid-cols-2 gap-3 mb-6">
                 {domainTemplates.map(t => (
-                  <TemplateCard key={t.id} template={t} onSelect={onSelect} recommended />
+                  <TemplateCard key={t.id} template={t} onSelect={t => onSelect(localise(t))} recommended />
                 ))}
               </div>
               {otherTemplates.length > 0 && (
@@ -218,7 +259,7 @@ export function FlowTemplateGallery({ domainType, onSelect, onClose }: Props) {
           )}
           <div className="grid grid-cols-2 gap-3">
             {(filter === 'all' ? otherTemplates : filtered).map(t => (
-              <TemplateCard key={t.id} template={t} onSelect={onSelect} />
+              <TemplateCard key={t.id} template={t} onSelect={t2 => onSelect(localise(t2))} />
             ))}
           </div>
           {filtered.length === 0 && (

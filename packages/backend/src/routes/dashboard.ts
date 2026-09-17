@@ -1,10 +1,13 @@
 import { Router } from 'express'
 import { eq, and, sql, count, desc, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
+import { LIVE_ORDERS } from '../db/orderStatus.js'
 import { customers, orders, events, projects, segments, flows, emailTemplates, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { rawCustomerScopeSql, scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
+import { projectVocabulary, eventIn, type ProjectVocabulary } from '../services/projectVocabulary.js'
+import type { SQL } from 'drizzle-orm'
 
 const router = Router()
 
@@ -14,10 +17,97 @@ function pctChange(current: number, previous: number): number {
   return Math.round(((current - previous) / previous) * 100)
 }
 
+/**
+ * Orders rebuilt from the event ledger: one row per real order, reversals removed.
+ *
+ * The orders table is the normal source for every revenue figure. This is the spare,
+ * used when that table is empty — which happens to any project whose purchases carry
+ * no order id, since the aggregate worker cannot materialise an order row without one.
+ * A project on the spare must not be told a different number from a project on the
+ * main path, and it was:
+ *
+ *   - CANCELLED ORDERS COUNTED AS REVENUE. The orders path excludes cancelled,
+ *     returned and refunded; the spare summed every purchase event and no reversal
+ *     ever took anything off. Measured against Viranacart's ledger, ₹33,786 of
+ *     reversed money across 14 orders; Girinacart, ₹58,180 across 20. The figure
+ *     could only ever go up.
+ *   - THE SAME ORDER COUNTED TWICE. The orders table is unique on
+ *     (project, external_order_id), so an order arriving through two doors — a
+ *     webhook and a resync, a replay — lands once. The spare counted events, so it
+ *     landed twice. Viranacart carries 42 purchase events for 40 real orders.
+ *
+ * Both are fixed here, in ONE place, because the two callers that need it are the
+ * revenue tile and the trends chart, and every bug found today came from the same
+ * question being answered in two places that then drifted apart.
+ *
+ * Events with NO order id are kept and counted once each. They cannot be deduplicated
+ * and cannot be reversed — a recurring payment, an event from a shop that sends no
+ * reference — and dropping them would understate a project that sends nothing else.
+ */
+function ordersFromEvents(
+  projectId: string, vocab: ProjectVocabulary, customerIdScope: SQL,
+): SQL {
+  // The same three-way fallback the aggregate worker uses to key an order, so the two
+  // agree on what "the same order" means.
+  const orderId = sql`COALESCE(
+    NULLIF(properties->>${vocab.orderIdKey}, ''),
+    NULLIF(properties->>'order_id', ''),
+    NULLIF(properties->>'id', ''))`
+
+  return sql`
+    SELECT DISTINCT ON (COALESCE(p.order_id, p.event_id::text))
+      p.timestamp, p.revenue, p.reversed
+    FROM (
+      SELECT
+        ${orderId} AS order_id,
+        id AS event_id,
+        timestamp,
+        -- Prefer the canonical amount under whatever this project calls it, falling
+        -- back to summing line items. Connectors rename source unit_price to
+        -- price; older bulk imports keep unit_price. Accept either.
+        COALESCE(
+          (properties->>${vocab.amountKey})::numeric,
+          (SELECT COALESCE(SUM(COALESCE(
+                                 (item->>'price')::numeric,
+                                 (item->>'unit_price')::numeric,
+                                 0)), 0)
+           FROM jsonb_array_elements(properties->'line_items') item),
+          0
+        ) AS revenue,
+        -- FLAGGED, NOT DROPPED — so a caller can count every order and still sum only
+        -- the money that stayed. This used to be a NOT IN filter that removed reversed
+        -- orders outright, which made the two paths answer the order-count question
+        -- differently: the orders path now counts all 69,687 of GoWelmart's orders
+        -- while this one would have reported 62,663 for the same project on different
+        -- plumbing. Same question, same answer, whichever source a project is on.
+        ${orderId} IN (
+          -- Any of THIS PROJECT'S reversal words, in its own vocabulary. The list is
+          -- the union of the cancelled / returned / refunded boxes, so all three take
+          -- the sale back off exactly as they do on the orders path.
+          SELECT ${orderId} FROM events
+          WHERE project_id = ${projectId}
+            AND ${eventIn(sql`event_name`, vocab.cancellationEvents)}
+            AND ${orderId} IS NOT NULL
+        ) AS reversed
+      FROM events
+      WHERE project_id = ${projectId}
+        AND ${eventIn(sql`event_name`, vocab.purchaseEvents)}
+        AND ${customerIdScope}
+    ) p
+    -- Earliest event per order: the purchase itself, not a later restatement of it.
+    ORDER BY COALESCE(p.order_id, p.event_id::text), p.timestamp ASC`
+}
+
 // GET /api/dashboard/stats?projectId=...
 router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
+    // The revenue fallback below reads events directly when the orders table is
+    // empty, and did so with a shop's event names and money field. A client whose
+    // purchase is called anything else saw zero on the revenue tile — the orders
+    // table covers the normal case, so this only surfaced where it was hardest to
+    // explain.
+    const dashVocab = await projectVocabulary(projectId)
 
     const now = new Date()
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
@@ -72,15 +162,31 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
 
     if (domainType === 'ecommerce') {
       // Try orders table first, fall back to order_placed / order_completed events
+      // COUNTING AND EARNING ARE TWO DIFFERENT QUESTIONS.
+      //
+      // Both used to share one filter: reversed orders were dropped from the WHERE, so
+      // revenue excluded them — correct, that money did not stay — and the ORDER COUNT
+      // excluded them too, while the tile above it still read "Total Orders".
+      //
+      // On GoWelmart that is 69,687 orders placed reported as 62,663, with 7,024
+      // cancellations subtracted silently. A tenth of the order book vanishing is not a
+      // rounding difference: cancellation rate is an operational signal, and the row is
+      // deliberately kept rather than deleted so it stays measurable — then the headline
+      // threw it away again.
+      //
+      // So the filter moves off the WHERE and onto the money alone. Every order placed
+      // is counted; only orders whose money stayed are summed. The revenue figure is
+      // unchanged — the Girinacart bug the old comment describes stays fixed.
       const orderResult = await db.execute(sql`
         SELECT
           COUNT(*) AS total_orders,
-          COALESCE(SUM(total::numeric), 0) AS total_revenue,
+          COALESCE(SUM(total::numeric) FILTER (WHERE ${LIVE_ORDERS}), 0) AS total_revenue,
           COUNT(*) FILTER (WHERE created_at >= ${sevenDaysAgo}) AS orders_7d,
           COUNT(*) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}) AS orders_prev_7d,
-          COALESCE(SUM(total::numeric) FILTER (WHERE created_at >= ${sevenDaysAgo}), 0) AS revenue_7d,
-          COALESCE(SUM(total::numeric) FILTER (WHERE created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}), 0) AS revenue_prev_7d
-        FROM orders WHERE project_id = ${projectId} AND ${customerIdScope}
+          COALESCE(SUM(total::numeric) FILTER (WHERE ${LIVE_ORDERS} AND created_at >= ${sevenDaysAgo}), 0) AS revenue_7d,
+          COALESCE(SUM(total::numeric) FILTER (WHERE ${LIVE_ORDERS} AND created_at >= ${fourteenDaysAgo} AND created_at < ${sevenDaysAgo}), 0) AS revenue_prev_7d
+        FROM orders
+        WHERE project_id = ${projectId} AND ${customerIdScope}
       `)
       const o = orderResult.rows[0] as Record<string, string>
       let totalOrders = Number(o.total_orders)
@@ -90,38 +196,21 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
       let revenue7d = Number(o.revenue_7d)
       let revenuePrev7d = Number(o.revenue_prev_7d)
 
-      // Fallback: if orders table is empty, compute from order events.
-      // Per-order revenue prefers the canonical properties.total set by the
-      // connector (Medusa summary.current_order_total / bulk imports), falling
-      // back to summing line-item prices. The connector's order field map
-      // renames source `unit_price` → `price` on line_items, but older bulk
-      // imports keep `unit_price` — accept either.
+      // Fallback: if orders table is empty, rebuild the orders from the event ledger.
+      // Deduplicated, with reversals FLAGGED rather than removed — see ordersFromEvents.
       if (totalOrders === 0) {
         const evtResult = await db.execute(sql`
-          WITH order_events AS (
-            SELECT
-              timestamp,
-              COALESCE(
-                (properties->>'total')::numeric,
-                (SELECT COALESCE(SUM(COALESCE(
-                                       (item->>'price')::numeric,
-                                       (item->>'unit_price')::numeric,
-                                       0)), 0)
-                 FROM jsonb_array_elements(properties->'line_items') item),
-                0
-              ) AS revenue
-            FROM events
-            WHERE project_id = ${projectId}
-              AND event_name IN ('order_placed', 'order_completed')
-              AND ${customerIdScope}
-          )
+          WITH order_events AS (${ordersFromEvents(projectId, dashVocab, customerIdScope)})
+          -- Same rule as the orders path above: every order counted, only unreversed
+          -- money summed. reversed is a flag on the row rather than a filter that
+          -- removed it, so both sources answer "how many orders" identically.
           SELECT
             COUNT(*) AS total_orders,
-            COALESCE(SUM(revenue), 0) AS total_revenue,
+            COALESCE(SUM(revenue) FILTER (WHERE NOT reversed), 0) AS total_revenue,
             COUNT(*) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS orders_7d,
             COUNT(*) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS orders_prev_7d,
-            COALESCE(SUM(revenue) FILTER (WHERE timestamp >= ${sevenDaysAgo}), 0) AS revenue_7d,
-            COALESCE(SUM(revenue) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
+            COALESCE(SUM(revenue) FILTER (WHERE NOT reversed AND timestamp >= ${sevenDaysAgo}), 0) AS revenue_7d,
+            COALESCE(SUM(revenue) FILTER (WHERE NOT reversed AND timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}), 0) AS revenue_prev_7d
           FROM order_events
         `)
         const ev = evtResult.rows[0] as Record<string, string>
@@ -144,13 +233,20 @@ router.get('/stats', requireProjectId, async (req: AuthenticatedRequest, res) =>
           COUNT(*) AS total_tx,
           COUNT(*) FILTER (WHERE timestamp >= ${sevenDaysAgo}) AS tx_7d,
           COUNT(*) FILTER (WHERE timestamp >= ${fourteenDaysAgo} AND timestamp < ${sevenDaysAgo}) AS tx_prev_7d
-        FROM events WHERE project_id = ${projectId} AND event_name = 'transaction_completed' AND ${customerIdScope}
+        FROM events WHERE project_id = ${projectId}
+          AND (event_name = 'transaction_completed' OR ${eventIn(sql`event_name`, dashVocab.purchaseEvents)})
+          AND ${customerIdScope}
       `)
       const tx = txResult.rows[0] as Record<string, string>
 
+      // `transaction_completed` is a BANK's event — money in and out of an account. A
+      // lender never sends it: the NBFC pack's purchase is `loan_disbursed`, so this
+      // tile read "0 transactions, ₹0 volume" for a book of live loans. The project's
+      // own purchase event counts too, and volume falls back to lifetime spend, which
+      // for a lender is the disbursed total.
       const [volume] = await db
         .select({
-          total: sql<string>`COALESCE(SUM((metrics->>'total_transaction_volume')::numeric), 0)`,
+          total: sql<string>`COALESCE(SUM(COALESCE((metrics->>'total_transaction_volume')::numeric, total_spent::numeric, 0)), 0)`,
         })
         .from(customers)
         .where(customerScope)
@@ -251,6 +347,7 @@ router.get('/activity', requireProjectId, async (req: AuthenticatedRequest, res)
 router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) => {
   try {
     const projectId = req.projectId!
+    const dashVocab = await projectVocabulary(projectId)
     const range = (req.query.range as string) || '7d'
     const days = range === '30d' ? 30 : range === '14d' ? 14 : 7
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
@@ -339,15 +436,16 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
             LEFT JOIN (
               SELECT created_at::date AS day, COUNT(*) AS order_count, SUM(total::numeric) AS revenue
               FROM orders WHERE project_id = ${projectId} AND created_at >= ${startDate} AND ${customerIdScope}
+                AND ${LIVE_ORDERS}
               GROUP BY created_at::date
             ) o ON o.day = d.day::date
             ORDER BY d.day
           `)
-        // Per-order revenue mirrors /stats: prefer the canonical
-        // properties.total the connector sets (Medusa
-        // summary.current_order_total), falling back to summing line items.
-        // Connectors rename source `unit_price` -> `price` on line_items, but
-        // older bulk imports keep `unit_price` — accept either.
+        // Exactly the same reconstruction /stats uses — deduplicated, reversals
+        // removed. Written out separately here, the chart disagreed with the tile
+        // above it: two answers to one question is the shape of every bug on this
+        // screen. The window is applied AFTER the rebuild, so an order reversed
+        // outside the window still drops out of it.
         : await db.execute(sql`
             SELECT
               d.day::date AS date,
@@ -355,17 +453,13 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
               COALESCE(o.revenue, 0) AS revenue
             FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
             LEFT JOIN (
+              -- Same rule as the headline tiles: every order counted on the day it
+              -- was placed, only unreversed money summed. The trend line and the tile
+              -- above it must not disagree about what a day contained.
               SELECT timestamp::date AS day, COUNT(*) AS order_count,
-                COALESCE(SUM(COALESCE(
-                  (properties->>'total')::numeric,
-                  (SELECT COALESCE(SUM(COALESCE(
-                                         (item->>'price')::numeric,
-                                         (item->>'unit_price')::numeric,
-                                         0)), 0)
-                   FROM jsonb_array_elements(properties->'line_items') item),
-                  0
-                )), 0) AS revenue
-              FROM events WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed') AND timestamp >= ${startDate} AND ${customerIdScope}
+                     COALESCE(SUM(revenue) FILTER (WHERE NOT reversed), 0) AS revenue
+              FROM (${ordersFromEvents(projectId, dashVocab, customerIdScope)}) oe
+              WHERE timestamp >= ${startDate}
               GROUP BY timestamp::date
             ) o ON o.day = d.day::date
             ORDER BY d.day
@@ -379,7 +473,9 @@ router.get('/trends', requireProjectId, async (req: AuthenticatedRequest, res) =
         FROM generate_series(${startDate}::date, CURRENT_DATE, '1 day') AS d(day)
         LEFT JOIN (
           SELECT timestamp::date AS day, COUNT(*) AS tx_count
-          FROM events WHERE project_id = ${projectId} AND event_name = 'transaction_completed' AND timestamp >= ${startDate} AND ${customerIdScope}
+          FROM events WHERE project_id = ${projectId}
+            AND (event_name = 'transaction_completed' OR ${eventIn(sql`event_name`, dashVocab.purchaseEvents)})
+            AND timestamp >= ${startDate} AND ${customerIdScope}
           GROUP BY timestamp::date
         ) t ON t.day = d.day::date
         ORDER BY d.day
