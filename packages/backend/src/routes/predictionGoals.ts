@@ -4,6 +4,8 @@ import { db } from '../db/connection.js'
 import { predictionTrainingRuns, predictionModelVersions, predictionGoals } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import {
+  goalTargetIsKnown,
+  segmentsUsingGoal,
   createPredictionGoal,
   listPredictionGoals,
   getPredictionGoal,
@@ -179,6 +181,26 @@ router.post('/', requireProjectId, async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'The observation window must be a whole number of days.',
+      })
+    }
+
+    // THE TARGET HAS TO BE SOMETHING THIS PROJECT CAN ANSWER.
+    //
+    // Two kinds are valid, and nothing else:
+    //   * one of the built-in goal MEANINGS, which the pipeline recognises by name;
+    //   * an event this project has actually sent, for a goal asked as itself.
+    //
+    // Neither was checked. A goal targeting `this_event_does_not_exist` was accepted
+    // with 201, sat on the screen looking configured, and failed only when somebody
+    // pressed Re-train minutes later — reported as "insufficient data", which reads as
+    // "come back when you have more" rather than "that event does not exist".
+    const known = await goalTargetIsKnown(req.projectId!, String(targetEvent))
+    if (!known) {
+      return res.status(400).json({
+        success: false,
+        error: `"${targetEvent}" is neither a built-in goal nor an event this project `
+             + 'has ever sent, so there would be nothing to learn from. Pick one of the '
+             + 'built-in goals, or an event you are already sending.',
       })
     }
 
@@ -395,6 +417,21 @@ router.post('/:id/retrain', requireProjectId, async (req, res) => {
 // DELETE /api/prediction-goals/:id?projectId=...
 router.delete('/:id', requireProjectId, async (req, res) => {
   try {
+    // A SEGMENT BUILT ON THIS GOAL'S SCORE LOSES A CONDITION WHEN IT GOES.
+    //
+    // The segment builder exposes `prediction:<goalId>:bucket|score` as filter fields,
+    // so a live segment can be defined partly by a model. Deleting the model would
+    // silently change who is in that segment — and campaigns read segments. Refused
+    // with the names, so the choice is made knowingly rather than discovered later.
+    const used = await segmentsUsingGoal(req.projectId!, req.params.id as string)
+    if (used.length) {
+      return res.status(409).json({
+        success: false,
+        error: `This goal's score is used by ${used.length} segment(s): ${used.join(', ')}. `
+             + 'Remove it from those segments first, or they would silently change.',
+      })
+    }
+
     const deleted = await deletePredictionGoal(req.projectId!, req.params.id as string)
     if (!deleted) {
       return res.status(404).json({ success: false, error: 'Prediction goal not found' })

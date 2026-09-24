@@ -50,7 +50,12 @@ storees/
 │   ├── backend/         ← Agent 1 (Express, routes, Shopify, DB, workers)
 │   ├── frontend/        ← Agent 2 (Next.js, pages, components, hooks)
 │   ├── segments/        ← Agent 3 (evaluator, templates, lifecycle)
-│   └── flows/           ← Agent 4 (trigger, executor, scheduler, actions)
+│   ├── flows/           ← Agent 4 (trigger, executor, scheduler, actions)
+│   ├── ml/              ← Python. Prediction pipeline: windows, features, labels,
+│   │                      training, scoring. FastAPI, deployed SEPARATELY from
+│   │                      Jenkins — see docs/runbooks/ML_PIPELINE_RELEASE.md
+│   ├── sdk/             ← Browser SDK shops embed to send events
+│   └── sdk-react/       ← React bindings for the above
 ├── docs/                ← All documentation
 ├── .claude/             ← Agent prompts, skills, rules
 ├── package.json         ← Workspace root

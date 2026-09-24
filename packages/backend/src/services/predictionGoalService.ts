@@ -1,6 +1,6 @@
 import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { predictionGoals } from '../db/schema.js'
+import { predictionGoals, predictionScores, segments, events } from '../db/schema.js'
 
 /**
  * The two AUCs, plus how many people the model actually covers.
@@ -163,11 +163,74 @@ export async function updatePredictionGoalStatus(
   return updated ?? null
 }
 
-export async function deletePredictionGoal(projectId: string, goalId: string) {
-  const [deleted] = await db
-    .delete(predictionGoals)
-    .where(and(eq(predictionGoals.id, goalId), eq(predictionGoals.projectId, projectId)))
-    .returning({ id: predictionGoals.id })
+/** The goal meanings the pipeline implements. Mirrors `shared/windows.py:GOALS`. */
+const BUILT_IN_GOALS = new Set([
+  'purchase', 'repeat_purchase', 'churn', 'dormancy', 'cart_abandoned',
+])
 
-  return !!deleted
+/**
+ * Can this project answer a goal aimed at `target`?
+ *
+ * A built-in meaning always can. Anything else has to be an event the project has
+ * actually recorded — a goal asked about an event that has never arrived has no
+ * positive labels by construction, and says so only after a training run.
+ */
+export async function goalTargetIsKnown(projectId: string, target: string): Promise<boolean> {
+  if (BUILT_IN_GOALS.has(target)) return true
+  const [row] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), eq(events.eventName, target)))
+    .limit(1)
+  return Number(row?.n ?? 0) > 0
+}
+
+/** Segments whose filter reads this goal's score — they lose a condition if it goes. */
+export async function segmentsUsingGoal(projectId: string, goalId: string): Promise<string[]> {
+  const rows = await db
+    .select({ name: segments.name, filters: segments.filters })
+    .from(segments)
+    .where(eq(segments.projectId, projectId))
+
+  // The segment builder namespaces these fields `prediction:<goalId>:bucket|score`
+  // (see `predictionFieldDefs`), so the goal id appears verbatim in the filter JSON.
+  return rows
+    .filter(r => JSON.stringify(r.filters ?? {}).includes(`prediction:${goalId}:`))
+    .map(r => r.name)
+}
+
+export async function deletePredictionGoal(projectId: string, goalId: string) {
+  // THE SCORES GO FIRST, IN THE SAME TRANSACTION.
+  //
+  // `prediction_scores.goal_id` is the one child reference declared WITHOUT
+  // `onDelete: cascade` — `prediction_training_runs` and `prediction_model_versions`
+  // both have it. So a goal that had ever been scored could not be deleted at all:
+  //
+  //   ERROR: update or delete on table "prediction_goals" violates foreign key
+  //   constraint "prediction_scores_goal_id_prediction_goals_id_fk"
+  //
+  // In practice that meant only a goal that never trained could be removed, which is
+  // backwards — the ones worth deleting are exactly the ones that have run. Clearing
+  // them here rather than changing the constraint keeps this a code change; the
+  // constraint is still the better long-term home for it.
+  //
+  // One transaction, so a failure between the two statements cannot leave a goal
+  // stripped of its scores but still listed.
+  return await db.transaction(async tx => {
+    const [found] = await tx
+      .select({ id: predictionGoals.id })
+      .from(predictionGoals)
+      .where(and(eq(predictionGoals.id, goalId), eq(predictionGoals.projectId, projectId)))
+
+    if (!found) return false
+
+    await tx.delete(predictionScores).where(eq(predictionScores.goalId, goalId))
+
+    const [deleted] = await tx
+      .delete(predictionGoals)
+      .where(and(eq(predictionGoals.id, goalId), eq(predictionGoals.projectId, projectId)))
+      .returning({ id: predictionGoals.id })
+
+    return !!deleted
+  })
 }

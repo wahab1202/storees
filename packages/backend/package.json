@@ -13,10 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "tsx src/scripts/seed.ts",
-    "db:migrate": "tsx src/scripts/migrate.ts",
-    "mapping:status": "tsx src/scripts/mappingLock.ts status",
-    "mapping:unlock": "tsx src/scripts/mappingLock.ts unlock",
-    "mapping:lock": "tsx src/scripts/mappingLock.ts lock"
+    "db:migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1113.0",

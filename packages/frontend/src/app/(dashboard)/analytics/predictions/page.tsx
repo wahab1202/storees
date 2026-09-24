@@ -460,7 +460,19 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
           <button
             onClick={() => {
               if (confirm('Delete this prediction goal?')) {
-                deleteGoal.mutate(goal.id)
+                // A FAILED DELETE HAS TO SAY SO.
+                //
+                // `mutate` with no handlers swallows the rejection: the row stays, no
+                // toast appears, and the click reads as "nothing happened" rather than
+                // "refused". A goal that has ever been scored is exactly the case that
+                // fails, so every goal worth deleting failed silently.
+                deleteGoal.mutate(goal.id, {
+                  onSuccess: () => toast.success('Prediction goal deleted'),
+                  onError: (err) => toast.error(
+                    err instanceof Error && err.message
+                      ? err.message
+                      : 'Failed to delete prediction goal'),
+                })
               }
             }}
             disabled={deleteGoal.isPending}
@@ -511,6 +523,13 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
     setStep(1)
   }
 
+  // WHAT THE CHOSEN PRESET MEANS, kept separately from whatever is in the box.
+  //
+  // Read from the preset rather than from `targetEvent`, so it survives the user
+  // browsing the dropdown and coming back. Empty when no preset is selected — a goal
+  // built from scratch has no built-in meaning and takes one of the shop's events.
+  const builtInTarget = presets.find(p => p.value === predType)?.event ?? ''
+
   // One conversion, read by the hint and by what gets saved, so they cannot drift.
   const pinnedIsEventDriven = isEventDriven(toDays(Number(predictionValue), predictionUnit))
 
@@ -527,8 +546,19 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
       })
       toast.success('Prediction goal created')
       onClose()
-    } catch {
-      toast.error('Failed to create prediction goal')
+    } catch (err) {
+      // SAY WHAT THE SERVER SAID.
+      //
+      // The route already answers precisely — "a prediction goal with this name
+      // already exists for this project", "the observation window must be a whole
+      // number of days" — and `ApiError.message` carries that text verbatim. A bare
+      // `catch` threw it away and printed a sentence that fits every failure equally,
+      // so a duplicate name and a malformed window were indistinguishable and neither
+      // told you what to change. Measured cost: a rejected create read as a broken
+      // feature rather than a name that was already taken.
+      toast.error(err instanceof Error && err.message
+        ? err.message
+        : 'Failed to create prediction goal')
     }
   }
 
@@ -588,7 +618,28 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
                   className="w-full px-3 py-2 border border-border rounded-lg text-sm appearance-none bg-white pr-8"
                 >
                   <option value="">Select event...</option>
-                  {eventNames.map(name => (
+                  {/* THE PRESET'S ANSWER, FIRST AND ALREADY SELECTED.
+                    *
+                    * The five built-in goals are not aimed at an event this shop sends —
+                    * they are aimed at a MEANING (`repeat_purchase`, `cart_abandoned`),
+                    * and the pipeline recognises those by name. `eventNames` holds only
+                    * the shop's own event names, so the value the preset just set matched
+                    * no option, the box rendered EMPTY, and picking anything to fill it
+                    * overwrote the meaning with a raw event.
+                    *
+                    * Measured consequence: a goal created as "Repeat Purchase" stored
+                    * `order_placed`, resolved to the PURCHASE goal, and scored all 4,002
+                    * customers instead of the 944 who had ever bought — with a plausible
+                    * AUC and nothing on screen to say the question had changed.
+                    *
+                    * So the preset's own value is offered as an option. It is what the
+                    * goal means; the shop's events stay below it for a custom goal. */}
+                  {builtInTarget && (
+                    <option value={builtInTarget}>
+                      {builtInTarget} — the built-in goal
+                    </option>
+                  )}
+                  {eventNames.filter(name => name !== builtInTarget).map(name => (
                     <option key={name} value={name}>{name}</option>
                   ))}
                 </select>

@@ -140,6 +140,12 @@
       "interaction_type": "cart_remove",
       "weight": 1.5,
       "decay_half_life_days": 14
+    },
+    {
+      "event_name": "cart_updated",
+      "interaction_type": "cart_snapshot",
+      "weight": 1.0,
+      "decay_half_life_days": 7
     }
   ],
   "field_defaults": {

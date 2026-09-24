@@ -10,3 +10,25 @@ sqlalchemy>=2.0.25
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 joblib>=1.3.0
+
+# The ML service reads every dataset through DuckDB — feature_builder, cart_rows,
+# labeling and trainer all import it, and none of them start without it. It was never
+# declared because no release before this one used DuckDB at all: the previous pipeline
+# read through pandas + SQLAlchemy, which are listed above and still used elsewhere.
+#
+# A missing entry here is not a degraded service, it is no service: uvicorn raises
+# ModuleNotFoundError on the first import and PM2 restarts into the same failure. The ML
+# service is deployed by hand from its own checkout, so `pip install -r requirements.txt`
+# in that venv is the only thing that installs it.
+#
+# FLOOR, NOT A PIN. 1.0 is the first stable release and carries everything the SQL uses —
+# verified against the constructs actually present: list_intersect, list_transform,
+# arg_max, FILTER without WHERE, EXCLUDE, struct access, last_value IGNORE NULLS,
+# TRY_CAST, json_extract_string, read_parquet, and the postgres extension that ATTACH
+# depends on. Left unpinned to match every other line in this file.
+duckdb>=1.0.0
+
+# Pulled in by scikit-learn and shap, so it has always installed; named here because
+# `shared/windows.py` imports it directly and a transitive dependency is somebody else's
+# promise to keep.
+scipy>=1.11.0

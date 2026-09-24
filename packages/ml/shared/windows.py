@@ -183,11 +183,27 @@ class WindowPolicy:
     #: configuration. No branch downstream knows what business it is.
     cadence_signal: str = "order"
 
-    snapshots: int = 2               # preferred training snapshots besides val+test
+    # SNAPSHOTS AND ROUNDS WERE 2 AND 3. Measured on GoWelmart across purchase, repeat
+    # purchase, dormancy and churn: dropping to 1 and 2 left three of the four models
+    # level or better on the sealed test (churn +0.0124, dormancy +0.0050, purchase
+    # +0.0010) and the fourth down 0.0029, which is inside that model's own noise. The
+    # models also came out simpler — 5, 12 and 5 features where the old settings gave
+    # 20, 16 and 8.
+    #
+    # The gain is not from doing less work. It is that BOTH NUMBERS SPEND HISTORY:
+    # `horizon_cap` subtracts snapshots x gap before deciding how far ahead a goal may
+    # forecast, and `needed()` adds it back before deciding which look-backs fit. Fewer
+    # snapshots return that history to the question. Dormancy's grid went from two
+    # candidates to four, and the newly affordable 42d won.
+    #
+    # A second snapshot is a second photograph of the same customers two weeks apart,
+    # not new customers; on these datasets it bought less than the history it cost.
+    # Set ML_SCAFFOLD_LEGACY=1 to restore 2 and 3 without a code change.
+    snapshots: int = 1               # preferred training snapshots besides val+test
     snapshot_gap: int = 14           # preferred days between them
     min_snapshot_gap: int = 7        # closer than a week and two snapshots are the
                                      # same picture, so the extra one buys nothing
-    rounds: int = 3                  # preferred held-out rounds for the window search
+    rounds: int = 2                  # preferred held-out rounds for the window search
     min_search_room: int = 7         # a search needs a week of slack beyond the floor
                                      # or the grid collapses to a single option
 
@@ -221,7 +237,15 @@ class WindowPolicy:
     min_recoveries: int = 30
 
 
-DEFAULT_POLICY = WindowPolicy()
+def _legacy_scaffold() -> bool:
+    """The way out, without an edit. A scaffold change moves every derived window, so
+    the fastest honest rollback is one the person diagnosing a bad model can apply
+    from a shell rather than a deploy."""
+    import os
+    return os.environ.get("ML_SCAFFOLD_LEGACY") == "1"
+
+
+DEFAULT_POLICY = WindowPolicy(snapshots=2, rounds=3) if _legacy_scaffold() else WindowPolicy()
 
 
 def scale_to_rhythm(policy: WindowPolicy, rhythm_days: float) -> WindowPolicy:

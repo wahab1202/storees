@@ -58,7 +58,11 @@ const navItems: NavItem[] = [
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
   { href: '/event-sources', label: 'Event Sources', icon: Webhook, adminOnly: true },
-  { href: '/event-sources/mapping', label: 'Event Mapping', icon: EventMapIcon, adminOnly: true },
+  // SUPER-ADMIN ONLY, not merely admin. Saving here rebuilds a client's order history
+  // and moves their reported revenue by crores; even READING it invites the question
+  // of why the boxes cannot be changed. It sits with Clients and Projects — the other
+  // surfaces a project admin has no business seeing at all.
+  { href: '/event-sources/mapping', label: 'Event Mapping', icon: EventMapIcon, superAdminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
   { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]

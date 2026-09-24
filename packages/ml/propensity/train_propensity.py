@@ -321,7 +321,25 @@ def _pipeline_goal(goal_id: str, target_event: str, dataset) -> str:
     resolved = resolve_goal(name, target_event, tuple(dataset.events.purchase),
                             tuple(dataset.events.cart_abandon))
     print(f"[train] goal {name or goal_id!r}: target_event={target_event!r} -> {resolved!r}")
-    return resolved or target_event
+
+    # NOTHING TO RESOLVE IS AN ANSWER, NOT A THING TO PASS ALONG.
+    #
+    # `resolved or target_event` handed the raw value on whenever resolution found
+    # nothing, and it travelled four frames before dying as a bare `ValueError(<value>)`
+    # inside the labeller — a stack trace naming a string, with no mention of the goal
+    # it belonged to, the project, or what would fix it. The training worker reported
+    # that as `status=failed, reason=null`, so the screen said "Training did not
+    # complete" and nothing anywhere said why.
+    #
+    # Refusing here names all three, at the only point that still knows them.
+    if not resolved:
+        raise ValueError(
+            f"goal {name or goal_id!r} has target_event={target_event!r}, which is "
+            f"neither one of the built-in goals {GOALS} nor an event this project "
+            f"sends. Set its target to a built-in goal, or to an event you are "
+            f"already sending, and re-train."
+        )
+    return resolved
 
 
 def resolve_dataset(project_id: str, domain: str = "ecommerce"):
@@ -512,6 +530,17 @@ _MEANING_OF_INTERACTION = {
     "cart_remove": "cart_remove",
     "cart_removal": "cart_remove",
     "remove_from_cart": "cart_remove",
+    # THE BASKET, NOT A MOVE MADE TO IT.
+    #
+    # `intent` above says a thing went in; this says what the basket now IS — its
+    # total and its lines, already added up by the shop that sent it. Both arrive on
+    # every cart change, so where a project declares this the value is READ rather
+    # than rebuilt from adds minus removes.
+    #
+    # Same second copy as `cart_remove` above: `ROLE_TO_MEANING` in the backend's
+    # event-mapping route carries the identical entry, and `vocabularyConsistency`
+    # fails the build if the two ever disagree.
+    "cart_snapshot": "cart_snapshot",
 }
 
 
@@ -941,10 +970,40 @@ def _dataset_fingerprint(dataset) -> str:
             return str(obj)
 
     try:
-        parts = {"events": dump(dataset.events)}
+        from shared.normalise import CLEANING_SCHEMA_VERSION
+        parts = {"events": dump(dataset.events), "schema": CLEANING_SCHEMA_VERSION}
         cfg = getattr(dataset.tables, "cfg", None)
         if cfg is not None:
             parts["cfg"] = dump(cfg)
+
+        # THE PROJECTIONS THEMSELVES, so nobody has to remember to bump anything.
+        #
+        # The mapping decides which ROWS the cache holds; the SQL below decides which
+        # COLUMNS. Keyed on the mapping alone, a cache survived `cart_id` being added to
+        # the orders projection and the cart query then died binding a column that file
+        # had never had. `CLEANING_SCHEMA_VERSION` fixes that, but only while a human
+        # remembers to raise it — the same shape of trap, one step further back.
+        #
+        # Hashing the generated SQL removes the human. Change a projection in any way
+        # that reaches the query text and every cache misses once and rebuilds.
+        #
+        # It is deliberately over-sensitive: the SQL carries its own comments, so
+        # editing one invalidates caches that would still have been valid. That costs a
+        # re-read and nothing else, which is the trade this cache key has always made —
+        # "wrong only ever costs a re-read; it never returns the wrong rows".
+        tables = getattr(dataset, "tables", None)
+        if tables is not None:
+            shape = {}
+            for name in ("events", "orders", "customers", "products"):
+                fn = getattr(tables, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    shape[name] = hashlib.sha1(str(fn()).encode()).hexdigest()[:8]
+                except Exception:
+                    # A projection that cannot be rendered cannot be proven unchanged.
+                    shape[name] = uuid.uuid4().hex[:8]
+            parts["projections"] = shape
         blob = json.dumps(parts, sort_keys=True, default=stringify)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
     except Exception:

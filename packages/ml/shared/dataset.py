@@ -72,6 +72,21 @@ class EventMap:
     snapshot_event: str = "cart_updated"
     snapshot_cart_key: str = "cart_id"
     snapshot_size_key: str = "item_count"
+    #: the property holding the basket's VALUE, already totalled by the shop.
+    snapshot_total_key: str = "total"
+
+    #: THE DECLARED BASKET-SNAPSHOT SLOT, as against `snapshot_event` above.
+    #:
+    #: The two are not the same thing and must not be merged. `snapshot_event` serves
+    #: `cart_add_mode="snapshot_growth"`, where a shop sends ONLY basket states and adds
+    #: have to be reconstructed from growth. This is the ordinary case: a shop sends
+    #: adds, removes AND a snapshot, each doing the job it is good at -- the actions
+    #: carry behaviour, this carries value.
+    #:
+    #: Empty for a shop that sends no snapshot, in which case the basket is summed from
+    #: adds minus removes exactly as before. Declared per project like every other slot;
+    #: the default lives in the backend's vocabulary, not here.
+    cart_snapshot: tuple[str, ...] = ()
 
     #: which signal measures how fast this project's relationship moves — `order` for a
     #: shop, `event:emi_paid` for a lender whose customers take one loan and repay it
@@ -149,8 +164,13 @@ class ProjectDataset:
             # not hear.
             cart_abandon=tuple(cfg.cart_abandon_events),
             cart_remove=tuple(cfg.cart_remove_events),
+            # Carried, not defaulted. `cart_abandon` above is the standing reminder of
+            # what omitting one line here costs: a meaning a project can state, validate
+            # and save, which the pipeline then never hears.
+            cart_snapshot=tuple(cfg.cart_snapshot_events),
             ignored=tuple(cfg.ignored_events), cart_add_mode=cfg.cart_add_mode,
             snapshot_event=cfg.snapshot_event,
+            snapshot_total_key=cfg.snapshot_total_key,
             signals={k: tuple(v) for k, v in (cfg.signals or {}).items()},
             cadence_signal=cfg.cadence_signal,
         )

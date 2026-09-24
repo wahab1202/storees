@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from shared.cart_xy import cache_enabled as _day_cache_on, day_cache_stats, reset_day_cache
 from shared.dataset import ProjectDataset
 from shared.sources import DatasetSignalSource
 from shared.windows import DEFAULT_POLICY, DerivedWindows, derive, event_goal_target
@@ -64,6 +65,54 @@ class Windows:
 
 #: goals whose look-back also decides who is in the population
 POPULATION_DEFINED_BY_WINDOW = {"cart_abandoned"}
+
+
+def _choose_look_back(scored: list[tuple[int, float]],
+                      held_out: list[tuple[int, int]], log) -> int:
+    """The winning look-back, with ties judged against the measurement's own error.
+
+    WHAT WAS HERE BEFORE: `max(scored, key=lambda r: (round(r[1], 4), -r[0]))`. Rounding
+    to four places is a tie-break bar of 0.0001, and it was never chosen — it is what
+    rounding happened to leave behind. Measured on GoWelmart, a candidate's score moves
+    by 0.013 to 0.040 between rehearsals, so the bar sat a hundred times below the noise
+    and every comparison produced a "clear" winner. Repeat purchase picked 35d, 77d and
+    105d on three runs of the same data; dormancy picked 28d one day and 21d the next
+    with nothing changed at all. A longer look-back is not free either — it reads more
+    history per build — so the coin toss was also spending time.
+
+    The bar here is the Hanley-McNeil standard error of the score being compared, taken
+    from the held-out counts the rehearsals actually scored on, floored at the same
+    K_TOLERANCE_FLOOR the k-sweep uses. Among every candidate inside it, the SMALLEST
+    look-back wins: equal accuracy on the evidence available, less history to read, and
+    the same answer next run.
+
+    NOT A NEW IDEA — `select_features` hit this exact failure choosing the feature
+    count ("k was effectively chosen at random"), fixed it this way, and wrote it down.
+    The window search never got the same treatment because it had no named tolerance to
+    find, only a rounding call.
+
+    A tie is still decided at a boundary, and a candidate can sit a hair either side of
+    it. What changes is the size of the thing being decided by a hair: a window that is
+    genuinely equivalent, rather than one that is genuinely better.
+    """
+    from propensity.select_features import K_TOLERANCE_FLOOR, _auc_se
+
+    best = max(s for _lb, s in scored)
+    tol = K_TOLERANCE_FLOOR
+    if held_out:
+        n_pos = sorted(p for p, _n in held_out)[len(held_out) // 2]
+        n_neg = sorted(n for _p, n in held_out)[len(held_out) // 2]
+        if n_pos and n_neg:
+            tol = max(K_TOLERANCE_FLOOR, _auc_se(best, n_pos, n_neg))
+
+    tied = sorted(lb for lb, s in scored if s >= best - tol)
+    winner = max(scored, key=lambda r: r[1])[0]
+    if len(tied) > 1:
+        log(f"    within one standard error ({tol:.4f}) of the best: "
+            f"{tied} — taking the smallest")
+    if tied and min(tied) != winner:
+        log(f"    (top score was {winner}d; it is not separable from {min(tied)}d here)")
+    return min(tied) if tied else winner
 
 
 def _candidate_lookbacks(derived: DerivedWindows, earliest_snapshot: dt.date,
@@ -135,6 +184,12 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
     result — pinning one leaves the rest deriving and searching as they always did.
     """
     source = source or DatasetSignalSource(dataset)
+
+    # Per-goal lifetime, deliberately. Held across goals it would outlive a reseed or a
+    # mapping change and serve rows built from data that no longer exists.
+    reset_day_cache()
+    if _day_cache_on():
+        log("  per-day feature reuse ON (ML_CART_DAY_CACHE=1)")
 
     # A goal asking about an event this project has never sent cannot be answered, and
     # says so here rather than several minutes later. Left to run it does not crash: the
@@ -276,6 +331,7 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
             log("  could not tune up front — each candidate will tune itself")
 
         scored: list[tuple[int, float]] = []
+        held_out: list[tuple[int, int]] = []
         for look_back in grid:
             marks = []
             # selected once for this candidate, on the oldest rehearsal
@@ -300,11 +356,13 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
                 # judged on both numbers together: overall alone rewards a model that
                 # is merely good at telling dormant customers from live ones
                 marks.append(overall if active is None else 0.5 * overall + 0.5 * active)
+                if m.get("n_test"):
+                    held_out.append((m["n_pos_test"], m["n_test"] - m["n_pos_test"]))
             if marks:
                 scored.append((look_back, sum(marks) / len(marks)))
                 log(f"    look-back {look_back:>3}d  score {scored[-1][1]:.4f}")
         if scored:
-            chosen = max(scored, key=lambda r: (round(r[1], 4), -r[0]))[0]
+            chosen = _choose_look_back(scored, held_out, log)
         log(f"  chose look-back {chosen}d")
 
     win = Windows(eligibility_days=derived.eligibility_days if pinned else chosen,
@@ -329,4 +387,13 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
     result["windows_pinned"] = windows_pinned
     result["selection"] = {k: sel.get(k) for k in
                            ("chosen_k", "n_candidates", "n_clusters", "n_stable_clusters")}
+    if _day_cache_on():
+        st = day_cache_stats()
+        total = st["hits"] + st["misses"]
+        if total:
+            log(f"  per-day feature reuse: {st['hits']:,} reused / {total:,} asked "
+                f"({st['hits']/total*100:.1f}%), {st['distinct']:,} days held, "
+                f"{st['mb']} MB" + (" (budget reached)" if st["capped"] else ""))
+        result["day_cache"] = st
+    reset_day_cache()
     return result

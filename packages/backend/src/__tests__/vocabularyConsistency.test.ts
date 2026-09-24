@@ -177,5 +177,48 @@ describe('role translation agrees across the TypeScript and Python halves', () =
     expect(missingHere,
       `roles the pipeline understands but this screen does not: ${missingHere.join(', ')}`,
     ).toEqual([])
+
+    // AND THE OTHER DIRECTION, which the first check cannot see.
+    //
+    // Drift runs both ways. A slot added to the screen and not to the pipeline looks
+    // perfect to a client — the box is there, it accepts an event name, it saves —
+    // while the models never receive it. That is the shape `cart_remove` had, and the
+    // shape `cart_snapshot` would have had without this half.
+    //
+    // `fulfilment` is exempt and always will be: it moves an order's STATUS and builds
+    // no feature, so the pipeline has no slot for it and needs none. Listed rather than
+    // pattern-matched, so adding a genuinely missing role cannot be waved through by a
+    // loose rule.
+    const TS_ONLY_BY_DESIGN = ['fulfilment', 'fulfillment']
+    const missingInPipeline = tsRoles
+      .filter(r => !pyRoles.includes(r))
+      .filter(r => !TS_ONLY_BY_DESIGN.includes(r))
+    expect(missingInPipeline,
+      `roles this screen offers but the pipeline ignores: ${missingInPipeline.join(', ')}`,
+    ).toEqual([])
+  })
+
+  it('the cart slots are understood by both halves', () => {
+    // Named explicitly rather than left to the coverage checks above. The three cart
+    // meanings are the ones that have actually drifted, and a test that says which
+    // slot broke is worth more at 2am than one that says "a role is missing".
+    const fs = require('fs') as typeof import('fs')
+    const path = require('path') as typeof import('path')
+    const pyPath = path.resolve(__dirname, '../../../ml/propensity/train_propensity.py')
+    if (!fs.existsSync(pyPath)) return
+
+    const py = fs.readFileSync(pyPath, 'utf8')
+    const ts = fs.readFileSync(path.resolve(__dirname, '../routes/eventMapping.ts'), 'utf8')
+
+    for (const role of ['intent', 'cart_remove', 'cart_snapshot']) {
+      expect(new RegExp(`"${role}":`).test(py), `${role} missing from _MEANING_OF_INTERACTION`).toBe(true)
+      expect(new RegExp(`\\b${role}:`).test(ts), `${role} missing from ROLE_TO_MEANING`).toBe(true)
+    }
+
+    // And the screen must actually OFFER the slot, not merely translate a role into it.
+    // A meaning absent from MEANINGS is a role that resolves to a box nobody can fill.
+    for (const key of ['add_to_cart', 'cart_remove', 'cart_snapshot']) {
+      expect(ts.includes(`key: '${key}'`), `${key} is not one of the mapping screen's MEANINGS`).toBe(true)
+    }
   })
 })

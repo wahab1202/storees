@@ -123,8 +123,33 @@ Moves no money. It only advances the order out of "placed".
 ### 7. `added_to_cart` — intent
 
 ```json
-{ "product_id": "SKU-11", "product_collection": "Shirts", "quantity": 1, "price": 1499 }
+{ "cart_id": "cart_01KYWH", "product_id": "SKU-11", "product_collection": "Shirts",
+  "quantity": 1, "price": 1499 }
 ```
+
+`quantity` is the CHANGE, not the new total — going from three to four sends `1`.
+
+### 8. `removed_from_cart` — taken back out
+
+```json
+{ "cart_id": "cart_01KYWH", "product_id": "SKU-11", "quantity": 1, "price": 1499 }
+```
+
+Send `quantity` to reduce a line; **omit it to remove the line entirely**. Without this
+event a basket is the sum of its adds, and anything the shopper took back out keeps
+counting.
+
+### 9. `cart_updated` — the whole basket
+
+```json
+{ "cart_id": "cart_01KYWH", "item_count": 4, "total": 3190,
+  "line_items": [ { "product_id": "SKU-11", "product_name": "Oxford Shirt",
+                    "quantity": 3, "price": 840 } ] }
+```
+
+Send it **alongside** each add and removal, not instead of them. The actions say what
+the shopper did; this says what the basket is now worth, already totalled by you — and
+where it is mapped, that total is read rather than reconstructed.
 
 ---
 
@@ -171,7 +196,7 @@ Tracked and usable in segments and journeys. None of them move money.
 ```
 cart_created          item_count · total · currency · line_items · cart_id
 cart_updated          item_count · total · line_items · cart_id
-removed_from_cart     product_id · quantity · price
+removed_from_cart     product_id · quantity · price · cart_id
 checkout_started      total · currency · item_count
 coupon_applied        code · type · amount
 payment_failed        order_id · currency · amount · reason

@@ -17,10 +17,11 @@
  */
 import { Router } from 'express'
 import { db } from '../db/connection.js'
-import { dataSourceConnectors, events, interactionConfigs, orders } from '../db/schema.js'
+import { dataSourceConnectors, events, interactionConfigs, orders, projects } from '../db/schema.js'
 import { eq, and, inArray, sql } from 'drizzle-orm'
 import { requireProjectId } from '../middleware/projectId.js'
-import { mappingLockState, lockMapping } from '../services/mappingLock.js'
+import { requireSuperAdmin } from '../middleware/membership.js'
+import { LIVE_ORDERS } from '../db/orderStatus.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { invalidateVocabulary } from '../services/projectVocabulary.js'
 import { customerAggregateQueue } from '../services/queue.js'
@@ -50,6 +51,21 @@ const MEANINGS = [
   { key: 'cart_remove', label: 'Removed from cart',
     help: 'Taken back out of the basket before checkout. Used to total what is '
         + 'actually in a cart — without it, an item removed still counts.',
+    required: false },
+  // THE BASKET ITSELF, as against a move made to it.
+  //
+  // `added_to_cart` and `cart_remove` say what a shopper DID; this says what the
+  // basket now IS — four items, 3,190 — and the shop has already done the addition.
+  // Both arrive on every change (measured on the reference shop: 23 actions, 23
+  // snapshots, paired one for one), so where this is declared the value is read
+  // rather than rebuilt.
+  //
+  // Optional, and empty is a real answer: a shop that sends only actions keeps the
+  // add-minus-remove reconstruction exactly as it was.
+  { key: 'cart_snapshot', label: 'Cart contents',
+    help: 'The whole basket after a change — its total and what is in it. Sent '
+        + 'alongside each add or removal. Where given, the basket\'s value is read '
+        + 'from it instead of being added up from the moves.',
     required: false },
   { key: 'fulfilment', label: 'Delivered',
     help: 'The order reached the customer. Moves no money — it only advances the '
@@ -110,6 +126,7 @@ const ROLE_TO_MEANING: Record<string, string> = {
   fulfillment: 'fulfilment',
   return: 'return',
   refund: 'refund',
+  cart_snapshot: 'cart_snapshot',
   // THE EIGHTH SLOT. Seven meanings were listed for eight boxes, so the Removed-from-
   // cart box was the one thing this screen could never suggest. A pack DID name the
   // event — retail files `removed_from_cart` here — but with no role mapped to it the
@@ -177,7 +194,78 @@ async function mappingConnector(projectId: string) {
 
 // GET /api/event-mapping?projectId=...
 // The current mapping, plus every event this project has sent and how often.
-router.get('/', requireProjectId, async (req, res) => {
+type BuildResult =
+  | { ok: true; nextEvents: Mapping }
+  | { ok: false; status: number; error: string }
+
+/**
+ * Turn a request body into the mapping that WOULD be saved, or the reason it cannot be.
+ *
+ * Shared by the preview and the save so the two cannot disagree. A preview validated
+ * separately from the write it describes is worse than no preview at all: it would
+ * either promise an outcome the save then refuses, or describe one it would not make.
+ */
+async function buildMapping(projectId: string, body: Record<string, any>): Promise<BuildResult> {
+  const purchase = asList(body.purchase)
+  if (purchase.length === 0) {
+    return { ok: false, status: 400,
+             error: 'A purchase event is required — every prediction is built from it.' }
+  }
+
+  // Refuse a name this project has never sent. The pipeline would accept it, match
+  // nothing, and train a model on an empty column; catching it at the point someone
+  // types it is the only place the mistake is still obvious.
+  const sent = await db
+    .select({ eventName: events.eventName })
+    .from(events)
+    .where(eq(events.projectId, projectId))
+    .groupBy(events.eventName)
+  const known = new Set(sent.map(e => e.eventName))
+
+  const byMeaning = new Map<string, string[]>(
+    MEANING_KEYS.map(k => [k, k === 'purchase' ? purchase : asList(body[k])]),
+  )
+  const meanings = [...byMeaning.values()].flat()
+  const unknown = [...new Set(meanings.filter(n => !known.has(n)))]
+  if (unknown.length) {
+    return { ok: false, status: 400,
+             error: `This project has never sent: ${unknown.join(', ')}. `
+                  + `A meaning must point at an event that has data behind it.` }
+  }
+
+  // One name, one meaning. The vocabulary resolves conflicts by precedence, so a name
+  // left in two boxes would silently stop doing one of the two jobs its owner thinks
+  // it does. Refusing is the only version of that they can see.
+  const seen = new Map<string, string>()
+  for (const [key, names] of byMeaning) {
+    for (const n of names) {
+      const first = seen.get(n)
+      if (first) {
+        return { ok: false, status: 400,
+                 error: `"${n}" is in both ${labelOf(first)} and ${labelOf(key)}. `
+                      + `An event can only carry one meaning.` }
+      }
+      seen.set(n, key)
+    }
+  }
+
+  const one = (v: string[]) => (v.length === 1 ? v[0] : v)
+  const nextEvents: Mapping = { purchase: one(purchase) }
+  for (const key of MEANING_KEYS) {
+    if (key === 'purchase') continue
+    const v = byMeaning.get(key) ?? []
+    if (v.length) nextEvents[key] = one(v)
+  }
+  const ignore = asList(body.ignore_events)
+  if (ignore.length) nextEvents.ignore_events = one(ignore)
+  const signals = asList(body.signals)
+  if (signals.length) {
+    nextEvents.signals = Object.fromEntries(signals.map(s => [s, s]))
+  }
+  return { ok: true, nextEvents }
+}
+
+router.get('/', requireProjectId, requireSuperAdmin(), async (req, res) => {
   try {
     const projectId = req.projectId!
 
@@ -235,10 +323,21 @@ router.get('/', requireProjectId, async (req, res) => {
         available: sent,
         unmatched: [...new Set(unmatched)],
         configured: Boolean(Object.keys(saved).length),
-        // Whether Save will be accepted. Sent with the mapping so the screen can say so
+        // Whether Save will be accepted, sent with the mapping so the screen can say so
         // BEFORE somebody fills the boxes in — a form that looks editable and then
         // refuses on submit is worse than one that tells you up front.
-        lock: await mappingLockState(projectId),
+        //
+        // Always true now that the whole surface is super-admin only — kept because the
+        // screen still reads it, and a stale session that somehow renders the form should
+        // find Save shut rather than open.
+        //
+        // This replaced a one-remap LOCK whose only key was `npm run mapping:unlock` on
+        // the server. The lock guarded the right thing for the wrong reason: a save moves
+        // a client's reported revenue by crores, but the danger is a WRONG save, not a
+        // SECOND one — and the screen was reachable by every admin, so the lock was doing
+        // a permission's job with a one-shot fuse. A permission plus a preview of the
+        // damage covers both, and neither needs somebody with server access.
+        canEdit: (req as AuthenticatedRequest).adminUser?.isSuperAdmin === true,
       },
     })
   } catch (err) {
@@ -293,7 +392,7 @@ async function replayStatus(projectId: string): Promise<{
 // GET /api/event-mapping/replay-status?projectId=...
 // Polled by the screen while a rebuild is draining, so Save can be held shut and the
 // person can see it is working rather than guessing.
-router.get('/replay-status', requireProjectId, async (req, res) => {
+router.get('/replay-status', requireProjectId, requireSuperAdmin(), async (req, res) => {
   try {
     res.json({ success: true, data: await replayStatus(req.projectId!) })
   } catch (err) {
@@ -302,11 +401,109 @@ router.get('/replay-status', requireProjectId, async (req, res) => {
   }
 })
 
+// POST /api/event-mapping/preview?projectId=...
+// Same body as the save. Writes NOTHING — answers "what would that save do".
+//
+// The number people need before pressing Save is not how many events exist, it is how
+// many ORDER ROWS disappear and how much revenue goes with them. That is the part the
+// save cannot undo by itself, and it was invisible until now: the screen said "revenue
+// and order counts will change" and left the direction and the size to the imagination.
+router.post('/preview', requireProjectId, requireSuperAdmin(), async (req, res) => {
+  try {
+    const projectId = req.projectId!
+    const built = await buildMapping(projectId, req.body ?? {})
+    if (!built.ok) {
+      return res.status(built.status).json({ success: false, error: built.error })
+    }
+    const nextEvents = built.nextEvents
+
+    const connector = await mappingConnector(projectId)
+    const prevEvents = ((connector?.config as Record<string, any>)?.mapping?.events
+                        ?? {}) as Record<string, unknown>
+
+    const purchaseNames = asList(nextEvents.purchase)
+    const statusNames = [...new Set(
+      (['fulfilment', 'cancellation', 'return', 'refund'] as const)
+        .flatMap(k => asList(nextEvents[k])),
+    )]
+    const retiredPurchaseEvents = asList(prevEvents.purchase)
+      .filter(n => !purchaseNames.includes(n))
+
+    const moved = MEANING_KEYS
+      .some(k => JSON.stringify(prevEvents[k] ?? null) !== JSON.stringify(nextEvents[k] ?? null))
+
+    // What exists right now, under the mapping being replaced.
+    const [current] = await db.execute<{ orders: number; revenue: string }>(sql`
+      SELECT COUNT(*)::int AS orders,
+             COALESCE(SUM(total::numeric), 0)::text AS revenue
+      FROM orders
+      WHERE project_id = ${projectId} AND ${LIVE_ORDERS}
+    `).then(r => r.rows)
+
+    // The rows this save would DELETE, and the revenue they carry. Exact, not estimated:
+    // it is the same predicate the retire step runs.
+    const [retiring] = retiredPurchaseEvents.length
+      ? await db.execute<{ orders: number; revenue: string }>(sql`
+          SELECT COUNT(*)::int AS orders,
+                 COALESCE(SUM(total::numeric) FILTER (WHERE ${LIVE_ORDERS}), 0)::text AS revenue
+          FROM orders
+          WHERE project_id = ${projectId}
+            AND source_event IN (${sql.join(retiredPurchaseEvents.map(n => sql`${n}`), sql`, `)})
+        `).then(r => r.rows)
+      : [{ orders: 0, revenue: '0' }]
+
+    // What the new purchase event has to offer — distinct orders in the event ledger.
+    // Not a promise: rows already materialised by a sync have no event behind them and
+    // are not counted here, which is exactly why the rebuild cannot be predicted to the
+    // rupee. Reported as "at least".
+    const [building] = purchaseNames.length
+      ? await db.execute<{ orders: number; revenue: string }>(sql`
+          SELECT COUNT(*)::int AS orders,
+                 COALESCE(SUM(total), 0)::text AS revenue
+          FROM (
+            SELECT DISTINCT ON (COALESCE(NULLIF(properties->>'order_id', ''), id::text))
+                   COALESCE(NULLIF(properties->>'total', '')::numeric, 0) AS total
+            FROM events
+            WHERE project_id = ${projectId}
+              AND event_name IN (${sql.join(purchaseNames.map(n => sql`${n}`), sql`, `)})
+          ) d
+        `).then(r => r.rows)
+      : [{ orders: 0, revenue: '0' }]
+
+    const [counts] = await db.execute<{ purchases: number; statuses: number }>(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE event_name IN (${purchaseNames.length
+          ? sql.join(purchaseNames.map(n => sql`${n}`), sql`, `) : sql`NULL`}))::int AS purchases,
+        COUNT(*) FILTER (WHERE event_name IN (${statusNames.length
+          ? sql.join(statusNames.map(n => sql`${n}`), sql`, `) : sql`NULL`}))::int AS statuses
+      FROM events WHERE project_id = ${projectId}
+    `).then(r => r.rows)
+
+    const project = await db.select({ name: projects.name })
+      .from(projects).where(eq(projects.id, projectId)).limit(1)
+
+    res.json({ success: true, data: {
+      projectName: project[0]?.name ?? '',
+      willRebuild: moved,
+      replaying: { purchases: counts?.purchases ?? 0, statuses: counts?.statuses ?? 0 },
+      retiring: {
+        orders: retiring?.orders ?? 0, revenue: retiring?.revenue ?? '0',
+        events: retiredPurchaseEvents,
+      },
+      building: { atLeastOrders: building?.orders ?? 0, revenue: building?.revenue ?? '0' },
+      current: { orders: current?.orders ?? 0, revenue: current?.revenue ?? '0' },
+    } })
+  } catch (err) {
+    console.error('Event mapping preview error:', err)
+    res.status(500).json({ success: false, error: 'Failed to preview the mapping change' })
+  }
+})
+
 // PUT /api/event-mapping?projectId=...
 // Body: { purchase: string[], product_viewed: string[], add_to_cart: string[],
 //         fulfilment: string[], cancellation: string[], return: string[],
 //         refund: string[], signals: string[], ignore_events: string[] }
-router.put('/', requireProjectId, async (req, res) => {
+router.put('/', requireProjectId, requireSuperAdmin(), async (req, res) => {
   try {
     const projectId = req.projectId!
     const body = req.body ?? {}
@@ -321,18 +518,6 @@ router.put('/', requireProjectId, async (req, res) => {
     //
     // Reopening it takes `npm run mapping:unlock` on the server — deliberately not a
     // click. The unlock was built and proven before this check existed.
-    const lock = await mappingLockState(projectId)
-    if (lock.locked) {
-      return res.status(423).json({
-        success: false,
-        error: 'This project\'s event mapping is locked. It was set on '
-             + `${new Date(lock.lockedAt!).toLocaleString()} by ${lock.lockedBy}. `
-             + 'Reopen it from the server with: npm run mapping:unlock -- '
-             + `--project ${projectId} --reason "<why>"`,
-        data: { locked: true, lockedAt: lock.lockedAt, lockedBy: lock.lockedBy },
-      })
-    }
-
     // ONE REBUILD AT A TIME.
     //
     // A save re-queues every stored event the meanings cover, and on a large project
@@ -349,74 +534,27 @@ router.put('/', requireProjectId, async (req, res) => {
       })
     }
 
-    const purchase = asList(body.purchase)
-    if (purchase.length === 0) {
-      return res.status(400).json({
+    const built = await buildMapping(projectId, body)
+    if (!built.ok) {
+      return res.status(built.status).json({ success: false, error: built.error })
+    }
+    const nextEvents = built.nextEvents
+
+    // TYPE THE PROJECT NAME. The preview says what this will do; this says you read it.
+    //
+    // The permission decides WHO may save. It cannot catch the save that person did not
+    // mean to make, and that is the failure this screen actually has: one wrong purchase
+    // slot moved a client's reported revenue between ₹16.3 crore and ₹101 crore. A
+    // confirmation the hand cannot produce by accident is the guard the old one-shot
+    // lock was reaching for.
+    const project = await db.select({ name: projects.name })
+      .from(projects).where(eq(projects.id, projectId)).limit(1)
+    const expected = project[0]?.name ?? ''
+    if (String(body.confirm ?? '').trim() !== expected) {
+      return res.status(428).json({
         success: false,
-        error: 'A purchase event is required — every prediction is built from it.',
+        error: `Type the project name (${expected}) to confirm this rebuild.`,
       })
-    }
-
-    // Refuse a name this project has never sent. The pipeline would accept it, match
-    // nothing, and train a model on an empty column; catching it at the point someone
-    // types it is the only place the mistake is still obvious.
-    const sent = await db
-      .select({ eventName: events.eventName })
-      .from(events)
-      .where(eq(events.projectId, projectId))
-      .groupBy(events.eventName)
-    const known = new Set(sent.map(e => e.eventName))
-
-    // Strict on the meanings, permissive on the rest — the two mistakes are not the
-    // same size. A meaning pointed at a name with no rows silently guts the models:
-    // one project's purchase slot matched 6,266 of its 81,164 orders and still
-    // returned a plausible score. A SIGNAL with no rows costs a constant column that
-    // selection drops, and refusing it would block the legitimate case of mapping an
-    // event whose tracking ships tomorrow. Those are reported on the screen instead.
-    const byMeaning = new Map<string, string[]>(
-      MEANING_KEYS.map(k => [k, k === 'purchase' ? purchase : asList(body[k])]),
-    )
-    const meanings = [...byMeaning.values()].flat()
-    const unknown = [...new Set(meanings.filter(n => !known.has(n)))]
-    if (unknown.length) {
-      return res.status(400).json({
-        success: false,
-        error: `This project has never sent: ${unknown.join(', ')}. `
-             + `A meaning must point at an event that has data behind it.`,
-      })
-    }
-
-    // One name, one meaning. With seven boxes instead of four this is now easy to get
-    // wrong by hand, and the consequences are silent: the vocabulary resolves conflicts
-    // by precedence, so a name left in two boxes would just stop doing one of the two
-    // jobs its owner thinks it does. Refusing is the only version of that they can see.
-    const seen = new Map<string, string>()
-    for (const [key, names] of byMeaning) {
-      for (const n of names) {
-        const first = seen.get(n)
-        if (first) {
-          return res.status(400).json({
-            success: false,
-            error: `"${n}" is in both ${labelOf(first)} and ${labelOf(key)}. `
-                 + `An event can only carry one meaning.`,
-          })
-        }
-        seen.set(n, key)
-      }
-    }
-
-    const one = (v: string[]) => (v.length === 1 ? v[0] : v)
-    const nextEvents: Mapping = { purchase: one(purchase) }
-    for (const key of MEANING_KEYS) {
-      if (key === 'purchase') continue
-      const v = byMeaning.get(key) ?? []
-      if (v.length) nextEvents[key] = one(v)
-    }
-    const ignore = asList(body.ignore_events)
-    if (ignore.length) nextEvents.ignore_events = one(ignore)
-    const signals = asList(body.signals)
-    if (signals.length) {
-      nextEvents.signals = Object.fromEntries(signals.map(s => [s, s]))
     }
 
     const connector = await mappingConnector(projectId)
@@ -722,13 +860,13 @@ router.put('/', requireProjectId, async (req, res) => {
       console.error('[event-mapping] replay failed (mapping still saved):', err)
     }
 
-    // The save succeeded, so this project's vocabulary is now declared. Locking here
-    // rather than at the top means a save that FAILED leaves the door open — a failed
-    // attempt must not cost somebody their one remap.
-    await lockMapping(projectId,
-      (req as AuthenticatedRequest).adminUser?.email ?? 'unknown')
+    // Who changed a client's revenue, and when. The lock used to carry this; the
+    // permission that replaced it does not, so it is recorded here instead.
+    console.log(`[event-mapping] ${projectId}: mapping saved by `
+      + `${(req as AuthenticatedRequest).adminUser?.email ?? 'unknown'} — `
+      + `${reprocessing} event(s) queued for rebuild`)
 
-    res.json({ success: true, data: { events: nextEvents, reprocessing, retired, locked: true } })
+    res.json({ success: true, data: { events: nextEvents, reprocessing, retired } })
   } catch (err) {
     console.error('Event mapping write error:', err)
     res.status(500).json({ success: false, error: 'Failed to save the event mapping' })

@@ -85,6 +85,16 @@ export type ProjectVocabulary = {
    *  shopper is still active. Emptying a basket is engagement — the clock should
    *  reset on it exactly as it does on an add. */
   cartRemoveEvents: string[]
+  /** THE WHOLE BASKET, not a move made to it.
+   *
+   *  `added_to_cart` says "a shampoo went in"; this says "the basket is now four
+   *  items worth 3,190". Both arrive on every change — the action carries the
+   *  behaviour, this carries the value — and reading the second is what stops the
+   *  first being asked a question it cannot answer.
+   *
+   *  Empty for a shop that sends only actions; the basket is then reconstructed
+   *  from adds and removes exactly as before. */
+  cartSnapshotEvents: string[]
   /** saved-for-later. Retail's wishlist; most verticals have no equivalent. */
   wishlistEvents: string[]
   /** the property on a purchase event holding the amount */
@@ -95,6 +105,12 @@ export type ProjectVocabulary = {
   currencyKey: string
   /** the property holding the discount applied to the transaction */
   discountKey: string
+  /** on a basket snapshot: the property holding the basket's value */
+  cartTotalKey: string
+  /** on a basket snapshot: the property holding how many items are in it */
+  cartItemCountKey: string
+  /** on a basket snapshot: the property holding the array of lines */
+  cartLinesKey: string
 }
 
 /** What a project that has declared nothing gets. Retail's words, because retail was
@@ -144,11 +160,22 @@ const RETAIL_DEFAULTS: ProjectVocabulary = {
   // A shop that never sends the event is unaffected: the mapping simply matches nothing,
   // which is the same position the empty default left it in.
   cartRemoveEvents: ['removed_from_cart'],
+  // The published name, like every slot above it. A shop following EVENT_SPEC.md
+  // sends `cart_updated` on every cart change; one that sends nothing by this name
+  // matches nothing, which is the same position an empty default would leave it in.
+  cartSnapshotEvents: ['cart_updated'],
   wishlistEvents: ['added_to_wishlist'],
   amountKey: 'total',
   orderIdKey: 'order_id',
   currencyKey: 'currency',
   discountKey: 'discount',
+  // The three properties a basket snapshot carries, per EVENT_SPEC.md. Overridable
+  // for the same reason `amountKey` is: the spec is what shops are ASKED to send,
+  // not what every shop will send, and a wrong key reads as an empty basket rather
+  // than as an error.
+  cartTotalKey: 'total',
+  cartItemCountKey: 'item_count',
+  cartLinesKey: 'line_items',
 }
 
 /** onboarding's interaction types -> the meaning the rest of the product uses */
@@ -163,6 +190,7 @@ const ROLE: Record<string, keyof ProjectVocabulary> = {
   refund: 'refundEvents',
   fulfilment: 'fulfilmentEvents',
   fulfillment: 'fulfilmentEvents',
+  cart_snapshot: 'cartSnapshotEvents',
 }
 
 // Vocabulary changes only when someone edits the mapping screen or re-runs a pack —
@@ -244,6 +272,7 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
     ['viewEvents', 'product_viewed'],
     ['cartEvents', 'add_to_cart'],
     ['cartRemoveEvents', 'cart_remove'],
+    ['cartSnapshotEvents', 'cart_snapshot'],
   ]
   for (const [key, mapKey] of fromMapping) {
     const names = asList(ev[mapKey])
@@ -266,11 +295,21 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
   if (typeof fields.currency === 'string' && fields.currency) { out.currencyKey = fields.currency; settled.add('currencyKey') }
   if (typeof fields.discount === 'string' && fields.discount) { out.discountKey = fields.discount; settled.add('discountKey') }
 
+  // The snapshot's own field names live under `fields.cart`, beside the order's. A
+  // project that never mentions them keeps the published defaults, which is the
+  // common case and the one the spec describes.
+  const cartFields = ((mapping.fields ?? {}) as Record<string, unknown>).cart as Record<string, unknown> | undefined
+  if (cartFields) {
+    if (typeof cartFields.total === 'string' && cartFields.total) { out.cartTotalKey = cartFields.total; settled.add('cartTotalKey') }
+    if (typeof cartFields.item_count === 'string' && cartFields.item_count) { out.cartItemCountKey = cartFields.item_count; settled.add('cartItemCountKey') }
+    if (typeof cartFields.line_items === 'string' && cartFields.line_items) { out.cartLinesKey = cartFields.line_items; settled.add('cartLinesKey') }
+  }
+
   // 2. onboarding's record fills any EVENT category the connector left unsaid.
   // Field paths have no equivalent there, so an undeclared one keeps the default.
   const eventKeys: Array<keyof ProjectVocabulary> = [
     'purchaseEvents', 'cancellationEvents', 'returnEvents', 'refundEvents',
-    'fulfilmentEvents', 'viewEvents', 'cartEvents',
+    'fulfilmentEvents', 'viewEvents', 'cartEvents', 'cartSnapshotEvents',
   ]
   if (eventKeys.some(k => !settled.has(k))) {
     const rows = await db

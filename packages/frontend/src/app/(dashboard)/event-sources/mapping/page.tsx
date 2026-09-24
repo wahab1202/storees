@@ -4,13 +4,25 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { useSuperAdminGuard } from '@/components/auth/RequireSuperAdmin'
 import {
-  useEventMapping, useSaveEventMapping, useReplayStatus, MEANING_ORDER, emptyAssignment,
+  useEventMapping, useSaveEventMapping, useReplayStatus, usePreviewEventMapping,
+  MEANING_ORDER, emptyAssignment,
   type MeaningKey, type SentEvent,
 } from '@/hooks/useEventMapping'
 
 function fmtCount(n: number): string {
   return n.toLocaleString('en-IN')
+}
+
+/** Crore and lakh, because ₹857094239.02 is a number nobody can weigh at a glance —
+ *  and weighing it is the entire point of showing it before a rebuild. */
+function fmtMoney(raw: string | number): string {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return '—'
+  if (n >= 1e7) return `₹${(n / 1e7).toFixed(2)} Cr`
+  if (n >= 1e5) return `₹${(n / 1e5).toFixed(2)} L`
+  return `₹${Math.round(n).toLocaleString('en-IN')}`
 }
 
 /** Eight boxes in one flat list reads as a wall. They split cleanly in two: what the
@@ -20,7 +32,7 @@ const MEANING_GROUPS: Array<{ title: string; help: string; keys: MeaningKey[] }>
   {
     title: 'What the customer did',
     help: 'The behaviour predictions are built from.',
-    keys: ['purchase', 'product_viewed', 'add_to_cart', 'cart_remove'],
+    keys: ['purchase', 'product_viewed', 'add_to_cart', 'cart_remove', 'cart_snapshot'],
   },
   {
     title: 'What happened to the order',
@@ -120,6 +132,15 @@ function MeaningRow({
 }
 
 export default function EventMappingPage() {
+  // Nav hides this already; this is what stops a pasted URL from rendering the form.
+  // Deliberately a wrapper rather than a check inside the page, so none of the page's
+  // queries fire for someone who may not see the answer.
+  const guard = useSuperAdminGuard()
+  if (guard) return guard
+  return <EventMappingScreen />
+}
+
+function EventMappingScreen() {
   const { data, isLoading } = useEventMapping()
   const save = useSaveEventMapping()
   // A save re-queues every stored event the meanings cover — minutes of work on a large
@@ -170,16 +191,27 @@ export default function EventMappingPage() {
     setIgnored(prev => prev.filter(n => n !== name))
   }
 
-  // ONE REMAP PER PROJECT. The save that gets the mapping right closes the door.
+  // WHO MAY SAVE, AND WHETHER THEY MEANT TO.
   //
   // A save rebuilds this client's order history from their stored events — on GoWelmart,
   // correcting the purchase event moved reported revenue from ₹16.3 crore to ₹101 crore,
-  // and a wrong save moves it as far the other way. Mapping is declared once at
-  // onboarding and changes about never, so the button stops being available afterwards
-  // rather than sitting there inviting a second opinion.
-  const lock = data?.data?.lock
-  const locked = lock?.locked === true
-  const canSave = assigned.purchase.length > 0 && !save.isPending && !rebuilding && !locked
+  // and a wrong save moves it as far the other way.
+  //
+  // This used to be a one-remap LOCK reopened only by `npm run mapping:unlock` on the
+  // server. It guarded the right thing the wrong way: the screen was reachable by every
+  // admin, so a lock was standing in for a permission — and the danger is a WRONG save,
+  // not a second one, which a one-shot fuse does nothing about. Now the permission says
+  // who, and the preview below says what, with the damage in rupees before anyone
+  // commits to it.
+  const canEdit = data?.data?.canEdit === true
+  const canSave = assigned.purchase.length > 0 && !save.isPending && !rebuilding && canEdit
+
+  const preview = usePreviewEventMapping()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [typed, setTyped] = useState('')
+  const payload = () => ({ ...emptyAssignment(), ...assigned, signals, ignore_events: ignored })
+  const impact = preview.data?.data
+  const nameMatches = impact ? typed.trim() === impact.projectName : false
 
   if (isLoading) {
     return (
@@ -234,6 +266,12 @@ export default function EventMappingPage() {
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-5">
+          {/* A SLOT THE SERVER SENDS AND NO GROUP CLAIMS MUST STILL BE VISIBLE.
+              The groups above are a hand-written list, and a ninth meaning was added to
+              the server, the vocabulary, the packs and the pipeline while this list was
+              not touched — so the box simply did not render. Nothing failed: the screen
+              looked complete, and the slot was unreachable. Grouping is presentation;
+              dropping a meaning is not, so anything unclaimed falls through below. */}
           {MEANING_GROUPS.map(group => {
             const rows = (mapping?.meanings ?? []).filter(m => group.keys.includes(m.key))
             if (!rows.length) return null
@@ -258,6 +296,36 @@ export default function EventMappingPage() {
               </section>
             )
           })}
+
+          {/* The catch-all described above. Renders nothing in the normal case. */}
+          {(() => {
+            const claimed = new Set(MEANING_GROUPS.flatMap(g => g.keys as string[]))
+            const orphans = (mapping?.meanings ?? []).filter(m => !claimed.has(m.key))
+            if (!orphans.length) return null
+            return (
+              <section className="rounded-xl border border-amber-300 bg-white p-5">
+                <h2 className="text-sm font-medium text-heading">Other meanings</h2>
+                <p className="mt-0.5 text-xs text-text-muted">
+                  These are read by the pipeline but have not been given a place on this
+                  screen yet. They work exactly as the boxes above.
+                </p>
+                <div className="mt-3 space-y-3">
+                  {orphans.map(m => (
+                    <MeaningRow
+                      key={m.key}
+                      label={m.label}
+                      help={m.help}
+                      required={m.required}
+                      source={m.source}
+                      selected={assigned[m.key] ?? []}
+                      available={available}
+                      onToggle={name => toggleMeaning(m.key, name)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )
+          })()}
 
           <section className="rounded-xl border border-border bg-white p-5">
             <h2 className="text-sm font-medium text-heading">Other signals</h2>
@@ -356,13 +424,13 @@ export default function EventMappingPage() {
 
             <button
               disabled={!canSave}
-              // Spread every box rather than listing four by hand — the version that
-              // listed them is how a new meaning would reach the screen, be assignable,
-              // and then silently not be sent.
-              onClick={() => save.mutate({
-                ...emptyAssignment(), ...assigned,
-                signals, ignore_events: ignored,
-              })}
+              // Opens the preview rather than saving. Nothing is written until the
+              // damage has been shown and the project's name typed back.
+              onClick={() => {
+                setTyped('')
+                setConfirmOpen(true)
+                preview.mutate(payload())
+              }}
               className={cn(
                 'mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
                 canSave ? 'bg-accent text-white hover:bg-accent-hover'
@@ -370,23 +438,17 @@ export default function EventMappingPage() {
               )}
             >
               {(save.isPending || rebuilding) && <Loader2 className="h-4 w-4 animate-spin" />}
-              {rebuilding ? 'Rebuilding…' : locked ? 'Mapping locked' : 'Save mapping'}
+              {rebuilding ? 'Rebuilding…' : !canEdit ? 'Read only' : 'Review and save…'}
             </button>
 
-            {/* Say WHY it cannot be saved, and how to reopen it. A disabled button with
-                no explanation is the thing people file tickets about. */}
-            {locked && (
+            {/* Say WHY it cannot be saved. A disabled button with no explanation is the
+                thing people file tickets about. */}
+            {!canEdit && (
               <p className="mt-3 rounded-lg bg-surface px-3 py-2 text-[11px] leading-relaxed text-text-muted">
-                <span className="font-medium text-text-secondary">One remap per project.</span>{' '}
-                Set {lock?.lockedAt ? `on ${new Date(lock.lockedAt).toLocaleString()}` : 'at onboarding'}
-                {lock?.lockedBy ? ` by ${lock.lockedBy}` : ''}. Reopen it from the server with{' '}
-                <code className="rounded bg-white px-1 py-0.5">npm run mapping:unlock</code>.
-              </p>
-            )}
-            {!locked && lock?.unlockedUntil && (
-              <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800">
-                Unlocked until {new Date(lock.unlockedUntil).toLocaleTimeString()}
-                {lock.unlockedBy ? ` by ${lock.unlockedBy}` : ''} — this buys one save.
+                <span className="font-medium text-text-secondary">Read only.</span>{' '}
+                Saving rebuilds this project&rsquo;s order history and changes its reported
+                revenue, so it is limited to super-admins. Ask one to make the change —
+                everything above is accurate to what the pipeline is using today.
               </p>
             )}
             <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
@@ -397,6 +459,131 @@ export default function EventMappingPage() {
           </div>
         </aside>
       </div>
+
+      {/* WHAT THIS SAVE WOULD DO, BEFORE IT DOES IT.
+          The screen used to say "revenue and order counts will change" and leave the
+          direction and the size to the imagination. The numbers were always available —
+          the save computes them to decide what to retire — they were simply never shown
+          to the one person who could still change their mind. */}
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <h2 className="text-base font-semibold text-heading">Review this rebuild</h2>
+              <button onClick={() => setConfirmOpen(false)}
+                      className="rounded p-1 text-text-muted hover:bg-surface">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {preview.isPending && (
+              <p className="mt-5 flex items-center gap-2 text-sm text-text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" /> Working out what would change…
+              </p>
+            )}
+
+            {preview.isError && (
+              <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+                {(preview.error as Error)?.message ?? 'Could not preview this change.'}
+              </p>
+            )}
+
+            {impact && !impact.willRebuild && (
+              <p className="mt-4 rounded-lg bg-surface px-3 py-2 text-sm text-text-secondary">
+                No meaning changed, so nothing is rebuilt. Signals and ignored events are
+                saved on their own and take effect at the next training run.
+              </p>
+            )}
+
+            {impact && impact.willRebuild && (
+              <>
+                <dl className="mt-4 space-y-2 text-sm">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <dt className="text-text-muted">Orders today</dt>
+                    <dd className="font-mono text-heading">
+                      {fmtCount(impact.current.orders)} · {fmtMoney(impact.current.revenue)}
+                    </dd>
+                  </div>
+                  {impact.retiring.orders > 0 && (
+                    <div className="flex items-baseline justify-between gap-3 rounded-lg bg-red-50 px-3 py-2">
+                      <dt className="text-red-700">
+                        Deleted — built from {impact.retiring.events.join(', ')}
+                      </dt>
+                      <dd className="font-mono font-medium text-red-700">
+                        −{fmtCount(impact.retiring.orders)} · −{fmtMoney(impact.retiring.revenue)}
+                      </dd>
+                    </div>
+                  )}
+                  <div className="flex items-baseline justify-between gap-3 rounded-lg bg-surface px-3 py-2">
+                    <dt className="text-text-secondary">Rebuilt from events</dt>
+                    <dd className="font-mono text-heading">
+                      at least {fmtCount(impact.building.atLeastOrders)} · {fmtMoney(impact.building.revenue)}
+                    </dd>
+                  </div>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <dt className="text-text-muted">Events replayed</dt>
+                    <dd className="font-mono text-heading">
+                      {fmtCount(impact.replaying.purchases + impact.replaying.statuses)}
+                    </dd>
+                  </div>
+                </dl>
+
+                {/* The failure this catches. A purchase event carrying no amount rebuilds
+                    the right number of orders worth nothing at all, and every screen then
+                    reports a collapse nobody ordered. */}
+                {Number(impact.building.revenue) === 0 && impact.building.atLeastOrders > 0 && (
+                  <p className="mt-3 flex gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      The event you picked carries <strong>no amount</strong> on any of its rows.
+                      This rebuilds orders worth <strong>₹0</strong> and your reported revenue
+                      collapses. Almost certainly the wrong event.
+                    </span>
+                  </p>
+                )}
+
+                <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
+                  &ldquo;At least&rdquo; because orders pulled in by a store sync have no event behind
+                  them and cannot be rebuilt from the ledger — they are left untouched.
+                </p>
+
+                <label className="mt-4 block text-xs text-text-secondary">
+                  Type <span className="font-medium text-heading">{impact.projectName}</span> to confirm
+                  <input
+                    value={typed}
+                    onChange={e => setTyped(e.target.value)}
+                    placeholder={impact.projectName}
+                    className="mt-1 w-full rounded-lg border border-border px-3 py-2 text-sm text-heading outline-none focus:border-accent"
+                  />
+                </label>
+              </>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setConfirmOpen(false)}
+                      className="rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-surface">
+                Cancel
+              </button>
+              <button
+                disabled={!impact || (impact.willRebuild && !nameMatches) || save.isPending}
+                onClick={() => {
+                  save.mutate({ ...payload(), confirm: impact?.projectName ?? '' },
+                               { onSuccess: () => setConfirmOpen(false) })
+                }}
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium',
+                  impact && (!impact.willRebuild || nameMatches) && !save.isPending
+                    ? 'bg-accent text-white hover:bg-accent-hover'
+                    : 'cursor-not-allowed bg-surface text-text-muted',
+                )}
+              >
+                {save.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                {impact && !impact.willRebuild ? 'Save' : 'Rebuild order history'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

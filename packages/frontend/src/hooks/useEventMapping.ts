@@ -10,7 +10,7 @@ import { withProject } from '@/lib/project'
  *  boxes because the order's STATUS needs to know which kind it was — one shared
  *  "undo" could only ever say the money came back off. */
 export const MEANING_ORDER = [
-  'purchase', 'product_viewed', 'add_to_cart', 'cart_remove',
+  'purchase', 'product_viewed', 'add_to_cart', 'cart_remove', 'cart_snapshot',
   'fulfilment', 'cancellation', 'return', 'refund',
 ] as const
 
@@ -47,20 +47,35 @@ export type EventMapping = {
   /** mapped names with no rows behind them — the failure this screen prevents */
   unmatched: string[]
   configured: boolean
-  /** Whether Save will be accepted. One remap per project: the save that gets the
-   *  mapping right closes the door, and reopening it takes a command on the server. */
-  lock?: {
-    locked: boolean
-    lockedAt?: string
-    lockedBy?: string
-    unlockedUntil?: string
-    unlockedBy?: string
-  }
+  /** Whether this viewer may save. Only a super-admin may: a save rebuilds the client's
+   *  order history and moves their reported revenue, so the screen stays readable by
+   *  everyone and writable by the few. */
+  canEdit?: boolean
+}
+
+/** What a save WOULD do, before it does it. */
+export type MappingPreview = {
+  projectName: string
+  willRebuild: boolean
+  replaying: { purchases: number; statuses: number }
+  retiring: { orders: number; revenue: string; events: string[] }
+  building: { atLeastOrders: number; revenue: string }
+  current: { orders: number; revenue: string }
 }
 
 export type EventMappingInput = Record<MeaningKey, string[]> & {
   signals: string[]
   ignore_events: string[]
+  /** The project's own name, typed by the person saving. The server checks it. */
+  confirm?: string
+}
+
+/** Ask the server what this mapping would do. Writes nothing. */
+export function usePreviewEventMapping() {
+  return useMutation({
+    mutationFn: (input: Omit<EventMappingInput, 'confirm'>) =>
+      api.post<MappingPreview>(withProject('/api/event-mapping/preview'), input),
+  })
 }
 
 /** Whether a rebuild from a previous save is still draining.

@@ -86,11 +86,47 @@ was true at the time, where the catalog only knows today.
 
 ### `added_to_cart`
 ```json
-{ "product_id": "P_77", "quantity": 1, "price": 11990,
+{ "cart_id": "cart_01KYWH", "product_id": "P_77", "quantity": 1, "price": 11990,
   "product_collection": "Smartphones" }
 ```
+| property | required | unlocks |
+|---|---|---|
+| `product_id` | **yes** | which product; catalog lookup |
+| `quantity` | recommended | the basket total; a change, not a new total — see below |
+| `price` | recommended | cart value, the strongest feature in the cart model |
+| `cart_id` | recommended | ties this action to the basket `cart_updated` describes |
+
+**`quantity` is the CHANGE, not the new total.** Going from three to four sends `1`.
+A shop that sends the new total instead overstates every basket that was added to twice.
+
+**`cart_id` matters more than it looks.** `cart_updated` requires it, so a basket can be
+followed across updates — but without it on the actions, an add cannot be tied to the
+basket it went into, and the two are matched by customer and time instead. That is
+correct while a shopper has one basket at a time, and approximate the moment they have
+two (a phone and a laptop, or a B2B account with several draft orders).
+
 Send this as an **action** — one event per add. If your platform can only report the
 cart's current contents, use `cart_updated` instead and say so during onboarding.
+
+### `removed_from_cart`
+```json
+{ "cart_id": "cart_01KYWH", "product_id": "P_77", "quantity": 1, "price": 11990 }
+```
+| property | required | unlocks |
+|---|---|---|
+| `product_id` | **yes** | which line was reduced or dropped |
+| `quantity` | see below | reduce a line by this much; **omit to remove the line entirely** |
+| `price` | recommended | keeps the basket total honest after the removal |
+| `cart_id` | recommended | as above |
+
+**Omitting `quantity` means something different from sending it.** A removal WITH a
+quantity reduces the line by that much; a removal WITHOUT one takes the whole line out,
+whatever was in it. Both are needed, and defaulting the missing one to 1 would turn
+every deletion into a reduction-to-one.
+
+**Without this event a basket cannot be totalled honestly.** Adds alone overstate it:
+measured on one shop, 770 removals against 10,418 adds — roughly one basket in fourteen
+counting something the shopper had taken back out, with nothing to say which.
 
 ### `cart_updated` — cart state
 ```json

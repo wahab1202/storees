@@ -100,6 +100,24 @@ def _signals(ev: dict) -> dict[str, list[str]]:
     return out
 
 
+#: THE SHAPE THIS FILE PRODUCES, NOT WHAT THE PROJECT CONFIGURED.
+#:
+#: The on-disk parquet cache is keyed on the project's MAPPING (see
+#: `_dataset_fingerprint`), which is right for "the rows would differ" and blind to
+#: "the COLUMNS would differ". Adding `cart_id` to the orders projection changed the
+#: columns without changing any mapping, so every project with a warm cache kept its
+#: old parquet and the cart query died binding a column that file has never had:
+#:
+#:   BinderException: Values list "o" does not have a column named "cart_id"
+#:
+#: It is not a stale-data bug the pipeline can detect by reading the rows — the rows
+#: are fine, the schema is a version behind. So the version is stated here and folded
+#: into the cache key: bump it whenever a projection below gains, loses or renames a
+#: column, and every warm cache misses once and rebuilds. A rebuild costs minutes; the
+#: alternative is a crash on the first retrain after deploy, on every project at once.
+CLEANING_SCHEMA_VERSION = 2
+
+
 def _json(col: str, key: str) -> str:
     """Read one key out of a JSON column.
 
@@ -185,6 +203,12 @@ class ProjectConfig:
     snapshot_event: str = "cart_updated"
     snapshot_cart_key: str = "cart_id"
     snapshot_size_key: str = "item_count"
+    #: the property holding the basket's own total, per EVENT_SPEC.md.
+    snapshot_total_key: str = "total"
+    #: every event that means "here is the WHOLE basket". Distinct from
+    #: `cart_add_events`, which mean "a thing went in". Empty for a shop that sends
+    #: only actions -- the basket is then summed from adds minus removes, unchanged.
+    cart_snapshot_events: list[str] = field(default_factory=list)
     # order fields, as property names on the purchase event
     order_id_key: str = "order_id"
     amount_key: str = "total"
@@ -350,6 +374,10 @@ class ProjectConfig:
             # which is visible, rather than a guessed event name that silently matches
             # nothing.
             cart_remove_events=_names(ev.get("cart_remove")),
+            # Declared, or EMPTY — never borrowed, same rule as every meaning above.
+            # A shop that sends no basket snapshot gets none, and the basket is summed
+            # from adds minus removes exactly as it was before this slot existed.
+            cart_snapshot_events=_names(ev.get("cart_snapshot")),
             cart_add_event="add_to_cart",
             snapshot_event=cart_names[0] if snapshot else "cart_updated",
             order_id_key=_prop(order.get("order_id", "order_id")),
@@ -419,6 +447,30 @@ class DatabaseTables:
                 # (`cart_rows._CART_VALUE` among them), so nothing downstream changes
                 # meaning — the information simply survives long enough to be read.
                 f"'quantity': TRY_CAST({_json('properties', c.event_qty_key)} AS DOUBLE), "
+                # THE BASKET'S OWN TOTAL, where the shop reports one.
+                #
+                # This struct is the ONE place that decides what an event carries
+                # downstream — a key absent here is unreachable however faithfully the
+                # mapping names it, which is why reading a snapshot's total failed until
+                # it was added. NULL on every event that is not a basket snapshot, and
+                # on snapshots from a shop that sends no total, so a consumer can tell
+                # "no snapshot" from "a basket worth nothing".
+                #
+                # Named for what it is. `cart_value` was not available: it already means
+                # the value of the single add that opened a cart, and two different
+                # numbers under one name is how this pipeline loses an afternoon.
+                f"'basket_total': TRY_CAST({_json('properties', c.snapshot_total_key)} AS DOUBLE), "
+                # WHICH BASKET this event belongs to, where the shop says so.
+                #
+                # NOT a substitute for `session_id`, which is first-class on every event
+                # and measures a visit. Reading a cart id as if it were a session is a
+                # mistake this file has already made once — it left eight visit features
+                # counting baskets. This is only ever used to tie a cart ACTION to the
+                # SNAPSHOT describing the same basket, and nothing else may read it.
+                #
+                # NULL wherever a shop does not send one, which is the common case and
+                # the reason every consumer must fall back rather than require it.
+                f"'cart_id': {_json('properties', c.snapshot_cart_key)}, "
                 "'session_id': session_id} AS properties")
 
     # -- helpers ---------------------------------------------------------
@@ -558,6 +610,17 @@ class DatabaseTables:
                    'b2b' AS business_type,
                    {_json('properties', 'fulfillment_status')} AS status,
                    {_json('properties', 'dealer_id')} AS dealer_id,
+                   -- WHICH BASKET THIS ORDER CAME OUT OF, where the shop says so.
+                   --
+                   -- Read here rather than inferred later: the cart label matches an
+                   -- order to an occasion by timing and overlapping products, which is
+                   -- exact only while a shopper has one basket open. A shop that names
+                   -- the basket removes the guess; one that does not is unaffected,
+                   -- because NULL falls through to the same matching as before.
+                   --
+                   -- No schema change: `properties` is JSONB and already carries this
+                   -- the moment a shop starts sending it.
+                   {_json('properties', 'cart_id')} AS cart_id,
                    'database' AS source
             FROM ({base})
             WHERE event_name IN ({self._in(c.purchase_events)})
