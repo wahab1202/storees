@@ -1,16 +1,24 @@
 import { Router } from 'express'
-import { eq, and, desc } from 'drizzle-orm'
+import { eq, and, desc, gt } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { predictionTrainingRuns, predictionModelVersions, predictionGoals } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import {
+  goalTargetIsKnown,
+  segmentsUsingGoal,
   createPredictionGoal,
   listPredictionGoals,
   getPredictionGoal,
   updatePredictionGoalStatus,
   deletePredictionGoal,
 } from '../services/predictionGoalService.js'
-import { enqueueTrainingJob } from '../workers/trainingWorker.js'
+import { enqueueTrainingJob, TRAINING_STALE_MS } from '../workers/trainingWorker.js'
+
+/** How far back the screen looks for a training outcome to report. Long enough to
+ *  still be there when someone walks away and comes back; short enough that a
+ *  failure from last week is history, not news. */
+const RECENT_RUN_MS = 6 * 60 * 60_000
+
 import { checkMlHealth, promoteModelVersion } from '../services/mlProxyService.js'
 
 const router = Router()
@@ -25,6 +33,72 @@ router.get('/_ml-health', requireProjectId, async (_req, res) => {
 })
 
 // POST /api/prediction-goals/_retrain-all?projectId=...
+/** Which goals are training right now.
+ *
+ *  Training is minutes of work behind a button that returns in milliseconds — the
+ *  request only queues a job. Without something to poll, the page is identical before
+ *  and after a click: no spinner, no error, nothing moving until the numbers change
+ *  some minutes later. The natural reading is "it didn't work", and the natural
+ *  response is to click again.
+ *
+ *  Mirrors the Event Mapping replay-status endpoint, and for the same reason.
+ */
+router.get('/_training-status', requireProjectId, async (req, res) => {
+  try {
+    const rows = await db
+      .select({ id: predictionGoals.id, name: predictionGoals.name,
+                updatedAt: predictionGoals.updatedAt })
+      .from(predictionGoals)
+      .where(and(
+        eq(predictionGoals.projectId, req.projectId!),
+        eq(predictionGoals.status, 'training'),
+      ))
+
+    // A worker killed mid-run cannot clear its own status, so anything older than the
+    // stale window is reported as finished. A spinner that never stops is worse than
+    // no spinner: it claims work is happening when nothing is.
+    const cutoff = Date.now() - TRAINING_STALE_MS
+    const running = rows.filter(r => (r.updatedAt?.getTime() ?? 0) > cutoff)
+
+    // WHAT HAPPENED THE LAST TIME SOMEBODY PRESSED THE BUTTON.
+    //
+    // A failed training puts the goal back to `active` — anything else would take its
+    // existing model out of scoring. That is right for the pipeline and useless for the
+    // person who just clicked: the card would go back to exactly how it looked before,
+    // and nothing on the screen would say the attempt died. The attempt is recorded, so
+    // read it back and let the page say so.
+    const since = new Date(Date.now() - RECENT_RUN_MS)
+    const recent = await db
+      .select({ goalId: predictionTrainingRuns.goalId, name: predictionGoals.name,
+                status: predictionTrainingRuns.status, reason: predictionTrainingRuns.reason,
+                at: predictionTrainingRuns.trainedAt })
+      .from(predictionTrainingRuns)
+      .innerJoin(predictionGoals, eq(predictionGoals.id, predictionTrainingRuns.goalId))
+      .where(and(
+        eq(predictionTrainingRuns.projectId, req.projectId!),
+        gt(predictionTrainingRuns.trainedAt, since),
+      ))
+      .orderBy(desc(predictionTrainingRuns.trainedAt))
+
+    // One entry per goal — its most recent attempt only. An older failure that has since
+    // been retrained successfully must not keep reporting itself.
+    const latest = new Map<string, typeof recent[number]>()
+    for (const r of recent) if (!latest.has(r.goalId)) latest.set(r.goalId, r)
+    const failures = [...latest.values()]
+      .filter(r => r.status === 'failed' || r.status === 'error')
+      .map(r => ({ goalId: r.goalId, name: r.name, reason: r.reason ?? 'Training did not complete.' }))
+
+    res.json({ success: true, data: {
+      running: running.length > 0,
+      goals: running.map(r => ({ id: r.id, name: r.name })),
+      failures,
+    } })
+  } catch (err) {
+    console.error('Training status error:', err)
+    res.status(500).json({ success: false, error: 'Failed to read training status' })
+  }
+})
+
 // Re-enqueue training for every goal on this project. Used by the
 // "Re-train all" button or after a major data backfill, so goals stuck on
 // insufficient_data get a fresh shot once data lands.
@@ -76,10 +150,58 @@ router.get('/:id', requireProjectId, async (req, res) => {
 // Body: { name, targetEvent, observationWindowDays?, predictionWindowDays?, minPositiveLabels? }
 router.post('/', requireProjectId, async (req, res) => {
   try {
-    const { name, targetEvent, observationWindowDays, predictionWindowDays, minPositiveLabels } = req.body
+    const {
+      name, targetEvent, observationWindowDays, predictionWindowDays,
+      windowsPinned, minPositiveLabels,
+    } = req.body
 
     if (!name || !targetEvent) {
       return res.status(400).json({ success: false, error: 'name and targetEvent are required' })
+    }
+
+    // Pinning without saying what to pin to is the one incoherent combination — the
+    // pipeline would skip the search and then have nothing to skip it in favour of.
+    if (windowsPinned && !(observationWindowDays > 0 && predictionWindowDays > 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Setting the windows yourself needs both an observation and a '
+             + 'prediction window, in days.',
+      })
+    }
+
+    // BOTH ARRIVE IN DAYS; ONLY ONE OF THEM CAN BE A FRACTION.
+    //
+    // `prediction_window_days` is double precision precisely so a window shorter than a
+    // day is expressible — the cart goal derives to five hours, and a form that could
+    // not send 0.2083 would leave the manual path unable to say what the automatic path
+    // says every run. `observation_window_days` is an integer column: a fraction there
+    // is silently truncated by the driver, so a request asking for half a day of history
+    // would train on none and report it as a modelling failure. Rejected loudly instead.
+    if (windowsPinned && !Number.isInteger(observationWindowDays)) {
+      return res.status(400).json({
+        success: false,
+        error: 'The observation window must be a whole number of days.',
+      })
+    }
+
+    // THE TARGET HAS TO BE SOMETHING THIS PROJECT CAN ANSWER.
+    //
+    // Two kinds are valid, and nothing else:
+    //   * one of the built-in goal MEANINGS, which the pipeline recognises by name;
+    //   * an event this project has actually sent, for a goal asked as itself.
+    //
+    // Neither was checked. A goal targeting `this_event_does_not_exist` was accepted
+    // with 201, sat on the screen looking configured, and failed only when somebody
+    // pressed Re-train minutes later — reported as "insufficient data", which reads as
+    // "come back when you have more" rather than "that event does not exist".
+    const known = await goalTargetIsKnown(req.projectId!, String(targetEvent))
+    if (!known) {
+      return res.status(400).json({
+        success: false,
+        error: `"${targetEvent}" is neither a built-in goal nor an event this project `
+             + 'has ever sent, so there would be nothing to learn from. Pick one of the '
+             + 'built-in goals, or an event you are already sending.',
+      })
     }
 
     const goal = await createPredictionGoal(req.projectId!, {
@@ -87,6 +209,7 @@ router.post('/', requireProjectId, async (req, res) => {
       targetEvent,
       observationWindowDays,
       predictionWindowDays,
+      windowsPinned: Boolean(windowsPinned),
       minPositiveLabels,
     })
 
@@ -294,6 +417,21 @@ router.post('/:id/retrain', requireProjectId, async (req, res) => {
 // DELETE /api/prediction-goals/:id?projectId=...
 router.delete('/:id', requireProjectId, async (req, res) => {
   try {
+    // A SEGMENT BUILT ON THIS GOAL'S SCORE LOSES A CONDITION WHEN IT GOES.
+    //
+    // The segment builder exposes `prediction:<goalId>:bucket|score` as filter fields,
+    // so a live segment can be defined partly by a model. Deleting the model would
+    // silently change who is in that segment — and campaigns read segments. Refused
+    // with the names, so the choice is made knowingly rather than discovered later.
+    const used = await segmentsUsingGoal(req.projectId!, req.params.id as string)
+    if (used.length) {
+      return res.status(409).json({
+        success: false,
+        error: `This goal's score is used by ${used.length} segment(s): ${used.join(', ')}. `
+             + 'Remove it from those segments first, or they would silently change.',
+      })
+    }
+
     const deleted = await deletePredictionGoal(req.projectId!, req.params.id as string)
     if (!deleted) {
       return res.status(404).json({ success: false, error: 'Prediction goal not found' })

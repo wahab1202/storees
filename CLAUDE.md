@@ -50,7 +50,12 @@ storees/
 │   ├── backend/         ← Agent 1 (Express, routes, Shopify, DB, workers)
 │   ├── frontend/        ← Agent 2 (Next.js, pages, components, hooks)
 │   ├── segments/        ← Agent 3 (evaluator, templates, lifecycle)
-│   └── flows/           ← Agent 4 (trigger, executor, scheduler, actions)
+│   ├── flows/           ← Agent 4 (trigger, executor, scheduler, actions)
+│   ├── ml/              ← Python. Prediction pipeline: windows, features, labels,
+│   │                      training, scoring. FastAPI, deployed SEPARATELY from
+│   │                      Jenkins — see docs/runbooks/ML_PIPELINE_RELEASE.md
+│   ├── sdk/             ← Browser SDK shops embed to send events
+│   └── sdk-react/       ← React bindings for the above
 ├── docs/                ← All documentation
 ├── .claude/             ← Agent prompts, skills, rules
 ├── package.json         ← Workspace root
@@ -100,7 +105,9 @@ REDIS_URL=redis://...
 SHOPIFY_API_KEY=...
 SHOPIFY_API_SECRET=...
 RESEND_API_KEY=...
-DEMO_DELAY_MINUTES=2          # Set to 30 for production, 2 for demo
+# DEMO_DELAY_MINUTES=2        # Demo only. UNSET in production — see .env.example.
+                              # Any value collapses every flow delay to it; there is
+                              # no "production value". Unset = nodes use their own.
 APP_URL=http://localhost:3001
 FRONTEND_URL=http://localhost:3000
 ```

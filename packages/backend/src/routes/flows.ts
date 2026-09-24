@@ -6,6 +6,7 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
 import { listFlowTemplates, installFlowTemplate, type FlowTemplateId, type TemplateIndustry } from '../services/flowTemplates.js'
+import { projectVocabulary } from '../services/projectVocabulary.js'
 
 const router = Router()
 
@@ -129,7 +130,15 @@ router.get('/:id', requireProjectId, async (req, res) => {
 router.post('/', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
-    const { name, description, triggerEvent, triggerFilters } = req.body
+    // `nodes` and `exitConfig` arrive when a flow is created FROM A TEMPLATE.
+    //
+    // The gallery builds the template's whole journey — the waits, the did-they-buy
+    // checks, the sends — translates it into this project's vocabulary, and passes it
+    // to the create call. This route accepted only the name and trigger, so every one
+    // of those steps was dropped on the floor: a card advertising 7 nodes produced a
+    // flow with 2, a trigger and an end, and nothing in between. Nothing reported it,
+    // because creating a bare flow is also a legitimate thing to do.
+    const { name, description, triggerEvent, triggerFilters, nodes, exitConfig } = req.body
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ success: false, error: 'Name is required' })
@@ -138,26 +147,45 @@ router.post('/', requireProjectId, async (req, res) => {
     // Persist the event + any property filters set in the create dialog. The
     // builder reads config.filters on the trigger node, so they carry straight
     // through when the flow opens.
+    //
+    // The no-event fallback is this project's own cart event. It was the literal
+    // `cart_created` — a name the event dictionary defines but no pack maps and no
+    // shop sends — so a flow created without a trigger waited on something that could
+    // never arrive, for every tenant.
+    const flowVocab = await projectVocabulary(projectId)
     const triggerConfig = {
-      event: triggerEvent || 'cart_created',
+      event: triggerEvent || flowVocab.cartEvents[0] || 'added_to_cart',
       ...(triggerFilters && Array.isArray(triggerFilters.rules) && triggerFilters.rules.length > 0
         ? { filters: triggerFilters }
         : {}),
     }
 
-    const defaultNodes = [
-      { id: 'trigger_1', type: 'trigger', config: triggerConfig },
-      { id: 'end_1', type: 'end', label: 'End' },
-    ]
+      // A bare flow still gets the two-node skeleton the builder opens with.
+      const defaultNodes = [
+        { id: 'trigger_1', type: 'trigger', config: triggerConfig },
+        { id: 'end_1', type: 'end', label: 'End' },
+      ]
 
-    const [flow] = await db.insert(flows).values({
-      projectId,
-      name: name.trim(),
-      description: description?.trim() || '',
-      triggerConfig,
-      nodes: defaultNodes,
-      status: 'draft',
-    }).returning()
+      // A TEMPLATE'S OWN JOURNEY WINS OVER THE SKELETON.
+      //
+      // Its trigger node is re-pointed at `triggerConfig` so the two can never
+      // disagree: the trigger the flow listens on is the one written on the flow row,
+      // whatever the template happened to carry.
+      const supplied = Array.isArray(nodes) && nodes.length > 0
+      const flowNodes = supplied
+        ? (nodes as Array<Record<string, unknown>>).map(n =>
+            n.type === 'trigger' ? { ...n, config: triggerConfig } : n)
+        : defaultNodes
+
+      const [flow] = await db.insert(flows).values({
+        projectId,
+        name: name.trim(),
+        description: description?.trim() || '',
+        triggerConfig,
+        nodes: flowNodes,
+        ...(exitConfig ? { exitConfig } : {}),
+        status: 'draft',
+      }).returning()
 
     res.status(201).json({ success: true, data: flow })
   } catch (err) {

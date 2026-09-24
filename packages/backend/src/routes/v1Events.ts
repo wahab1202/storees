@@ -6,7 +6,7 @@ import { eq, and, sql, inArray } from 'drizzle-orm'
 import { requirePublicKeyAuth } from '../middleware/apiKeyAuth.js'
 import { dataMaskingMiddleware } from '../middleware/dataMasking.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
-import { eventsQueue, metricsQueue, customerAggregateQueue } from '../services/queue.js'
+import { eventsQueue, metricsQueue, customerAggregateQueue, publishEvent, publishEvents } from '../services/queue.js'
 import { resolveCustomer as resolveCustomerService } from '../services/customerService.js'
 import { linkAnonymousSession } from '../services/anonymousSessionService.js'
 import { setCrossBrandConsent } from '../services/globalIdentityService.js'
@@ -25,14 +25,34 @@ function deriveIdempotencyKey(
   customerId: string,
   properties: Record<string, unknown> | undefined,
   ts: Date,
+  callerSuppliedTimestamp: boolean,
 ): string {
-  const bucket = Math.floor(ts.getTime() / DEDUP_WINDOW_MS)
+  // WHAT SEPARATES A REDELIVERY FROM A REAL REPEAT.
+  //
+  // A redelivered webhook carries the SAME timestamp it did the first time. A shopper
+  // pressing + twice carries two different ones. So when the caller states the time,
+  // that is the discriminator, to the millisecond.
+  //
+  // Bucketing to ten seconds instead assumed repeats look different in their payload —
+  // "distinct states differ in properties". That was true while a quantity meant the
+  // line's new total, and false the moment it meant "one more", which is what the event
+  // contract actually specifies. Measured on an Amazon-style stepper: five presses of +
+  // inside a second, five identical payloads, ONE event stored and four silently lost.
+  // The shop held five units and the analytics held one, with nothing anywhere to say
+  // events had been dropped.
+  //
+  // Only when no timestamp is supplied does the time bucket stand in, because then the
+  // server's own clock differs between a delivery and its retry and nothing else could
+  // collapse them.
+  const when = callerSuppliedTimestamp
+    ? ts.getTime()
+    : Math.floor(ts.getTime() / DEDUP_WINDOW_MS)
   const hash = crypto
     .createHash('sha1')
     .update(`${customerId}|${JSON.stringify(properties ?? {})}`)
     .digest('hex')
     .slice(0, 24)
-  return `auto:${eventName}:${hash}:${bucket}`
+  return `auto:${eventName}:${hash}:${when}`
 }
 
 // All v1 routes require API key auth (public-key-only for SDK compatibility)
@@ -104,7 +124,8 @@ router.post('/events', async (req: Request, res: Response) => {
     // legitimately return to an earlier state later without being dropped.
     const effectiveKey = payload.idempotency_key
       ? payload.idempotency_key
-      : deriveIdempotencyKey(payload.event_name.trim(), customerId ?? eventSessionId ?? 'anon', payload.properties, eventTimestamp)
+      : deriveIdempotencyKey(payload.event_name.trim(), customerId ?? eventSessionId ?? 'anon',
+                             payload.properties, eventTimestamp, Boolean(payload.timestamp))
 
     const result = await db.execute(sql`
       INSERT INTO events (project_id, customer_id, event_name, properties, platform, source, session_id, device_id, idempotency_key, timestamp)
@@ -137,10 +158,23 @@ router.post('/events', async (req: Request, res: Response) => {
         }
       }
 
-      // Update customer lastSeen
-      await db.update(customers)
-        .set({ lastSeen: eventTimestamp, updatedAt: new Date() })
-        .where(eq(customers.id, customerId))
+      // Update customer lastSeen — never into the future, never backwards.
+      //
+      // Two separate ways this field was wrong. `eventTimestamp` is the caller's, and
+      // nothing checks it against the clock, so a skewed sender or a backfill that
+      // dates follow-ups forward pushes "last seen" past today and it never returns.
+      // And a plain SET moves the field to whatever arrived LAST, so one late delivery
+      // of an old event drags a live customer's recency backwards — the aggregate
+      // worker has always used GREATEST for exactly that reason; this path did not.
+      //
+      // Recency is a model input, not a display date: it feeds days_since_last_seen,
+      // churn, dormancy, "Active (7d)", and every recency segment filter.
+      await db.execute(sql`
+        UPDATE customers
+        SET last_seen = GREATEST(last_seen, LEAST(${eventTimestamp}, NOW())),
+            updated_at = NOW()
+        WHERE id = ${customerId}
+      `)
 
       // Handle SDK-specific events (incl. the session→customer stitch)
       await handleSdkEvent(projectId, customerId, payload)
@@ -155,7 +189,7 @@ router.post('/events', async (req: Request, res: Response) => {
         source: eventSource,
         timestamp: eventTimestamp.toISOString(),
       }
-      await eventsQueue.add(payload.event_name, jobPayload)
+      await publishEvent(payload.event_name, jobPayload)
       await metricsQueue.add('recompute', jobPayload)
       // Customer-aggregate worker — folds the event into total_orders /
       // total_spent / last_order_date / etc. Replaces the FDW federation cron.
@@ -400,18 +434,46 @@ router.post('/events/batch', async (req: Request, res: Response) => {
 
     if (jobPayloads.length > 0) {
       await Promise.all([
-        eventsQueue.addBulk(jobPayloads),
+        publishEvents(jobPayloads.map(j => ({ name: j.name, data: j.data }))),
         metricsQueue.addBulk(jobPayloads.map(j => ({ name: 'recompute', data: j.data }))),
         customerAggregateQueue.addBulk(aggregateJobs),
       ])
     }
 
-    // Phase 7: Bulk update lastSeen for affected (identified) customers.
-    const customerIds = [...new Set(customerEvents.map(e => e.customerId))]
-    if (customerIds.length > 0) {
-      await db.update(customers)
-        .set({ lastSeen: new Date(), updatedAt: new Date() })
-        .where(inArray(customers.id, customerIds))
+    // Phase 7: lastSeen for affected customers — THE EVENT'S OWN TIME, not the clock.
+    //
+    // This set `lastSeen: new Date()` for every customer in the batch, so an import
+    // stamped all of them "active right now" whatever their events actually said.
+    // Measured: 760 seeded customers whose real activity spanned five months came out
+    // with last_seen = today, all 760 wrong. The single-event path above has always
+    // done this correctly; the batch path — the one every history import uses — did
+    // not, so the shops most affected are those arriving with years of data.
+    //
+    // Recency is a model input, not a display date: it feeds days_since_last_seen,
+    // churn, dormancy, "Active (7d)" and every recency segment filter. A whole base
+    // stamped today means nobody is ever at risk and nothing is ever dormant.
+    //
+    // Same rule as the single path: never into the future (a skewed sender), never
+    // backwards (a late delivery of an old event), and per customer rather than one
+    // value for the entire batch.
+    const latestSeen = new Map<string, Date>()
+    for (const e of customerEvents) {
+      const raw = (e.payload as { timestamp?: string }).timestamp
+      const ts = raw ? new Date(raw) : new Date()
+      if (Number.isNaN(ts.getTime())) continue
+      const prev = latestSeen.get(e.customerId)
+      if (!prev || ts > prev) latestSeen.set(e.customerId, ts)
+    }
+    if (latestSeen.size > 0) {
+      const rows = [...latestSeen.entries()].map(([id, ts]) =>
+        sql`(${id}::uuid, ${ts.toISOString()}::timestamptz)`)
+      await db.execute(sql`
+        UPDATE customers c
+        SET last_seen = GREATEST(c.last_seen, LEAST(v.seen_at, NOW())),
+            updated_at = NOW()
+        FROM (VALUES ${sql.join(rows, sql`, `)}) AS v(id, seen_at)
+        WHERE c.id = v.id
+      `)
     }
 
     const succeeded = results.filter(r => r.id).length
@@ -595,12 +657,38 @@ async function resolveCustomer(
   projectId: string,
   payload: EventIngestionPayload,
 ): Promise<string> {
-  // Delegate to shared service (handles resolution, creation, lastSeen, ON CONFLICT)
+  // WHEN THE EVENT HAPPENED, not when it arrived.
+  //
+  // This passed identifiers only, so the service had nothing to date the customer by
+  // and fell back to the clock: `first_seen = NOW()` on insert, and `last_seen = NOW()`
+  // again on EVERY subsequent event through its ON CONFLICT branch. A shop importing
+  // five years of history therefore got a base where every customer first appeared
+  // today and was last active today. Measured on a 760-customer seed spanning five
+  // months: all 760 came out stamped with the import date, every one of them wrong.
+  //
+  // That is not a cosmetic date. `days_since_last_seen` and `days_since_first_seen`
+  // feed churn, dormancy, "Active (7d)" and every recency segment — so an imported
+  // base reads as uniformly fresh, nobody is ever at risk and nothing is ever dormant.
+  //
+  // Two values are needed, not one. `sourceCreatedAt` fixes first_seen; without
+  // `skipLastSeenBump` the ON CONFLICT branch keeps re-stamping NOW() on each event
+  // and the correct value can never survive. With the bump suppressed, last_seen is
+  // owned by the two update paths that know the event's own time and clamp it — never
+  // into the future, never backwards.
+  //
+  // A LIVE event is unaffected: its timestamp IS now, so the result is identical.
+  const eventAt = payload.timestamp ? new Date(payload.timestamp) : new Date()
+  const seenAt = Number.isNaN(eventAt.getTime())
+    ? new Date()
+    : new Date(Math.min(eventAt.getTime(), Date.now()))
+
   const customerId = await resolveCustomerService({
     projectId,
     externalId: payload.customer_id ?? undefined,
     email: payload.customer_email ?? undefined,
     phone: payload.customer_phone ?? undefined,
+    sourceCreatedAt: seenAt,
+    skipLastSeenBump: true,
   })
 
   // Ensure identity records exist for this customer (idempotent via ON CONFLICT)

@@ -5,8 +5,9 @@ import { segments, customers, customerSegments } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole, resolveScopedAgentIds } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
-import { evaluateSegment, evaluateAllSegments, instantiateDefaultSegments } from '../services/segmentService.js'
-import { getLifecycleChart, filterToSql, scopedFilterToSql } from '@storees/segments'
+import { evaluateSegment, evaluateAllSegments } from '../services/segmentService.js'
+import { getLifecycleChart } from '@storees/segments'
+import { scopedFilterSqlForProject } from '../services/projectVocabulary.js'
 import type { FilterConfig } from '@storees/shared'
 import { exportSegmentAudience, SUPPORTED_PLATFORMS, platformLabel, type AdPlatform } from '../services/adAudienceExport.js'
 
@@ -17,8 +18,12 @@ router.get('/', requireProjectId, async (req, res) => {
   try {
     const projectId = req.projectId!
 
-    // Ensure default segments exist (evaluates them on first creation)
-    await instantiateDefaultSegments(projectId)
+    // Seeding deliberately does NOT happen here. Listing segments is a read, and this
+    // call made it a write: every project is seeded at creation — by the vertical pack,
+    // by onboarding, or explicitly by the integrations route — and this line then added
+    // a THIRD set the first time anyone opened the page. A freshly onboarded ecommerce
+    // project went 8 -> 14 on one click, with two different segments both named
+    // "At Risk". Nobody had done anything; the page did it.
 
     // Return cached counts immediately, re-evaluate in background
     const rows = await db
@@ -31,10 +36,16 @@ router.get('/', requireProjectId, async (req, res) => {
       data: rows,
     })
 
-    // Fire-and-forget: re-evaluate all segments after response is sent
-    evaluateAllSegments(projectId).catch(err => {
-      console.error('Background segment evaluation error:', err)
-    })
+    // NO AUTOMATIC RE-EVALUATION HERE. Reading a page is not a request to recompute.
+    //
+    // This used to fire a full pass — 58 segments, 181 seconds measured — after every
+    // single response, so merely looking at the screen rewrote every membership in the
+    // project, and a few refreshes in a minute stacked several passes over the same rows.
+    //
+    // Membership decides who campaigns and flows send to. Rebuilding it is a deliberate
+    // act, and it now happens only where somebody asks for it: the Re-evaluate All
+    // button, saving a segment, or the aggregate recalculation on the Customers page.
+    // The counts shown here are whatever the last real pass produced.
   } catch (err) {
     console.error('Segment list error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch segments' })
@@ -67,7 +78,10 @@ router.post('/preview', requireProjectId, async (req: AuthenticatedRequest, res)
     }
 
     const scopedIds = await resolveScopedAgentIds(req)
-    const filterSql = scopedFilterToSql(filters, scopedIds)
+    // Vocabulary-aware. The bare `scopedFilterToSql` compiled this preview against
+    // retail's words, so a shop using its own previewed 0 and then saved a segment
+    // that had members.
+    const filterSql = await scopedFilterSqlForProject(projectId, filters, scopedIds)
 
     // Get total count
     const [{ total }] = await db
@@ -285,7 +299,9 @@ router.delete('/:id', requireRole('admin'), requireProjectId, async (req, res) =
 // Admin-only: writes cross all customers regardless of viewer's scope.
 router.post('/evaluate', requireRole('admin'), requireProjectId, async (req, res) => {
   try {
-    await evaluateAllSegments(req.projectId!)
+    // `force`: the cooldown exists to stop page views triggering passes, not to
+    // ignore somebody pressing the button. The in-flight guard still applies.
+    await evaluateAllSegments(req.projectId!, { force: true })
     res.json({ success: true, data: { message: 'Segments evaluated' } })
   } catch (err) {
     console.error('Segment evaluation error:', err)

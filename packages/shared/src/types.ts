@@ -1,6 +1,6 @@
 // ============ DATABASE MODELS ============
 
-export type DomainType = 'ecommerce' | 'fintech' | 'saas' | 'custom'
+export type DomainType = 'ecommerce' | 'fintech' | 'saas' | 'edtech' | 'custom'
 export type IntegrationType = 'shopify' | 'api_key' | 'stripe' | 'custom'
 
 export type Project = {
@@ -985,8 +985,16 @@ export type PredictionGoal = {
   targetEvent: string
   observationWindowDays: number
   predictionWindowDays: number
+  /** true when these two windows were set by hand and training must use them as given
+   *  rather than deriving its own. The resulting score was not selected on held-out
+   *  rounds, so any screen showing it alongside a derived goal's must say which. */
+  windowsPinned: boolean
   minPositiveLabels: number
-  status: 'active' | 'paused' | 'insufficient_data'
+  /** `training` is transient — set when a retrain is queued, replaced by whatever the
+   *  run produces. The worker clears it on every exit, including the failure paths, and
+   *  anything left over an hour is treated as finished (a worker killed mid-run cannot
+   *  clear its own status, and a spinner that never stops is worse than none). */
+  status: 'active' | 'paused' | 'insufficient_data' | 'training'
   lastTrainedAt: Date | null
   currentMetric: number | null
   origin: 'pack' | 'user'

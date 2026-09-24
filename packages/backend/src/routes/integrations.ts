@@ -19,6 +19,7 @@ import { encrypt } from '../services/encryption.js'
 import { redis } from '../services/redis.js'
 import { generateJwt, jwtPayloadFrom } from '../services/authService.js'
 import { requireAuth } from '../middleware/requireAuth.js'
+import { activatePack } from '../services/verticalPackService.js'
 import { requireProjectAccess } from '../middleware/membership.js'
 import { instantiateDefaultSegments } from '../services/segmentService.js'
 import { instantiateDefaultFlows } from '../services/flowService.js'
@@ -99,8 +100,21 @@ router.get('/shopify/callback', async (req, res) => {
     // Register webhooks
     await registerWebhooks(shop, accessToken, projectId)
 
-    // Create default segments and flows
-    await instantiateDefaultSegments(projectId)
+    // A Shopify install is an ECOMMERCE onboarding, so it gets the ecommerce pack —
+    // the same one the setup wizard runs.
+    //
+    // It used to seed only `instantiateDefaultSegments`, which predates vertical packs
+    // and hands over six generic segments and nothing else: no event meanings, no
+    // prediction goals, no field paths, no cadence signal. Two identical shops joining
+    // on the same day got different products depending on which door they came through,
+    // and the Shopify one could not train a model at all because nothing told the
+    // pipeline which event was the purchase.
+    //
+    // Safe on reinstall: `activatePack` now finds-or-creates the catalogue and skips
+    // goals and segments that already exist. Before that it threw on the duplicate goal
+    // name and left the project half configured, which is why this could not simply be
+    // swapped in earlier.
+    await activatePack(projectId, 'ecommerce')
     await instantiateDefaultFlows(projectId)
 
     // Trigger historical sync

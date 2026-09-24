@@ -8,6 +8,7 @@ import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from '.
 import { buildDecisionVars } from './decisioningService.js'
 import { createHash } from 'node:crypto'
 import { evaluateEventFilters, readPath } from '@storees/shared'
+import { filterSqlForProject } from './projectVocabulary.js'
 import type {
   FilterConfig,
   FlowNode,
@@ -517,7 +518,7 @@ async function evaluateCondition(
     const [row] = await db
       .select({ one: sql`1` })
       .from(customers)
-      .where(and(eq(customers.id, customerId), filterToSql(config.attributeFilter)))
+      .where(and(eq(customers.id, customerId), await filterSqlForProject(String((trip as Record<string, unknown>).projectId), config.attributeFilter)))
       .limit(1)
     return !!row
   }

@@ -4,6 +4,7 @@ import { db } from '../db/connection.js'
 import { customers, segments } from '../db/schema.js'
 import { filterToSql } from '@storees/segments'
 import type { FilterConfig } from '@storees/shared'
+import { filterSqlForProject } from './projectVocabulary.js'
 
 // Gap 8: ad-platform audience export. Resolves the segment to its current
 // member list, hashes PII per each platform's spec, returns a CSV the
@@ -150,7 +151,7 @@ export async function exportSegmentAudience(
     .limit(1)
   if (!segment) throw new Error('Segment not found')
 
-  const sqlCond = filterToSql(segment.filters as FilterConfig)
+  const sqlCond = await filterSqlForProject(projectId, segment.filters as FilterConfig)
   const rows = await db
     .select({ email: customers.email, phone: customers.phone, name: customers.name })
     .from(customers)

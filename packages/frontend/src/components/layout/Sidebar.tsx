@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   UserCircle,
   PlugsConnected as Webhook,
+  ArrowsLeftRight as EventMapIcon,
 } from '@phosphor-icons/react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,11 @@ const navItems: NavItem[] = [
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
   { href: '/event-sources', label: 'Event Sources', icon: Webhook, adminOnly: true },
+  // SUPER-ADMIN ONLY, not merely admin. Saving here rebuilds a client's order history
+  // and moves their reported revenue by crores; even READING it invites the question
+  // of why the boxes cannot be changed. It sits with Clients and Projects — the other
+  // surfaces a project admin has no business seeing at all.
+  { href: '/event-sources/mapping', label: 'Event Mapping', icon: EventMapIcon, superAdminOnly: true },
   { href: '/debugger', label: 'Event Debugger', icon: Radio, adminOnly: true },
   { href: '/logs', label: 'Notification Logs', icon: ScrollText, adminOnly: true },
 ]
@@ -249,6 +255,10 @@ export function Sidebar() {
   const visibleNavItems = visibleFor(role, isSuperAdmin, navItems)
   const visibleBottomItems = visibleFor(role, isSuperAdmin, bottomItems)
 
+  // Every href on screen, so each item can tell whether a deeper one owns the current
+  // page. Without it a parent and its nested child both highlight — see SidebarItem.
+  const allHrefs = [...visibleNavItems, ...visibleBottomItems].map(i => i.href)
+
   // Close mobile drawer on route change
   useEffect(() => {
     setMobileOpen(false)
@@ -266,7 +276,7 @@ export function Sidebar() {
 
   const sidebarContent = (
     <>
-      <div className="px-4 py-5 flex items-center justify-between">
+      <div className="shrink-0 px-4 py-5 flex items-center justify-between">
         <img
           src="https://cdn.waioz.com/webpimg/imgi_19_image.webp"
           alt="Storees"
@@ -283,9 +293,22 @@ export function Sidebar() {
       </div>
 
       {/* Project Switcher */}
-      <ProjectSwitcher />
+      <div className="shrink-0"><ProjectSwitcher /></div>
 
-      <nav className="flex-1 flex flex-col gap-1 py-2">
+      {/*
+        THE NAV SCROLLS; EVERYTHING ELSE STAYS PUT.
+
+        `flex-1` alone does not make a flex child shrink — its default `min-height:auto`
+        keeps it at least as tall as its content. So once the item list outgrew the
+        viewport the nav simply pushed the footer off the bottom of the screen, and the
+        signed-in account disappeared with no way to reach it. Three super-admin items
+        were enough to do it on a laptop.
+
+        `min-h-0` lets it shrink, `overflow-y-auto` gives the overflow somewhere to go,
+        and the blocks above and below are pinned with `shrink-0` so the account and
+        Settings are reachable at any window height.
+      */}
+      <nav className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1 py-2">
         {visibleNavItems.map((item) => {
           const countMap: Record<string, number | undefined> = {
             '/customers': counts?.customers,
@@ -295,18 +318,18 @@ export function Sidebar() {
             '/flows': counts?.flows,
           }
           return (
-            <SidebarItem key={item.href} {...item} count={countMap[item.href]} />
+            <SidebarItem key={item.href} {...item} allHrefs={allHrefs} count={countMap[item.href]} />
           )
         })}
       </nav>
 
-      <div className="border-t border-white/10 py-2">
+      <div className="shrink-0 border-t border-white/10 py-2">
         {visibleBottomItems.map((item) => (
-          <SidebarItem key={item.href} {...item} />
+          <SidebarItem key={item.href} {...item} allHrefs={allHrefs} />
         ))}
       </div>
 
-      <UserMenu />
+      <div className="shrink-0"><UserMenu /></div>
     </>
   )
 

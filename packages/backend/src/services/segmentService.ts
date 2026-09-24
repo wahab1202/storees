@@ -1,20 +1,34 @@
 import { eq, and, sql, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { segments, customers, customerSegments } from '../db/schema.js'
-import { SEGMENT_TEMPLATE_DEFINITIONS, filterToSql } from '@storees/segments'
+import { SEGMENT_TEMPLATE_DEFINITIONS } from '@storees/segments'
 import { eventsQueue } from './queue.js'
 import { emitWebhookEvent } from './webhookService.js'
 import type { FilterConfig } from '@storees/shared'
+import { filterSqlForProject } from './projectVocabulary.js'
 
 /**
- * Create the 4 default segments for a new project from templates.
- * Idempotent — skips if segments already exist for the project.
+ * Create the default segments for a new project from templates.
+ * Idempotent — skips if the project already has ANY segments.
+ *
+ * The guard used to look only for `type = 'default'`, and the two other seeders write
+ * `type = 'template'` — the vertical pack's list and onboarding's domain list. So a
+ * project that had already been seeded twice still looked empty to this check, and
+ * because `GET /api/segments` calls this before rendering, merely OPENING the segments
+ * page added a third set. A freshly onboarded ecommerce project went from 8 segments to
+ * 14 on the first click, with two different segments both named "At Risk" and one
+ * ("Overdue Reorders") filtering on `days_overdue`, a lending field that resolves to
+ * nothing in a shop.
+ *
+ * Widening the check to any segment is the small fix. The real problem is that a GET
+ * mutates data at all; seeding belongs at project creation, and this call should
+ * eventually come out of the read path.
  */
 export async function instantiateDefaultSegments(projectId: string): Promise<void> {
   const existing = await db
     .select({ id: segments.id })
     .from(segments)
-    .where(and(eq(segments.projectId, projectId), eq(segments.type, 'default')))
+    .where(eq(segments.projectId, projectId))
     .limit(1)
 
   if (existing.length > 0) return
@@ -59,7 +73,10 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
   if (!segment || !segment.isActive) return 0
 
   const filters = segment.filters as FilterConfig
-  const filterSql = filterToSql(filters)
+  // Evaluate against THIS project's vocabulary. Without it every product, browse and
+  // order filter compiles to a shop's event names, and a lender's "took a Gold Loan"
+  // segment returns nobody while looking exactly like a segment nobody qualifies for.
+  const filterSql = await filterSqlForProject(segment.projectId, filters)
 
   // Find all matching customers for this project. Pull reachability flags
   // alongside so we can compute reachableCount in the same scan — match +
@@ -180,13 +197,71 @@ export async function evaluateSegment(segmentId: string): Promise<number> {
 /**
  * Re-evaluate all active segments for a project.
  */
-export async function evaluateAllSegments(projectId: string): Promise<void> {
+/** One full pass per project at a time, and not on every page view.
+ *
+ *  MEASURED on GoWelmart: 58 segments, 181 seconds, 3.1s each. Nothing coordinated
+ *  those passes. The segments list endpoint fired one after every response, so opening
+ *  the page three times in a minute started three concurrent three-minute passes, all
+ *  rewriting the same `customer_segments` rows — and each one attaches its own database
+ *  connections. That is the shape of the exhaustion we already hit once today.
+ *
+ *  Two guards, both cheap:
+ *    IN FLIGHT  a second caller joins the run already going rather than starting another
+ *    COOLDOWN   a background caller skips entirely if one finished recently
+ *
+ *  `force` bypasses the cooldown only — never the in-flight guard, because two
+ *  simultaneous passes are never what anyone wants. It is for the Re-evaluate All
+ *  button, where somebody is explicitly asking for it now.
+ */
+const inFlight = new Map<string, Promise<void>>()
+const lastFinished = new Map<string, number>()
+
+/** How recently a pass must have finished for a background caller to skip its own.
+ *  Long enough that browsing the page a few times costs one pass, short enough that a
+ *  send list is never badly out of date. */
+const SEGMENT_COOLDOWN_MS = Number(process.env.SEGMENT_COOLDOWN_MS ?? 10 * 60_000)
+
+export async function evaluateAllSegments(
+  projectId: string,
+  opts: { force?: boolean } = {},
+): Promise<void> {
+  const running = inFlight.get(projectId)
+  if (running) return running
+
+  const since = Date.now() - (lastFinished.get(projectId) ?? 0)
+  if (!opts.force && since < SEGMENT_COOLDOWN_MS) {
+    console.log(`[segments] skipped — a full pass finished ${Math.round(since / 1000)}s ago`)
+    return
+  }
+
+  const run = _evaluateAllSegments(projectId).finally(() => {
+    lastFinished.set(projectId, Date.now())
+    inFlight.delete(projectId)
+  })
+  inFlight.set(projectId, run)
+  return run
+}
+
+/** Whether a pass is running right now, for the screen to say so. */
+export const segmentsEvaluating = (projectId: string) => inFlight.has(projectId)
+
+async function _evaluateAllSegments(projectId: string): Promise<void> {
   const activeSegments = await db
     .select({ id: segments.id })
     .from(segments)
     .where(and(eq(segments.projectId, projectId), eq(segments.isActive, true)))
 
+  // One segment must not take the others down. A single malformed filter — a template
+  // pointing at a field nothing supplies — used to throw out of this loop and abort
+  // every remaining segment, so a project silently stopped updating ALL memberships
+  // because of one bad row. Failures are logged and the loop continues.
   for (const segment of activeSegments) {
-    await evaluateSegment(segment.id)
+    try {
+      await evaluateSegment(segment.id)
+    } catch (err) {
+      console.error(
+        `[segments] evaluation failed for ${segment.id} — skipping it and continuing:`,
+        (err as Error).message)
+    }
   }
 }

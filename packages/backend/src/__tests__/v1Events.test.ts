@@ -13,6 +13,11 @@ vi.mock('../db/connection.js', () => ({
     update: vi.fn().mockReturnThis(),
     set: vi.fn().mockReturnThis(),
     onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    // The ingest path writes the event with raw SQL so it can use
+    // ON CONFLICT ... DO NOTHING RETURNING id, and reads `rows` back to tell a
+    // fresh insert from an idempotent replay. It also stamps last_seen the same
+    // way. Both need `execute` on the mock; one returning row stands for a new event.
+    execute: vi.fn().mockResolvedValue({ rows: [{ id: 'evt_123' }] }),
   },
 }))
 
@@ -56,6 +61,13 @@ vi.mock('../services/queue.js', () => ({
   eventsQueue: { add: vi.fn().mockResolvedValue({ id: 'job_event' }), addBulk: vi.fn().mockResolvedValue([]) },
   metricsQueue: { add: vi.fn().mockResolvedValue({ id: 'job_metrics' }), addBulk: vi.fn().mockResolvedValue([]) },
   identityMergeQueue: { add: vi.fn().mockResolvedValue({ id: 'job_identity' }) },
+  // The single-event path fans out through publishEvent and queues the aggregate
+  // job; the batch path uses the plural form. A mock missing either makes ingestion
+  // throw and the route answer 500, which reads as a broken endpoint rather than a
+  // stale mock.
+  customerAggregateQueue: { add: vi.fn().mockResolvedValue({ id: 'job_agg' }), addBulk: vi.fn().mockResolvedValue([]) },
+  publishEvent: vi.fn().mockResolvedValue(undefined),
+  publishEvents: vi.fn().mockResolvedValue(undefined),
 }))
 
 import express from 'express'

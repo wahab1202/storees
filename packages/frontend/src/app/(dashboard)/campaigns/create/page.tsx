@@ -32,6 +32,7 @@ import { VariablePanel } from '@/components/templates/VariablePanel'
 import { MultiPlatformPushBlock } from '@/components/campaigns/MultiPlatformPushBlock'
 import { AiCopywriterPanel } from '@/components/campaigns/AiCopywriterPanel'
 import { ApiError } from '@/lib/api'
+import { useEventNames } from '@/hooks/useEvents'
 import type { CampaignContentType, CampaignChannel, CampaignDeliveryType, CampaignSendTimeMode, CampaignUtmParameter, CampaignUtmParameters, ConversionGoal, GmailAnnotation, PeriodicSchedule, FilterConfig, ProjectEmailSender, TemplateVariable } from '@storees/shared'
 import {
   ArrowLeft,
@@ -3196,7 +3197,15 @@ function Step3ScheduleGoals({
   countForFreqCapping: boolean; setCountForFreqCapping: (v: boolean) => void
   inputClass: string; selectClass: string
 }) {
-  const eventOptions = ['order_completed', 'product_viewed', 'added_to_cart', 'checkout_started', 'page_viewed', 'app_opened', 'signed_up']
+  // The project's OWN events, not a fixed list.
+  //
+  // This read `order_completed, product_viewed, added_to_cart, …` — Storees' vocabulary,
+  // and one name (`order_completed`) that is no longer part of even that. A campaign's
+  // conversion goal names the event that counts as success, so a shop using its own
+  // words could not choose the event that actually means a sale: the goal was set to a
+  // name they never send and reported zero conversions for a campaign that worked.
+  const { data: eventNamesData } = useEventNames()
+  const eventOptions: string[] = eventNamesData?.data ?? []
 
   const addGoal = () => setConversionGoals([
     ...conversionGoals,

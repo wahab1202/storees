@@ -16,7 +16,12 @@ type TabId = 'script' | 'npm' | 'api'
 const DOMAIN_EVENTS: Record<string, Array<{ name: string; example: string }>> = {
   ecommerce: [
     { name: 'product_viewed', example: "Storees.track('product_viewed', { product_id: 'SKU-123', name: 'Blue T-Shirt', price: 2999 })" },
-    { name: 'add_to_cart', example: "Storees.track('add_to_cart', { product_id: 'SKU-123', quantity: 1, price: 2999 })" },
+    // `added_to_cart`, past tense, matching `added_to_wishlist`. This screen is the
+    // integration spec a new shop copies from, and it read `add_to_cart` — a name that
+    // exists in no pack and no schema. A shop following it exactly sent an event
+    // nothing maps, so cart metrics, cart segments and the abandoned-cart flow all
+    // stayed empty with no error anywhere.
+    { name: 'added_to_cart', example: "Storees.track('added_to_cart', { product_id: 'SKU-123', quantity: 1, price: 2999 })" },
     { name: 'checkout_started', example: "Storees.track('checkout_started', { cart_total: 5998, item_count: 2 })" },
     { name: 'order_placed', example: "Storees.track('order_placed', { order_id: 'ORD-456', total: 5998 })" },
   ],

@@ -24,7 +24,11 @@ export function StatusStrip({ tabs, active, onChange }: StatusStripProps) {
             key={tab.key}
             onClick={() => onChange(i === 0 ? null : tab.key)}
             className={cn(
-              'flex-1 min-w-[100px] px-4 py-3 text-center transition-colors border-b-2',
+              // Same rule as the dashboard's metric strip: grow to fill, but never
+              // shrink below the number inside. `flex-1` is basis:0 + shrink:1, so a
+              // cell collapses to the 100px floor and a long count (1,23,45,678) runs
+              // out of the box and over its neighbour.
+              'grow shrink-0 basis-auto min-w-[100px] px-4 py-3 text-center transition-colors border-b-2',
               isActive
                 ? 'border-accent bg-accent/5'
                 : 'border-transparent hover:bg-surface',

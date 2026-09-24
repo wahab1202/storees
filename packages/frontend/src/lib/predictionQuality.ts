@@ -53,3 +53,24 @@ export function getAucQuality(metric: number | null | undefined, isBehavior: boo
   }
   return { label: 'Strong', colorClass: 'text-emerald-600' }
 }
+
+
+/** The five goals whose `target_event` is a GOAL NAME, not an event anybody sends.
+ *
+ *  `dormancy`, `churn` and `cart_abandoned` are questions the pipeline works out from a
+ *  project's mapped events — a cart with no order after it, activity that stopped. No
+ *  shop emits them. The card showed them under "Target:" beside real event names like
+ *  `order_placed`, so an internal word read as something the shop was expected to send,
+ *  and a reasonable person asked why they were never receiving it.
+ */
+export const PSEUDO_GOAL_EVENTS: Record<string, { label: string; from: string[] }> = {
+  purchase:        { label: 'Purchase',            from: ['purchase'] },
+  repeat_purchase: { label: 'Repeat purchase',     from: ['purchase'] },
+  dormancy:        { label: 'Dormancy',            from: ['purchase', 'product_viewed', 'add_to_cart'] },
+  churn:           { label: 'Churn',               from: ['purchase'] },
+  cart_abandoned:  { label: 'Cart abandonment',    from: ['add_to_cart', 'purchase'] },
+}
+
+/** Whether this goal watches a real event the shop sends, or is derived from meanings. */
+export const isPseudoGoal = (targetEvent: string) =>
+  Object.prototype.hasOwnProperty.call(PSEUDO_GOAL_EVENTS, targetEvent)

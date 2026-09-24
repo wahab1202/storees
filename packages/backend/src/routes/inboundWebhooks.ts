@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import crypto from 'node:crypto'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, sql, asc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { inboundWebhooks, inboundWebhookEvents, eventDefinitions } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -137,7 +137,13 @@ router.get('/:id/events', requireProjectId, async (req, res) => {
     const [rows, [{ count }]] = await Promise.all([
       db.select().from(inboundWebhookEvents)
         .where(eq(inboundWebhookEvents.webhookId, webhookId))
-        .orderBy(desc(inboundWebhookEvents.receivedAt))
+      // A tie-break, so LIMIT/OFFSET has a total order to page through.
+      // Without it, rows sharing the sort value come back in whatever order the
+      // planner chooses per query, and paging then repeats some rows while hiding
+      // others — measured at 132 duplicates in 1,250 customer rows before the
+      // same fix was applied there. Scores tie far harder than that: calibration
+      // lands 3,406 customers on 266 distinct values.
+        .orderBy(desc(inboundWebhookEvents.receivedAt), asc(inboundWebhookEvents.id))
         .limit(pageSize)
         .offset((page - 1) * pageSize),
       db.select({ count: sql<number>`count(*)::int` }).from(inboundWebhookEvents)

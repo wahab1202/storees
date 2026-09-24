@@ -10,11 +10,32 @@ type SidebarItemProps = {
   label: string
   icon: Icon
   count?: number
+  /** Every href in the sidebar. Needed so an item can tell whether a deeper item
+   *  already owns the current page — see `isActive` below. */
+  allHrefs?: string[]
 }
 
-export function SidebarItem({ href, label, icon: Icon, count }: SidebarItemProps) {
+export function SidebarItem({ href, label, icon: Icon, count, allHrefs }: SidebarItemProps) {
   const pathname = usePathname()
-  const isActive = pathname === href || pathname.startsWith(`${href}/`)
+
+  // THE LONGEST MATCHING HREF WINS.
+  //
+  // This read `pathname === href || pathname.startsWith(href + '/')`, so a parent lit
+  // up for any page beneath it. That is right for a detail page — `/customers/abc123`
+  // should keep Customers highlighted, and it has no sidebar item of its own.
+  //
+  // It is wrong when a nested page IS its own item. Event Mapping lives at
+  // `/event-sources/mapping`, so opening it highlighted Event Sources AND Event
+  // Mapping at once, and the sidebar stopped saying where you were.
+  //
+  // Comparing lengths settles both cases with one rule: `/event-sources/mapping` beats
+  // `/event-sources`, and `/customers/abc123` still falls to Customers because nothing
+  // longer matches it.
+  const matches = (h: string) => pathname === h || pathname.startsWith(`${h}/`)
+  const longestMatch = (allHrefs ?? [href])
+    .filter(matches)
+    .reduce((a, b) => (b.length > a.length ? b : a), '')
+  const isActive = longestMatch === href
 
   return (
     <Link

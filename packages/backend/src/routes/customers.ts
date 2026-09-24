@@ -9,6 +9,8 @@ import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
+import { projectVocabulary, eventIn } from '../services/projectVocabulary.js'
+import { isReversedOrderStatus, isOrderStatus, ORDER_STATUS, type OrderStatus } from '../db/orderStatus.js'
 import { backfillOrdersFromEvents } from '../services/orderBackfillService.js'
 import { listAbandonments, saveAbandonmentReason } from '../services/abandonmentService.js'
 import { computeAndUpdateMetrics } from '../workers/metricsWorker.js'
@@ -16,6 +18,34 @@ import { getConsentAuditLog, getConsentStatus } from '../services/consentService
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
 
 const router = Router()
+
+/** A source's own word for an order's state, translated into ours — or `pending`.
+ *
+ *  The doors that pull from a shop's API (rather than receiving our events) see that
+ *  shop's internal vocabulary: Medusa says `delivered` and `processing`, Shopify says
+ *  `fulfilled` and `partially_fulfilled`, the next platform will say something else
+ *  again. None of those are Storees statuses, and copying one in is how a column meant
+ *  to hold five words ended up holding a dozen.
+ *
+ *  Only the unambiguous synonyms are accepted. `processing`, `shipped`, `partial` and
+ *  anything unrecognised become `pending` — placed, and nothing settled yet — because
+ *  guessing at a foreign word is exactly the habit this function exists to end. The
+ *  real answer arrives as a fulfilment or reversal EVENT, read through the slots. */
+function translateSourceStatus(raw: unknown): OrderStatus {
+  const s = String(raw ?? '').trim().toLowerCase()
+  if (isOrderStatus(s)) return s
+  switch (s) {
+    case 'delivered':
+    case 'complete':
+    case 'completed':
+      return ORDER_STATUS.FULFILLED
+    case 'canceled':          // Shopify and Medusa both spell it with one 'l'
+    case 'voided':
+      return ORDER_STATUS.CANCELLED
+    default:
+      return ORDER_STATUS.PENDING
+  }
+}
 
 /**
  * Returns true if the customer is visible under the authenticated user's scope.
@@ -139,6 +169,20 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
           : sql`${customers.lastSeen} DESC NULLS LAST`)
       : (sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn))
 
+    // A SORT WITH TIES IS NOT AN ORDER, AND LIMIT/OFFSET NEEDS AN ORDER.
+    //
+    // Every column offered here has duplicates — 475 customers share a `last_seen`
+    // value in one project alone — and Postgres is free to return tied rows in any
+    // order it likes, differently on each query. Paging is two separate queries, so a
+    // row tied on page 1 can come back on page 2 while another is never returned at
+    // all. Measured before this line existed: paging 25 pages of 50 returned 1,250
+    // rows holding only 1,118 distinct customers — 132 shown twice, and by the same
+    // count 132 that the operator could not reach at any page number.
+    //
+    // The id is unique and never null, so appending it makes the order total: ties
+    // resolve the same way in every query, and a page boundary lands in one place.
+    const pageOrder = [orderExpr, asc(customers.id)]
+
     // Count total
     const [{ total }] = await db
       .select({ total: count() })
@@ -150,7 +194,7 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       .select()
       .from(customers)
       .where(whereClause)
-      .orderBy(orderExpr)
+      .orderBy(...pageOrder)
       .limit(pageSize)
       .offset(offset)
 
@@ -256,6 +300,11 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       return res.status(404).json({ success: false, error: 'Customer not found' })
     }
 
+    // What THIS project calls its purchase event and its amount / id / currency /
+    // discount properties. Everything below read the retail spellings literally, so
+    // the event-derived half of this tab was blank for a tenant using its own names.
+    const ordersVocab = await projectVocabulary(projectId)
+
     // Orders live in TWO places depending on the ingestion path: the native
     // Shopify sync writes the `orders` table, while the data-sync connector
     // writes ONLY `order_placed` events. A customer can have a mix (old orders
@@ -274,7 +323,13 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       projectId,
       customerId,
       externalOrderId: row.externalOrderId as string,
-      status: row.status,
+      // Translated on the way OUT too. The column is ours, but it already contains
+      // words written before it was: rows imported from a shop's own database carry
+      // that shop's vocabulary — `processing`, `shipped`, or nothing at all. Reading
+      // them through the same translator means the screen speaks one language even
+      // while the stored history does not, and a `pending` here is then a placeholder
+      // the transition events below can legitimately replace.
+      status: translateSourceStatus(row.status),
       total: Number(row.total),
       discount: Number(row.discount),
       currency: row.currency ?? 'INR',
@@ -303,7 +358,7 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         and(
           eq(events.customerId, customerId),
           eq(events.projectId, projectId),
-          inArray(events.eventName, ['order_placed', 'order_completed']),
+          eventIn(sql`${events.eventName}`, ordersVocab.purchaseEvents),
         ),
       )
       .orderBy(desc(events.timestamp))
@@ -319,25 +374,42 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       const itemPrice = (item: Record<string, unknown>): number =>
         Number(item.price ?? item.unit_price) || 0
 
-      // Prefer authoritative top-level props.total (the connector stores
-      // summary.current_order_total there for Medusa orders; bulk imports
-      // store the canonical order total). Fall back to line-item math when
-      // missing — older imports relied on that path.
+      // Prefer the authoritative top-level amount, under whatever this project calls
+      // it (the connector stores summary.current_order_total there for Medusa orders;
+      // bulk imports store the canonical order total). Fall back to line-item math
+      // when missing — older imports relied on that path.
       const lineItemTotal = lineItems.reduce((sum: number, item: Record<string, unknown>) =>
         sum + itemPrice(item) * (Number(item.quantity) || 1), 0)
-      const total = props.total !== undefined && props.total !== null
-        ? Number(props.total)
+      const rawTotal = props[ordersVocab.amountKey] ?? props.total
+      const total = rawTotal !== undefined && rawTotal !== null
+        ? Number(rawTotal)
         : lineItemTotal
 
       return {
         id: row.id,
         projectId,
         customerId,
-        externalOrderId: (props.order_id as string) ?? (props.display_id ? `#${props.display_id}` : null),
-        status: (props.fulfillment_status as string) ?? (props.status as string) ?? 'pending',
+        externalOrderId: (props[ordersVocab.orderIdKey] as string) ?? (props.order_id as string)
+          ?? (props.display_id ? `#${props.display_id}` : null),
+        // TRANSLATED into our vocabulary, never copied.
+        //
+        // This used to pass the source's own word straight through — `shipped`,
+        // `processing`, whatever that shop's system happened to call it — into a field
+        // the rest of the product reads as a Storees status. Our rules understand five
+        // words; anything else matched nothing and silently did nothing. It also invented
+        // `unknown`, a sixth word belonging to no vocabulary at all.
+        //
+        // A word we cannot place is not a status. It becomes `pending` — placed, and we
+        // have not been told otherwise — and the transition events below, which speak
+        // through the slots, supply the real answer.
+        status: translateSourceStatus(props.fulfillment_status ?? props.status),
         total,
-        discount: Number(props.discount_total) || 0,
-        currency: (props.currency as string) ?? 'INR',
+        // `discount_total` appeared exactly once in the codebase — here, being read.
+        // Nothing has ever written it: Shopify sends `total_discounts` and the event
+        // processor normalises that to `discount`, so this column showed 0 for every
+        // tenant, including ones using entirely default names.
+        discount: Number(props[ordersVocab.discountKey] ?? props.discount ?? 0) || 0,
+        currency: (props[ordersVocab.currencyKey] as string) ?? (props.currency as string) ?? 'INR',
         lineItems: lineItems.map((item: Record<string, unknown>) => ({
           productId: (item.product_id as string) ?? '',
           productName: (item.product_name as string) ?? 'Unknown Product',
@@ -369,11 +441,131 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         const entry = { ...order }
         seen.set(key, entry)
         deduped.push(entry)
-      } else if (order.status === 'delivered' && existing.status !== 'delivered') {
-        existing.status = 'delivered'
-        existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
+      } else if (
+        // ANY settled status beats the placeholder. Both sides are Storees vocabulary
+        // by this point, so there is one comparison rather than a growing list of other
+        // people's words — this branch used to test for the literal `delivered`, which
+        // is Medusa's word and not one of ours at all.
+        existing.status === ORDER_STATUS.PENDING && order.status !== ORDER_STATUS.PENDING
+      ) {
+        existing.status = order.status
+        if (order.status === ORDER_STATUS.FULFILLED) {
+          existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
+        }
       }
     }
+    // ── OVERLAY THE TRANSITION EVENTS ───────────────────────────────────────
+    //
+    // Everything above answers "what does the order RECORD say". This answers "what
+    // has the shop since told us", and the two are not the same when the record was
+    // never built.
+    //
+    // Most of a connector-fed project's orders can exist only as events. A delivery or
+    // cancellation arriving later updates the orders TABLE — so it never reaches an
+    // order with no row, and that order reads `pending` or `unknown` for ever. On
+    // GoWelmart that is 83,000 events against 1,800 rows: their orders had been
+    // delivered, they said so, and the screen showed `unknown` because it only ever
+    // consulted the table.
+    //
+    // Read the transition events directly and lay them over the top, matched by order
+    // id, latest winning. Independent of whether a row exists.
+    //
+    // THE NAMES COME FROM THE PROJECT'S MAPPING, not a fixed list. A hardcoded
+    // ['order_fulfilled','order_cancelled'] works for a shop using our spelling and
+    // silently does nothing for Viranacart's `purchase_delivered` — the exact failure
+    // the mapping screen exists to prevent, reintroduced one layer down.
+    // The PUBLISHED names are included alongside, for the same reason the aggregate
+    // worker keeps them: a project that has not filled in its Delivered box yet still
+    // sends `order_fulfilled`, and refusing to look would leave its orders reading
+    // `unknown` until somebody visits the mapping screen. GoWelmart is exactly that
+    // case — 2,994 delivery events, an empty box, and every order showing `unknown`.
+    // Mapping stays authoritative; these are the floor, not the answer.
+    const STANDARD_TRANSITIONS = [
+      'order_fulfilled', 'order_cancelled', 'order_returned', 'order_refunded',
+    ]
+    // A transition event is not the only place a status can arrive. Plenty of sources
+    // never emit one at all and instead stamp the current status onto the ORDER event
+    // itself — GoWelmart does exactly this: 65,398 of its orders state `delivered` in
+    // an `order_placed` payload and never send `order_fulfilled`. Those events are read
+    // here too, but ONLY for a status they state outright: a purchase name means "a
+    // purchase happened", never a status, so `statusOf` must not speak for it. Ignoring
+    // them leaves an order the shop has already delivered reading `unknown` for ever.
+    const transitionNames = [...new Set([
+      ...ordersVocab.fulfilmentEvents,
+      ...ordersVocab.cancellationEvents,   // the union of cancelled / returned / refunded
+      ...STANDARD_TRANSITIONS,
+      'order_status_updated',              // a pure status carrier; no meaning box owns it
+      ...ordersVocab.purchaseEvents,       // stated status only — see statusOf below
+      // The purchase names a project has NOT mapped still carry status for its
+      // orders; GoWelmart's `purchase` box holds `order_completed`, and it is
+      // `order_placed` that states the status.
+      'order_placed', 'order_completed',
+    ])].filter(Boolean)
+
+    if (transitionNames.length) {
+      const statusEvents = await db
+        .select({
+          eventName: events.eventName,
+          properties: events.properties,
+          timestamp: events.timestamp,
+        })
+        .from(events)
+        .where(and(
+          eq(events.customerId, customerId),
+          eq(events.projectId, projectId),
+          inArray(events.eventName, transitionNames),
+        ))
+        .orderBy(desc(events.timestamp))
+
+      // Which Storees status each name means, from the slots — so a shop's own word
+      // lands on the right one rather than being flattened to "reversed". The slots
+      // answer for the client's language; the five constants are what comes back.
+      const statusOf = (name: string): OrderStatus | null =>
+        ordersVocab.refundEvents.includes(name) ? ORDER_STATUS.REFUNDED
+        : ordersVocab.returnEvents.includes(name) ? ORDER_STATUS.RETURNED
+        : ordersVocab.fulfilmentEvents.includes(name) ? ORDER_STATUS.FULFILLED
+        : ordersVocab.cancellationEvents.includes(name) ? ORDER_STATUS.CANCELLED
+        : null
+
+      const latestByOrder = new Map<string, OrderStatus>()
+      for (const ev of statusEvents) {
+        const props = (ev.properties ?? {}) as Record<string, unknown>
+        const orderId = String(
+          props[ordersVocab.orderIdKey] ?? props.order_id ?? '',
+        ).trim()
+        if (!orderId || latestByOrder.has(orderId)) continue  // DESC, so first is latest
+        // What the event itself says wins; the meaning of its name is the fallback.
+        //
+        // Both arrive as OUR vocabulary. The stated value is a source's word and goes
+        // through the translator; the name's meaning comes from the slots. Nothing
+        // reaches the screen in a language the rest of the product cannot read.
+        const stated = props.status ?? props.fulfillment_status ?? props.order_status
+        const status = stated != null && String(stated).trim()
+          ? translateSourceStatus(stated)
+          : statusOf(ev.eventName)
+        if (status) latestByOrder.set(orderId, status)
+      }
+
+      if (latestByOrder.size) {
+        for (const order of deduped) {
+          const override = order.externalOrderId
+            ? latestByOrder.get(order.externalOrderId) : undefined
+          if (!override) continue
+          // A reversal already on the RECORD is never undone by an event. Reading the
+          // order events for a stated status means a purchase payload saying
+          // `delivered` can now be the newest thing an order has — and a cancellation
+          // that arrived by any other door (a sync, an import, the aggregate worker)
+          // lives only in the row. Letting the overlay win there would show money as
+          // collected that the books have already reversed.
+          if (isReversedOrderStatus(order.status) && !isReversedOrderStatus(override)) continue
+          order.status = override
+          if (override === ORDER_STATUS.FULFILLED) {
+            order.fulfilledAt = order.fulfilledAt ?? order.createdAt
+          }
+        }
+      }
+    }
+
     deduped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
     res.json({ success: true, data: deduped })

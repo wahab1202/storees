@@ -1,5 +1,11 @@
 declare module 'drizzle-orm' {
   export function sql(strings: TemplateStringsArray, ...values: unknown[]): SQL
+  // Declaration merging: `sql.raw` is a real drizzle API, and this shim stands in for
+  // drizzle's own types inside this package. Used only for table ALIASES, which are
+  // literals in this file and never come from a request.
+  export namespace sql {
+    function raw(query: string): SQL
+  }
   export function and(...conditions: (SQL | undefined)[]): SQL | undefined
   export function or(...conditions: (SQL | undefined)[]): SQL | undefined
   export function eq(left: unknown, right: unknown): SQL

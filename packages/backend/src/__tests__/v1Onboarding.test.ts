@@ -1,19 +1,43 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock DB
-vi.mock('../db/connection.js', () => ({
-  db: {
-    select: vi.fn().mockReturnThis(),
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockResolvedValue([]),
-    insert: vi.fn().mockReturnThis(),
-    values: vi.fn().mockReturnThis(),
-    returning: vi.fn().mockResolvedValue([{ id: 'proj_123', name: 'Test', domainType: 'fintech', integrationType: 'api_key' }]),
-    update: vi.fn().mockReturnThis(),
-    set: vi.fn().mockReturnThis(),
-  },
-}))
+// A chainable stub for the query builder.
+//
+// Creating a project now runs the whole industry pack — catalogue, items, interaction
+// configs, prediction goals, segments, connector config — so the builder is walked far
+// more deeply than when this endpoint inserted a project row and three segments. A
+// proxy answers any method rather than this mock growing one entry per newly-reached
+// code path, and a set trap keeps the per-test overrides tests rely on.
+//
+// Everything lives inside the factory: vi.mock is hoisted above the file's own
+// declarations, so referencing them from out here fails at import time.
+vi.mock('../db/connection.js', () => {
+  const PROJECT_ROW = { id: 'proj_123', name: 'Test', domainType: 'fintech', integrationType: 'api_key' }
+  const TERMINALS: Record<string, () => Promise<unknown>> = {
+    returning: async () => [PROJECT_ROW],
+    limit: async () => [],
+    execute: async () => ({ rows: [] }),
+  }
+  // ONE object for the whole chain, like the flat mock this replaced: every builder
+  // method returns the same proxy. Tests override a terminal on `db` itself
+  // (`mockDb.limit = ...`) and expect it to apply several calls deep, which only holds
+  // if `db.select().from().where()` is still the same object.
+  const overrides: Record<string, unknown> = {}
+  const self: any = new Proxy(function () {} as any, {
+    get(_t, prop: string) {
+      if (prop === 'then') return undefined          // not thenable — only terminals resolve
+      if (prop in overrides) return overrides[prop]
+      if (prop in TERMINALS) return vi.fn(TERMINALS[prop])
+      return vi.fn(() => self)
+    },
+    set(_t, prop: string, value) { overrides[prop] = value; return true },
+    apply() { return self },
+  })
+  // Overrides live for the life of the module, so a `mockResolvedValueOnce` set by one
+  // test is still installed — and exhausted, resolving to undefined — when the next one
+  // runs. Cleared between tests.
+  return { db: self, __resetDbMock: () => { for (const k of Object.keys(overrides)) delete overrides[k] } }
+})
 
 vi.mock('../db/schema.js', () => ({
   projects: { id: 'id', name: 'name', domainType: 'domain_type', integrationType: 'integration_type', shopifyAccessToken: 'shopify_access_token' },
@@ -23,6 +47,15 @@ vi.mock('../db/schema.js', () => ({
   customers: {},
   entities: {},
   identities: {},
+  // Creating a project now runs the industry pack — the same setup the wizard and the
+  // Shopify install run — so this mock has to cover the tables activatePack touches.
+  // Before, this endpoint seeded a few segment templates and nothing else, and a
+  // project created through the API had no event mapping, no goals and no field paths.
+  catalogues: { id: 'id', projectId: 'project_id', name: 'name' },
+  items: { id: 'id', projectId: 'project_id' },
+  interactionConfigs: { id: 'id', projectId: 'project_id', eventName: 'event_name' },
+  predictionGoals: { id: 'id', projectId: 'project_id', name: 'name' },
+  dataSourceConnectors: { id: 'id', projectId: 'project_id', config: 'config' },
 }))
 
 vi.mock('../middleware/apiKeyAuth.js', () => ({
@@ -84,7 +117,11 @@ async function request(
 }
 
 describe('POST /api/onboarding/projects', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    const conn = await import('../db/connection.js') as unknown as { __resetDbMock: () => void }
+    conn.__resetDbMock()
+  })
 
   it('returns 400 when name is missing', async () => {
     const app = buildApp()
@@ -164,7 +201,11 @@ describe('POST /api/onboarding/projects', () => {
 })
 
 describe('POST /api/onboarding/projects/:id/test-event', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    const conn = await import('../db/connection.js') as unknown as { __resetDbMock: () => void }
+    conn.__resetDbMock()
+  })
 
   it('returns 404 for non-existent project', async () => {
     const { db } = await import('../db/connection.js')

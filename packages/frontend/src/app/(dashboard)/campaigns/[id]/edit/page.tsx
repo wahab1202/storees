@@ -26,6 +26,7 @@ import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
 import { cn } from '@/lib/utils'
 import { ApiError } from '@/lib/api'
+import { useEventNames } from '@/hooks/useEvents'
 import type { EmailTemplate } from '@/lib/emailTypes'
 import type { CampaignAttachment, CampaignChannel, CampaignSendTimeMode, CampaignUtmParameter, CampaignUtmParameters, ConversionGoal, FilterConfig, GmailAnnotation, PeriodicSchedule, TemplateVariable } from '@storees/shared'
 import {
@@ -63,7 +64,7 @@ const inputClass = 'w-full h-10 px-3.5 text-sm border border-border rounded-lg b
 const selectClass = cn(inputClass, 'appearance-none cursor-pointer pr-10 bg-[length:16px] bg-[right_12px_center] bg-no-repeat bg-[url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%239CA3AF%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E")]')
 
 const DAYS_OF_WEEK = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const EVENT_OPTIONS = ['order_completed', 'product_viewed', 'added_to_cart', 'checkout_started', 'page_viewed', 'app_opened', 'signed_up']
+// Replaced by the project's own event names, read at render — see useEventNames below.
 const TIMEZONE_OPTIONS = ['Asia/Kolkata', 'UTC', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Asia/Dubai', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney']
 type DraftAttachment = CampaignAttachmentUpload & { localId: string }
 type PreviewDevice = 'desktop' | 'mobile'
@@ -187,6 +188,9 @@ function isEmailTemplate(value: unknown): value is EmailTemplate {
 }
 
 export default function EditCampaignPage() {
+  // The project's own events — see the note where EVENT_OPTIONS used to be.
+  const { data: eventNamesData } = useEventNames()
+  const EVENT_OPTIONS = eventNamesData?.data ?? []
   const params = useParams()
   const router = useRouter()
   const id = params.id as string

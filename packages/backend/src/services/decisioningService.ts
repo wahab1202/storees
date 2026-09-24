@@ -1,6 +1,8 @@
 import { and, eq, or, inArray, sql } from 'drizzle-orm'
+import { liveOrders } from '../db/orderStatus.js'
 import { db } from '../db/connection.js'
 import { products, productRecommendations } from '../db/schema.js'
+import { projectVocabulary, eventIn } from './projectVocabulary.js'
 
 /**
  * Decisioning service (Step 1) — the shared "what should this customer get/see"
@@ -125,9 +127,10 @@ export async function socialProof(projectId: string, productId: string, days = 3
 }
 
 async function socialProofUncached(projectId: string, productId: string, days: number): Promise<SocialProof> {
+  const decisionVocab = await projectVocabulary(projectId)
   const v = await db.execute(sql`
     SELECT COUNT(DISTINCT customer_id) AS n FROM events
-    WHERE project_id = ${projectId} AND event_name = 'product_viewed'
+    WHERE project_id = ${projectId} AND ${eventIn(sql`event_name`, decisionVocab.viewEvents)}
       AND properties->>'product_id' = ${productId}
       AND timestamp > NOW() - make_interval(days => ${days})
   `)
@@ -135,6 +138,7 @@ async function socialProofUncached(projectId: string, productId: string, days: n
     SELECT COUNT(DISTINCT o.customer_id) AS n
     FROM orders o, jsonb_array_elements(o.line_items) li
     WHERE o.project_id = ${projectId}
+      AND ${liveOrders('o')}
       AND COALESCE(li->>'product_id', li->>'productId') = ${productId}
       AND o.created_at > NOW() - make_interval(days => ${days * 3})
   `)
@@ -169,7 +173,8 @@ function topSellerIds(projectId: string, cache: DecisionCache | undefined, take:
   const load = () => db.execute(sql`
     SELECT COALESCE(li->>'product_id', li->>'productId') AS pid, COUNT(*) AS n
     FROM orders o, jsonb_array_elements(o.line_items) li
-    WHERE o.project_id = ${projectId} AND COALESCE(li->>'product_id', li->>'productId') <> ''
+    WHERE o.project_id = ${projectId} AND ${liveOrders('o')}
+      AND COALESCE(li->>'product_id', li->>'productId') <> ''
     GROUP BY 1 ORDER BY n DESC
     LIMIT ${take}
   `).then(res => (res.rows as Array<{ pid: string }>).map(r => r.pid).filter(Boolean))
@@ -190,6 +195,7 @@ export async function recommendForCustomer(projectId: string, customerId: string
     SELECT COALESCE(li->>'product_id', li->>'productId') AS pid
     FROM orders o, jsonb_array_elements(o.line_items) li
     WHERE o.project_id = ${projectId} AND o.customer_id = ${customerId}
+      AND ${liveOrders('o')}
       AND COALESCE(li->>'product_id', li->>'productId') <> ''
     ORDER BY o.created_at DESC
     LIMIT 1

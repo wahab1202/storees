@@ -26,6 +26,7 @@ export function useCreatePredictionGoal() {
       name: string
       targetEvent: string
       observationWindowDays?: number
+      windowsPinned?: boolean
       predictionWindowDays?: number
       minPositiveLabels?: number
     }) => api.post<PredictionGoal>(withProject('/api/prediction-goals'), data),
@@ -67,6 +68,12 @@ export function useRetrainPredictionGoal() {
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prediction-goals'] })
+      // ...and the watcher that draws the banner. It only polls WHILE something
+      // is running, so on its own it never learns that anything STARTED: the page
+      // keeps the answer it had from before the click until something else happens
+      // to refetch it. Observed: five cards went to `training…` while the banner
+      // still showed the previous run's failure.
+      queryClient.invalidateQueries({ queryKey: ['prediction-training-status'] })
     },
   })
 }
@@ -81,6 +88,12 @@ export function useRetrainAllPredictionGoals() {
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prediction-goals'] })
+      // ...and the watcher that draws the banner. It only polls WHILE something
+      // is running, so on its own it never learns that anything STARTED: the page
+      // keeps the answer it had from before the click until something else happens
+      // to refetch it. Observed: five cards went to `training…` while the banner
+      // still showed the previous run's failure.
+      queryClient.invalidateQueries({ queryKey: ['prediction-training-status'] })
     },
   })
 }
@@ -164,6 +177,30 @@ export function useMlServiceHealth() {
   })
 }
 
+/** Which goals are training right now, polled while any of them is.
+ *
+ *  Training takes minutes and the Re-train request returns instantly — it only queues
+ *  the job. The button's own spinner therefore stops almost at once, and the page looks
+ *  exactly as it did before the click. This is what lets the screen keep saying so.
+ *
+ *  Polling stops the moment nothing is running, so an idle Predictions page makes no
+ *  requests at all. Same shape as `useReplayStatus` on the Event Mapping screen.
+ */
+export function useTrainingStatus() {
+  return useQuery({
+    queryKey: ['prediction-training-status'],
+    queryFn: () => api.get<{
+      running: boolean
+      goals: Array<{ id: string; name: string }>
+      /** Goals whose most recent attempt (last 6h) did not produce a model. A failed
+       *  training leaves the goal `active` so its existing model keeps scoring, which
+       *  means the card alone cannot show that anything went wrong. */
+      failures: Array<{ goalId: string; name: string; reason: string }>
+    }>(withProject('/api/prediction-goals/_training-status')),
+    refetchInterval: (q) => (q.state.data?.data?.running ? 3000 : false),
+  })
+}
+
 // ============ PREDICTION SCORES (for Customer 360) ============
 
 type PredictionFactor = {
@@ -236,18 +273,19 @@ type GoalCustomersResponse = {
 
 export function useGoalCustomers(
   goalId: string,
-  params: { bucket?: string; page?: number; pageSize?: number; sort?: string } = {},
+  params: { bucket?: string; page?: number; pageSize?: number; sort?: string; scope?: 'live' | 'all' } = {},
 ) {
-  const { bucket, page = 1, pageSize = 25, sort = 'score_desc' } = params
+  const { bucket, page = 1, pageSize = 25, sort = 'score_desc', scope } = params
   const extra: Record<string, string> = {
     page: String(page),
     pageSize: String(pageSize),
     sort,
   }
   if (bucket) extra.bucket = bucket
+  if (scope) extra.scope = scope
 
   return useQuery({
-    queryKey: ['goal-customers', goalId, bucket, page, pageSize, sort],
+    queryKey: ['goal-customers', goalId, bucket, page, pageSize, sort, scope],
     queryFn: () =>
       api.get<GoalCustomersResponse>(
         withProject(`/api/predictions/goals/${goalId}/customers`, extra),

@@ -30,6 +30,7 @@ import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
 import type { CampaignUtmParameters, GmailAnnotation } from '@storees/shared'
 import { normalizeEmailList } from '@storees/shared'
+import { filterSqlForProject } from './projectVocabulary.js'
 
 // Page sizes tuned for 100K-recipient campaigns: bounded heap, bounded round-trips.
 const RECIPIENT_PAGE_SIZE = 1000
@@ -202,7 +203,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
     : null
 
   while (true) {
-    const excludeClause = excludeAudienceFilter ? sql`NOT (${filterToSql(excludeAudienceFilter)})` : undefined
+    const excludeClause = excludeAudienceFilter ? sql`NOT (${await filterSqlForProject(input.projectId, excludeAudienceFilter)})` : undefined
     const page: Array<{ customerId: string; email: string | null; phone: string | null; pushSubscribed: boolean; customAttributes: unknown }>
       = audienceFilter
         ? await db
@@ -218,7 +219,7 @@ export async function previewCampaignAudienceConfig(input: CampaignAudiencePrevi
               eq(customers.projectId, input.projectId),
               isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
-              filterToSql(audienceFilter),
+              await filterSqlForProject(input.projectId, audienceFilter),
               excludeClause,
             ))
             .orderBy(customers.id)
@@ -516,7 +517,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
     // order: inline filter > saved segment > all-users.
     const remaining = audienceCap == null ? RECIPIENT_PAGE_SIZE : Math.min(RECIPIENT_PAGE_SIZE, audienceCap - totalRecipients)
     const pageLimit = Math.max(1, remaining)
-    const excludeClause = hasRules(excludeAudienceFilter) ? sql`NOT (${filterToSql(excludeAudienceFilter)})` : undefined
+    const excludeClause = hasRules(excludeAudienceFilter) ? sql`NOT (${await filterSqlForProject(campaign.projectId, excludeAudienceFilter)})` : undefined
     const page: Array<{ customerId: string; email: string | null; name: string | null; phone: string | null; pushSubscribed: boolean; customAttributes: unknown }>
       = hasRules(audienceFilter)
         ? await db
@@ -533,7 +534,7 @@ export async function dispatchCampaign(campaignId: string): Promise<number> {
               eq(customers.projectId, campaign.projectId),
               isNull(customers.mergedInto),
               cursor ? gt(customers.id, cursor) : undefined,
-              filterToSql(audienceFilter),
+              await filterSqlForProject(campaign.projectId, audienceFilter),
               excludeClause,
             ))
             .orderBy(customers.id)

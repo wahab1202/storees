@@ -1,36 +1,166 @@
 {
   "id": "ecommerce",
   "name": "Ecommerce",
-  "icon": "🛍️",
-  "description": "Online retail stores — product-centric, order-driven engagement",
+  "icon": "\ud83d\udecd\ufe0f",
+  "description": "Online retail stores \u2014 product-centric, order-driven engagement",
   "catalogue": {
     "name": "Products",
     "item_type_label": "Product",
     "attribute_schema": [
-      { "name": "category", "type": "select", "values": ["Electronics", "Fashion", "Home", "Beauty", "Food", "Sports", "Books", "Other"], "weight": 0.3 },
-      { "name": "brand", "type": "text", "weight": 0.2 },
-      { "name": "price", "type": "number", "weight": 0.15 },
-      { "name": "collection", "type": "select", "values": ["New Arrivals", "Best Sellers", "Sale", "Premium", "Seasonal"], "weight": 0.15 },
-      { "name": "in_stock", "type": "boolean", "weight": 0.0 },
-      { "name": "rating", "type": "number", "weight": 0.1 },
-      { "name": "tags", "type": "text", "weight": 0.1 }
+      {
+        "name": "category",
+        "type": "select",
+        "values": [
+          "Electronics",
+          "Fashion",
+          "Home",
+          "Beauty",
+          "Food",
+          "Sports",
+          "Books",
+          "Other"
+        ],
+        "weight": 0.3
+      },
+      {
+        "name": "brand",
+        "type": "text",
+        "weight": 0.2
+      },
+      {
+        "name": "price",
+        "type": "number",
+        "weight": 0.15
+      },
+      {
+        "name": "collection",
+        "type": "select",
+        "values": [
+          "New Arrivals",
+          "Best Sellers",
+          "Sale",
+          "Premium",
+          "Seasonal"
+        ],
+        "weight": 0.15
+      },
+      {
+        "name": "in_stock",
+        "type": "boolean",
+        "weight": 0.0
+      },
+      {
+        "name": "rating",
+        "type": "number",
+        "weight": 0.1
+      },
+      {
+        "name": "tags",
+        "type": "text",
+        "weight": 0.1
+      }
     ],
     "default_items": []
   },
   "interaction_config": [
-    { "event_name": "product_viewed", "interaction_type": "view", "weight": 1.0, "decay_half_life_days": 14 },
-    { "event_name": "added_to_cart", "interaction_type": "intent", "weight": 3.0, "decay_half_life_days": 7 },
-    { "event_name": "added_to_wishlist", "interaction_type": "engage", "weight": 2.0, "decay_half_life_days": 30 },
-    { "event_name": "checkout_started", "interaction_type": "strong_intent", "weight": 4.0, "decay_half_life_days": 3 },
-    { "event_name": "order_completed", "interaction_type": "conversion", "weight": 5.0, "decay_half_life_days": 60 },
-    { "event_name": "product_reviewed", "interaction_type": "engage", "weight": 2.5, "decay_half_life_days": 90 },
-    { "event_name": "product_shared", "interaction_type": "engage", "weight": 1.5, "decay_half_life_days": 30 },
-    { "event_name": "collection_viewed", "interaction_type": "view", "weight": 0.5, "decay_half_life_days": 14 }
+    {
+      "event_name": "product_viewed",
+      "interaction_type": "view",
+      "weight": 1.0,
+      "decay_half_life_days": 14
+    },
+    {
+      "event_name": "added_to_cart",
+      "interaction_type": "intent",
+      "weight": 3.0,
+      "decay_half_life_days": 7
+    },
+    {
+      "event_name": "added_to_wishlist",
+      "interaction_type": "engage",
+      "weight": 2.0,
+      "decay_half_life_days": 30
+    },
+    {
+      "event_name": "checkout_started",
+      "interaction_type": "strong_intent",
+      "weight": 4.0,
+      "decay_half_life_days": 3
+    },
+    {
+      "event_name": "order_fulfilled",
+      "interaction_type": "fulfilment",
+      "weight": 2.0,
+      "decay_half_life_days": 60
+    },
+    {
+      "event_name": "order_placed",
+      "interaction_type": "conversion",
+      "weight": 5.0,
+      "decay_half_life_days": 60
+    },
+    {
+      "event_name": "review_submitted",
+      "interaction_type": "engage",
+      "weight": 2.5,
+      "decay_half_life_days": 90
+    },
+    {
+      "event_name": "product_shared",
+      "interaction_type": "engage",
+      "weight": 1.5,
+      "decay_half_life_days": 30
+    },
+    {
+      "event_name": "collection_viewed",
+      "interaction_type": "view",
+      "weight": 0.5,
+      "decay_half_life_days": 14
+    },
+    {
+      "event_name": "order_cancelled",
+      "interaction_type": "cancellation",
+      "weight": 1.0,
+      "decay_half_life_days": 90
+    },
+    {
+      "event_name": "order_returned",
+      "interaction_type": "return",
+      "weight": 1.0,
+      "decay_half_life_days": 90
+    },
+    {
+      "event_name": "order_refunded",
+      "interaction_type": "refund",
+      "weight": 1.0,
+      "decay_half_life_days": 90
+    },
+    {
+      "event_name": "removed_from_cart",
+      "interaction_type": "cart_remove",
+      "weight": 1.5,
+      "decay_half_life_days": 14
+    },
+    {
+      "event_name": "cart_updated",
+      "interaction_type": "cart_snapshot",
+      "weight": 1.0,
+      "decay_half_life_days": 7
+    }
   ],
+  "field_defaults": {
+    "order": {
+      "order_id": "order_id",
+      "amount": "total",
+      "currency": "currency",
+      "discount": "discount"
+    }
+  },
+  "cadence_signal": "order",
   "prediction_goals": [
     {
       "name": "Propensity to Purchase",
-      "target_event": "order_completed",
+      "target_event": "purchase",
       "observation_window_days": 30,
       "prediction_window_days": 7,
       "min_positive_labels": 200,
@@ -60,7 +190,7 @@
     },
     {
       "name": "Repeat Purchase Propensity",
-      "target_event": "order_completed",
+      "target_event": "repeat_purchase",
       "observation_window_days": 90,
       "prediction_window_days": 30,
       "min_positive_labels": 300,
@@ -82,66 +212,260 @@
   "segment_templates": [
     {
       "name": "High Value Customers",
-      "description": "Customers with total spend above ₹5,000",
-      "icon": "💎",
-      "filter": { "logic": "AND", "rules": [{ "field": "total_spent", "operator": "greater_than", "value": 500000 }] }
+      "description": "Customers with total spend above \u20b95,000",
+      "icon": "\ud83d\udc8e",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "total_spent",
+            "operator": "greater_than",
+            "value": 500000
+          }
+        ]
+      }
     },
     {
       "name": "Cart Abandoners",
       "description": "Added to cart recently but haven't purchased in 7+ days",
-      "icon": "🛒",
-      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_order", "operator": "greater_than", "value": 7 }, { "field": "total_orders", "operator": "greater_than", "value": 0 }] }
+      "icon": "\ud83d\uded2",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "days_since_last_order",
+            "operator": "greater_than",
+            "value": 7
+          },
+          {
+            "field": "total_orders",
+            "operator": "greater_than",
+            "value": 0
+          }
+        ]
+      }
     },
     {
       "name": "Repeat Buyers",
       "description": "Customers with 2+ orders",
-      "icon": "🔄",
-      "filter": { "logic": "AND", "rules": [{ "field": "total_orders", "operator": "greater_than", "value": 1 }] }
+      "icon": "\ud83d\udd04",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "total_orders",
+            "operator": "greater_than",
+            "value": 1
+          }
+        ]
+      }
     },
     {
       "name": "At Risk",
       "description": "No orders in 30+ days",
-      "icon": "⚠️",
-      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_order", "operator": "greater_than", "value": 30 }] }
+      "icon": "\u26a0\ufe0f",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "days_since_last_order",
+            "operator": "greater_than",
+            "value": 30
+          }
+        ]
+      }
     },
     {
       "name": "New Customers",
       "description": "First seen in last 7 days",
-      "icon": "🆕",
-      "filter": { "logic": "AND", "rules": [{ "field": "first_seen", "operator": "within_last", "value": 7, "unit": "days" }] }
+      "icon": "\ud83c\udd95",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "first_seen",
+            "operator": "within_last",
+            "value": 7,
+            "unit": "days"
+          }
+        ]
+      }
     },
     {
       "name": "Discount Shoppers",
       "description": "Customers where 20%+ of orders used discounts",
-      "icon": "🏷️",
-      "filter": { "logic": "AND", "rules": [{ "field": "discount_order_percentage", "operator": "greater_than", "value": 20 }] }
+      "icon": "\ud83c\udff7\ufe0f",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "discount_order_percentage",
+            "operator": "greater_than",
+            "value": 20
+          }
+        ]
+      }
     },
     {
       "name": "Email Subscribers",
       "description": "Customers opted into email",
-      "icon": "📧",
-      "filter": { "logic": "AND", "rules": [{ "field": "email_subscribed", "operator": "is_true", "value": true }] }
+      "icon": "\ud83d\udce7",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "email_subscribed",
+            "operator": "is_true",
+            "value": true
+          }
+        ]
+      }
     },
     {
       "name": "Dormant",
       "description": "No activity in 60+ days",
-      "icon": "💤",
-      "filter": { "logic": "AND", "rules": [{ "field": "days_since_last_seen", "operator": "greater_than", "value": 60 }] }
+      "icon": "\ud83d\udca4",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "days_since_last_seen",
+            "operator": "greater_than",
+            "value": 60
+          }
+        ]
+      }
+    },
+    {
+      "name": "Champions",
+      "description": "Highest value customers \u2014 ordered recently, frequently, and spent the most.",
+      "icon": "\ud83c\udfc6",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "total_orders",
+            "operator": "greater_than",
+            "value": 5
+          },
+          {
+            "field": "total_spent",
+            "operator": "greater_than",
+            "value": 10000
+          },
+          {
+            "field": "days_since_last_order",
+            "operator": "less_than",
+            "value": 30
+          }
+        ]
+      }
+    },
+    {
+      "name": "Loyal Customers",
+      "description": "Regular buyers with consistent purchase patterns.",
+      "icon": "\ud83d\udc9a",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "total_orders",
+            "operator": "greater_than",
+            "value": 3
+          },
+          {
+            "field": "days_since_last_order",
+            "operator": "less_than",
+            "value": 60
+          }
+        ]
+      }
+    },
+    {
+      "name": "New Buyers",
+      "description": "Started purchasing recently \u2014 1 to 3 orders, active in the last 60 days.",
+      "icon": "\ud83c\udf31",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "total_orders",
+            "operator": "greater_than",
+            "value": 0
+          },
+          {
+            "field": "total_orders",
+            "operator": "less_than",
+            "value": 4
+          },
+          {
+            "field": "days_since_last_order",
+            "operator": "less_than",
+            "value": 60
+          }
+        ]
+      }
+    },
+    {
+      "name": "Window Shoppers",
+      "description": "Registered contacts who have never bought.",
+      "icon": "\ud83d\udc40",
+      "filter": {
+        "logic": "AND",
+        "rules": [
+          {
+            "field": "total_orders",
+            "operator": "is",
+            "value": 0
+          }
+        ]
+      }
     }
   ],
   "flow_templates": [],
   "dashboard_templates": [],
   "wizard_questions": {
     "products_label": "What do you sell?",
-    "products_options": ["Physical Products", "Digital Products", "Subscriptions", "Services", "Mixed"],
-    "journey_steps": ["Browse Products", "Add to Cart", "Checkout", "Purchase", "Review", "Refer Friend"],
+    "products_options": [
+      "Physical Products",
+      "Digital Products",
+      "Subscriptions",
+      "Services",
+      "Mixed"
+    ],
+    "journey_steps": [
+      "Browse Products",
+      "Add to Cart",
+      "Checkout",
+      "Purchase",
+      "Review",
+      "Refer Friend"
+    ],
     "priorities": [
-      { "label": "Increase repeat purchases", "maps_to": "Propensity to Purchase" },
-      { "label": "Reduce customer dormancy", "maps_to": "Predict Dormancy" },
-      { "label": "Recover abandoned carts", "maps_to": "Predict Cart Abandonment" },
-      { "label": "Drive repeat purchases", "maps_to": "Repeat Purchase Propensity" },
-      { "label": "Reduce customer churn", "maps_to": "Churn Risk" },
-      { "label": "Improve email engagement", "maps_to": null }
+      {
+        "label": "Increase repeat purchases",
+        "maps_to": "Propensity to Purchase"
+      },
+      {
+        "label": "Reduce customer dormancy",
+        "maps_to": "Predict Dormancy"
+      },
+      {
+        "label": "Recover abandoned carts",
+        "maps_to": "Predict Cart Abandonment"
+      },
+      {
+        "label": "Drive repeat purchases",
+        "maps_to": "Repeat Purchase Propensity"
+      },
+      {
+        "label": "Reduce customer churn",
+        "maps_to": "Churn Risk"
+      },
+      {
+        "label": "Improve email engagement",
+        "maps_to": null
+      }
     ]
   }
 }

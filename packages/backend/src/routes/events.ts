@@ -6,6 +6,21 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
+/**
+ * A JS array as a Postgres ARRAY[...] literal, one bound parameter per element.
+ *
+ * Interpolating an array straight into a raw `sql` template — `ANY(${ids}::varchar[])`
+ * — builds a ROW constructor, `('a','b')`, and Postgres refuses to cast a record to an
+ * array: "cannot cast type record to character varying[]". The whole request 500s.
+ *
+ * It stayed hidden because both call sites are guarded by `length > 0`: a project with
+ * no sessions never reaches them, so the Event Debugger looked fine until real events
+ * arrived. Each element is still a bound parameter, so nothing is interpolated raw.
+ */
+function pgArray(values: string[]) {
+  return sql`ARRAY[${sql.join(values.map(v => sql`${v}`), sql`, `)}]`
+}
+
 const router = Router()
 
 // GET /api/events?projectId=...&limit=100&customer=...&eventName=...&from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -135,7 +150,7 @@ router.get('/sessions', requireProjectId, async (req: AuthenticatedRequest, res)
     const links = ids.length > 0 ? (await db.execute(sql`
       SELECT session_id, customer_id::text AS customer_id, linked_at, resolved_at, events_back_attributed
       FROM anonymous_sessions
-      WHERE project_id = ${projectId} AND session_id = ANY(${ids}::varchar[])
+      WHERE project_id = ${projectId} AND session_id = ANY(${pgArray(ids)}::varchar[])
     `)).rows as Array<{ session_id: string; customer_id: string | null; linked_at: string | null; resolved_at: string | null; events_back_attributed: number | null }> : []
     const linkBySession = new Map(links.map(l => [l.session_id, l]))
 
@@ -144,7 +159,7 @@ router.get('/sessions', requireProjectId, async (req: AuthenticatedRequest, res)
       ...links.map(l => l.customer_id),
     ].filter((x): x is string => !!x))]
     const customerRows = customerIds.length > 0 ? (await db.execute(sql`
-      SELECT id::text AS id, name, email, phone FROM customers WHERE id = ANY(${customerIds}::uuid[])
+      SELECT id::text AS id, name, email, phone FROM customers WHERE id = ANY(${pgArray(customerIds)}::uuid[])
     `)).rows as Array<{ id: string; name: string | null; email: string | null; phone: string | null }> : []
     const customerById = new Map(customerRows.map(c => [c.id, c]))
 

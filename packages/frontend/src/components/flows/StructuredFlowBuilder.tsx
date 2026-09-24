@@ -1034,17 +1034,20 @@ function ConditionBlock({
         </Fld>
       ) : cfg.check === 'event_occurred' ? (
         <>
+          {/* The same picker the Trigger and Exit use, and for the same reason: the
+              industry catalog is a starting point, not this project's vocabulary. A
+              shop whose purchase is `sales_order_placed` was offered only the retail
+              names here and could not express its own condition at all. EventNameSelect
+              merges in the events this project has actually sent.
+              Switching events invalidates any property filter the old event had
+              (e.g. a product_id rule on a non-product event). */}
           <Fld label="Event">
-            <select
+            <EventNameSelect
               value={cfg.event ?? ''}
-              // Switching events invalidates any property filter the old
-              // event had (e.g. product_id rule on a non-product event).
-              onChange={e => patch({ event: e.target.value, filters: undefined })}
-              className={INPUT}
-            >
-              <option value="">Select...</option>
-              {events.map((ev: string) => <option key={ev} value={ev}>{fmtEvent(ev)}</option>)}
-            </select>
+              onChange={ev => patch({ event: ev, filters: undefined })}
+              catalog={events}
+              catalogLabel="Catalog events"
+            />
           </Fld>
           {/* Same event-property rule editor the Trigger uses. The condition
               evaluator (flowExecutor) applies these against past events of

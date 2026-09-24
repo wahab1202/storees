@@ -40,6 +40,20 @@ step "Building @storees/shared"
 npm run build -w @storees/shared
 
 if [ "$ROLE" = "backend" ]; then
+  # The backend depends on @storees/segments and @storees/flows, and resolves both
+  # through their package.json "types"/"exports" -> dist/, NOT through a tsconfig path
+  # mapping to src/. dist/ is gitignored, so `git pull` updates their SOURCE and leaves
+  # the COMPILED output from the previous deploy in place. Building the backend against
+  # that stale dist fails on anything newly exported:
+  #
+  #   error TS2305: Module '"@storees/segments"' has no exported member 'SegmentVocabulary'
+  #
+  # It went unnoticed because a dev machine has freshly built dist/ folders lying around
+  # and the server does not. Build the dependencies first, in dependency order.
+  step "Building @storees/segments"
+  npm run build -w @storees/segments
+  step "Building @storees/flows"
+  npm run build -w @storees/flows
   step "Building @storees/backend"
   npm run build -w @storees/backend
   step "Running migrations"

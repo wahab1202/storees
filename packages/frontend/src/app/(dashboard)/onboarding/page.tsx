@@ -265,7 +265,7 @@ function OnboardingPageInner() {
       // 1. Create the project first
       const projectRes = await createProject.mutateAsync({
         name: projectName.trim(),
-        domain_type: (selectedPack === 'nbfc' ? 'fintech' : selectedPack === 'edtech' ? 'custom' : selectedPack) as DomainType,
+        domain_type: (selectedPack === 'nbfc' ? 'fintech' : selectedPack) as DomainType,
       })
       setProjectData(projectRes.data)
 

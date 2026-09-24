@@ -7,6 +7,7 @@ import { resolveCustomer as resolveCustomerService } from '../services/customerS
 import { bulkUpsertProducts, type ProductImport } from '../services/productCatalogService.js'
 import { upsertDealer, type DealerInput } from '../services/dealerImport.js'
 import { customerAggregateQueue } from '../services/queue.js'
+import { projectVocabulary } from '../services/projectVocabulary.js'
 
 /**
  * Bulk import endpoints — one-time historical data loaders.
@@ -120,7 +121,22 @@ router.post('/import/customers', async (req: Request, res: Response) => {
 // customer totals.
 
 type OrderImport = {
-  customer_id: string                  // external_id of the customer
+  /** THE SHOP'S OWN customer id — `customers.external_id`, not Storees' uuid.
+   *
+   *  Named `customer_id` before, which reads as "the id of the customer" and is
+   *  exactly what someone hands Storees' own uuid to. Resolution then finds nobody
+   *  with that external id and CREATES a customer keyed on the uuid string, with no
+   *  email — so the orders, the revenue and every metric land on a person who does
+   *  not exist, while the real record stays empty. Nothing errors: the response
+   *  reports the orders as imported, because they were. */
+  external_customer_id?: string
+  /** @deprecated the old name for `external_customer_id`, still accepted. */
+  customer_id?: string
+  /** Either of these identifies the customer instead — same resolution the events
+   *  API uses, so an importer does not have to import customers first just to learn
+   *  the ids it would then have to send back. */
+  customer_email?: string
+  customer_phone?: string
   order_id: string                     // unique per merchant — becomes idempotency_key
   timestamp: string                    // ISO 8601 — when the order originally happened
   total: number                        // numeric, in the same currency as `currency`
@@ -153,9 +169,12 @@ router.post('/import/orders', async (req: Request, res: Response) => {
     let unresolved = 0
     const errors: Array<{ index: number; error: string }> = []
 
-    // Phase 1 — resolve every customer_id (external_id) → Storees customer.id.
-    // Skip records whose customer isn't found; client should have called
-    // /import/customers first.
+    // Phase 1 — resolve each order's customer to a Storees customer.id.
+    //
+    // Any of the three identifiers works, matching what /v1/events accepts. Requiring
+    // the shop's external id meant an importer had to load customers first, read back
+    // the ids, and reference them — a round trip that exists only because this
+    // endpoint would not take an email.
     type ResolvedOrder = { idx: number; input: OrderImport; customerId: string }
     const resolvedOrders: ResolvedOrder[] = []
 
@@ -164,18 +183,36 @@ router.post('/import/orders', async (req: Request, res: Response) => {
       const batch = inputs.slice(i, i + CONCURRENCY)
       const results = await Promise.allSettled(
         batch.map(async (input, batchIdx) => {
-          if (!input.customer_id || !input.order_id || !input.timestamp) {
-            errors.push({ index: i + batchIdx, error: 'customer_id, order_id, timestamp required' })
+          const externalId = input.external_customer_id ?? input.customer_id
+          const email = input.customer_email ?? null
+          const phone = input.customer_phone ?? null
+
+          if (!externalId && !email && !phone) {
+            errors.push({
+              index: i + batchIdx,
+              error: 'one of external_customer_id (the shop\'s own customer id), '
+                   + 'customer_email or customer_phone is required',
+            })
+            return null
+          }
+          if (!input.order_id || !input.timestamp) {
+            errors.push({ index: i + batchIdx, error: 'order_id and timestamp required' })
             return null
           }
           try {
             const customerId = await resolveCustomerService({
-              projectId,
-              externalId: input.customer_id,
+              projectId, externalId, email, phone,
             })
             return { idx: i + batchIdx, input, customerId }
-          } catch {
+          } catch (err) {
+            // Counted AND reported. `unresolved` alone told an importer that some rows
+            // vanished and nothing about which or why, so a partial import looked the
+            // same as a clean one apart from a number.
             unresolved++
+            errors.push({
+              index: i + batchIdx,
+              error: `could not resolve customer: ${err instanceof Error ? err.message : String(err)}`,
+            })
             return null
           }
         }),
@@ -186,7 +223,23 @@ router.post('/import/orders', async (req: Request, res: Response) => {
     }
 
     // Phase 2 — bulk insert events with `historical: true` flag. Idempotency
-    // key = "order_placed_historical:<order_id>" so re-imports dedup.
+    // key = "<purchase event>_historical:<order_id>" so re-imports dedup.
+    //
+    // THE EVENT NAME IS THIS PROJECT'S, NOT A LITERAL.
+    //
+    // This wrote `order_placed` for everyone. The worker that turns an event into an
+    // order asks `vocab.purchaseEvents.includes(eventName)`, so for any project whose
+    // purchase is called something else the answer was no: the events landed, no order
+    // rows were built, and the response still said `imported: N`. A tenant uploading
+    // three years of history saw a success count and a dashboard reading zero, with
+    // nothing anywhere reporting a problem.
+    //
+    // Same resolution the live path uses (dataSyncService.ts), so an imported order and
+    // a webhook order are indistinguishable once stored — which is what lets the
+    // idempotency key dedupe across both.
+    const importVocab = await projectVocabulary(projectId)
+    const purchaseEventName = importVocab.purchaseEvents[0] ?? 'order_placed'
+
     const INSERT_BATCH = 500
     type InsertedEvent = { id: string; customerId: string; eventName: string; properties: Record<string, unknown>; timestamp: Date }
     const inserted: InsertedEvent[] = []
@@ -196,7 +249,7 @@ router.post('/import/orders', async (req: Request, res: Response) => {
       const rows = chunk.map(r => ({
         projectId,
         customerId: r.customerId,
-        eventName: 'order_placed',
+        eventName: purchaseEventName,
         properties: {
           order_id: r.input.order_id,
           total: r.input.total,
@@ -206,7 +259,12 @@ router.post('/import/orders', async (req: Request, res: Response) => {
         },
         platform: 'api',
         source: 'import',
-        idempotencyKey: `order_placed_historical:${r.input.order_id}`,
+        // Keyed on the same event name, which is what makes this dedupe against
+        // `processHistoricalEvent` — the sync path builds `<eventName>_historical:<id>`
+        // too, so the same order arriving by import and by sync collapses to one row.
+        // Pinned to the literal it would have written before, the two stopped matching
+        // the moment a project declared its own purchase word.
+        idempotencyKey: `${purchaseEventName}_historical:${r.input.order_id}`,
         timestamp: new Date(r.input.timestamp),
       }))
 

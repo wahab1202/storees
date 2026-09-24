@@ -153,12 +153,13 @@ router.post('/complete', async (req: Request, res: Response) => {
         return res.status(400).json({ success: false, error: 'projectId or projectName required' })
       }
 
-      // Map pack ID to domain type
+      // Map pack ID to domain type. The two names differ where the pack is named
+      // after the business ("nbfc") and the domain after the sector ("fintech").
       const domainMap: Record<string, string> = {
         ecommerce: 'ecommerce',
         nbfc: 'fintech',
         saas: 'saas',
-        edtech: 'custom',
+        edtech: 'edtech',
       }
 
       const [project] = await db.insert(projects).values({

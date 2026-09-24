@@ -87,7 +87,19 @@ export default function DashboardPage() {
       <div className="bg-white border border-border rounded-lg">
         <div className="flex items-stretch divide-x divide-border overflow-x-auto">
           {metrics.map((m, i) => (
-            <div key={i} className="flex-1 min-w-[160px] px-4 py-3">
+            /* A TILE IS NEVER NARROWER THAN THE NUMBER INSIDE IT.
+               `flex-1` is grow:1 shrink:1 basis:0 — the basis of zero means the cell
+               starts at nothing and the shrink of one lets it stay there, so eight
+               tiles in a narrow window each collapse to the 160px floor while the
+               value keeps its `whitespace-nowrap` and simply runs out of the box,
+               across the divider and over its neighbour. Indian-format currency is
+               where it shows: Rs2,02,49,088.05 needs about 210px.
+               `grow shrink-0 basis-auto` reverses both halves — the cell starts at
+               its content's width and is forbidden from shrinking below it, so a
+               long value widens its own tile instead of escaping it, and still
+               stretches to fill the row when there is room. The strip already
+               scrolls, so the overflow goes somewhere sensible. */
+            <div key={i} className="grow shrink-0 basis-auto min-w-[160px] px-4 py-3">
               {statsLoading ? (
                 <div className="space-y-1.5">
                   <Skeleton className="h-3 w-16" />

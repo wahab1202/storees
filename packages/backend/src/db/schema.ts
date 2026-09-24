@@ -7,6 +7,7 @@ import {
   boolean,
   integer,
   decimal,
+  doublePrecision,
   jsonb,
   uniqueIndex,
   index,
@@ -175,8 +176,16 @@ export const orders = pgTable('orders', {
   lineItems: jsonb('line_items').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+  /** Which door created this row — see migration 0082.
+   *
+   *  A purchase event name means the row was built from the event ledger and can be
+   *  rebuilt from it, so a mapping change may safely remove it. 'shopify_sync' and
+   *  'historical_import' have no event behind them and must never be deleted. NULL is
+   *  a row written before this column existed: provenance unknown, so untouchable. */
+  sourceEvent: varchar('source_event', { length: 100 }),
 }, (table) => [
   index('idx_orders_customer').on(table.projectId, table.customerId, table.createdAt),
+  index('idx_orders_source_event').on(table.projectId, table.sourceEvent),
   uniqueIndex('idx_orders_external').on(table.projectId, table.externalOrderId),
   index('idx_orders_status').on(table.projectId, table.status),
 ])
@@ -846,7 +855,31 @@ export const predictionGoals = pgTable('prediction_goals', {
   name: varchar('name', { length: 255 }).notNull(),
   targetEvent: varchar('target_event', { length: 100 }).notNull(),
   observationWindowDays: integer('observation_window_days').notNull().default(90),
-  predictionWindowDays: integer('prediction_window_days').notNull().default(14),
+  /** How far ahead the goal is asked to see, IN DAYS — and days can be fractional.
+   *
+   *  This was `integer`, which is right for every goal whose answer plays out over
+   *  weeks. It is wrong for carts. GoWelmart's own data says half of all adds convert
+   *  within 4.19 hours; as an integer that stores as 0, the label window collapses,
+   *  every cart comes out "abandoned" (measured: 99.7% positive) and the goal cannot
+   *  train at all.
+   *
+   *  `doublePrecision`, not `numeric`: Drizzle types `numeric` as a STRING, so every
+   *  reader — `predictionLiveEvalScheduler` does arithmetic on this — would need a
+   *  cast, and the one place that forgot would be a silent bug. `doublePrecision`
+   *  types as `number`, so nothing that reads this column changes.
+   *
+   *  Widening is lossless: 14 stays 14, 90 stays 90. Narrowing back is NOT — a
+   *  fractional window rounds to 0 — so this migration is one-way in practice. */
+  predictionWindowDays: doublePrecision('prediction_window_days').notNull().default(14),
+  /** Use the two windows above AS GIVEN instead of deriving them.
+   *
+   *  Off for everything by default. The pipeline normally works the windows out from
+   *  the project's own data and picks a look-back by scoring candidates on held-out
+   *  rounds — better than a typed guess, and the reason the two columns above were
+   *  overwritten after every run. This lets one goal opt out and assert its own,
+   *  which is a real need (a client who knows their buying cycle is six weeks may
+   *  well be right) at the cost of a score nobody validated. */
+  windowsPinned: boolean('windows_pinned').notNull().default(false),
   minPositiveLabels: integer('min_positive_labels').notNull().default(200),
   status: varchar('status', { length: 20 }).notNull().default('active'),
   // 'active' | 'paused' | 'insufficient_data'

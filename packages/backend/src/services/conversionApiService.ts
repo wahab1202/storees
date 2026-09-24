@@ -3,6 +3,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { adConversionDestinations, customers as customersTable } from '../db/schema.js'
 import { decrypt } from './encryption.js'
+import { projectVocabulary } from './projectVocabulary.js'
 
 // Gap 9: Conversion APIs. When a revenue event lands (order_placed,
 // subscription_renewed, etc.), we fan out a server-side event to every
@@ -78,12 +79,34 @@ const META_EVENT_NAME_MAP: Record<string, string> = {
   customer_created: 'CompleteRegistration',
 }
 
+/** What Meta should be told this event was — resolved through the project's slots.
+ *
+ *  `META_EVENT_NAME_MAP` is keyed on OUR published names, and the name arriving here
+ *  is whatever the shop actually sends. For a shop using its own vocabulary the lookup
+ *  missed every time and `if (!mappedName) return` skipped the relay in silence — so
+ *  Meta received NO conversions at all, and the ad platform optimised bids against
+ *  nothing. Nothing errored; the destination simply reported zero sent.
+ *
+ *  So resolve the meaning first: whatever this project calls a purchase becomes
+ *  `order_placed` for the purposes of the lookup, and Meta gets `Purchase`. */
+function canonicalNameFor(eventName: string, vocab: {
+  purchaseEvents: string[]; viewEvents: string[]; cartEvents: string[]
+  wishlistEvents: string[]; fulfilmentEvents: string[]
+}): string {
+  if (vocab.purchaseEvents.includes(eventName)) return 'order_placed'
+  if (vocab.viewEvents.includes(eventName)) return 'product_viewed'
+  if (vocab.cartEvents.includes(eventName)) return 'added_to_cart'
+  if (vocab.wishlistEvents.includes(eventName)) return 'added_to_wishlist'
+  return eventName   // already ours, or a signal Meta has no equivalent for
+}
+
 async function relayToMeta(
   destination: typeof adConversionDestinations.$inferSelect,
   evt: ConversionEventInput,
   customer: { email: string | null; phone: string | null; name: string | null },
+  vocab: Awaited<ReturnType<typeof projectVocabulary>>,
 ): Promise<void> {
-  const mappedName = META_EVENT_NAME_MAP[evt.eventName]
+  const mappedName = META_EVENT_NAME_MAP[canonicalNameFor(evt.eventName, vocab)]
   if (!mappedName) return  // event isn't part of Meta's standard taxonomy — silently skip
 
   const { fn, ln } = splitName(customer.name)
@@ -98,13 +121,23 @@ async function relayToMeta(
 
   if (Object.keys(user_data).length === 0) return  // nothing to match on
 
-  const props = evt.properties as { total?: number; currency?: string; line_items?: Array<{ product_id?: string; quantity?: number; price?: number }>; order_id?: string }
-  const custom_data: Record<string, unknown> = {}
-  if (typeof props.total === 'number') {
-    custom_data.value = props.total
-    custom_data.currency = (props.currency ?? 'INR').toUpperCase()
+  // Amount, currency and transaction id under THIS project's field names. Read as the
+  // literal `total`/`order_id`, a shop calling them anything else relayed a conversion
+  // with no value on it — Meta counts the event but cannot optimise for revenue, which
+  // is the entire reason for sending it.
+  const props = evt.properties as Record<string, unknown> & {
+    line_items?: Array<{ product_id?: string; quantity?: number; price?: number }>
   }
-  if (props.order_id) custom_data.order_id = props.order_id
+  const amount = Number(props[vocab.amountKey] ?? props.total)
+  const currency = String(props[vocab.currencyKey] ?? props.currency ?? 'INR')
+  const orderId = props[vocab.orderIdKey] ?? props.order_id
+
+  const custom_data: Record<string, unknown> = {}
+  if (Number.isFinite(amount)) {
+    custom_data.value = amount
+    custom_data.currency = currency.toUpperCase()
+  }
+  if (orderId) custom_data.order_id = orderId
   if (Array.isArray(props.line_items) && props.line_items.length > 0) {
     custom_data.content_ids = props.line_items.map((l) => l.product_id).filter(Boolean)
     custom_data.content_type = 'product'
@@ -117,7 +150,11 @@ async function relayToMeta(
         event_name: mappedName,
         event_time: Math.floor(evt.eventTime.getTime() / 1000),
         action_source: 'website',
-        event_id: `${evt.eventName}:${props.order_id ?? evt.customerId}:${evt.eventTime.getTime()}`,
+        // Meta dedupes on this. Under the project's own order-id key — read as the
+        // literal `order_id`, a shop naming it otherwise fell back to the customer id,
+        // so two different orders by the same customer in the same millisecond could
+        // collide, and a retried relay of one order would not dedupe against itself.
+        event_id: `${evt.eventName}:${orderId ?? evt.customerId}:${evt.eventTime.getTime()}`,
         user_data,
         custom_data,
       },
@@ -190,6 +227,9 @@ export async function relayConversionEvent(evt: ConversionEventInput): Promise<v
   }
   if (destinations.length === 0) return
 
+  // Resolved once for the whole fan-out — every destination needs the same answer.
+  const relayVocab = await projectVocabulary(evt.projectId)
+
   // Single customer lookup, reused across destinations
   const [customer] = await db
     .select({ email: customersTable.email, phone: customersTable.phone, name: customersTable.name })
@@ -201,7 +241,7 @@ export async function relayConversionEvent(evt: ConversionEventInput): Promise<v
   for (const dest of destinations) {
     try {
       const platform = dest.platform as AdPlatform
-      if (platform === 'meta') await relayToMeta(dest, evt, customer)
+      if (platform === 'meta') await relayToMeta(dest, evt, customer, relayVocab)
       else if (platform === 'google') await relayToGoogle()
       else if (platform === 'tiktok') await relayToTikTok()
       else if (platform === 'snap') await relayToSnap()
@@ -247,21 +287,29 @@ export async function testRelay(destinationId: string, projectId: string): Promi
     .limit(1)
   if (!customer) throw new Error('No customers in project — cannot send a test event with real identifiers')
 
+  // The project's own purchase event, and its own field names.
+  //
+  // A test exists to prove the real thing works. Sent as the literal `order_placed`
+  // carrying `order_id` and `total`, it proved that RETAIL's conversion would relay —
+  // which tells a lender or a course platform nothing about their own. Their live
+  // conversions could be failing for precisely the reason the test was meant to catch,
+  // and the test would still come back green.
+  const vocab = await projectVocabulary(projectId)
   const evt: ConversionEventInput = {
     projectId,
     customerId: customer.id,
-    eventName: 'order_placed',
+    eventName: vocab.purchaseEvents[0] ?? 'order_placed',
     eventTime: new Date(),
     properties: {
-      order_id: `test_${Date.now()}`,
-      total: 100,
-      currency: 'INR',
+      [vocab.orderIdKey]: `test_${Date.now()}`,
+      [vocab.amountKey]: 100,
+      [vocab.currencyKey]: 'INR',
       line_items: [{ product_id: 'test-product', quantity: 1, price: 100 }],
     },
   }
 
   const platform = dest.platform as AdPlatform
-  if (platform === 'meta') return relayToMeta(dest, evt, customer)
+  if (platform === 'meta') return relayToMeta(dest, evt, customer, vocab)
   if (platform === 'google') return relayToGoogle()
   if (platform === 'tiktok') return relayToTikTok()
   if (platform === 'snap') return relayToSnap()

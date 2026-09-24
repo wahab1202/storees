@@ -14,6 +14,35 @@ export const eventsQueue = new Queue('events', {
   },
 })
 
+/** THE SAME EVENTS AGAIN, FOR PREDICTION SCORING.
+ *
+ *  A BullMQ queue is a WORK queue, not a broadcast: every job goes to exactly one
+ *  consumer. `triggerWorker` and `predictionTriggerWorker` both listened on `events`,
+ *  so the two of them split the stream and each saw roughly half of it — a coin flip on
+ *  every event deciding whether a cart got re-scored.
+ *
+ *  It looked like flakiness rather than a bug, because half of everything did work: a
+ *  shopper added three items and one or two updated the screen. Chased as intermittency
+ *  for an afternoon; it is a race, and it was in the wiring rather than in either
+ *  worker.
+ *
+ *  Fanning out to a second queue is the smallest correct fix — each consumer gets its
+ *  own copy, and neither can starve the other. A third consumer of the event stream
+ *  needs its own queue too; adding another `new Worker('events', …)` would quietly
+ *  reintroduce exactly this. */
+export const predictionEventsQueue = new Queue('prediction-events', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 1000,
+    },
+    removeOnComplete: true,
+    removeOnFail: { count: 100 },
+  },
+})
+
 export const flowActionsQueue = new Queue('flow-actions', {
   connection: redisConnection,
   defaultJobOptions: {
@@ -174,3 +203,30 @@ export const webhookDeliveryQueue = new Queue('webhook-delivery', {
     removeOnFail: { count: 200 },
   },
 })
+
+
+/** PUBLISH ONE EVENT TO EVERY CONSUMER OF THE EVENT STREAM.
+ *
+ *  Use this rather than `eventsQueue.add` directly. Two independent things react to
+ *  events — flow triggers and prediction scoring — and a BullMQ queue delivers each job
+ *  to exactly ONE worker, so sharing a queue silently halves both of them. Fanning out
+ *  here keeps that decision in a single place: a new consumer gets a queue and a line in
+ *  this function, instead of a `new Worker('events', …)` that quietly steals half the
+ *  stream from whoever was already listening.
+ */
+export async function publishEvent(name: string, data: unknown, opts?: Record<string, unknown>) {
+  await Promise.all([
+    eventsQueue.add(name, data as never, opts as never),
+    predictionEventsQueue.add(name, data as never, opts as never),
+  ])
+}
+
+/** The bulk form, for an import or a segment recompute. */
+export async function publishEvents(jobs: Array<{ name: string; data: unknown }>) {
+  if (jobs.length === 0) return
+  const shaped = jobs.map(j => ({ name: j.name, data: j.data as never }))
+  await Promise.all([
+    eventsQueue.addBulk(shaped),
+    predictionEventsQueue.addBulk(shaped),
+  ])
+}

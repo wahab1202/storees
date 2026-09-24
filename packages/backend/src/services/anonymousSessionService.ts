@@ -34,7 +34,23 @@ export async function linkAnonymousSession(
       .set({ customerId, deviceId: deviceId ?? null, linkedAt: new Date(), eventsBackAttributed: null, flowsTriggered: null, resolvedAt: null })
       .where(eq(anonymousSessions.id, existing.id))
   } else {
-    await db.insert(anonymousSessions).values({ projectId, sessionId, customerId, deviceId: deviceId ?? null })
+    // LET THE DATABASE SETTLE THE RACE, NOT THE SELECT ABOVE.
+    //
+    // Look-then-insert is not atomic. Two events from the same visitor arriving
+    // together both read "no row", both insert, and the loser violates
+    // idx_anon_sessions_unique — 20 of these were logged as errors during a 65-shopper
+    // run. Nothing was actually lost: both callers were writing the SAME link, so the
+    // loser's work was already done by the winner. But it surfaced as an error, and a
+    // log full of harmless errors is how a real one goes unnoticed.
+    //
+    // Upserting says what was always meant: this session belongs to this customer.
+    // The winner inserts, the loser updates to the identical value, and neither throws.
+    await db.insert(anonymousSessions)
+      .values({ projectId, sessionId, customerId, deviceId: deviceId ?? null })
+      .onConflictDoUpdate({
+        target: [anonymousSessions.projectId, anonymousSessions.sessionId],
+        set: { customerId, deviceId: deviceId ?? null, linkedAt: new Date() },
+      })
   }
 
   await identityMergeQueue.add('merge', { projectId, sessionId, customerId, deviceId: deviceId ?? null })

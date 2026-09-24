@@ -6,6 +6,8 @@ import { projects, orders, products, collections, productCollections, dataSource
 import { fetchShopifyApi, fetchShopifyPage, getValidShopifyToken } from '../services/shopifyService.js'
 import { resolveCustomer, updateCustomerAggregates } from '../services/customerService.js'
 import { processHistoricalEvent } from '../services/eventProcessor.js'
+import { isReversedOrderStatus } from '../db/orderStatus.js'
+import { projectVocabulary } from '../services/projectVocabulary.js'
 import { SHOPIFY_API_DELAY_MS } from '@storees/shared'
 import { evaluateAllSegments } from '../services/segmentService.js'
 
@@ -54,6 +56,11 @@ type ShopifyOrder = {
   currency: string
   created_at: string
   fulfillment_status: string | null
+  // Shopify has always sent these two — the fetch asks for `status=any` and no field
+  // filter, so a cancelled or refunded order arrives complete. They were simply never
+  // declared here, and so never read. See `shopifyOrderStatus` below for what that cost.
+  cancelled_at: string | null
+  financial_status: string | null
   line_items: Array<{
     product_id: number
     title: string
@@ -61,6 +68,30 @@ type ShopifyOrder = {
     price: string
     image?: { src: string }
   }>
+}
+
+/** Shopify's own words for an order's state, translated into ours.
+ *
+ *  This door read ONE field — `fulfillment_status` — and produced two values:
+ *  `fulfilled`, or `pending` for everything else. A cancelled order and a refunded
+ *  order both came out `pending`, which is a live order, which counts as revenue.
+ *  So Shopify money that had gone back to the customer stayed on the books, and the
+ *  customer's lifetime total included it. The same disease as GoWelmart's ₹1 crore of
+ *  uncounted cancellations, arriving through a different door.
+ *
+ *  Precedence is finality first: an order that was cancelled was never shipped, so
+ *  cancellation outranks whatever the fulfilment field says.
+ *
+ *  `partially_refunded` is deliberately NOT a reversal. Storees stores one status per
+ *  order and has no notion of a part refund; treating it as fully refunded would drop
+ *  the entire order's revenue to settle a fraction of it. Counting it in full is the
+ *  smaller error, and the honest one until partials are modelled. */
+function shopifyOrderStatus(o: ShopifyOrder): string {
+  if (o.cancelled_at) return 'cancelled'
+  if (o.financial_status === 'voided') return 'cancelled'
+  if (o.financial_status === 'refunded') return 'refunded'
+  if (o.fulfillment_status === 'fulfilled') return 'fulfilled'
+  return 'pending'
 }
 
 export function startSyncWorker(): Worker {
@@ -85,6 +116,11 @@ export function startSyncWorker(): Worker {
       // Re-mints a fresh Admin API token for custom-app connections (the
       // client_credentials token is ~24h); returns the stored token for legacy OAuth.
       const { token } = await getValidShopifyToken(projectId)
+
+      // This project's words, resolved once for the whole run. Shopify's own vocabulary
+      // is fixed, but what WE write into the ledger from it must be this project's
+      // purchase and reversal names, or nothing downstream recognises the history.
+      const vocab = await projectVocabulary(projectId)
 
       // Resolve the unified Data Sources sync-history row so this run shows in
       // the project's Data Sources panel (status, counts, duration) — same shell
@@ -157,11 +193,12 @@ export function startSyncWorker(): Worker {
             const total = Number(shopifyOrder.total_price)
             const discount = Number(shopifyOrder.total_discounts)
 
+            const status = shopifyOrderStatus(shopifyOrder)
             const inserted = await db.insert(orders).values({
               projectId,
               customerId,
               externalOrderId: String(shopifyOrder.id),
-              status: shopifyOrder.fulfillment_status === 'fulfilled' ? 'fulfilled' : 'pending',
+              status,
               total: String(total),
               discount: String(discount),
               currency: shopifyOrder.currency,
@@ -174,26 +211,54 @@ export function startSyncWorker(): Worker {
               })),
               createdAt: new Date(shopifyOrder.created_at),
               fulfilledAt: shopifyOrder.fulfillment_status === 'fulfilled' ? new Date() : null,
+              // Pulled from Shopify's API — there is no event behind this row, so a
+              // mapping change must never delete it. It could not be rebuilt.
+              sourceEvent: 'shopify_sync',
             }).onConflictDoNothing().returning({ id: orders.id })
 
             // Only update aggregates if the order was actually inserted (not a duplicate)
-            if (inserted.length > 0) {
+            // AND the order still stands. A cancelled or refunded order was counted here
+            // too, so its money entered the customer's lifetime total and never left —
+            // the row said `pending`, and nothing downstream had any reason to doubt it.
+            if (inserted.length > 0 && !isReversedOrderStatus(status)) {
               await updateCustomerAggregates(customerId, total, new Date(shopifyOrder.created_at))
             }
 
             // Create historical event (does NOT trigger flows)
+            //
+            // Under THIS project's purchase name, not a hardcoded `order_placed`. A shop
+            // whose purchase slot says something else got an event nothing recognised,
+            // so every segment and model that counts purchases from the ledger missed
+            // its Shopify history entirely.
+            const orderProps = {
+              order_id: String(shopifyOrder.id),
+              total,
+              discount,
+              item_count: shopifyOrder.line_items.length,
+            }
             await processHistoricalEvent(
-              projectId,
-              customerId,
-              'order_placed',
-              {
-                order_id: String(shopifyOrder.id),
-                total,
-                discount,
-                item_count: shopifyOrder.line_items.length,
-              },
-              new Date(shopifyOrder.created_at),
+              projectId, customerId, vocab.purchaseEvents[0] ?? 'order_placed',
+              orderProps, new Date(shopifyOrder.created_at),
             )
+
+            // AND the reversal, when there is one.
+            //
+            // The ledger recorded a purchase for a cancelled order and never recorded
+            // that it came back. The orders TABLE knows (above), but several surfaces
+            // count purchases from the EVENTS instead — `Orders in Last 30 Days` is one —
+            // and those subtract a reversal only when they can find a matching reversal
+            // event. With none written, a refunded Shopify order counted as a live one.
+            if (isReversedOrderStatus(status)) {
+              const reversalName =
+                status === 'refunded' ? (vocab.refundEvents[0] ?? 'order_refunded')
+                : status === 'returned' ? (vocab.returnEvents[0] ?? 'order_returned')
+                : (vocab.cancellationEvents[0] ?? 'order_cancelled')
+              await processHistoricalEvent(
+                projectId, customerId, reversalName,
+                { ...orderProps, amount: total },
+                new Date(shopifyOrder.cancelled_at ?? shopifyOrder.created_at),
+              )
+            }
 
             ordersProcessed++
           }

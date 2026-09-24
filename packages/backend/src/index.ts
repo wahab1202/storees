@@ -1,4 +1,7 @@
 import 'dotenv/config'
+// Must sit directly after dotenv and before every other import: it installs the
+// outbound-call block, and a module imported earlier could call out first.
+import './safeMode.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import express from 'express'
@@ -28,6 +31,7 @@ import resendWebhookRoutes from './routes/resendWebhook.js'
 import catalogueRoutes from './routes/catalogues.js'
 import itemRoutes from './routes/items.js'
 import interactionConfigRoutes from './routes/interactionConfig.js'
+import eventMappingRoutes from './routes/eventMapping.js'
 import predictionGoalRoutes from './routes/predictionGoals.js'
 import consentRoutes from './routes/consent.js'
 import verticalPackRoutes from './routes/verticalPacks.js'
@@ -65,6 +69,7 @@ import { startMetricsWorker } from './workers/metricsWorker.js'
 import { startDeliveryWorker } from './workers/deliveryWorker.js'
 import { startInteractionWorker } from './workers/interactionWorker.js'
 import { startScoringWorker } from './workers/scoringWorker.js'
+import { startPredictionTriggerWorker } from './workers/predictionTriggerWorker.js'
 import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
 import { startIdentityMergeWorker } from './workers/identityMergeWorker.js'
 import { startCustomerAggregateWorker, runStartupCatchUp } from './workers/customerAggregateWorker.js'
@@ -201,6 +206,7 @@ app.use('/api/onboarding', requireAuth, onboardingRoutes)
 app.use('/api/catalogues', requireAuth, catalogueRoutes)
 app.use('/api/items', requireAuth, itemRoutes)
 app.use('/api/interaction-config', requireAuth, interactionConfigRoutes)
+app.use('/api/event-mapping', requireAuth, eventMappingRoutes)
 app.use('/api/prediction-goals', requireAuth, predictionGoalRoutes)
 app.use('/api/consent', requireAuth, consentRoutes)
 app.use('/api/packs', requireAuth, verticalPackRoutes)
@@ -241,33 +247,82 @@ async function bootstrap() {
   }
 
   // Bootstrap cross-tenant super admins from STOREES_PLATFORM_ADMINS so existing
-  // platform operators keep access after the 0085 membership change. Idempotent.
+  // platform operators keep access after the 0085 membership change. Idempotent,
+  // and a no-op when the variable is unset — it only writes to our own database,
+  // so it runs on both sides of the SAFE gate below.
   const { seedSuperAdmins } = await import('./middleware/membership.js')
   await seedSuperAdmins()
 
-  // Start workers
-  startSyncWorker()
-  startTriggerWorker()
-  startFlowWorker()
-  startCampaignWorker()
+  // LOCAL_SAFE_MODE: run only the workers that read and write our own database.
+  // Everything that can reach a real customer or an external service — message
+  // delivery, campaign and flow senders, store sync, outbound webhooks,
+  // template-status polling, and the automatic training/scoring schedulers —
+  // stays off. The flag is unset in production, so this branch changes nothing
+  // about a real deployment.
+  const SAFE = process.env.LOCAL_SAFE_MODE === 'true'
+
+  // Local read-model workers — safe, they only touch our own database
   startMetricsWorker()
-  startDeliveryWorker()
-  startInteractionWorker()
-  startScoringWorker()
-  startScoringScheduler()
-  const { startPredictionTrainingScheduler } = await import('./workers/predictionTrainingScheduler.js')
-  startPredictionTrainingScheduler()
-  const { startLiveEvalScheduler } = await import('./workers/predictionLiveEvalScheduler.js')
-  startLiveEvalScheduler()
-  startTrainingWorker()
-  startCampaignScheduler()
-  startFlowFixedTimeScheduler()
-  startTemplateStatusWorker()
   startIdentityMergeWorker()
   startCustomerAggregateWorker()
-  startAggregateReconcileWorker()
-  startDataSyncWorker()
-  startWebhookDeliveryWorker()
+
+
+  // Training belongs here, not behind the gate.
+  //
+  // It sat with the senders and external pollers, so a local Re-train queued a job that
+  // nothing ever picked up: no error, no spinner, no change — the click simply vanished.
+  // But training reaches nothing outside this machine. It reads our own database and
+  // calls the ML service on localhost. The SCHEDULER that fires it on a timer stays
+  // gated, so nothing trains locally unless a person asks for it.
+  startTrainingWorker()
+
+  // Scoring belongs with it, for the same reason and by the same test.
+  //
+  // Training ends by queueing a scoring job — that is how a new model reaches the
+  // customers. With this worker gated, the job was queued and nothing ever ran it, so a
+  // model trained today served scores computed by an older one: the Dormancy screen
+  // showed every customer scored `24/08/2026` beside a model trained on the 28th, with
+  // nothing to say the two were unrelated.
+  //
+  // Like training, it reads our own database and calls the ML service on localhost. It
+  // sends nothing outward. The SCHEDULER that rescores everything on a timer stays gated
+  // below, so scoring still only happens as a consequence of somebody training.
+  startScoringWorker()
+
+  if (!SAFE) {
+    startSyncWorker()
+    startTriggerWorker()
+    startFlowWorker()
+    startCampaignWorker()
+    startDeliveryWorker()
+    startInteractionWorker()
+    startScoringScheduler()
+    // The scheduler's counterpart for goals it cannot serve. A window shorter than the
+    // scheduler's own period opens and closes between two of its wake-ups, so those
+    // goals are scored when their event arrives instead. Gated alongside the scheduler
+    // deliberately: it is the same act — rescoring on a signal rather than on a
+    // request — and SAFE mode's rule is that scoring only follows from somebody
+    // training.
+    startPredictionTriggerWorker()
+    const { startPredictionTrainingScheduler } = await import('./workers/predictionTrainingScheduler.js')
+    startPredictionTrainingScheduler()
+    const { startLiveEvalScheduler } = await import('./workers/predictionLiveEvalScheduler.js')
+    startLiveEvalScheduler()
+    startCampaignScheduler()
+    startFlowFixedTimeScheduler()
+    startTemplateStatusWorker()
+    startDataSyncWorker()
+    startWebhookDeliveryWorker()
+    // Nightly rebuild of customer aggregates from the orders table — his
+    // self-healing backstop for the "card shows 6, Orders tab shows 40" bug.
+    // Database-only, but it is a TIMER, and this gate's stated rule is that the
+    // automatic schedulers stay off locally. Move it above the gate if a local
+    // run should self-heal too.
+    startAggregateReconcileWorker()
+  } else {
+    console.log('[bootstrap] LOCAL_SAFE_MODE: senders, sync and external pollers are OFF — local only.')
+  }
+
 
   // One-shot catch-up: process any events ingested before the aggregate worker
   // was running. Idempotent (events.processed_at guard). Backgrounded so boot

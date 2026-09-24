@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useFlows, useCreateFlow, useUpdateFlowStatus, useDeleteFlow, useCloneFlow } from '@/hooks/useFlows'
@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { useDashboardStats } from '@/hooks/useDashboard'
 import { FlowTemplateGallery } from '@/components/flows/FlowTemplateGallery'
 import { TriggerFiltersBlock } from '@/components/flows/StructuredFlowBuilder'
+import { useEventNames } from '@/hooks/useEvents'
 import type { FilterConfig } from '@storees/shared'
 
 const STATUS_CONFIG = {
@@ -48,8 +49,21 @@ const DOMAIN_EVENTS: Record<string, { label: string; events: string[]; defaultTr
   },
 }
 
+// THE EVENT'S REAL NAME, NOT A PRETTIER VERSION OF IT.
+//
+// This title-cased the name — `added_to_cart` rendered as "Added To Cart" — which reads
+// well and hides the one thing the reader needs. The value stored on the flow, matched
+// by the trigger worker as plain text, and sent by the shop is the raw name; showing
+// anything else means the screen and the shop are using different words for the same
+// thing, and there is no way to tell from the UI whether the list is this project's
+// real events or a generic guess. That ambiguity is exactly what it cost: the list has
+// been per-project for some time and still read as a fixed menu.
+//
+// It also could not win. Title-casing mangles the names it does not know — `emi_paid`
+// became "Emi Paid", `sms_sent` became "Sms Sent" — so the prettier form was wrong for
+// precisely the verticals whose words are least familiar.
 function formatEventLabel(evt: string): string {
-  return evt.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  return evt
 }
 
 export default function FlowsPage() {
@@ -65,6 +79,34 @@ export default function FlowsPage() {
   const domain = statsData?.data.domainType ?? 'ecommerce'
   const domainConfig = DOMAIN_EVENTS[domain] ?? DOMAIN_EVENTS.ecommerce
 
+  // WHAT THIS PROJECT ACTUALLY SENDS, ahead of what its industry usually sends.
+  //
+  // The list below is a per-industry guess written in Storees' vocabulary. A shop using
+  // its own words could not find its events in it — `purchase_confirmed` is not on any
+  // industry list — so there was no way to build a flow triggered by the one thing that
+  // matters most to them. They could only pick a name they never send, which creates a
+  // flow that silently never fires.
+  //
+  // The observed names come first because they are facts; the industry list follows so a
+  // brand-new project with no traffic yet still has something to choose from.
+  const { data: observedData } = useEventNames()
+  const observed = observedData?.data ?? []
+  const triggerOptions = [...new Set([...observed, ...domainConfig.events])]
+
+  // THE PRE-SELECTED TRIGGER MUST BE ONE THIS SHOP ACTUALLY SENDS.
+  //
+  // The options above were already merged, so a shop could FIND its own events. What it
+  // still opened on was `domainConfig.defaultTrigger` — `cart_created` for ecommerce,
+  // a name the dictionary defines but no pack maps and miranaCART has never sent once.
+  // Open the dialog, type a name, press create, and the flow is bound to an event that
+  // will never arrive: it reports active, fires nothing, and looks healthy doing it.
+  // The default is the one field nobody deliberately chooses, which is exactly why it
+  // has to be right.
+  //
+  // Observed first, because it is a fact. The industry default survives only for a
+  // brand-new project with no traffic yet, which has nothing better to offer.
+  const defaultTrigger = observed[0] ?? domainConfig.defaultTrigger
+
   // Pre-open + prefill the create modal when arriving from a customer's Next
   // Best Action (?nbaName=…).
   const [showCreate, setShowCreate] = useState(!!searchParams.get('nbaName'))
@@ -73,6 +115,21 @@ export default function FlowsPage() {
   const [newName, setNewName] = useState(searchParams.get('nbaName') ?? '')
   const [newDescription, setNewDescription] = useState('')
   const [newTrigger, setNewTrigger] = useState(domainConfig.defaultTrigger)
+  // WHETHER THE PERSON HAS CHOSEN, NOT WHETHER THE VALUE LOOKS UNCHOSEN.
+  //
+  // `observed` arrives after the first render, so the initial state above cannot see it
+  // and the real default has to be adopted once it lands. The first version decided
+  // "have they chosen yet?" by comparing the current value against the industry
+  // default — and the industry default is itself a selectable option. Clicking
+  // `cart_created` therefore looked exactly like not having clicked anything, so the
+  // effect immediately replaced it: that option could not be selected at all.
+  //
+  // A flag records the fact directly. Nothing about the VALUE can be mistaken for the
+  // ACT of choosing, so every option in the list stays selectable.
+  const [triggerTouched, setTriggerTouched] = useState(false)
+  useEffect(() => {
+    if (!triggerTouched && defaultTrigger !== newTrigger) setNewTrigger(defaultTrigger)
+  }, [defaultTrigger, triggerTouched, newTrigger])
   const [triggerFilters, setTriggerFilters] = useState<FilterConfig | undefined>(undefined)
 
   const handleCreate = () => {
@@ -84,7 +141,9 @@ export default function FlowsPage() {
           setShowCreate(false)
           setNewName('')
           setNewDescription('')
-          setNewTrigger(domainConfig.defaultTrigger)
+          setNewTrigger(defaultTrigger)
+    setTriggerTouched(false)
+          setTriggerTouched(false)
           setTriggerFilters(undefined)
           if (result.data?.id) {
             router.push(`/flows/${result.data.id}`)
@@ -98,7 +157,7 @@ export default function FlowsPage() {
     setShowCreate(false)
     setNewName('')
     setNewDescription('')
-    setNewTrigger(domainConfig.defaultTrigger)
+    setNewTrigger(defaultTrigger)
     setTriggerFilters(undefined)
   }
 
@@ -134,7 +193,15 @@ export default function FlowsPage() {
           onSelect={(template) => {
             setShowTemplates(false)
             createFlow.mutate(
-              { name: template.name, description: template.description, triggerEvent: template.triggerEvent },
+              // The template's whole journey, not just its name. `localise` has already
+              // rewritten every event inside it into this project's own words.
+              {
+                name: template.name,
+                description: template.description,
+                triggerEvent: template.triggerEvent,
+                nodes: template.nodes,
+                ...(template.exitEvent ? { exitConfig: { event: template.exitEvent } } : {}),
+              },
               {
                 onSuccess: (result) => {
                   if (result.data?.id) {
@@ -206,10 +273,10 @@ export default function FlowsPage() {
                   This flow starts when this event occurs for a customer
                 </p>
                 <div className="grid grid-cols-2 gap-2 max-h-52 overflow-y-auto pr-1">
-                  {domainConfig.events.map((evt: string) => (
+                  {triggerOptions.map((evt: string) => (
                     <button
                       key={evt}
-                      onClick={() => { setNewTrigger(evt); setTriggerFilters(undefined) }}
+                      onClick={() => { setNewTrigger(evt); setTriggerTouched(true); setTriggerFilters(undefined) }}
                       className={cn(
                         'px-3 py-2 text-sm text-left rounded-lg border transition-colors',
                         newTrigger === evt
@@ -217,7 +284,7 @@ export default function FlowsPage() {
                           : 'border-border text-text-secondary hover:border-text-muted hover:bg-surface',
                       )}
                     >
-                      {formatEventLabel(evt)}
+                      <span className="font-mono text-[12px]">{formatEventLabel(evt)}</span>
                     </button>
                   ))}
                 </div>
@@ -428,7 +495,7 @@ function FlowCardStats({ flow }: { flow: import('@/hooks/useFlows').FlowWithCoun
         {triggerEvent && (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium bg-surface text-text-secondary rounded-md border border-border">
             <Zap className="h-3 w-3 text-accent" />
-            {formatEventLabel(triggerEvent)}
+            <span className="font-mono">{formatEventLabel(triggerEvent)}</span>
           </span>
         )}
         {tc.total > 0 && (

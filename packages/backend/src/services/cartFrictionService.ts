@@ -2,6 +2,7 @@ import { and, eq, gt, sql, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { events, customers } from '../db/schema.js'
 import { readPath } from '@storees/shared'
+import { projectVocabulary, eventIn } from './projectVocabulary.js'
 
 /**
  * Abandoned-cart friction analysis.
@@ -62,11 +63,15 @@ export async function analyzeCartFriction(projectId: string, customerId: string)
   const abandonedAt = abandon.timestamp
 
   // 2. Did they buy AFTER the abandon? Then it's recovered — no action needed.
+  // "Recovered" means they converted after abandoning — in this project's terms. On
+  // retail's names a lender's abandoned application never counted as recovered even
+  // after the loan was disbursed, so every one stayed flagged as friction forever.
+  const recoveryVocab = await projectVocabulary(projectId)
   const [{ recovered }] = await db.execute(sql`
     SELECT EXISTS (
       SELECT 1 FROM events
       WHERE project_id = ${projectId} AND customer_id = ${customerId}
-        AND event_name IN ('order_placed', 'order_completed')
+        AND ${eventIn(sql`event_name`, recoveryVocab.purchaseEvents)}
         AND timestamp > ${abandonedAt}
     ) AS recovered
   `).then(r => r.rows as Array<{ recovered: boolean }>)
@@ -89,9 +94,12 @@ export async function analyzeCartFriction(projectId: string, customerId: string)
   }
 
   // 4. Browsing depth in the days before the abandon (stitched history)
+  // Browsing, in this project's words — a lender's abandoned application otherwise
+  // reported zero page views, reading as "gave up without looking at anything".
+  const frictionVocab = await projectVocabulary(projectId)
   const [{ product_views, sessions }] = await db.execute(sql`
     SELECT
-      COUNT(*) FILTER (WHERE event_name IN ('product_viewed', 'page_viewed'))::int AS product_views,
+      COUNT(*) FILTER (WHERE ${eventIn(sql`event_name`, frictionVocab.viewEvents)})::int AS product_views,
       COUNT(DISTINCT session_id)::int AS sessions
     FROM events
     WHERE project_id = ${projectId} AND customer_id = ${customerId}

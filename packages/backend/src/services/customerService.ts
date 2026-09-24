@@ -1,6 +1,8 @@
 import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { customers, orders, events } from '../db/schema.js'
+import { LIVE_ORDERS } from '../db/orderStatus.js'
+import { projectVocabulary, eventIn } from './projectVocabulary.js'
 
 // ============ CLV CALCULATION ============
 
@@ -13,7 +15,42 @@ type ClvInput = {
   // distinguish "lapsed but engaging" (re-engagement opportunity) from
   // "truly gone" (write-off). Falls back to lastOrderDate when null.
   lastSeenDate: Date | null
-  churnRiskScore?: number // 0-100 from ML, if available
+  /** THIS PROJECT'S OWN typical orders-per-month, measured from its customers who
+   *  have enough history to measure. Omitted only when the project is too new to
+   *  have any — see CLV_FALLBACK_ORDERS_PER_MONTH. */
+  populationOrdersPerMonth?: number
+  /** 0-100 from a MODEL, if one has scored this customer.
+   *
+   *  MUST NOT be this function's own previous answer. It was, from all four call
+   *  sites: they read `metrics.churn_risk`, which is written from
+   *  `clv_churn_probability × 100` — the output of the branch this value overrides.
+   *  So the score fed itself and froze at whatever it produced first.
+   *
+   *  Every customer exists before their first order, and the no-orders branch below
+   *  returns a churn probability of 1. So the first value stored was 100, and 100 is
+   *  what it stayed — through their first purchase and every one after. Measured:
+   *  every customer in all six projects sat at exactly 100, including six who had
+   *  bought that same week.
+   *
+   *  100 is also the tell. The ladder below caps at 0.95, so it can never produce 100
+   *  — only the no-orders branch can. GoWelmart's customers were bulk-imported WITH
+   *  order history, so their first value came from the ladder and looks plausible
+   *  (95%, 60%…) — the same freeze, wearing a believable number.
+   *
+   *  Read from a key only a model writes. `metrics.churn_risk` is ours. */
+  churnRiskScore?: number
+}
+
+/** The churn score a MODEL produced for this customer, if any.
+ *
+ *  Deliberately not `metrics.churn_risk` — that is what the CLV calculation writes,
+ *  and reading it back is the loop described above. Nothing writes this key yet; the
+ *  override stays wired so a real churn model can take over without touching the
+ *  callers, and until then the heuristic ladder runs, which is what it was for. */
+export function mlChurnScore(metrics: Record<string, unknown> | null | undefined): number | undefined {
+  const v = (metrics ?? {}).ml_churn_risk
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN
+  return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
 export type ClvHealth =
@@ -55,6 +92,73 @@ const MS_PER_DAY = 1000 * 60 * 60 * 24
  * from "truly churned" (nothing happening on either axis) — these warrant
  * very different marketing actions.
  */
+/** How far ahead a lifetime value looks. Twelve months: comparable to a year's
+ *  revenue, the horizon shops budget against, and short enough that the prediction
+ *  can be marked against what actually happens. */
+const CLV_HORIZON_MONTHS = 12
+
+/** LAST RESORT ONLY — used when a project cannot yet measure its own rate.
+ *
+ *  This started life as a flat 0.55 applied to every project, taken from one shop's
+ *  data. That is the wrong shape for a platform: a grocer whose customers buy weekly
+ *  and a furniture shop whose customers buy twice a year do not share a rate, and
+ *  hard-coding one silently under-predicts the first and over-predicts the second for
+ *  every customer's first three months.
+ *
+ *  A project now measures its own (`projectOrderRate`). This value is reached only by
+ *  a project with no customer old enough to measure — day one, before any history
+ *  exists — and is deliberately conservative, because over-predicting a brand-new
+ *  shop's customers is the more expensive mistake. */
+const CLV_FALLBACK_ORDERS_PER_MONTH = 0.5
+
+/** How much that population rate is worth, in months of the customer's own history.
+ *  At three, a customer is trusted over the population once they pass three months. */
+const CLV_PRIOR_WEIGHT_MONTHS = 3
+
+/**
+ * What a typical customer of THIS project buys in a month.
+ *
+ * Measured, not assumed. Only customers with at least `MEASURE_MIN_MONTHS` of history
+ * count — a rate taken over days is the very error this whole correction exists to
+ * undo, so letting those customers define the population average would feed the bug
+ * back into its own fix.
+ *
+ * The median is used rather than the mean. One customer with nine orders in three
+ * weeks drags a mean upwards hard; on Bazario the mean across all buyers came out at
+ * 18.7 orders a month against a true rate of 0.55, purely from short-tenure outliers.
+ *
+ * Cached briefly: this is a whole-table aggregate and the answer moves slowly — it is
+ * a property of the shop, not of the customer being scored.
+ */
+const RATE_CACHE = new Map<string, { rate: number; at: number }>()
+const RATE_TTL_MS = 10 * 60 * 1000
+const MEASURE_MIN_MONTHS = 3
+
+export async function projectOrderRate(projectId: string): Promise<number> {
+  const hit = RATE_CACHE.get(projectId)
+  if (hit && Date.now() - hit.at < RATE_TTL_MS) return hit.rate
+
+  const res = await db.execute<{ rate: string | null }>(sql`
+    SELECT percentile_cont(0.5) WITHIN GROUP (
+             ORDER BY total_orders / (EXTRACT(EPOCH FROM (NOW() - first_order_date)) / 86400.0 / 30.44)
+           ) AS rate
+    FROM customers
+    WHERE project_id = ${projectId}
+      AND total_orders > 0
+      AND first_order_date IS NOT NULL
+      AND EXTRACT(EPOCH FROM (NOW() - first_order_date)) / 86400.0 / 30.44 >= ${MEASURE_MIN_MONTHS}
+  `)
+  const raw = Number(res.rows[0]?.rate)
+  // Bounded either side: a project whose measurement collapses (one odd customer, a
+  // bad import) must not swing every prediction on the platform.
+  const rate = Number.isFinite(raw) && raw > 0
+    ? Math.min(10, Math.max(0.05, raw))
+    : CLV_FALLBACK_ORDERS_PER_MONTH
+
+  RATE_CACHE.set(projectId, { rate, at: Date.now() })
+  return rate
+}
+
 export function computeClv(input: ClvInput): ClvResult {
   const { totalSpent, totalOrders, firstOrderDate, lastOrderDate, lastSeenDate, churnRiskScore } = input
   const now = new Date()
@@ -81,11 +185,31 @@ export function computeClv(input: ClvInput): ClvResult {
   const historical = totalSpent
   const aov = totalSpent / totalOrders
 
-  // Tenure in months (min 1 to avoid division by zero)
   const tenureDays = Math.max(1, (now.getTime() - firstOrderDate.getTime()) / MS_PER_DAY)
-  const tenureMonths = Math.max(1, tenureDays / 30.44)
 
-  const monthlyFrequency = totalOrders / tenureMonths
+  // HOW OFTEN THEY BUY — WEIGHTED BY HOW MUCH WE ACTUALLY KNOW.
+  //
+  // This read `totalOrders / tenureMonths` with tenure floored at one month, so a
+  // shopper two days old with five orders was recorded as buying five times a MONTH
+  // and that rate was then projected forward. Measured on Bazario: customers with
+  // three months of history buy 0.55 times a month; customers under a month were
+  // credited with 10-30x that, and one who had spent Rs1.94 lakh over two days came
+  // out valued at Rs82 lakh. Across the base, predicted value ran 28x actual revenue.
+  //
+  // The floor was the trap. It does stop a divide-by-zero, but it also silently turns
+  // "we have two days of evidence" into "we have a month of evidence", and a burst of
+  // first-week orders reads as a permanent habit.
+  //
+  // So the observed rate is blended with the population's, weighted by evidence: a
+  // customer with days of history leans on the population, one with a year leans on
+  // themselves, and the shift between the two is gradual rather than a cliff. This is
+  // the standard correction for a rate measured over a short window — the same reason
+  // a batsman is not given a career average after one innings.
+  const priorMonths = CLV_PRIOR_WEIGHT_MONTHS
+  const populationRate = input.populationOrdersPerMonth ?? CLV_FALLBACK_ORDERS_PER_MONTH
+  const observedMonths = Math.max(tenureDays / 30.44, 0.03)
+  const monthlyFrequency =
+    (totalOrders + priorMonths * populationRate) / (observedMonths + priorMonths)
 
   // Days since last order. If lastOrderDate is missing (the worker hasn't
   // populated it yet), fall back to last_seen — that's a tighter bound than
@@ -133,8 +257,26 @@ export function computeClv(input: ClvInput): ClvResult {
     else                                engagementMultiplier = 0.5
   }
 
-  const monthlyChurnRate = Math.max(0.01, 1 - Math.pow(1 - churnProb, 1 / 12))
-  const retentionMonths = Math.min(36, 1 / monthlyChurnRate)
+  // HOW LONG THEY KEEP BUYING — AND THE FLOOR THAT USED TO DECIDE IT.
+  //
+  // `Math.max(0.01, ...)` was overriding the churn score rather than guarding it. A
+  // healthy customer's monthly churn works out at 0.00427, the floor raised it to
+  // 0.01, that gave 100 months, and the cap trimmed it to 36. Every customer who was
+  // not visibly lapsing therefore received the SAME three years, and the careful churn
+  // banding above this line changed nothing for them:
+  //
+  //     churnProb 0.05 -> 36 months      churnProb 0.35 -> 28.4 months
+  //     churnProb 0.15 -> 36 months      churnProb 0.60 -> 13.6 months
+  //
+  // The horizon is now twelve months, and the floor sits below what any real churn
+  // value produces so the score is what decides.
+  //
+  // Twelve because that is what the data can answer for. Predicting three years from
+  // eight months of history extrapolates four times past the evidence, and a 36-month
+  // figure cannot be checked until 2029. A year is comparable to annual revenue, is
+  // how shops budget, and can be marked against reality when it arrives.
+  const monthlyChurnRate = Math.max(0.001, 1 - Math.pow(1 - churnProb, 1 / 12))
+  const retentionMonths = Math.min(CLV_HORIZON_MONTHS, 1 / monthlyChurnRate)
 
   const predicted = Math.round(aov * monthlyFrequency * retentionMonths * engagementMultiplier * 100) / 100
 
@@ -436,6 +578,7 @@ async function updateLastSeen(
  */
 async function refreshCustomerClv(customerId: string): Promise<void> {
   const [row] = await db.select({
+    projectId: customers.projectId,
     totalSpent: customers.totalSpent,
     totalOrders: customers.totalOrders,
     firstOrderDate: customers.firstOrderDate,
@@ -452,7 +595,9 @@ async function refreshCustomerClv(customerId: string): Promise<void> {
     firstOrderDate: row.firstOrderDate,
     lastOrderDate: row.lastOrderDate,
     lastSeenDate: row.lastSeen,
-    churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+    // This shop's own rhythm, not a number borrowed from a different kind of shop.
+    populationOrdersPerMonth: await projectOrderRate(row.projectId),
+    churnRiskScore: mlChurnScore(metrics),
   })
   await db.execute(sql`
     UPDATE customers SET
@@ -467,11 +612,78 @@ async function refreshCustomerClv(customerId: string): Promise<void> {
  * Update customer aggregates after an order event.
  * Uses atomic SQL increment to prevent lost-update race conditions.
  */
+/**
+ * Run one customer's aggregate recompute with every other recompute for that same
+ * customer held back.
+ *
+ * WHY A LOCK, WHEN THE RECOMPUTE IS ALREADY ONE ATOMIC STATEMENT.
+ *
+ * Atomic is not the same as ordered. Under READ COMMITTED each statement takes its
+ * snapshot when it starts, so two recomputes for one customer can both read, then
+ * both write, and the one that read the OLDER world is free to commit last.
+ *
+ * That is not hypothetical. A purchase and its refund are routinely handed to
+ * different workers in the same instant. The refund marks the order refunded and
+ * recomputes to zero; the purchase's recompute, whose snapshot was taken a moment
+ * earlier and still sees the order as a live sale, lands on top and restores the
+ * revenue. The orders table then says refunded while the customer card says sold,
+ * and nothing ever runs again to reconcile them. Two projects fed byte-identical
+ * data came out at 473 and 474 orders against a true 470, each having lost a
+ * different arbitrary handful.
+ *
+ * The lock is taken in its own statement before the recompute, so the recompute's
+ * snapshot is taken after the previous holder has committed. Whichever recompute
+ * runs last therefore reads the final state, which is the property that was missing.
+ * It is transaction-scoped, so it is released on commit or rollback with nothing to
+ * clean up, and it is keyed per customer, so it serialises one shopper's events
+ * without holding up anybody else's.
+ */
+async function withCustomerAggregateLock(
+  customerId: string,
+  run: (tx: typeof db) => Promise<unknown>,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${customerId}, 0))`)
+    await run(tx as unknown as typeof db)
+  })
+}
+
 export async function updateCustomerAggregates(
   customerId: string,
   _orderTotal?: number,   // vestigial — kept for call-site compatibility
   _orderDate?: Date,      // aggregates are recomputed from the orders table
+  /** WHEN this event actually happened. Defaults to now, which is right for an event
+   *  that just arrived and wrong for one being replayed — see the `last_seen` line. */
+  seenAt?: Date,
 ): Promise<void> {
+
+  // THIS CUSTOMER'S PROJECT DECIDES WHAT COUNTS AS REVENUE.
+  //
+  // The union below reads order EVENTS as well as order rows, and an event only
+  // counts if it is one of the words this project actually uses for a sale. Reading
+  // a fixed pair of names instead would make a lender's `emi_paid` invisible here —
+  // and the zeroing guard further down treats "invisible" as "never bought", which
+  // is how a borrower's recorded revenue was wiped to zero on Recalculate.
+  //
+  // `projectVocabulary` is cached for 60s, so this costs one lookup per project per
+  // minute, not one per order.
+  const [{ projectId: _pid } = { projectId: '' }] = await db
+    .select({ projectId: customers.projectId })
+    .from(customers).where(eq(customers.id, customerId)).limit(1)
+  const vocab = await projectVocabulary(_pid)
+  const revenueEvents = [...new Set([
+    ...vocab.purchaseEvents, 'subscription_renewed', 'emi_paid', 'premium_paid',
+  ])]
+  const amountKey = vocab.amountKey
+  const fallbackOrderId = (alias: string) => sql`COALESCE(
+    NULLIF(${sql.raw(alias)}.properties->>${vocab.orderIdKey}, ''),
+    ${sql.raw(alias)}.id::text)`
+  const reversedOrderIds = sql`(
+    SELECT COALESCE(NULLIF(r.properties->>${vocab.orderIdKey}, ''), r.id::text)
+    FROM events r
+    WHERE r.project_id = ${_pid}
+      AND ${eventIn(sql`r.event_name`, vocab.cancellationEvents)})`
+
   // IDEMPOTENT: recompute order stats from the ORDERS TABLE (deduped on
   // (project, external_order_id)), NOT by +1. Incremental counting
   // double-counted whenever an order reached the counter through more than
@@ -479,16 +691,30 @@ export async function updateCustomerAggregates(
   // though the order row was inserted once — that's the "Orders tab shows 1
   // but the card shows 2" bug. Callers invoke this AFTER inserting the order
   // row, so the new order is included. Cancelled orders excluded.
-  await db.execute(sql`
+  await withCustomerAggregateLock(customerId, tx =>
+    tx.execute(sql`
     UPDATE customers c SET
       total_orders     = COALESCE(agg.cnt, 0),
       total_spent      = COALESCE(agg.spent, 0),
       avg_order_value  = CASE WHEN COALESCE(agg.cnt, 0) > 0 THEN agg.spent / agg.cnt ELSE 0 END,
       first_order_date = agg.first_at,
       last_order_date  = agg.last_at,
-      last_seen        = GREATEST(last_seen, NOW()),
+      -- THE EVENT'S OWN TIME, not the clock.
+      --
+      -- This said NOW(), which is the same thing while events arrive live and quietly
+      -- false the moment history is re-read. Saving the Event Mapping screen replays
+      -- stored events through this function, so re-reading a March order stamped that
+      -- customer as active today. Measured on a GoWelmart copy whose data ends 18
+      -- August: 3,809 customers came out marked "last seen" on the 25th.
+      --
+      -- It is not just a chart. last_seen decides who is dormant, who is at risk,
+      -- the recency axis of the RFM grid and the recency half of the engagement score
+      -- — so a replay quietly lifted lapsed customers out of the very segments meant
+      -- to win them back.
+      last_seen        = GREATEST(last_seen, ${seenAt ?? new Date()}),
       updated_at       = NOW()
     FROM (
+
       SELECT COUNT(*)::int AS cnt,
              COALESCE(SUM(revenue), 0)::numeric(12,2) AS spent,
              MIN(ts) AS first_at,
@@ -499,15 +725,15 @@ export async function updateCustomerAggregates(
           SELECT COALESCE(NULLIF(external_order_id, ''), id::text) AS order_key,
                  COALESCE(total::numeric, 0) AS revenue, created_at AS ts, 0 AS source_rank
           FROM orders
-          WHERE customer_id = ${customerId} AND status IS DISTINCT FROM 'cancelled'
+          WHERE customer_id = ${customerId} AND ${LIVE_ORDERS}
           UNION ALL
           SELECT COALESCE(
-                   NULLIF(e.properties->>'order_id', ''),
+                   NULLIF(e.properties->>${vocab.orderIdKey}, ''),
                    CASE WHEN e.properties->>'display_id' IS NOT NULL THEN '#' || (e.properties->>'display_id') END,
                    e.id::text
                  ) AS order_key,
                  COALESCE(
-                   NULLIF(e.properties->>'total', '')::numeric,
+                   NULLIF(e.properties->>${amountKey}, '')::numeric,
                    (SELECT COALESCE(SUM(
                       COALESCE(NULLIF(item->>'price', '')::numeric, NULLIF(item->>'unit_price', '')::numeric, 0)
                       * COALESCE(NULLIF(item->>'quantity', '')::numeric, 1)
@@ -518,13 +744,16 @@ export async function updateCustomerAggregates(
                  e.timestamp AS ts, 1 AS source_rank
           FROM events e
           WHERE e.customer_id = ${customerId}
-            AND e.event_name IN ('order_placed', 'order_completed')
+            AND ${eventIn(sql`e.event_name`, revenueEvents)}
+            AND ${fallbackOrderId('e')} NOT IN ${reversedOrderIds}
         ) u
         ORDER BY order_key, source_rank
       ) deduped
+
     ) agg
     WHERE c.id = ${customerId}
   `)
+  )
 
   await refreshCustomerClv(customerId)
 }
@@ -539,13 +768,43 @@ export async function updateCustomerAggregates(
 export async function recalculateAggregates(
   customerId: string,
 ): Promise<void> {
-  await db.execute(sql`
+
+  // THIS CUSTOMER'S PROJECT DECIDES WHAT COUNTS AS REVENUE.
+  //
+  // The union below reads order EVENTS as well as order rows, and an event only
+  // counts if it is one of the words this project actually uses for a sale. Reading
+  // a fixed pair of names instead would make a lender's `emi_paid` invisible here —
+  // and the zeroing guard further down treats "invisible" as "never bought", which
+  // is how a borrower's recorded revenue was wiped to zero on Recalculate.
+  //
+  // `projectVocabulary` is cached for 60s, so this costs one lookup per project per
+  // minute, not one per order.
+  const [{ projectId: _pid } = { projectId: '' }] = await db
+    .select({ projectId: customers.projectId })
+    .from(customers).where(eq(customers.id, customerId)).limit(1)
+  const vocab = await projectVocabulary(_pid)
+  const revenueEvents = [...new Set([
+    ...vocab.purchaseEvents, 'subscription_renewed', 'emi_paid', 'premium_paid',
+  ])]
+  const amountKey = vocab.amountKey
+  const fallbackOrderId = (alias: string) => sql`COALESCE(
+    NULLIF(${sql.raw(alias)}.properties->>${vocab.orderIdKey}, ''),
+    ${sql.raw(alias)}.id::text)`
+  const reversedOrderIds = sql`(
+    SELECT COALESCE(NULLIF(r.properties->>${vocab.orderIdKey}, ''), r.id::text)
+    FROM events r
+    WHERE r.project_id = ${_pid}
+      AND ${eventIn(sql`r.event_name`, vocab.cancellationEvents)})`
+
+  await withCustomerAggregateLock(customerId, tx =>
+    tx.execute(sql`
     UPDATE customers c SET
       total_orders = agg.cnt,
       total_spent = agg.sum_total,
       avg_order_value = CASE WHEN agg.cnt > 0 THEN agg.sum_total / agg.cnt ELSE 0 END,
       updated_at = NOW()
     FROM (
+
       SELECT COUNT(*)::int AS cnt, COALESCE(SUM(revenue), 0) AS sum_total
       FROM (
         SELECT DISTINCT ON (order_key) order_key, revenue
@@ -553,15 +812,15 @@ export async function recalculateAggregates(
           SELECT COALESCE(NULLIF(external_order_id, ''), id::text) AS order_key,
                  COALESCE(total::numeric, 0) AS revenue, 0 AS source_rank
           FROM orders
-          WHERE customer_id = ${customerId} AND status IS DISTINCT FROM 'cancelled'
+          WHERE customer_id = ${customerId} AND ${LIVE_ORDERS}
           UNION ALL
           SELECT COALESCE(
-                   NULLIF(e.properties->>'order_id', ''),
+                   NULLIF(e.properties->>${vocab.orderIdKey}, ''),
                    CASE WHEN e.properties->>'display_id' IS NOT NULL THEN '#' || (e.properties->>'display_id') END,
                    e.id::text
                  ) AS order_key,
                  COALESCE(
-                   NULLIF(e.properties->>'total', '')::numeric,
+                   NULLIF(e.properties->>${amountKey}, '')::numeric,
                    (SELECT COALESCE(SUM(
                       COALESCE(NULLIF(item->>'price', '')::numeric, NULLIF(item->>'unit_price', '')::numeric, 0)
                       * COALESCE(NULLIF(item->>'quantity', '')::numeric, 1)
@@ -572,13 +831,16 @@ export async function recalculateAggregates(
                  1 AS source_rank
           FROM events e
           WHERE e.customer_id = ${customerId}
-            AND e.event_name IN ('order_placed', 'order_completed')
+            AND ${eventIn(sql`e.event_name`, revenueEvents)}
+            AND ${fallbackOrderId('e')} NOT IN ${reversedOrderIds}
         ) u
         ORDER BY order_key, source_rank
       ) deduped
+
     ) agg
     WHERE c.id = ${customerId}
   `)
+  )
 
   await refreshCustomerClv(customerId)
 }
@@ -596,6 +858,7 @@ export async function recalculateAggregates(
  * (e.g. a source that emits events without materialising orders).
  */
 export async function recalculateAllAggregates(projectId: string): Promise<number> {
+
   // A customer's orders live in TWO places: the orders table (native Shopify
   // sync) and order_placed/order_completed EVENTS (the data-sync connector,
   // which never materialises a row). The customer Orders tab MERGES both,
@@ -604,6 +867,57 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
   // undercounted any customer with a MIX: 7 table rows hid ~33 connector-only
   // orders (card showed 7, Orders tab showed 40). Union both sources, dedup by
   // (customer, order_key) with the table row winning when an order is in both.
+
+  // THIS PROJECT'S REVENUE VOCABULARY.
+  //
+  // Every pass below filtered on `order_placed` / `order_completed` and read
+  // `properties.total`. Two consequences for a vertical that says it differently:
+  // the fallback pass found nothing, and — far worse — the final pass ZEROED any
+  // customer it could not see, because "not in the order events and not in the orders
+  // table" was read as "has never bought".
+  //
+  // Measured on a lending project: a borrower with a ₹12,500 EMI recorded went
+  // `orders=1, spent=12500` -> `orders=0, spent=0` the moment an admin pressed
+  // Recalculate. Recurring revenue -- EMIs, subscription renewals, insurance premiums
+  // -- has no order row by design (no transaction id of its own), so it was invisible
+  // to both survival tests and got wiped.
+  //
+  // `revenueEvents` therefore covers the project's purchase events AND the recurring
+  // ones, and is used for both the fallback and the zeroing guard.
+  const vocab = await projectVocabulary(projectId)
+  // Declared projects are judged by their own purchase events plus the recurring
+  // payments that carry no transaction id. Undeclared ones keep the old fixed list,
+  // which is what they have always behaved as.
+  const revenueEvents = [...new Set([
+    ...vocab.purchaseEvents, 'subscription_renewed', 'emi_paid', 'premium_paid',
+  ])]
+  const amountKey = vocab.amountKey
+
+  const fallbackOrderId = (alias: string) => sql`COALESCE(
+    NULLIF(${sql.raw(alias)}.properties->>${vocab.orderIdKey}, ''),
+    NULLIF(${sql.raw(alias)}.properties->>'order_id', ''),
+    NULLIF(${sql.raw(alias)}.properties->>'id', ''),
+    ${sql.raw(alias)}.id::text)`
+
+  // Reversal ids only — the recurring-payment events carry no order id and fall back
+  // to their own event id above, so they can never collide with one of these.
+  const reversedOrderIds = sql`(
+    SELECT COALESCE(
+             NULLIF(r.properties->>${vocab.orderIdKey}, ''),
+             NULLIF(r.properties->>'order_id', ''),
+             NULLIF(r.properties->>'id', ''))
+    FROM events r
+    WHERE r.project_id = ${projectId}
+      AND ${eventIn(sql`r.event_name`, vocab.cancellationEvents)}
+      AND COALESCE(
+            NULLIF(r.properties->>${vocab.orderIdKey}, ''),
+            NULLIF(r.properties->>'order_id', ''),
+            NULLIF(r.properties->>'id', '')) IS NOT NULL
+  )`
+
+
+  // Primary: orders table — authoritative and deduped.
+
   const result = await db.execute(sql`
     UPDATE customers c SET
       total_orders     = agg.order_count,
@@ -614,13 +928,28 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       last_order_date  = agg.last_at,
       updated_at       = NOW()
     FROM (
+
       SELECT customer_id,
              COUNT(*)::integer AS order_count,
              COALESCE(SUM(revenue), 0)::numeric(12,2) AS total_spent,
              MIN(ts) AS first_at,
              MAX(ts) AS last_at
       FROM (
-        SELECT DISTINCT ON (customer_id, order_key) customer_id, order_key, revenue, ts
+        -- DEDUPE ON THE ORDER, NOT ON CUSTOMER-AND-ORDER.
+        --
+        -- An order belongs to one customer, so the order key alone identifies it, which
+        -- is exactly how the two per-customer queries above are keyed. Adding the
+        -- customer id to the key makes the SAME order two rows whenever the order row
+        -- and its event disagree about who placed it -- the normal residue of an
+        -- identity merge, where one side is re-pointed and the other keeps the old id.
+        --
+        -- Measured on miranaCART: 8,758 orders exist and every one is present in both
+        -- sources. Keyed on the pair this returned 8,788, and Rs121,483 of revenue that
+        -- does not exist. Keyed on the order alone it returns 8,758.
+        --
+        -- It also defeated source_rank, whose whole purpose is to let the authoritative
+        -- order row win over the event: the two were never competing for the same key.
+        SELECT DISTINCT ON (order_key) order_key, customer_id, revenue, ts
         FROM (
           -- Materialised order rows (authoritative when shared with an event).
           SELECT customer_id,
@@ -629,17 +958,17 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
                  created_at AS ts,
                  0 AS source_rank
           FROM orders
-          WHERE project_id = ${projectId} AND status IS DISTINCT FROM 'cancelled'
+          WHERE project_id = ${projectId} AND ${LIVE_ORDERS}
           UNION ALL
           -- Connector orders that only ever exist as events.
           SELECT e.customer_id,
                  COALESCE(
-                   NULLIF(e.properties->>'order_id', ''),
+                   NULLIF(e.properties->>${vocab.orderIdKey}, ''),
                    CASE WHEN e.properties->>'display_id' IS NOT NULL THEN '#' || (e.properties->>'display_id') END,
                    e.id::text
                  ) AS order_key,
                  COALESCE(
-                   NULLIF(e.properties->>'total', '')::numeric,
+                   NULLIF(e.properties->>${amountKey}, '')::numeric,
                    (SELECT COALESCE(SUM(
                       COALESCE(NULLIF(item->>'price', '')::numeric, NULLIF(item->>'unit_price', '')::numeric, 0)
                       * COALESCE(NULLIF(item->>'quantity', '')::numeric, 1)
@@ -652,10 +981,12 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
           FROM events e
           WHERE e.project_id = ${projectId}
             AND e.customer_id IS NOT NULL
-            AND e.event_name IN ('order_placed', 'order_completed')
+            AND ${eventIn(sql`e.event_name`, revenueEvents)}
+            AND ${fallbackOrderId('e')} NOT IN ${reversedOrderIds}
         ) u
-        ORDER BY customer_id, order_key, source_rank
+        ORDER BY order_key, source_rank
       ) deduped
+
       GROUP BY customer_id
     ) agg
     WHERE c.id = agg.customer_id AND c.project_id = ${projectId}
@@ -663,6 +994,27 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
 
   const ordersUpdated = Number((result as { rowCount?: number }).rowCount ?? 0)
 
+  // THE HELPERS THE ZEROING GUARD BELOW STILL NEEDS.
+  //
+  // The two UPDATE passes that used to sit here — an event-only fallback and an
+  // orders-table date backfill — are gone: the single UNION above now reads both
+  // sources in one query, so the fallback would double-count every event order it
+  // already saw, and the backfill would overwrite that query's dual-source dates
+  // with orders-table-only ones. What survives is the pair of SQL fragments the
+  // survival test still uses.
+
+  // Zero out customers neither pass above could account for.
+  //
+  // The survival test has to match what the passes actually set, or a customer falls
+  // between them and keeps a stale figure for ever. It did: someone whose only order
+  // was later cancelled still HAS a purchase event, so this test spared them — while
+  // the orders pass skipped them (no live order) and the fallback now skips them too
+  // (the purchase is reversed). Nothing wrote their row, nothing cleared it, and the
+  // number they were left with was from before the cancellation.
+  //
+  // So the event side of the test excludes reversed purchases, exactly as the fallback
+  // does. Recurring payments have no order id and are never in that list, so an EMI
+  // borrower still survives — which is the wipe this guard was written to prevent.
   // Zero out customers with no orders from either source
   await db.execute(sql`
     UPDATE customers SET
@@ -675,11 +1027,16 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       updated_at = NOW()
     WHERE project_id = ${projectId}
       AND id NOT IN (
-        SELECT DISTINCT customer_id FROM events
-        WHERE project_id = ${projectId} AND event_name IN ('order_placed', 'order_completed')
+        SELECT DISTINCT e.customer_id FROM events e
+        WHERE e.project_id = ${projectId}
+          AND ${eventIn(sql`e.event_name`, revenueEvents)}
+          AND e.customer_id IS NOT NULL
+          AND ${fallbackOrderId('e')} NOT IN ${reversedOrderIds}
         UNION
         SELECT DISTINCT customer_id FROM orders
-        WHERE project_id = ${projectId} AND status IS DISTINCT FROM 'cancelled'
+
+        WHERE project_id = ${projectId} AND ${LIVE_ORDERS}
+
       )
       AND (total_orders != 0 OR total_spent::numeric != 0)
   `)
@@ -708,7 +1065,7 @@ export async function recalculateAllAggregates(projectId: string): Promise<numbe
       firstOrderDate: row.firstOrderDate,
       lastOrderDate: row.lastOrderDate,
       lastSeenDate: row.lastSeen,
-      churnRiskScore: metrics.churn_risk ? Number(metrics.churn_risk) : undefined,
+      churnRiskScore: mlChurnScore(metrics),
     })
     return {
       id: row.id,

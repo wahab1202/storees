@@ -27,9 +27,14 @@ router.get('/', async (req, res) => {
         managerId: agents.managerId,
         isActive: agents.isActive,
         createdAt: agents.createdAt,
+        // The dealer id MUST stay table-qualified. Drizzle renders `${agents.id}`
+        // as a bare "id" — unambiguous in the outer query, but inside this
+        // subquery "id" binds to customers.id, so the test became
+        // `customers.agent_id = customers.id`: false for every row, and every
+        // dealer reported 0 customers while 5,537 were assigned.
         customerCount: sql<number>`(
-          SELECT COUNT(*)::int FROM customers
-          WHERE customers.agent_id = ${agents.id} AND customers.project_id = ${projectId}
+          SELECT COUNT(*)::int FROM customers c
+          WHERE c.agent_id = ${sql.raw('"agents"."id"')} AND c.project_id = ${projectId}
         )`,
       })
       .from(agents)
