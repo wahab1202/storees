@@ -16,6 +16,7 @@ const SLOT_FOR_NAME: Record<string, string> = {
   product_viewed: 'product_viewed',
   added_to_cart: 'add_to_cart',
   order_fulfilled: 'fulfilment',
+  order_delivered: 'delivery',
   order_cancelled: 'cancellation',
   order_returned: 'return',
   order_refunded: 'refund',
@@ -83,7 +84,7 @@ const TEMPLATES: FlowTemplate[] = [
       { id: 'trigger_1', type: 'trigger', config: { event: 'order_placed', filters: { logic: 'AND', rules: [] } } },
       { id: 'action_1', type: 'action', config: { actionType: 'send_email', templateId: '' } },
       { id: 'delay_1', type: 'delay', config: { value: 5, unit: 'days' } },
-      { id: 'cond_1', type: 'condition', config: { check: 'event_occurred', event: 'order_fulfilled', since: 'trip_start', branches: { yes: 'action_2', no: 'end_1' } } },
+      { id: 'cond_1', type: 'condition', config: { check: 'event_occurred', event: 'order_delivered', since: 'trip_start', branches: { yes: 'action_2', no: 'end_1' } } },
       { id: 'action_2', type: 'action', config: { actionType: 'send_email', templateId: '' } },
       { id: 'end_1', type: 'end', label: 'End' },
     ],
@@ -178,11 +179,18 @@ export function FlowTemplateGallery({ domainType, onSelect, onClose }: Props) {
   // A name with no slot is passed through unchanged, so `checkout_started` and every
   // other signal is untouched.
   const { data: mapping } = useEventMapping()
+  const boxed = (slot: string) => mapping?.data?.meanings?.find(m => m.key === slot)?.events ?? []
+  const received = new Set((mapping?.data?.available ?? []).map(e => e.eventName))
   const translate = (name: string): string => {
     const slot = SLOT_FOR_NAME[name]
     if (!slot) return name
-    const events = mapping?.data?.meanings?.find(m => m.key === slot)?.events
-    return events?.[0] ?? name
+    // "After they have it" uses delivery only when this shop has actually received a
+    // delivery event; otherwise it starts on the shipment — same rule as the server.
+    if (slot === 'delivery') {
+      const delivered = boxed('delivery').filter(n => received.has(n))
+      return delivered[0] ?? translate('order_fulfilled')
+    }
+    return boxed(slot)[0] ?? name
   }
   const localise = (t: {
     name: string; description: string; triggerEvent: string; nodes: FlowNode[]; exitEvent?: string

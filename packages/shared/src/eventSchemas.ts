@@ -96,6 +96,7 @@ export const EVENT_PROPERTIES: Record<string, EventPropertyDef[]> = {
   // ─────────── Ecommerce — orders ───────────
   order_placed: [ORDER_ID, TOTAL, CURRENCY, ITEM_COUNT, LINE_ITEMS, { name: 'payment_method', label: 'Payment Method', type: 'string' }],
   order_fulfilled: [ORDER_ID, TOTAL, CURRENCY],
+  order_delivered: [ORDER_ID],
   order_cancelled: [ORDER_ID, TOTAL, LINE_ITEMS, { name: 'reason', label: 'Reason', type: 'string' }],
   order_refunded: [ORDER_ID, { name: 'amount', label: 'Refund Amount', type: 'number' }, CURRENCY, { name: 'reason', label: 'Reason', type: 'string' }],
   order_returned: [ORDER_ID, { name: 'amount', label: 'Return Value', type: 'number' }, { name: 'reason', label: 'Reason', type: 'string' }],

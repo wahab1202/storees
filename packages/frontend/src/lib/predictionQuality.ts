@@ -6,7 +6,20 @@
  * "rename Needs Data → Fair" type changes touch one file, not five.
  *
  * Thresholds match the ML eval guardrails in packages/ml/shared/eval.py:
- *   AUC < 0.5  → genuinely worse than random ("Needs Data", red)
+ *   AUC <= 0.5 → no better than chance, and below it INVERTED ("Unusable", red).
+ *                Named for what it is, not for what would fix it: this said "Needs
+ *                Data", which reads as "wait for more customers" when the truth is
+ *                "discard this model". One shop's churn goal sat at 0.373 — its
+ *                most-likely-to-leave list was its most loyal customers — under a label
+ *                telling the reader to be patient. `trainer.NO_SIGNAL_AUC` refuses this
+ *                band outright now, so anything still showing it was published before
+ *                that gate existed and wants retraining or retiring.
+ *
+ *                Deliberately NOT extended to a lift-based "Weak" band above it. Lift is
+ *                capped by the base rate, and these goals run at base rates of 90-95%:
+ *                both working dormancy models measure 1.0-1.1x with AUC ~0.71, so
+ *                labelling on lift would call them weak and be wrong in the other
+ *                direction.
  *   AUC < 0.78 → real predictive lift, just not strong ("Fair", amber)
  *   AUC < 0.90 → solid model ("Good", blue)
  *   AUC < 0.95 → high discrimination ("Strong", green)
@@ -14,7 +27,7 @@
  *                 stays "Strong" for behavior-based goals.
  */
 
-export type QualityLabel = 'Not trained' | 'Needs Data' | 'Fair' | 'Good' | 'Strong' | 'Cycle-Based'
+export type QualityLabel = 'Not trained' | 'Unusable' | 'Fair' | 'Good' | 'Strong' | 'Cycle-Based'
 
 const BEHAVIOR_TARGETS = [
   'dormancy', 'dormant', 'churn', 'cancel', 'default', 'missed', 'expired', 'abandon',
@@ -36,8 +49,11 @@ export function getAucQuality(metric: number | null | undefined, isBehavior: boo
   if (metric === null || metric === undefined) {
     return { label: 'Not trained', colorClass: 'text-text-muted' }
   }
-  if (metric < 0.5) {
-    return { label: 'Needs Data', colorClass: 'text-red-600' }
+  // `<=`, matching `trainer.NO_SIGNAL_AUC`. At exactly 0.5 a ranking carries no
+  // information at all, and `<` would have called that "Fair" on the one screen while
+  // the engine refused to publish it.
+  if (metric <= 0.5) {
+    return { label: 'Unusable', colorClass: 'text-red-600' }
   }
   if (metric < 0.78) {
     return { label: 'Fair', colorClass: 'text-amber-600' }

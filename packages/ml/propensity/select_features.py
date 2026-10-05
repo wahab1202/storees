@@ -231,7 +231,14 @@ def select_features(dataset: ProjectDataset, goal: str, win,
             f"(rows={total_rows}, positives={total_pos}) -> N/A")
         result = {"project_id": dataset.project_id, "goal": goal, "segment": segment,
                   "status": "INSUFFICIENT_DATA",
-                  "reason": f"eligible population too small (rows={total_rows}, positives={total_pos})",
+                  # "eligible population too small (rows=3783, positives=0)" is the
+                  # pipeline describing its own inputs. The log line above keeps those
+                  # numbers; a goal card needs to know which shop fact is missing.
+                  "reason": ("Not enough customers have done this yet for a model to "
+                             "learn from. It will train once the shop has more history."
+                             if total_pos == 0 else
+                             "Too few of this shop's customers qualify for this "
+                             "prediction yet. It will train once there are more."),
                   "selected_features": [], "n_folds": len(fold_data)}
         return result
 

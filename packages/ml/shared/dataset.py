@@ -211,17 +211,51 @@ class ProjectDataset:
         removed, carts reconstructed — so what lands on disk is exactly what the
         pipeline would have seen, and cart mode is switched to plain because the
         reconstruction has already happened.
+
+        BUILT TO THE SIDE, THEN SWAPPED IN. A copy is only worth reusing if it is
+        complete, and the only moment that is known is after the last file is written.
+        Writing straight into the destination published each file the instant it
+        appeared, so a run that died partway — measured here: the database dropped the
+        connection while the Event Mapping rebuild was replaying 5,984 events — left a
+        zero-byte `events.parquet` under the real name. Every later run found it,
+        reported "using rows already read from the database", and failed on a file too
+        small to be a Parquet file. It never recovered on its own; the directory had to
+        be deleted by hand.
+
+        NEVER HALF-WRITTEN, BRIEFLY ABSENT. `os.replace` on a directory needs the target
+        gone first — POSIX rename refuses a non-empty one — so the old copy is removed
+        and then the new one takes its name. Between those two steps a reader finds no
+        directory at all and rebuilds: a wasted read, never a wrong one. That is the
+        whole guarantee this needs, and it is the one the old code could not make — a
+        reader could open a file that was still being written, or one that never
+        finished.
+
+        Two runs racing do the read twice and the last one wins. Both wrote the same
+        rows, so the loser costs time, never correctness. This mirrors what
+        `serve._cached_dataset` already does around its own call to this method.
         """
-        import duckdb
+        import duckdb, os, shutil
         from dataclasses import replace
         out = Path(into)
-        out.mkdir(parents=True, exist_ok=True)
-        con = duckdb.connect()
-        con.execute("PRAGMA disable_progress_bar")
-        self.prepare(con)
-        for name in ("customers", "orders", "events", "products"):
-            con.execute(f"COPY ({self.source(name)}) TO '{out / (name + '.parquet')}' (FORMAT PARQUET)")
-        con.close()
+        staging = out.with_name(out.name + f".building-{os.getpid()}")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            con = duckdb.connect()
+            con.execute("PRAGMA disable_progress_bar")
+            self.prepare(con)
+            for name in ("customers", "orders", "events", "products"):
+                con.execute(
+                    f"COPY ({self.source(name)}) TO "
+                    f"'{staging / (name + '.parquet')}' (FORMAT PARQUET)")
+            con.close()
+            # Only now is the copy complete enough to wear the name others look for.
+            shutil.rmtree(out, ignore_errors=True)
+            os.replace(staging, out)
+        except BaseException:
+            # Leave nothing half-written behind, under either name.
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
         return ProjectDataset(project_id=self.project_id, root=out,
                               events=replace(self.events, cart_add_mode="event"),
                               tables=None, dsn=None)
@@ -292,3 +326,62 @@ class ProjectDataset:
     def events_table(self) -> str: return self.table("events")
     @property
     def products(self) -> str: return self.table("products")
+
+
+def history_stamp(dataset, before) -> str:
+    """What the cached copy must describe: the events features are built from, AND
+    which customers exist at all.
+
+    Returns a stamp, not a count, because two different things can go stale.
+
+    EVENTS BEFORE `before` — a backfill changes them and must force a rebuild, while
+    ordinary live events timestamped now do not and must not, or every request would
+    rebuild and this cache would have no purpose.
+
+    THE CUSTOMER ROSTER — and this half was missing. A customer created TODAY has no
+    events before midnight, so the event count did not move, so the copy was judged
+    fresh and simply had no row for them. `score_customers` intersects the requested
+    ids with that copy's index, finds nothing, and returns `{"scores": []}` with a
+    200: no error, no log line, no score. Measured here — a shopper signed up at
+    13:35 and put an item in their basket; the copy had been built at 13:12 and had
+    never heard of them, so the cart model reported nothing wrong and scored no one.
+    A brand-new shopper with a live basket is the single most valuable case a cart
+    model has, and it was the one case that could not work.
+
+    Both counts are indexed and cheap next to the build they guard (measured: the
+    rebuild they trigger is 0.46s / 2.8MB on a 178k-event project). Raw rows, not
+    cleaned ones: cleaning is the expensive step this is deciding whether to run.
+    """
+    import duckdb
+    con = duckdb.connect()
+    try:
+        con.execute("PRAGMA disable_progress_bar")
+        dataset.prepare(con)
+        cutoff = before.strftime("%Y-%m-%d %H:%M:%S")
+        tbl = getattr(dataset.tables, "s", "pg")
+        events = int(con.execute(
+            f"SELECT count(*) FROM {tbl}.events WHERE project_id = ? AND timestamp < TIMESTAMP '{cutoff}'",
+            [dataset.project_id]).fetchone()[0])
+        people = int(con.execute(
+            f"SELECT count(*) FROM {tbl}.customers WHERE project_id = ?",
+            [dataset.project_id]).fetchone()[0])
+        return f"{events}:{people}"
+    finally:
+        con.close()
+
+
+def stamp_path(cache, who: str):
+    """Where a reader's note about `cache` lives — BESIDE it, never inside.
+
+    Training and scoring each keep their own note of what the copy describes, and both
+    used to write it into the copy's own directory. `materialise` swaps that directory in
+    whole, so whichever side rebuilt last destroyed the other's note, and the other then
+    rebuilt a copy that was already current — one wasted read per side, every time, for
+    ever. Seen on this machine: one project's directory held only `history.count`,
+    another's only `history.train`.
+
+    A sibling file survives the swap. It can also outlive the directory — a temp sweep
+    takes the copy and leaves the note — which is harmless: the reuse test requires
+    `events.parquet` to exist as well, so a note with no copy behind it decides nothing.
+    """
+    return cache.with_name(f"{cache.name}.{who}")

@@ -1,5 +1,6 @@
 import { db } from '../db/connection.js'
-import { flows, whatsappTemplates } from '../db/schema.js'
+import { and, eq, inArray } from 'drizzle-orm'
+import { events, flows, whatsappTemplates } from '../db/schema.js'
 import type {
   FlowNode, TriggerNode, DelayNode, ConditionNode, ActionNode, EndNode,
 } from '@storees/shared'
@@ -123,7 +124,7 @@ const ECOMMERCE: FlowTemplate[] = [
     ],
   }),
   template({
-    id: 'ecom_post_purchase_review', industry: 'ecommerce', name: 'Post-Purchase & Review', event: 'order_fulfilled',
+    id: 'ecom_post_purchase_review', industry: 'ecommerce', name: 'Post-Purchase & Review', event: 'order_delivered',
     description: 'Thanks the customer after delivery and asks for a review 3 days later.',
     nodes: [
       send('thanks', 'send_whatsapp', 'ecom_thankyou', 'Thank You'),
@@ -175,7 +176,7 @@ const ECOMMERCE: FlowTemplate[] = [
     ],
   }),
   template({
-    id: 'ecom_replenishment', industry: 'ecommerce', name: 'Replenishment Reminder', event: 'order_fulfilled',
+    id: 'ecom_replenishment', industry: 'ecommerce', name: 'Replenishment Reminder', event: 'order_delivered',
     description: 'For consumables — reminds the customer to reorder 30 days after delivery.',
     nodes: [
       wait('wait_30d', 30, 'days'),
@@ -381,6 +382,7 @@ export function listFlowTemplates(industry?: TemplateIndustry): FlowTemplate[] {
 const TEMPLATE_EVENT_SLOT: Record<string, keyof ProjectVocabulary> = {
   order_placed: 'purchaseEvents',
   order_fulfilled: 'fulfilmentEvents',
+  order_delivered: 'deliveryEvents',
   order_cancelled: 'cancellationEvents',
   product_viewed: 'viewEvents',
   added_to_cart: 'cartEvents',
@@ -406,6 +408,21 @@ export async function resolveTriggerEvent(projectId: string, event: string): Pro
 
   const vocab = await projectVocabulary(projectId)
   const names = vocab[slot] as string[]
+
+  // "AFTER THEY HAVE IT" FALLS BACK TO "AFTER IT SHIPPED".
+  //
+  // Review and reorder journeys wait for delivery — a review request before the parcel
+  // arrives is the thing being fixed. But many shops cannot report delivery at all, and
+  // a journey waiting for an event that never comes never starts. So delivery is used
+  // only when this project has actually RECEIVED a delivery event; otherwise the
+  // journey starts on its shipped event instead. Decided at install, like everything
+  // else here — a shop that starts reporting delivery later can re-point the flow.
+  if (slot === 'deliveryEvents') {
+    const delivered = await namesWithData(projectId, names)
+    if (delivered.length === 0) return resolveTriggerEvent(projectId, 'order_fulfilled')
+    return delivered.includes(event) ? event : delivered[0]
+  }
+
   if (!Array.isArray(names) || names.length === 0) return event
 
   // Already one of the project's words — the shop uses our spelling, so there is
@@ -503,4 +520,13 @@ export async function installFlowTemplate(
   }).returning({ id: flows.id, name: flows.name })
 
   return { flowId: created.id, name: created.name }
+}
+
+/** Which of these names this project has actually received at least once. */
+async function namesWithData(projectId: string, names: string[]): Promise<string[]> {
+  if (names.length === 0) return []
+  const rows = await db.selectDistinct({ name: events.eventName }).from(events)
+    .where(and(eq(events.projectId, projectId), inArray(events.eventName, names)))
+  const seen = new Set(rows.map(r => r.name))
+  return names.filter(n => seen.has(n))   // keep the mapping's order
 }

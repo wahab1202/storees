@@ -32,3 +32,18 @@ duckdb>=1.0.0
 # `shared/windows.py` imports it directly and a transitive dependency is somebody else's
 # promise to keep.
 scipy>=1.11.0
+
+# DuckDB's timezone support imports this AT RUNTIME, not at import time.
+#
+# `AT TIME ZONE`, and any timestamptz that has to be resolved, fails without it:
+#
+#   InvalidInputException: Invalid Input Error: Required module 'pytz' failed to import
+#
+# Nothing in this codebase imports pytz, and nothing declares it — it arrived for free
+# while `pandas` depended on it. pandas 3.0 dropped that dependency, and this file asks
+# for `pandas>=2.2.0`, so a fresh install now resolves to 3.x and pytz never lands.
+#
+# It survived every check because a developer machine still has it from an older pandas,
+# and because importing the modules does not execute a timezone query — the failure only
+# appears when a model actually trains. Declared here so the install cannot omit it.
+pytz>=2024.1

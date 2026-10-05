@@ -11,7 +11,7 @@ import { withProject } from '@/lib/project'
  *  "undo" could only ever say the money came back off. */
 export const MEANING_ORDER = [
   'purchase', 'product_viewed', 'add_to_cart', 'cart_remove', 'cart_snapshot',
-  'fulfilment', 'cancellation', 'return', 'refund',
+  'fulfilment', 'delivery', 'cancellation', 'return', 'refund',
 ] as const
 
 export type MeaningKey = (typeof MEANING_ORDER)[number]

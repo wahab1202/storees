@@ -163,6 +163,26 @@ def _checkpoints_for(data_end: dt.date, derived: DerivedWindows,
     return _checkpoints(data_end, predict_days, derived.scaffold)
 
 
+def _cart_silence(source, goal: str, data_end: dt.date, window_days: int | None) -> str | None:
+    """Why a cart goal has no carts, when the reason is that the shop stopped sending them.
+
+    "Too few customers qualify" reads as a small shop. When the add-to-cart event never
+    arrived, or last arrived before the window this goal looks at, the honest sentence
+    names the event and the date — that is a tracking problem the shop can fix, not a
+    wait for more history. `window_days=None` asks only "ever sent?"."""
+    if goal != "cart_abandoned" or not hasattr(source, "last_cart_add"):
+        return None
+    last = source.last_cart_add()
+    if last is None:
+        return ("This shop hasn't sent any add-to-cart events yet, so there are no carts "
+                "to predict. It will train once they start arriving.")
+    if window_days is not None and last < data_end - dt.timedelta(days=window_days):
+        return (f"No add-to-cart events have arrived since {last:%d %b %Y}, so there are "
+                f"no recent carts to predict. Check that the shop's website tracking is "
+                f"still sending them; it will train once they arrive again.")
+    return None
+
+
 def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: Path,
              source=None, search: bool = True,
              pinned_observe_days: int | None = None,
@@ -202,8 +222,9 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
     if target_event and not source.has_signal(f"event:{target_event}"):
         log(f"{goal}: this project has never sent `{target_event}` — nothing to predict")
         return {"project_id": dataset.project_id, "goal": goal, "status": "INSUFFICIENT_DATA",
-                "reason": f"no `{target_event}` events have ever been received for this "
-                          f"project, so the goal has no answer to learn from"}
+                "reason": f"This shop hasn't sent any '{target_event}' events yet, so there "
+                          f"is nothing for this prediction to learn from. It will train "
+                          f"once they start arriving."}
 
     # The same refusal, for the one goal whose event is a MAPPING rather than a name in
     # the goal itself. `DatasetSignalSource` used to assume an unmapped project called
@@ -215,9 +236,13 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
     if goal == "cart_abandoned" and not dataset.events.cart_add:
         log(f"{goal}: no cart event is mapped for this project — nothing to predict")
         return {"project_id": dataset.project_id, "goal": goal, "status": "INSUFFICIENT_DATA",
-                "reason": "this project has no add-to-cart event mapped, so there are no "
-                          "carts to predict against — set it on the Event Mapping screen "
-                          "and re-train"}
+                "reason": "No add-to-cart event is set for this shop, so there are no "
+                          "carts to predict. Set it on the Event Mapping screen, then "
+                          "re-train."}
+    if silence := _cart_silence(source, goal, data_end, None):
+        log(f"{goal}: {silence}")
+        return {"project_id": dataset.project_id, "goal": goal, "status": "INSUFFICIENT_DATA",
+                "reason": silence}
 
     # this project's own clock, from its saved config -- `order` unless it said otherwise
     policy = replace(DEFAULT_POLICY, cadence_signal=dataset.events.cadence_signal)
@@ -236,8 +261,12 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
     except ValueError as exc:
         log(f"{goal}: {exc}")
         return {"project_id": dataset.project_id, "goal": goal, "status": "INSUFFICIENT_DATA",
-                "reason": f"not enough history yet to work out this goal's windows ({exc}) "
-                          f"— it will train once more data has arrived"}
+                # The exception text was in here. `log()` above already has it, and it
+                # is the pipeline's own wording about snapshots and rounds — nothing a
+                # person reading a goal card can act on.
+                "reason": "There is not enough history yet to work out how far back "
+                          "this prediction should look. It will train once more data "
+                          "has arrived."}
     log(f"{goal}: signal starts {derived.onset} ({derived.history_days}d), "
         f"forecast {derived.predict_days}d, {derived.scaffold.describe()}")
     for note in derived.notes:
@@ -245,7 +274,8 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
 
     if not derived.ready:
         return {"project_id": dataset.project_id, "goal": goal, "status": "NOT_READY",
-                "reason": f"needs about {derived.shortfall_days} more days of history",
+                "reason": f"Needs about {derived.shortfall_days} more days of history "
+                          f"before it can train.",
                 "windows": derived.as_row()}
 
     windows_pinned = bool(pinned_observe_days and pinned_predict_days)
@@ -261,10 +291,10 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
         if need > derived.history_days:
             return {"project_id": dataset.project_id, "goal": goal,
                     "status": "INSUFFICIENT_DATA",
-                    "reason": f"windows set by hand need {need} days "
-                              f"({pinned_observe_days}d observation + "
-                              f"{pinned_predict_days}d prediction) but this project has "
-                              f"{derived.history_days} days of history",
+                    "reason": f"The look-back ({pinned_observe_days} days) and forecast "
+                              f"({pinned_predict_days} days) you set need {need} days of "
+                              f"history, but this shop has only {derived.history_days}. "
+                              f"Shorten them, or wait for more data.",
                     "windows": derived.as_row()}
 
     real = (_checkpoints_for(data_end, derived, pinned_predict_days) if windows_pinned
@@ -372,7 +402,8 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
     sel = select_features(dataset, goal, win)
     if sel.get("status") == "INSUFFICIENT_DATA" or not sel.get("selected_features"):
         return {"project_id": dataset.project_id, "goal": goal, "status": "INSUFFICIENT_DATA",
-                "reason": sel.get("reason", "no eligible population"),
+                "reason": _cart_silence(source, goal, data_end, win.eligibility_days)
+                          or sel.get("reason", "Too few customers qualify for this prediction yet. It will train once there are more."),
                 "windows": derived.as_row()}
 
     result = fit_model(dataset, goal, win, sel["selected_features"], model_dir)

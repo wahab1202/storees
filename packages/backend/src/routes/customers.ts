@@ -10,42 +10,17 @@ import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
 import { recalculateAllAggregates } from '../services/customerService.js'
 import { projectVocabulary, eventIn } from '../services/projectVocabulary.js'
-import { isReversedOrderStatus, isOrderStatus, ORDER_STATUS, type OrderStatus } from '../db/orderStatus.js'
+import {
+  ORDER_STATUS, STATUS_KEYS, laterStatus, statusFromProperties, translateSourceStatus, type OrderStatus,
+} from '../db/orderStatus.js'
 import { backfillOrdersFromEvents } from '../services/orderBackfillService.js'
+import { statedMoment } from '../services/orderMoments.js'
 import { listAbandonments, saveAbandonmentReason } from '../services/abandonmentService.js'
 import { computeAndUpdateMetrics } from '../workers/metricsWorker.js'
 import { getConsentAuditLog, getConsentStatus } from '../services/consentService.js'
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
 
 const router = Router()
-
-/** A source's own word for an order's state, translated into ours — or `pending`.
- *
- *  The doors that pull from a shop's API (rather than receiving our events) see that
- *  shop's internal vocabulary: Medusa says `delivered` and `processing`, Shopify says
- *  `fulfilled` and `partially_fulfilled`, the next platform will say something else
- *  again. None of those are Storees statuses, and copying one in is how a column meant
- *  to hold five words ended up holding a dozen.
- *
- *  Only the unambiguous synonyms are accepted. `processing`, `shipped`, `partial` and
- *  anything unrecognised become `pending` — placed, and nothing settled yet — because
- *  guessing at a foreign word is exactly the habit this function exists to end. The
- *  real answer arrives as a fulfilment or reversal EVENT, read through the slots. */
-function translateSourceStatus(raw: unknown): OrderStatus {
-  const s = String(raw ?? '').trim().toLowerCase()
-  if (isOrderStatus(s)) return s
-  switch (s) {
-    case 'delivered':
-    case 'complete':
-    case 'completed':
-      return ORDER_STATUS.FULFILLED
-    case 'canceled':          // Shopify and Medusa both spell it with one 'l'
-    case 'voided':
-      return ORDER_STATUS.CANCELLED
-    default:
-      return ORDER_STATUS.PENDING
-  }
-}
 
 /**
  * Returns true if the customer is visible under the authenticated user's scope.
@@ -342,6 +317,7 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       })),
       createdAt: row.createdAt,
       fulfilledAt: row.fulfilledAt ?? null,
+      deliveredAt: row.deliveredAt ?? null,
     }))
 
     // Also derive orders from order events. Both event names are accepted — the
@@ -402,7 +378,7 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         // A word we cannot place is not a status. It becomes `pending` — placed, and we
         // have not been told otherwise — and the transition events below, which speak
         // through the slots, supply the real answer.
-        status: translateSourceStatus(props.fulfillment_status ?? props.status),
+        status: statusFromProperties(props) ?? ORDER_STATUS.PENDING,
         total,
         // `discount_total` appeared exactly once in the codebase — here, being read.
         // Nothing has ever written it: Shopify sends `total_discounts` and the event
@@ -418,7 +394,12 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
           imageUrl: (item.image_url as string) ?? undefined,
         })),
         createdAt: row.timestamp,
-        fulfilledAt: props.fulfillment_status === 'delivered' ? row.timestamp : null,
+        // Shipped and delivered each get their own date — but only one the payload
+        // STATES. This row is a purchase event: its timestamp is when it was ordered, so
+        // using it as the delivery date would file a delivery on the day of purchase.
+        // A record that only says "delivered" is delivered, date unknown.
+        fulfilledAt: statusFromProperties(props) === ORDER_STATUS.FULFILLED ? statedMoment('fulfilment', props) : null,
+        deliveredAt: statusFromProperties(props) === ORDER_STATUS.DELIVERED ? statedMoment('delivery', props) : null,
       }
     })
 
@@ -441,17 +422,14 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         const entry = { ...order }
         seen.set(key, entry)
         deduped.push(entry)
-      } else if (
-        // ANY settled status beats the placeholder. Both sides are Storees vocabulary
-        // by this point, so there is one comparison rather than a growing list of other
-        // people's words — this branch used to test for the literal `delivered`, which
-        // is Medusa's word and not one of ours at all.
-        existing.status === ORDER_STATUS.PENDING && order.status !== ORDER_STATUS.PENDING
-      ) {
-        existing.status = order.status
-        if (order.status === ORDER_STATUS.FULFILLED) {
-          existing.fulfilledAt = existing.fulfilledAt ?? order.createdAt
-        }
+      } else {
+        // The further-along of the two, by the one forward-only rule. Both sides are
+        // Storees vocabulary by this point; a reversal on either is never undone.
+        existing.status = laterStatus(existing.status, order.status)
+        // Real dates only, from whichever side has them. This used to fill a missing
+        // shipped date with the ORDER date — a shipment invented on the day of purchase.
+        existing.fulfilledAt = existing.fulfilledAt ?? order.fulfilledAt
+        existing.deliveredAt = existing.deliveredAt ?? order.deliveredAt
       }
     }
     // ── OVERLAY THE TRANSITION EVENTS ───────────────────────────────────────
@@ -468,41 +446,39 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
     // consulted the table.
     //
     // Read the transition events directly and lay them over the top, matched by order
-    // id, latest winning. Independent of whether a row exists.
+    // id, forward only. Independent of whether a row exists.
     //
-    // THE NAMES COME FROM THE PROJECT'S MAPPING, not a fixed list. A hardcoded
-    // ['order_fulfilled','order_cancelled'] works for a shop using our spelling and
-    // silently does nothing for Viranacart's `purchase_delivered` — the exact failure
-    // the mapping screen exists to prevent, reintroduced one layer down.
-    // The PUBLISHED names are included alongside, for the same reason the aggregate
-    // worker keeps them: a project that has not filled in its Delivered box yet still
-    // sends `order_fulfilled`, and refusing to look would leave its orders reading
-    // `unknown` until somebody visits the mapping screen. GoWelmart is exactly that
-    // case — 2,994 delivery events, an empty box, and every order showing `unknown`.
-    // Mapping stays authoritative; these are the floor, not the answer.
-    const STANDARD_TRANSITIONS = [
-      'order_fulfilled', 'order_cancelled', 'order_returned', 'order_refunded',
-    ]
-    // A transition event is not the only place a status can arrive. Plenty of sources
-    // never emit one at all and instead stamp the current status onto the ORDER event
-    // itself — GoWelmart does exactly this: 65,398 of its orders state `delivered` in
-    // an `order_placed` payload and never send `order_fulfilled`. Those events are read
-    // here too, but ONLY for a status they state outright: a purchase name means "a
-    // purchase happened", never a status, so `statusOf` must not speak for it. Ignoring
-    // them leaves an order the shop has already delivered reading `unknown` for ever.
+    // TWO WAYS AN EVENT CAN SPEAK FOR AN ORDER, and neither needs a name written here.
+    //
+    //   BY ITS MEANING — the project's Shipped, Delivered, Cancelled, Returned and
+    //   Refunded boxes. A shop's own words land on the right status because the mapping
+    //   says so, not because they match a list in this file.
+    //
+    //   BY WHAT IT CARRIES — any event naming one of this customer's orders and stating
+    //   a status field. Plenty of sources never send a transition at all and stamp the
+    //   current status onto the order record itself, on whatever event they send it with.
+    //   That used to be found by listing the names such shops happened to use
+    //   (`order_placed`, `order_completed`, `order_status_updated`); recognising the
+    //   status field instead finds it under any name, for any shop.
+    //
+    // This replaced a fixed list of published names kept as a "floor" under the mapping.
+    // The floor overrode the mapping it sat under: a shop that mapped its own words still
+    // had `order_fulfilled` read as a shipment whatever its boxes said.
     const transitionNames = [...new Set([
       ...ordersVocab.fulfilmentEvents,
+      ...ordersVocab.deliveryEvents,
       ...ordersVocab.cancellationEvents,   // the union of cancelled / returned / refunded
-      ...STANDARD_TRANSITIONS,
-      'order_status_updated',              // a pure status carrier; no meaning box owns it
-      ...ordersVocab.purchaseEvents,       // stated status only — see statusOf below
-      // The purchase names a project has NOT mapped still carry status for its
-      // orders; GoWelmart's `purchase` box holds `order_completed`, and it is
-      // `order_placed` that states the status.
-      'order_placed', 'order_completed',
     ])].filter(Boolean)
+    const transitions = new Set(transitionNames)
+    // ...but never a receipt for one of Storees' own MESSAGES. A WhatsApp or email
+    // receipt can say `status: delivered` about a message that merely mentioned an order;
+    // read as the order's status it would mark the parcel delivered when the text was.
+    // Our receipts carry `message_id`, which no order record does.
+    const statesAStatus = sql`((${sql.join(
+      STATUS_KEYS.map(k => sql`COALESCE(${events.properties}->>${k}, '') <> ''`), sql` OR `)})
+      AND NOT (${events.properties} ? 'message_id'))`
 
-    if (transitionNames.length) {
+    {
       const statusEvents = await db
         .select({
           eventName: events.eventName,
@@ -513,7 +489,9 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
         .where(and(
           eq(events.customerId, customerId),
           eq(events.projectId, projectId),
-          inArray(events.eventName, transitionNames),
+          transitionNames.length
+            ? sql`(${inArray(events.eventName, transitionNames)} OR ${statesAStatus})`
+            : sql`(${statesAStatus})`,
         ))
         .orderBy(desc(events.timestamp))
 
@@ -523,27 +501,49 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
       const statusOf = (name: string): OrderStatus | null =>
         ordersVocab.refundEvents.includes(name) ? ORDER_STATUS.REFUNDED
         : ordersVocab.returnEvents.includes(name) ? ORDER_STATUS.RETURNED
+        : ordersVocab.deliveryEvents.includes(name) ? ORDER_STATUS.DELIVERED
         : ordersVocab.fulfilmentEvents.includes(name) ? ORDER_STATUS.FULFILLED
         : ordersVocab.cancellationEvents.includes(name) ? ORDER_STATUS.CANCELLED
         : null
 
+      // Every status event for an order, combined by the forward-only rule — not just
+      // the newest. "Latest wins" let an out-of-order `shipped` arriving after
+      // `delivered` walk the order backwards.
       const latestByOrder = new Map<string, OrderStatus>()
+      // The earliest event that reported each moment — when it shipped, when it arrived.
+      const shippedAt = new Map<string, Date>()
+      const arrivedAt = new Map<string, Date>()
+      const earliest = (m: Map<string, Date>, id: string, t: Date) => {
+        const cur = m.get(id); if (!cur || t < cur) m.set(id, t)
+      }
       for (const ev of statusEvents) {
         const props = (ev.properties ?? {}) as Record<string, unknown>
         const orderId = String(
           props[ordersVocab.orderIdKey] ?? props.order_id ?? '',
         ).trim()
-        if (!orderId || latestByOrder.has(orderId)) continue  // DESC, so first is latest
+        if (!orderId) continue
         // What the event itself says wins; the meaning of its name is the fallback.
         //
         // Both arrive as OUR vocabulary. The stated value is a source's word and goes
         // through the translator; the name's meaning comes from the slots. Nothing
         // reaches the screen in a language the rest of the product cannot read.
-        const stated = props.status ?? props.fulfillment_status ?? props.order_status
-        const status = stated != null && String(stated).trim()
-          ? translateSourceStatus(stated)
-          : statusOf(ev.eventName)
-        if (status) latestByOrder.set(orderId, status)
+        //
+        // Read through the ONE shared reader, which keeps "is the order still on?" and
+        // "where is the parcel?" apart instead of taking whichever field it met first.
+        const stated = props.message_id === undefined ? statusFromProperties(props) : null
+        const status = stated ?? statusOf(ev.eventName)
+        if (status) {
+          latestByOrder.set(orderId, laterStatus(latestByOrder.get(orderId) ?? ORDER_STATUS.PENDING, status))
+          // A dedicated shipped / delivered / reversal event is dated by its own time.
+          // Any other event that merely STATES a status is the order record, stamped
+          // when the order was made — so only a date it states counts (statedMoment).
+          const when = !transitions.has(ev.eventName)
+            ? (status === ORDER_STATUS.FULFILLED ? statedMoment('fulfilment', props)
+              : status === ORDER_STATUS.DELIVERED ? statedMoment('delivery', props) : null)
+            : new Date(ev.timestamp)
+          if (when && status === ORDER_STATUS.FULFILLED) earliest(shippedAt, orderId, when)
+          if (when && status === ORDER_STATUS.DELIVERED) earliest(arrivedAt, orderId, when)
+        }
       }
 
       if (latestByOrder.size) {
@@ -557,11 +557,10 @@ router.get('/:id/orders', requireProjectId, async (req: AuthenticatedRequest, re
           // that arrived by any other door (a sync, an import, the aggregate worker)
           // lives only in the row. Letting the overlay win there would show money as
           // collected that the books have already reversed.
-          if (isReversedOrderStatus(order.status) && !isReversedOrderStatus(override)) continue
-          order.status = override
-          if (override === ORDER_STATUS.FULFILLED) {
-            order.fulfilledAt = order.fulfilledAt ?? order.createdAt
-          }
+          order.status = laterStatus(order.status, override)
+          const id = order.externalOrderId as string
+          order.fulfilledAt = order.fulfilledAt ?? shippedAt.get(id) ?? null
+          order.deliveredAt = order.deliveredAt ?? arrivedAt.get(id) ?? null
         }
       }
     }

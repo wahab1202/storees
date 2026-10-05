@@ -61,6 +61,12 @@ const PREDICTION_PRESETS: Record<string, Array<{ value: string; label: string; e
     { value: 'dormancy', label: 'Predict Dormancy', event: 'dormancy', desc: 'Which active customers will become inactive' },
     { value: 'cart_abandon', label: 'Predict Cart Abandonment', event: 'cart_abandoned', desc: 'Which customers will add to cart but not buy' },
     { value: 'repeat', label: 'Repeat Purchase', event: 'repeat_purchase', desc: 'Which existing buyers will purchase again' },
+    // The ecommerce PACK creates five starter goals and this list offered four: a shop
+    // got a Churn Risk goal automatically, and if anyone deleted it there was no way to
+    // make another except through Custom Prediction. Every other vertical here already
+    // offers its churn equivalent — fintech's App Churn Risk, saas's Churn Risk,
+    // edtech's Completion Risk — so ecommerce was the only one missing its own.
+    { value: 'churn', label: 'Churn Risk', event: 'churn', desc: 'Which customers will stop buying altogether' },
   ],
   fintech: [
     { value: 'loan_conv', label: 'Loan Conversion', event: 'purchase', desc: 'Which leads are likely to get loans disbursed' },
@@ -100,6 +106,8 @@ export default function PredictionsPage() {
   const trainingGoals = training.data?.data?.goals ?? []
   const isTraining = (goalId: string) => trainingGoals.some(g => g.id === goalId)
   const trainingFailures = training.data?.data?.failures ?? []
+  const failedTraining = trainingFailures.filter(f => f.kind !== 'scoring')
+  const failedScoring = trainingFailures.filter(f => f.kind === 'scoring')
   // Show the bulk retrain whenever ≥1 goal needs help: either flagged as
   // insufficient_data, OR has no usable AUC (training failed silently in
   // an earlier run, so goal.status stayed 'active' but currentMetric is 0).
@@ -182,15 +190,34 @@ export default function PredictionsPage() {
         <div className="flex items-start gap-3 mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg">
           <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
           <div className="text-xs text-amber-800 min-w-0">
+            {/* TRAINING AND SCORING FAIL DIFFERENTLY AND THE READER HAS TO ACT
+                DIFFERENTLY. A failed training leaves a stale model; a failed scoring
+                leaves a good model that has given nobody a score. Both used to be
+                impossible to tell apart here, because scoring failures never reached
+                this page at all. */}
             <p className="font-medium">
-              Last training didn&apos;t finish for {trainingFailures.map(f => f.name).join(', ')}
+              {failedTraining.length > 0 && (
+                <>Last training didn&apos;t finish for {failedTraining.map(f => f.name).join(', ')}</>
+              )}
+              {failedTraining.length > 0 && failedScoring.length > 0 && <br />}
+              {failedScoring.length > 0 && (
+                <>Scoring didn&apos;t finish for {failedScoring.map(f => f.name).join(', ')}</>
+              )}
             </p>
             {trainingFailures.map(f => (
               <p key={f.goalId} className="mt-0.5 text-amber-700/90 break-words">{f.reason}</p>
             ))}
-            <p className="mt-1 text-amber-700/80">
-              The previous model is still scoring customers — these numbers are from that one.
-            </p>
+            {/* ONLY WHERE ONE EXISTS. Said unconditionally, this was the single false
+                sentence on the page: a goal that has never trained has no previous model
+                and is scoring nobody, and reading "these numbers are from that one" next
+                to a zero sends you looking for a data problem instead of a broken run. */}
+            {trainingFailures.some(f => f.hasModel) && (
+              <p className="mt-1 text-amber-700/80">
+                {trainingFailures.every(f => f.hasModel)
+                  ? 'The previous model is still scoring customers — these numbers are from that one.'
+                  : 'Where an earlier model exists it is still scoring customers, and those numbers are from it.'}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -264,8 +291,16 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
   // retrain describes a state that is already being rewritten.
   const isTrainingNow = goal.status === 'training'
   const statusKey = isTrainingNow ? 'training' : neverTrained ? 'untrained' : goal.status
+  // TWO OPPOSITE SITUATIONS WERE READING ALIKE. This badge says why there is no usable
+  // model; the quality label beside the score says how good the model that exists is.
+  // Spelled `insufficient data`, it sat one line from `Needs Data` on the same card —
+  // one meaning "nothing was built, wait for more customers", the other meaning "a model
+  // was built and it is worse than guessing, discard it". Naming the wait explicitly
+  // leaves the other free to name the fault.
   const statusLabel = isTrainingNow ? 'training…'
-    : neverTrained ? 'not trained yet' : goal.status.replace('_', ' ')
+    : neverTrained ? 'not trained yet'
+    : goal.status === 'insufficient_data' ? 'not enough data yet'
+    : goal.status.replace('_', ' ')
 
   const style = statusStyles[statusKey] ?? statusStyles.paused
   const StatusIcon = style.icon
@@ -290,6 +325,14 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
           .flatMap(k => meanings.find(m => m.key === k)?.events ?? []),
       )]
     : []
+
+  // What this goal watches, resolved by the backend from the project's mapping. Empty
+  // for a goal the pipeline cannot place, where the stored name is still the best answer.
+  const watchedEvents: string[] = goal.watchedEvents ?? []
+  const resolvedGoal: string = goal.resolvedGoal ?? ''
+  const goalLabel = resolvedGoal.startsWith('event:')
+    ? resolvedGoal.slice('event:'.length)
+    : resolvedGoal.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 
   // Quality bucket — single source of truth in lib/predictionQuality.
   const isBehaviorBased = isBehaviorBasedGoal(goal.targetEvent, goal.name)
@@ -342,6 +385,17 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
               {derivedFrom.length > 0 && (
                 <span className="text-text-muted"> · worked out from {derivedFrom.join(', ')}</span>
               )}
+            </span>
+          ) : watchedEvents.length > 0 ? (
+            /* WHAT TRAINING WILL ACTUALLY READ, not what the goal was created with.
+               `targetEvent` is written once when the goal is made and never revisited,
+               so a project that corrects its Event Mapping kept seeing the old name here
+               for ever — `order_completed` on a shop that has never sent one, beside a
+               model fitted on `order_placed`. The backend resolves this the same way the
+               pipeline does, from the project's own mapping. */
+            <span>
+              Goal: <span className="font-medium text-text-primary">{goalLabel}</span>
+              <span className="text-text-muted"> · worked out from {watchedEvents.join(', ')}</span>
             </span>
           ) : (
             <span>Target event: <span className="font-medium text-text-primary">{goal.targetEvent}</span></span>

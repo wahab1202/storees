@@ -54,7 +54,24 @@ export async function purchaseAwaitingProcessing(
             properties->>'order_id',
             properties->>'id'
           ) = ${externalOrderId}
+      -- STILL ON ITS WAY, not merely present.
+      --
+      -- "A purchase exists" was taken to mean "its order row is coming". That holds only
+      -- for a purchase still waiting to be processed. Two kinds never become a row:
+      -- one already processed (by code that predates order rows, or before a mapping
+      -- change), and a history import, which is written straight to the ledger and
+      -- never queued. For those the caller waited, retried, and gave up — and the
+      -- shipment, delivery or cancellation never reached the order. So: unprocessed,
+      -- not an import, and recent enough to plausibly still be in the queue.
+      AND processed_at IS NULL
+      AND platform <> ${HISTORY_IMPORT_PLATFORM}
+      AND received_at > NOW() - INTERVAL '24 hours'
     LIMIT 1
   `)
   return res.rows.length > 0
 }
+
+/** The platform `processHistoricalEvent` stamps on a history import — rows written to the
+ *  ledger directly and never queued, so never processed into an order row. */
+const HISTORY_IMPORT_PLATFORM = 'historical_sync'
+

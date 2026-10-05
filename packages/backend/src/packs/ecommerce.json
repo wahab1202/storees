@@ -94,6 +94,12 @@
       "decay_half_life_days": 60
     },
     {
+      "event_name": "order_delivered",
+      "interaction_type": "delivery",
+      "weight": 2.0,
+      "decay_half_life_days": 60
+    },
+    {
       "event_name": "order_placed",
       "interaction_type": "conversion",
       "weight": 5.0,

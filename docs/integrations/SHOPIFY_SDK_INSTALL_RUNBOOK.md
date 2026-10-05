@@ -5,6 +5,19 @@ Storees project with its own **public API key** — only the credentials in §0 
 snippet below is identical for every store. (Fine Wine was the first; this is the template
 for all future ones.)
 
+> **Use the Storees pixel first — it replaces §2–§5.** Storees → Settings → Setup →
+> SDK Integration → **Shopify** tab gives a Customer Events pixel pre-filled with the
+> project's key. One paste (Shopify admin → Settings → Customer events → Add custom
+> pixel), no theme edits, works on every theme. It tracks page, product and collection
+> views, search, add/remove from cart, cart views and every checkout step, and links a
+> shopper's anonymous browsing to them the moment checkout learns their email.
+> The theme snippets below missed quick-add buttons, cart drawers and quantity changes,
+> and broke whenever a theme renamed its product form.
+>
+> **The old §5 pixel never identified anyone.** It sent `email` / `phone`, but the events
+> API reads `customer_email` / `customer_phone`, and a call with neither those nor a
+> `session_id` is rejected. Any store running it should switch to the Settings pixel.
+
 Goal: get browse + checkout behavioral events flowing from a Shopify storefront into
 Storees, so segments/flows (cart abandonment, viewed-not-bought, discount intent) work.
 **This is all Shopify-admin / theme work — no Storees deploys needed.**
@@ -132,17 +145,17 @@ const send = (event_name, properties, id = {}) =>
 
 analytics.subscribe('checkout_started', (e) => {
   const c = e.data.checkout;
-  send('checkout_started', { total: Number(c.totalPrice?.amount), currency: c.currencyCode, item_count: c.lineItems?.length }, { email: c.email, phone: c.phone });
+  send('checkout_started', { total: Number(c.totalPrice?.amount), currency: c.currencyCode, item_count: c.lineItems?.length }, { customer_email: c.email, customer_phone: c.phone, session_id: e.clientId });
   const d = c.discountApplications?.[0];
-  if (d) send('discount_applied', { code: d.title, type: d.type }, { email: c.email });
+  if (d) send('discount_applied', { code: d.title, type: d.type }, { customer_email: c.email, session_id: e.clientId });
 });
 
 analytics.subscribe('payment_info_submitted', (e) =>
-  send('checkout_payment_info', { total: Number(e.data.checkout.totalPrice?.amount) }, { email: e.data.checkout.email }));
+  send('checkout_payment_info', { total: Number(e.data.checkout.totalPrice?.amount) }, { customer_email: e.data.checkout.email, session_id: e.clientId }));
 
 analytics.subscribe('checkout_completed', (e) => {
   const c = e.data.checkout;
-  send('checkout_completed', { order_id: c.order?.id, total: Number(c.totalPrice?.amount), currency: c.currencyCode }, { email: c.email });
+  send('checkout_completed', { order_id: c.order?.id, total: Number(c.totalPrice?.amount), currency: c.currencyCode }, { customer_email: c.email, session_id: e.clientId });
 });
 
 analytics.subscribe('search_submitted', (e) =>

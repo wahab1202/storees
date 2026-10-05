@@ -411,7 +411,18 @@ def resolve_dataset(project_id: str, domain: str = "ecommerce"):
                 mapping["fields"] = env_fields
                 cfg = dict(cfg); cfg["mapping"] = mapping
         else:
-            _fill_from(events, _events_from_interactions(dsn, project_id), "onboarding")
+            # A meaning the stored rows predate is not one they answered. Rows are written
+            # once, at onboarding; a meaning added to the pack later (Removed from cart,
+            # Cart contents) has no row for any project onboarded before it, and reading
+            # that silence as "none" emptied it for every existing shop. Left for the pack
+            # layer below instead — the same rule as the backend's projectVocabulary, so
+            # the dashboard and the model read one project the same way.
+            onboarding = _events_from_interactions(dsn, project_id)
+            if onboarding:
+                pack = _events_from_pack(dsn, project_id) or {}
+                predates = {k for k in _SLOT_MEANINGS
+                            if k not in onboarding and _names(pack.get(k))}
+                _fill_from(events, onboarding, "onboarding", skip=predates)
 
     if _unanswered(events):
         # Layer 3. Nothing recorded for this meaning — but the project declared its
@@ -662,19 +673,22 @@ def _settle_reversals(events: dict) -> None:
             events.setdefault(k, [])
 
 
-def _fill_from(events: dict, source: dict | None, where: str) -> None:
+def _fill_from(events: dict, source: dict | None, where: str, skip=()) -> None:
     """Answer every still-unspoken meaning from `source`, and mark them answered.
 
     A meaning this source does not carry is set EMPTY rather than left open. That is the
     backend's rule: a source that answered at all has answered for all of them, so an
     industry recording no cancellation — lending has none — ends up with none, instead
     of falling through to a shop's three cancellation words.
+
+    `skip` names meanings this source must NOT answer either way, leaving them for the
+    next layer — see the onboarding call in `resolve_dataset`.
     """
     if not source:
         return
     filled = []
     for key in _SLOT_MEANINGS:
-        if key in events:
+        if key in events or key in skip:
             continue
         names = _names(source.get(key))
         events[key] = names
@@ -1028,7 +1042,35 @@ def dataset_cache_dir(dataset) -> Path:
     have been deleted by the next training run even if it had ever been written.
     """
     import tempfile
-    base = Path(os.environ.get("ML_CACHE_DIR", tempfile.gettempdir()))
+    # OWNED BY THIS SERVICE, NOT SHARED WITH THE MACHINE.
+    #
+    # The default was the system temp directory itself, which on Linux is world-readable
+    # — mode 1777 — and what lands there is not anonymous. `customers.parquet` carries
+    # `email`, `phone`, `name`, `city` and `birth_year`; `events.parquet` carries every
+    # action those people took. Any account on the box could read every client's customer
+    # list without a password, and nothing in the product said so.
+    #
+    # Fixed in the DEFAULT rather than in the runbook. `ML_CACHE_DIR` has always been
+    # available and commented out, which protects only the servers where somebody
+    # remembered — and the one that matters is the one nobody configured. A dedicated
+    # directory created 0700 is protected on a fresh install, on a new box, and on a
+    # server set up by someone who never read this file.
+    #
+    # `/tmp` is also swept on a schedule while a run may be holding a copy open. That
+    # costs a rebuild, not correctness, but it is the shape of failure that takes a day
+    # to recognise. `ML_CACHE_DIR` still overrides, for a deployment that wants this on a
+    # larger or longer-lived volume, and gets the same 0700 treatment.
+    base = Path(os.environ.get("ML_CACHE_DIR") or Path(tempfile.gettempdir()) / "storees-ml")
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        # Set every time, not only on creation: an existing directory from an older
+        # release, or one a deployment made by hand, is exactly the case this guards.
+        os.chmod(base, 0o700)
+    except OSError as exc:
+        # A cache we cannot place is not worth failing a training run over — the pipeline
+        # reads the database directly when there is no copy. Say so rather than fall back
+        # to somewhere readable without mentioning it.
+        print(f"[train] could not prepare the cache directory {base} ({exc})")
     return base / f"ml_{dataset.project_id}_{_dataset_fingerprint(dataset)}"
 
 
@@ -1041,8 +1083,14 @@ def _prune_stale_caches(base, project_id: str, keep) -> None:
     import shutil
     try:
         for d in base.glob(f"ml_{project_id}*"):
-            if d.is_dir() and d != keep:
+            if d == keep or d.name.startswith(keep.name + "."):
+                continue  # this mapping's copy, and the notes that belong to it
+            if d.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
+            else:
+                # Notes now live beside the directory, so this loop has to sweep files
+                # too or every mapping change leaves one behind for ever.
+                d.unlink(missing_ok=True)
     except Exception:
         pass  # housekeeping only — never fail a training run over it
 
@@ -1086,11 +1134,53 @@ def train(project_id: str, goal_id: str, target_event: str,
         # Keyed on the MAPPING as well as the project — see `dataset_cache_dir`, which
         # is also what `publish_results` calls, so the two cannot name it differently.
         cache = dataset_cache_dir(dataset)
-        if not (cache / "events.parquet").exists() or _os.environ.get("ML_REFRESH") == "1":
-            print(f"[train] cache {cache.name} — reading this project's "
+
+        # FRESH MEANS "DESCRIBES THE SAME HISTORY", NOT "EXISTS".
+        #
+        # This asked only whether `events.parquet` was there. The name carries the
+        # mapping and the projections, so a changed mapping or a changed column list
+        # misses and re-reads — but NEW EVENTS change neither, so a copy made on Monday
+        # was still used on Wednesday. Worse, `data_end` above is read from the LIVE
+        # database, so the run believed its data ran to Wednesday while its rows stopped
+        # on Monday. For dormancy and churn that is the quiet failure: a customer who
+        # was active on Tuesday looks silent, the positives inflate, and the AUC that
+        # comes out looks perfectly ordinary.
+        #
+        # `history_stamp` is the rule scoring already applies to this same directory —
+        # events before the cutoff plus the customer roster, both indexed and cheap next
+        # to the build they guard. Its own file, not scoring's `history.count`: the two
+        # count to different cutoffs, and sharing one name would make each judge the
+        # other's stamp.
+        from shared.dataset import history_stamp as _history_stamp
+        import datetime as _dtm
+        from shared.dataset import stamp_path as _stamp_path
+        stamp_file = _stamp_path(cache, "history.train")
+        try:
+            history_now = _history_stamp(
+                dataset, _dtm.datetime.combine(data_end, _dtm.time.min))
+        except Exception as exc:
+            # Unprovable is not fresh. Costs a re-read; never returns the wrong rows.
+            print(f"[train] could not check whether the cached rows are current ({exc})")
+            history_now = None
+
+        cached = (cache / "events.parquet").exists()
+        stale = history_now is None or not stamp_file.exists() \
+            or stamp_file.read_text().strip() != history_now
+        if not cached or stale or _os.environ.get("ML_REFRESH") == "1":
+            why = ("no cached rows yet" if not cached
+                   else "the project has new rows since it was written" if stale
+                   else "ML_REFRESH=1")
+            print(f"[train] cache {cache.name} — {why}; reading this project's "
                   f"cleaned rows from the database once -> {cache}")
             dataset = dataset.materialise(cache)
             _prune_stale_caches(cache.parent, project_id, keep=cache)
+            if history_now is not None:
+                # After materialise: it swaps the whole directory in, so a stamp
+                # written before the swap would not survive it.
+                try:
+                    stamp_file.write_text(history_now)
+                except Exception:
+                    pass  # an unwritten stamp only costs the next run a re-read
         else:
             from shared.dataset import ProjectDataset as _PD
             from dataclasses import replace as _replace

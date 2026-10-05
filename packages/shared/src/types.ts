@@ -74,13 +74,16 @@ export type Order = {
   projectId: string
   customerId: string
   externalOrderId: string
-  status: 'pending' | 'fulfilled' | 'cancelled' | 'refunded'
+  status: 'pending' | 'fulfilled' | 'delivered' | 'cancelled' | 'returned' | 'refunded'
   total: number
   discount: number
   currency: string
   lineItems: LineItem[]
   createdAt: Date
+  /** when it shipped */
   fulfilledAt: Date | null
+  /** when the customer received it */
+  deliveredAt: Date | null
 }
 
 export type LineItem = {
@@ -982,7 +985,19 @@ export type PredictionGoal = {
   id: string
   projectId: string
   name: string
+  /** WHAT THE GOAL WAS CREATED WITH, which is not necessarily what it now watches.
+   *  Written once from the pack default and never revisited, so a project that corrects
+   *  its Event Mapping still carries the old name here. Read `watchedEvents` for what
+   *  training will actually fit on; this stays for provenance and for the goals the
+   *  pipeline cannot place. */
   targetEvent: string
+  /** The project's OWN events this goal reads, resolved from its mapping the same way
+   *  the pipeline resolves it. Empty when the goal cannot be placed, where `targetEvent`
+   *  is still the best answer available. */
+  watchedEvents?: string[]
+  /** The meaning the pipeline runs for this goal — `purchase`, `dormancy`, … or
+   *  `event:<name>` for a custom event goal. Null when it cannot be placed. */
+  resolvedGoal?: string | null
   observationWindowDays: number
   predictionWindowDays: number
   /** true when these two windows were set by hand and training must use them as given

@@ -26,7 +26,7 @@ const DOMAIN_EVENTS: Record<string, { label: string; events: string[]; defaultTr
     defaultTrigger: 'cart_created',
     events: [
       'cart_created', 'cart_updated', 'checkout_started', 'order_placed',
-      'order_fulfilled', 'order_cancelled', 'customer_created', 'customer_updated',
+      'order_fulfilled', 'order_delivered', 'order_cancelled', 'customer_created', 'customer_updated',
       'enters_segment', 'exits_segment',
     ],
   },

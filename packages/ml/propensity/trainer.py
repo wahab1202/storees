@@ -46,8 +46,66 @@ MIN_COVERAGE = 0.20
 TOP_DECILE = 0.10
 LOW_LIFT_THRESHOLD = 1.5  # top-decile lift below this -> barely beats guessing, flag it
 
+#: THE FLOOR, NOT A TARGET. A model at or below these has no information in it at all,
+#: which is a different claim from "weak" and is the only one worth refusing outright.
+#: Stated as chance itself so it needs no tuning per project or per vertical.
+NO_SIGNAL_AUC = 0.5    # AUC at or under chance — at 0.5 uninformative, under it inverted
+NO_SIGNAL_LIFT = 1.0   # top decile converts no better than a random tenth
+
 LIFT_TIERS = [(3.0, "Strong"), (2.0, "Good"), (LOW_LIFT_THRESHOLD, "Fair")]
 
+
+
+#: A guardrail's technical text -> what the goal card should say instead.
+#:
+#: The log keeps the exact numbers, because the person debugging a pipeline needs them.
+#: The card does not: "NO_SIGNAL: test AUC 0.3733 is at or below 0.5 — the model ranks no
+#: better than chance, and below it the ranking is inverted. Not published." is a
+#: sentence written for whoever wrote the guardrail, and it appeared verbatim on a
+#: marketing screen. A person reading that card wants to know what happened, whether
+#: anything was damaged, and what would change the answer.
+_PLAIN_REASONS = (
+    ("NO_SIGNAL: test AUC",
+     "This model was no better than guessing, so it was not published. "
+     "Your previous model, if there is one, is untouched."),
+    # Same sentence as the AUC check above, deliberately: both fire together on an
+    # inverted model, and two lines each ending "not published" read as two separate
+    # faults. Deduplication collapses them into one.
+    ("NO_SIGNAL: top-decile",
+     "This model was no better than guessing, so it was not published. "
+     "Your previous model, if there is one, is untouched."),
+    ("INSUFFICIENT_DATA:",
+     "There are not enough customers who did this yet for a model to learn from. "
+     "It will work once the shop has more history."),
+    ("INSUFFICIENT_CONTRAST:",
+     "Almost every customer in this shop already did the thing being predicted, "
+     "so there is nothing to tell apart yet."),
+    ("AUTO_REJECT: coverage",
+     "Too few of this shop's customers qualified for this prediction to be reliable. "
+     "It will work once the shop has more history."),
+    ("SUSPECTED_LEAKAGE:",
+     "This model scored suspiciously well, which usually means it was given a clue it "
+     "will not have in real use. It was not published."),
+)
+
+
+def _plain_reasons(failures: list[str]) -> str:
+    """The guardrail verdicts, said to the person reading the goal card.
+
+    One sentence per distinct meaning, deduplicated: both `NO_SIGNAL` checks fire
+    together on an inverted model, and two sentences saying "not published" read like two
+    separate faults.
+
+    An unrecognised guardrail falls back to its own text rather than being dropped. A new
+    check added later is then merely ugly on the card, never silent — and silence is the
+    failure this whole week was spent recovering from.
+    """
+    out: list[str] = []
+    for f in failures:
+        plain = next((m for needle, m in _PLAIN_REASONS if f.startswith(needle)), f)
+        if plain not in out:
+            out.append(plain)
+    return " ".join(out)
 
 def _lift_quality(lift: float) -> str:
     for floor, label in LIFT_TIERS:
@@ -402,6 +460,33 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
     guardrail_failures = []
     if n_pos_train < MIN_POSITIVES:
         guardrail_failures.append(f"INSUFFICIENT_DATA: only {n_pos_train} positive labels in training set (need >={MIN_POSITIVES})")
+
+    # HOW ONE-SIDED THIS IS — REPORTED, NOT REFUSED.
+    #
+    # A model learns by CONTRAST, and the floor above guards only one side of that: a
+    # set that is almost entirely one answer passes as "plenty of data" and has nothing
+    # to compare against. one shop's churn goal was 873 churned against 56 active — 94%
+    # positive — and trained for twenty seconds to produce AUC 0.373, which is not weak
+    # but inverted.
+    #
+    # THIS WAS A REJECTION AND IT WAS WRONG. Refusing on a negative COUNT punishes a set
+    # that is small and perfectly balanced: one shop's dormancy goal trains on 156 rows,
+    # 65 positive and 91 negative — 42/58, as even as it gets — and cannot ever hold 200
+    # of either. Enforced, it killed a model scoring 0.716 with 2,375 customers scored.
+    # Count is the wrong instrument for imbalance, and any share threshold in its place
+    # would be a number invented here.
+    #
+    # `NO_SIGNAL` already refuses on the outcome itself, measured on held-out data, which
+    # is the honest arbiter — it caught the churn model without this. So this only
+    # explains WHY, next to that verdict: "94% already churned" is what a person can act
+    # on; "ranks no better than chance" is not.
+    n_neg_train = int(len(y_train) - n_pos_train)
+    contrast_note = None
+    if len(y_train) and n_pos_train / len(y_train) > 0.9:
+        contrast_note = (
+            f"ONE_SIDED: {n_pos_train / len(y_train) * 100:.1f}% of the training population "
+            f"already did the thing being predicted ({n_neg_train} have not) — there is "
+            f"little to tell apart, and any score here rests on very few counter-examples")
     if coverage < MIN_COVERAGE:
         guardrail_failures.append(f"AUTO_REJECT: coverage {coverage*100:.1f}% below the {MIN_COVERAGE*100:.0f}% floor")
     if guardrail_failures:
@@ -409,6 +494,12 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
         for f in guardrail_failures:
             log(f"    {f}")
         return {"project_id": dataset.project_id, "goal": goal, "status": "REJECTED",
+                # `serve.train_model` reads `reason`; this only ever set
+                # `guardrail_failures`, so the sentence written right above — "only 70
+                # positive labels (need >=200)" — reached the log and nothing else. The
+                # card said "Training did not complete." and the person reading it had
+                # no way to learn the shop simply has too few buyers yet.
+                "reason": _plain_reasons(guardrail_failures),
                 "guardrail_failures": guardrail_failures}
 
     # ---- AUTO-TUNER: random search, GROUPED 3-fold CV (by customer), pick best ----
@@ -463,6 +554,8 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
 
     # ---- guardrail arbitration ----
     flags = []
+    if contrast_note:
+        flags.append(contrast_note)
     if test_auc > AUC_LEAKAGE_THRESHOLD:
         if active_auc is not None and active_auc > AUC_LEAKAGE_THRESHOLD:
             guardrail_failures.append(
@@ -480,6 +573,30 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
         flags.append(f"LOW_LIFT: top-decile lift {top_decile_lift:.2f}x is below {LOW_LIFT_THRESHOLD}x — "
                      f"barely beats random guessing at finding the top prospects, regardless of raw AUC")
     log(f"  lift quality: {lift_quality} ({top_decile_lift:.2f}x baseline)")
+
+    # NOTHING BELOW CHANCE IS PUBLISHABLE.
+    #
+    # Every guardrail above this point runs BEFORE the fit and asks whether there is
+    # enough data to try. Nothing asked whether the finished model was worth having, so
+    # `status` could only ever be decided by the pre-fit checks — and a model that had
+    # learned nothing went live with a green badge. Measured on one shop 2026-09-25: a
+    # churn model at AUC 0.373 was marked ACTIVE and scored 1,521 customers. Below 0.5 a
+    # ranking is not weak, it is INVERTED: the customers it calls most likely to churn
+    # are the least likely, so working that list is worse than working a random one.
+    #
+    # The comparison is to chance, not to a tuned number. 0.5 means the same thing for a
+    # wine shop, a lender and a course platform, so this needs no per-project threshold
+    # and can never be wrong for a vertical nobody has onboarded yet. `LOW_LIFT` above
+    # stays a flag: a 1.2x model is weak and still useful, and refusing it would throw
+    # away the honest middle of the range. Only "no better than chance" is refused.
+    if test_auc <= NO_SIGNAL_AUC:
+        guardrail_failures.append(
+            f"NO_SIGNAL: test AUC {test_auc:.4f} is at or below {NO_SIGNAL_AUC} — the model ranks no "
+            f"better than chance, and below it the ranking is inverted. Not published.")
+    if top_decile_lift < NO_SIGNAL_LIFT:
+        guardrail_failures.append(
+            f"NO_SIGNAL: top-decile lift {top_decile_lift:.2f}x is below {NO_SIGNAL_LIFT}x — the top "
+            f"10% it picks convert no better than 10% picked at random. Not published.")
 
     status = "REJECTED" if guardrail_failures else "ACTIVE"
     log(f"  STATUS: {status}")
@@ -509,7 +626,16 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
     bundle = {"model": final_model, "features": feature_cols}
     joblib.dump(bundle, versions_dir / f"model_{model_version}.joblib")
     model_path = model_dir / "model.joblib"
-    joblib.dump(bundle, model_path)
+    # THE DATABASE SAYING "failed" DOES NOT UNLOAD A FILE. `serve._load_model` reads
+    # `model.joblib` by goal id and knows nothing about run status, so a rejected fit
+    # written here would be the model every later scoring request used — the run marked
+    # failed, the customers scored by it anyway, and the previous good model gone. The
+    # versioned copy above is still written: a rejected fit is evidence, and `/promote`
+    # can reach it deliberately if somebody decides otherwise.
+    if status == "ACTIVE":
+        joblib.dump(bundle, model_path)
+    else:
+        log(f"  not published — {model_path.name} left as it was")
 
     # Everything scoring needs to rebuild the exact same inputs later. The windows
     # matter as much as the feature names: score a customer on a different look-back
@@ -542,6 +668,10 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
         "n_train": len(y_train), "n_pos_train": n_pos_train,
         "n_test": len(y_test), "n_pos_test": n_pos_test,
         "coverage": coverage,
+        # Same reason the pre-fit path carries one: a post-fit rejection (NO_SIGNAL,
+        # SUSPECTED_LEAKAGE) is the outcome most in need of explaining, and without this
+        # it arrived as a bare "failed".
+        "reason": _plain_reasons(guardrail_failures) or None,
         "guardrail_failures": guardrail_failures, "flags": flags,
         "selected_features": feature_cols,
         "feature_importance": [{"feature": f, "mean_abs_shap": float(v)} for f, v in importance],

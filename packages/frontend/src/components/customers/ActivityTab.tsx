@@ -4,6 +4,7 @@ import { useState, useMemo } from 'react'
 import {
   ShoppingCart,
   Package,
+  PackageCheck,
   CreditCard,
   UserPlus,
   UserCog,
@@ -41,6 +42,7 @@ const EVENT_ICONS: Record<string, typeof ShoppingCart> = {
   // Ecommerce
   order_placed: CreditCard,
   order_fulfilled: Package,
+  order_delivered: PackageCheck,
   order_cancelled: Package,
   cart_created: ShoppingCart,
   cart_updated: ShoppingCart,
@@ -80,7 +82,8 @@ const EVENT_ICONS: Record<string, typeof ShoppingCart> = {
 
 const EVENT_COLORS: Record<string, string> = {
   order_placed: 'bg-blue-500',
-  order_fulfilled: 'bg-green-500',
+  order_fulfilled: 'bg-blue-500',
+  order_delivered: 'bg-green-500',
   order_cancelled: 'bg-red-500',
   cart_created: 'bg-amber-500',
   checkout_started: 'bg-indigo-500',

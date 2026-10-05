@@ -252,7 +252,10 @@ export function compileEventOccurrenceRule(rule: EventOccurrenceRule): SQL {
     where.push(eventPropertyPredicate(f))
   }
   const count = Math.max(0, Number(rule.count) || 0)
-  const sub = sql`(SELECT COUNT(*) FROM events e WHERE ${and(...where)!})`
+  // Each ORDER once: an order event (it carries an order id) reaching the ledger by two
+  // doors is one occurrence, not two. Events with no order id — views, clicks — have
+  // nothing to collapse on and count row by row, exactly as before.
+  const sub = sql`(SELECT COUNT(DISTINCT COALESCE(${eventOrderId('e')}, e.id::text)) FROM events e WHERE ${and(...where)!})`
   switch (rule.countOp) {
     case 'at_most': return sql`${sub} <= ${count}`
     case 'exactly': return sql`${sub} = ${count}`
@@ -509,17 +512,30 @@ function aggHavingCompare(metric: SQL, op: AggregateCompareOp, value: number | [
 function aggSourceExists(rule: AggregateRule, source: 'events' | 'orders'): SQL {
   const scopePreds = (rule.scope?.filters ?? []).map(scopeFilterPredicate)
   if (source === 'events') {
-    const where: SQL[] = [
-      sql`e.project_id = customers.project_id`,
-      sql`e.customer_id = customers.id`,
-      sql`${isLivePurchase('e')}`,
+    // EACH ORDER ONCE. The same sale can sit in the ledger more than once — a webhook and
+    // a history pull of it, for instance — and summing every copy's line items made a
+    // customer who spent 3,000 on a product look like they spent 6,000. The purchase
+    // events are narrowed to one per order (the latest, which carries the newest state)
+    // before anything is added up. An event with no order id stands for itself.
+    const orderKey = sql`COALESCE(${eventOrderId('x')}, x.id::text)`
+    const base: SQL[] = [
+      sql`x.project_id = customers.project_id`,
+      sql`x.customer_id = customers.id`,
+      sql`${isLivePurchase('x')}`,
     ]
-    const tf = aggTimeframePredicate(rule.timeframe, sql`e.timestamp`)
-    if (tf) where.push(tf)
-    where.push(...scopePreds)
+    const tf = aggTimeframePredicate(rule.timeframe, sql`x.timestamp`)
+    if (tf) base.push(tf)
+    const where: SQL[] = scopePreds.length ? scopePreds : [sql`TRUE`]
+    // The key is computed ONCE, as a column. Written out in both DISTINCT ON and ORDER BY
+    // it binds its parameters twice, and Postgres then refuses the pair as different
+    // expressions.
     return sql`EXISTS (
       SELECT 1
-      FROM events e, jsonb_array_elements(COALESCE(e.properties->'line_items', '[]'::jsonb)) li
+      FROM (
+        SELECT DISTINCT ON (k.order_key) k.*
+        FROM (SELECT x.*, ${orderKey} AS order_key FROM events x WHERE ${and(...base)!}) k
+        ORDER BY k.order_key, k.timestamp DESC
+      ) e, jsonb_array_elements(COALESCE(e.properties->'line_items', '[]'::jsonb)) li
       WHERE ${and(...where)!}
       GROUP BY e.customer_id
       HAVING ${aggHavingCompare(aggMetricExpr(rule, sql`e.id`), rule.operator, rule.value)}
@@ -969,10 +985,12 @@ function fieldToSqlExpression(field: string): SQL {
       // Source: the discount property on order events, under whatever this project
       // calls it, like the rest of the event-driven order metrics. Negative or
       // non-numeric values are treated as no-discount via the > 0 filter on the cast.
+      // Per ORDER, not per stored row: a duplicated order would otherwise count twice on
+      // both sides of the fraction.
       return sql`COALESCE((
-        SELECT ROUND(100.0 * COUNT(*) FILTER (
+        SELECT ROUND(100.0 * COUNT(DISTINCT COALESCE(${eventOrderId('events')}, events.id::text)) FILTER (
           WHERE (events.properties->>${VOCAB.discountKey})::numeric > 0
-        ) / NULLIF(COUNT(*), 0))
+        ) / NULLIF(COUNT(DISTINCT COALESCE(${eventOrderId('events')}, events.id::text)), 0))
         FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND ${isLivePurchase('events')}
@@ -999,22 +1017,34 @@ function fieldToSqlExpression(field: string): SQL {
       // Count order events within the window — robust across both tenant
       // shapes since the orders table is empty for event-driven tenants
       // (eventProcessor's external-id dedup collapses GWM-style orders).
+      //
+      // DISTINCT on the order id, not COUNT(*): the same order reaches the ledger
+      // more than once whenever two ingestion paths both record it (a Shopify
+      // webhook and a historical sync write different idempotency keys, so neither
+      // collapses the other) or a sync runs again over rows written before those
+      // keys existed. One live dataset had 5,083 purchase events for 1,779 orders,
+      // over-counting 66% of customers and one of them by 34 orders, which silently
+      // moved every `orders in last N days` rule across every segment.
+      //
+      // Events with no order id fall back to their own row id, so each still counts
+      // once: a shop that sends no reference is thin, not duplicated, and dropping
+      // those would empty the segment instead of correcting it.
       return sql`COALESCE((
-        SELECT COUNT(*) FROM events
+        SELECT COUNT(DISTINCT COALESCE(${eventOrderId('events')}, events.id::text)) FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND ${isLivePurchase('events')}
         AND events.timestamp > NOW() - INTERVAL '30 days'
       ), 0)`
     case 'orders_in_last_90_days':
       return sql`COALESCE((
-        SELECT COUNT(*) FROM events
+        SELECT COUNT(DISTINCT COALESCE(${eventOrderId('events')}, events.id::text)) FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND ${isLivePurchase('events')}
         AND events.timestamp > NOW() - INTERVAL '90 days'
       ), 0)`
     case 'orders_in_last_365_days':
       return sql`COALESCE((
-        SELECT COUNT(*) FROM events
+        SELECT COUNT(DISTINCT COALESCE(${eventOrderId('events')}, events.id::text)) FROM events
         WHERE events.project_id = customers.project_id AND events.customer_id = customers.id
         AND ${isLivePurchase('events')}
         AND events.timestamp > NOW() - INTERVAL '365 days'

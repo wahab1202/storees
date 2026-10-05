@@ -1,15 +1,17 @@
 import { Worker } from 'bullmq'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, notInArray } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
 import { projects, orders, products, collections, productCollections, dataSourceConnectors, dataSourceSyncs } from '../db/schema.js'
 import { fetchShopifyApi, fetchShopifyPage, getValidShopifyToken } from '../services/shopifyService.js'
-import { resolveCustomer, updateCustomerAggregates } from '../services/customerService.js'
+import { resolveCustomer, updateCustomerAggregates, recalculateAggregates } from '../services/customerService.js'
 import { processHistoricalEvent } from '../services/eventProcessor.js'
 import { isReversedOrderStatus } from '../db/orderStatus.js'
 import { projectVocabulary } from '../services/projectVocabulary.js'
 import { SHOPIFY_API_DELAY_MS } from '@storees/shared'
 import { evaluateAllSegments } from '../services/segmentService.js'
+import { deliveredAt, refundedAt, shippedAt } from '../services/orderMoments.js'
+import { advanceOrder, correctOrderDates } from '../services/orderTransitions.js'
 
 type ShopifyAddress = {
   province?: string | null
@@ -61,6 +63,11 @@ type ShopifyOrder = {
   // declared here, and so never read. See `shopifyOrderStatus` below for what that cost.
   cancelled_at: string | null
   financial_status: string | null
+  // Each shipment, with its own date — what "when did it ship" is read from — and the
+  // courier's latest word on it (`delivered` once the customer has it).
+  fulfillments?: Array<{ created_at: string | null; updated_at?: string | null; shipment_status?: string | null }>
+  // Each refund, with its own date — when a refunded order was actually refunded.
+  refunds?: Array<{ created_at?: string | null; processed_at?: string | null }>
   line_items: Array<{
     product_id: number
     title: string
@@ -86,10 +93,14 @@ type ShopifyOrder = {
  *  order and has no notion of a part refund; treating it as fully refunded would drop
  *  the entire order's revenue to settle a fraction of it. Counting it in full is the
  *  smaller error, and the honest one until partials are modelled. */
+const DELIVERED_SHIPMENT = new Set(['delivered', 'picked_up'])
+
 function shopifyOrderStatus(o: ShopifyOrder): string {
   if (o.cancelled_at) return 'cancelled'
   if (o.financial_status === 'voided') return 'cancelled'
   if (o.financial_status === 'refunded') return 'refunded'
+  // Delivered once the courier says so for a shipment of it — later than shipped.
+  if ((o.fulfillments ?? []).some(f => DELIVERED_SHIPMENT.has(String(f.shipment_status ?? '').toLowerCase()))) return 'delivered'
   if (o.fulfillment_status === 'fulfilled') return 'fulfilled'
   return 'pending'
 }
@@ -210,7 +221,11 @@ export function startSyncWorker(): Worker {
                 imageUrl: item.image?.src,
               })),
               createdAt: new Date(shopifyOrder.created_at),
-              fulfilledAt: shopifyOrder.fulfillment_status === 'fulfilled' ? new Date() : null,
+              // WHEN IT SHIPPED, from the shipment itself. This was `new Date()` — the day
+              // the history pull ran — so every past order looked shipped on sync day.
+              // A delivered order also shipped; both dates come from the shipments.
+              fulfilledAt: status === 'fulfilled' || status === 'delivered' ? shippedAt(shopifyOrder.fulfillments) : null,
+              deliveredAt: status === 'delivered' ? deliveredAt(shopifyOrder.fulfillments) : null,
               // Pulled from Shopify's API — there is no event behind this row, so a
               // mapping change must never delete it. It could not be rebuilt.
               sourceEvent: 'shopify_sync',
@@ -222,6 +237,28 @@ export function startSyncWorker(): Worker {
             // the row said `pending`, and nothing downstream had any reason to doubt it.
             if (inserted.length > 0 && !isReversedOrderStatus(status)) {
               await updateCustomerAggregates(customerId, total, new Date(shopifyOrder.created_at))
+            }
+
+            // AN ORDER STOREES ALREADY HAS STILL MOVES FORWARD.
+            //
+            // The insert above skips an existing row, so a re-pull never told Storees that
+            // an order it already held had since shipped or arrived — it stayed `pending`
+            // for ever. Shipped and delivered are applied through the same forward-only
+            // rule every other door uses, with Shopify's own dates. Nothing here moves
+            // money, and nothing moves backwards or over a reversal.
+            if (inserted.length === 0 && (status === 'fulfilled' || status === 'delivered')) {
+              const step = (to: 'fulfilled' | 'delivered', at: Date | null) => at && advanceOrder({
+                projectId, externalOrderId: String(shopifyOrder.id), to, at,
+                eventName: 'shopify_sync', purchaseEvents: vocab.purchaseEvents, orderIdKey: vocab.orderIdKey,
+              }).catch(err => console.warn(`[shopify-sync] could not advance order ${shopifyOrder.id}:`, (err as Error).message))
+              await step('fulfilled', shippedAt(shopifyOrder.fulfillments))
+              if (status === 'delivered') await step('delivered', deliveredAt(shopifyOrder.fulfillments))
+              // ...and its dates are Shopify's, even where an older pull saved them wrong.
+              await correctOrderDates({
+                projectId, externalOrderId: String(shopifyOrder.id),
+                shippedAt: shippedAt(shopifyOrder.fulfillments),
+                deliveredAt: status === 'delivered' ? deliveredAt(shopifyOrder.fulfillments) : null,
+              }).catch(err => console.warn(`[shopify-sync] could not correct dates on order ${shopifyOrder.id}:`, (err as Error).message))
             }
 
             // Create historical event (does NOT trigger flows)
@@ -256,8 +293,28 @@ export function startSyncWorker(): Worker {
               await processHistoricalEvent(
                 projectId, customerId, reversalName,
                 { ...orderProps, amount: total },
-                new Date(shopifyOrder.cancelled_at ?? shopifyOrder.created_at),
+                // When it was reversed: a refund by its own date, a cancellation by its
+                // cancel date. Only when neither is given, the order's own date — and never
+                // "today", which would make an old reversal look recent.
+                (status === 'refunded' ? refundedAt(shopifyOrder.refunds) : null)
+                  ?? new Date(shopifyOrder.cancelled_at ?? shopifyOrder.created_at),
               )
+
+              // AN ORDER STOREES ALREADY HAS IS REVERSED TOO. The insert above skips an
+              // existing row, so a refund or cancellation whose live message was missed
+              // stayed `pending` and kept counting. A re-pull now catches it: the row
+              // takes the reversal (unless it already holds one — the first stands) and
+              // the customer's totals are recomputed, which reads the reversal just written.
+              if (inserted.length === 0) {
+                const reversed = await db.update(orders).set({ status })
+                  .where(and(
+                    eq(orders.projectId, projectId),
+                    eq(orders.externalOrderId, String(shopifyOrder.id)),
+                    notInArray(orders.status, ['cancelled', 'returned', 'refunded']),
+                  ))
+                  .returning({ id: orders.id })
+                if (reversed.length > 0) await recalculateAggregates(customerId)
+              }
             }
 
             ordersProcessed++

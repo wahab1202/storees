@@ -175,7 +175,10 @@ export const orders = pgTable('orders', {
   currency: varchar('currency', { length: 3 }).notNull().default('INR'),
   lineItems: jsonb('line_items').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  /** when it SHIPPED (the shop sent it) */
   fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+  /** when the customer RECEIVED it — a separate, later moment */
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   /** Which door created this row — see migration 0082.
    *
    *  A purchase event name means the row was built from the event ledger and can be
@@ -1001,6 +1004,15 @@ export const predictionScores = pgTable('prediction_scores', {
 }, (table) => [
   index('idx_prediction_scores_customer').on(table.projectId, table.customerId),
   index('idx_prediction_scores_goal').on(table.goalId, table.computedAt),
+  // ONE CURRENT SCORE PER CUSTOMER PER GOAL — `scoringWorker` upserts on exactly this
+  // triple, and an ON CONFLICT with no unique index behind it is not a slow path, it is
+  // a rejected statement: "there is no unique or exclusion constraint matching the ON
+  // CONFLICT specification", every batch, on every project. Migration 0058 created it in
+  // the database; this file never declared it, so the schema and the code have disagreed
+  // since 2026-05-21 and anything generated from here builds a Storees whose scoring
+  // cannot write a single row.
+  uniqueIndex('idx_prediction_scores_one_per_customer')
+    .on(table.projectId, table.goalId, table.customerId),
 ])
 
 // ============ ADMIN USERS (admin panel authentication) ============

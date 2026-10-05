@@ -84,9 +84,38 @@ router.get('/_training-status', requireProjectId, async (req, res) => {
     // been retrained successfully must not keep reporting itself.
     const latest = new Map<string, typeof recent[number]>()
     for (const r of recent) if (!latest.has(r.goalId)) latest.set(r.goalId, r)
+    // SCORING COUNTS AS AN ATTEMPT TOO. `scoring_failed` rows come from the scoring
+    // worker, which used to write nothing at all — a goal could fail to score every
+    // night and the page had no way to know. Carrying `kind` rather than flattening both
+    // into "training" matters to the reader: a training failure means the model is stale,
+    // a scoring failure means the model is fine and nobody has been given a score by it.
+    // DOES THIS GOAL HAVE A MODEL TO FALL BACK ON? The page used to state, next to every
+    // failure, that "the previous model is still scoring customers". For a goal that has
+    // never trained there is no previous model and nobody is being scored, so the one
+    // line meant to reassure was the only line on the page that was false — and it read
+    // as "your numbers are safe" at exactly the moment they did not exist.
+    const withModel = new Set(
+      (await db
+        .select({ goalId: predictionModelVersions.goalId })
+        .from(predictionModelVersions)
+        .where(and(
+          eq(predictionModelVersions.projectId, req.projectId!),
+          eq(predictionModelVersions.isActive, true),
+        ))
+      ).map(r => r.goalId),
+    )
+
     const failures = [...latest.values()]
-      .filter(r => r.status === 'failed' || r.status === 'error')
-      .map(r => ({ goalId: r.goalId, name: r.name, reason: r.reason ?? 'Training did not complete.' }))
+      .filter(r => r.status === 'failed' || r.status === 'error' || r.status === 'scoring_failed')
+      .map(r => ({
+        goalId: r.goalId,
+        name: r.name,
+        kind: r.status === 'scoring_failed' ? 'scoring' as const : 'training' as const,
+        reason: r.reason ?? (r.status === 'scoring_failed'
+          ? 'Scoring did not complete.'
+          : 'Training did not complete.'),
+        hasModel: withModel.has(r.goalId),
+      }))
 
     res.json({ success: true, data: {
       running: running.length > 0,

@@ -1,4 +1,4 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import {
   dataSourceConnectors,
@@ -21,6 +21,9 @@ import { upsertDealer, type DealerInput } from './dealerImport.js'
 import { agentRbacEnabled } from '../config/features.js'
 import { customerAggregateQueue } from './queue.js'
 import { projectVocabulary } from './projectVocabulary.js'
+import { ORDER_STATUS, isReversedOrderStatus, statusFromProperties, type OrderStatus } from '../db/orderStatus.js'
+import { statedMoment } from './orderMoments.js'
+import { orderEventKey } from './orderEventKey.js'
 
 // Sync orchestrator. The BullMQ worker calls runSync(syncId) — everything
 // else (pagination, mapping, calling import services, writing logs) lives
@@ -219,7 +222,8 @@ async function importProductBatch(
   }
 }
 
-async function importOrderBatch(
+/** @internal exported for tests — callers go through `runSync`. */
+export async function importOrderBatch(
   projectId: string,
   syncId: string,
   records: unknown[],
@@ -248,62 +252,42 @@ async function importOrderBatch(
       continue
     }
 
-    // Lifecycle gating — Medusa / VirpanAI ONLY. Scope-safe by field naming:
-    // these checks only fire when the connector's field map populates these
-    // keys. Shopify uses different spellings ('cancelled' with two Ls,
-    // cancelled_at, financial_status) and different semantics — it needs its
-    // own detection branch when that connector lands.
+    // ONE MONEY RULE — the same as every other door into Storees.
     //
-    // Per GWM backend team's spec, only fulfillment_status='delivered'
-    // counts as revenue:
-    //   fulfillment_status='delivered' → counted as revenue
-    //   fulfillment_status='canceled'  → NOT revenue (compensate)
-    //   anything else (pending/processing/etc) → NOT yet revenue (compensate
-    //     if previously counted under old "everything counts" code path;
-    //     otherwise just skip)
+    //   An order counts as revenue when it is PLACED. Shipping and delivery move no
+    //   money. Only a real cancellation, return or refund takes it back off.
     //
-    // status and canceled_at are fallback cancellation signals for older
-    // Medusa versions; ignored when fulfillment_status is present.
-    const status = mapped.order_status as string | undefined
-    const fulfillmentStatus = mapped.fulfillment_status as string | undefined
-    const canceledAt = mapped.canceled_at as string | null | undefined
-    // Revenue signal. Medusa exposes fulfillment_status (delivered = revenue);
-    // the CDP-export shape has NO fulfillment_status, so fall back to
-    // canceled_at (null/absent → active order → revenue). Without this fallback
-    // every export order looks non-delivered and gets compensated/skipped.
-    const isDelivered = fulfillmentStatus !== undefined
-      ? fulfillmentStatus === 'delivered'
-      : !canceledAt
+    // This path used to count an order only once the source said `delivered`, and
+    // wrote a cancellation event to take back any order it had counted that was not
+    // delivered YET — so in-transit orders were booked as cancelled, and booked again
+    // as a "revival" when they arrived. Measured on one connector-fed shop: 6,663 such
+    // cancellations of orders that were never cancelled. The rule was one client's
+    // instruction, applied to every shop on this connector.
+    //
+    // The order's state is read by the shared reader (orderStatus.ts), which keeps "is
+    // the order still on?" apart from "where is the parcel?".
+    const sourceState = statusFromProperties({
+      order_status: mapped.order_status, fulfillment_status: mapped.fulfillment_status,
+    })
+    const reversal: OrderStatus | null =
+      sourceState && isReversedOrderStatus(sourceState) ? sourceState
+      : mapped.canceled_at ? ORDER_STATUS.CANCELLED
+      : null
 
-    if (!isDelivered) {
-      // Non-delivered (canceled OR pending/processing). Compensate if a
-      // prior order_placed exists in our DB — pre-fix, every order was
-      // ingested as order_placed regardless of state. Net effect: total_spent
-      // reflects only delivered revenue.
-      const compensation = await buildCompensatingCancellation(projectId, orderId, mapped)
-      if (compensation === 'no-prior') {
-        // Never previously counted — nothing to undo. Skip silently.
-        continue
-      }
-      if (compensation === 'already-compensated') {
-        // Compensation was emitted on a prior sync. Idempotent skip.
-        continue
-      }
-      pending.push({ rawCustomerId: customerExternalId, row: compensation })
-      continue
-    }
-    // Explicitly mark void to silence unused-var lint on the fallback signals.
-    // They're still validated above as part of the lifecycle comment.
-    void status
+    // A reversal already counted once must not be counted again, and needs the amount
+    // the sale was booked at — the source often zeroes an order's total on cancellation.
+    const priorTotal = reversal ? await bookedTotal(projectId, orderId, syncVocab) : null
 
     const total = mapped.total
-    if (typeof total !== 'number' || total <= 0) {
-      stats.failed += 1
-      await log(syncId, 'warn', `Order ${orderId} has total ${String(total)} — skipping (zero/negative totals indicate a field-mapping bug)`, {
-        entityType: 'order',
-        entityId: orderId,
-        payload: { mapped },
-      })
+    const hasTotal = typeof total === 'number' && total > 0
+    if (!hasTotal && priorTotal === null) {
+      // Nothing booked before and no amount now: there is no sale to record or undo.
+      if (!reversal) {
+        stats.failed += 1
+        await log(syncId, 'warn', `Order ${orderId} has total ${String(total)} — skipping (zero/negative totals indicate a field-mapping bug)`, {
+          entityType: 'order', entityId: orderId, payload: { mapped },
+        })
+      }
       continue
     }
 
@@ -315,44 +299,39 @@ async function importOrderBatch(
     if (mapped.timestamp == null || mapped.timestamp === '') {
       stats.failed += 1
       await log(syncId, 'error', `Order ${orderId} skipped — no timestamp in source row. Set mappings.orders.timestamp on the connector to the source's order-date field (e.g. "created_at").`, {
-        entityType: 'order',
-        entityId: orderId,
-        payload: { mapped },
+        entityType: 'order', entityId: orderId, payload: { mapped },
       })
       continue
     }
 
-    // If a compensation event exists for this order, it means this order was
-    // previously non-delivered (we subtracted its revenue) and has now been
-    // delivered. Use a distinct idempotency key so insertion isn't blocked
-    // by the prior order_placed row AND so the new event still adds revenue
-    // (aggregator processes by event_name, not by key). Net contribution
-    // over the lifecycle: +X (initial historical) − X (compensation) + X
-    // (revival) = +X, which is correct since the order is now delivered.
-    const compensationKey = `order_cancelled_compensation:${orderId}`
-    const [priorComp] = await db
-      .select({ id: eventsTable.id })
-      .from(eventsTable)
-      .where(
-        and(
-          eq(eventsTable.projectId, projectId),
-          eq(eventsTable.idempotencyKey, compensationKey),
-        ),
-      )
-      .limit(1)
-    const isRevival = priorComp != null
-
-    const row = buildOrderRow(projectId, mapped, { isRevival }, syncVocab)
-    if (!row) {
-      stats.failed += 1
-      await log(syncId, 'error', `Order ${orderId} skipped — invalid timestamp value: ${String(mapped.timestamp)}`, {
-        entityType: 'order',
-        entityId: orderId,
-        payload: { mapped },
-      })
-      continue
+    // The sale — always, when the source has an amount for it. A cancelled order that
+    // was never booked is still recorded and immediately reversed: net zero, and the
+    // history says what happened.
+    if (hasTotal) {
+      const row = buildOrderRow(projectId, mapped, syncVocab)
+      if (!row) {
+        stats.failed += 1
+        await log(syncId, 'error', `Order ${orderId} skipped — invalid timestamp value: ${String(mapped.timestamp)}`, {
+          entityType: 'order', entityId: orderId, payload: { mapped },
+        })
+        continue
+      }
+      pending.push({ rawCustomerId: customerExternalId, row })
     }
-    pending.push({ rawCustomerId: customerExternalId, row })
+
+    // The reversal — only when the source says it really happened.
+    if (reversal) {
+      const undo = await buildReversal(projectId, orderId, mapped, reversal,
+        priorTotal ?? (total as number), syncVocab)
+      if (undo === 'already-recorded') continue
+      if (undo === 'no-slot') {
+        await log(syncId, 'warn', `Order ${orderId} is ${reversal} at the source, but this project has no event mapped for that — set it on the Event Mapping screen`, {
+          entityType: 'order', entityId: orderId,
+        })
+        continue
+      }
+      pending.push({ rawCustomerId: customerExternalId, row: undo })
+    }
   }
 
   // Resolve customer UUIDs (each row needs a customer_id FK). resolveCustomer
@@ -427,123 +406,90 @@ async function importOrderBatch(
   }
 }
 
-/**
- * For an order that's now canceled in the source system, emit a paired
- * order_cancelled event so the customer-aggregate worker subtracts the
- * original revenue from customers.total_spent on its next pass.
- *
- * Steady-state semantics:
- *   - If the source-side cancellation has no prior order_placed in our DB,
- *     there's nothing to compensate (the order was either never ingested
- *     OR ingestion happened after the fix). Returns 'no-prior'.
- *   - If a compensating order_cancelled already exists (prior sync emitted
- *     it), this is idempotent — returns 'already-compensated'.
- *   - Otherwise builds a fresh order_cancelled event carrying the ORIGINAL
- *     order_placed total in properties.total. Aggregator subtracts that
- *     value via REVENUE_DECREMENT_EVENTS path.
- *
- * Idempotency key intentionally differs from the original order_placed
- * row (`order_cancelled_compensation:<orderId>` vs
- * `order_placed_historical:<orderId>`) so:
- *   1. Both rows coexist in the events table — audit trail preserved.
- *   2. Re-running the sync doesn't create duplicate compensations (the
- *      unique index on (project_id, idempotency_key) blocks dupes).
- */
+/** The amount this order was booked at by an earlier sync, or null if it never was. */
+async function bookedTotal(
+  projectId: string, orderId: string, vocab: { amountKey: string; purchaseEvents: string[] },
+): Promise<number | null> {
+  // The fingerprint the sale is written under now, and the one older syncs wrote (which
+  // named `order_placed` whatever the project called a sale).
+  const keys = [...new Set([
+    orderEventKey(vocab.purchaseEvents[0] ?? 'order_placed', orderId),
+    orderEventKey('order_placed', orderId),
+  ])]
+  const [prior] = await db
+    .select({ properties: eventsTable.properties })
+    .from(eventsTable)
+    .where(and(eq(eventsTable.projectId, projectId), inArray(eventsTable.idempotencyKey, keys)))
+    .limit(1)
+  if (!prior) return null
+  const props = (prior.properties ?? {}) as Record<string, unknown>
+  const amount = Number(props[vocab.amountKey] ?? props.total ?? 0)
+  return Number.isFinite(amount) && amount > 0 ? amount : null
+}
+
 type OrderEventRow = NonNullable<ReturnType<typeof buildOrderRow>> & {
   properties: Record<string, unknown>
 }
 
-async function buildCompensatingCancellation(
+/**
+ * The reversal event for an order the source says was cancelled, returned or refunded —
+ * under THIS project's word for that kind of reversal, from its mapping.
+ *
+ * One per order, ever: the idempotency key is unchanged from the earlier implementation
+ * (`order_cancelled_compensation:<orderId>`), so a reversal already recorded by a past
+ * sync is recognised and never written twice. It is bookkeeping, not vocabulary.
+ *
+ * 'no-slot' when the project has no event for that kind of reversal — it cannot be
+ * expressed in its own words, and inventing a retail word for it would be read by
+ * nothing (see the history of the compensation path).
+ */
+async function buildReversal(
   projectId: string,
   orderId: string,
   mapped: Record<string, unknown>,
-): Promise<'no-prior' | 'already-compensated' | OrderEventRow> {
-  const compensatingKey = `order_cancelled_compensation:${orderId}`
-  const originalKey = `order_placed_historical:${orderId}`
-
-  // Already emitted compensation? Skip — idempotent.
-  const existingCompensation = await db
+  kind: OrderStatus,
+  amount: number,
+  vocab: { cancellationEvents: string[]; returnEvents: string[]; refundEvents: string[]; orderIdKey: string; amountKey: string; currencyKey: string },
+): Promise<'already-recorded' | 'no-slot' | OrderEventRow> {
+  const key = `order_cancelled_compensation:${orderId}`
+  const [existing] = await db
     .select({ id: eventsTable.id })
     .from(eventsTable)
-    .where(
-      and(
-        eq(eventsTable.projectId, projectId),
-        eq(eventsTable.idempotencyKey, compensatingKey),
-      ),
-    )
+    .where(and(eq(eventsTable.projectId, projectId), eq(eventsTable.idempotencyKey, key)))
     .limit(1)
-  if (existingCompensation.length > 0) return 'already-compensated'
+  if (existing) return 'already-recorded'
 
-  // Find the original order_placed event to recover the canonical total —
-  // the source system has zeroed it on cancellation, but we need the
-  // pre-cancellation amount to subtract correctly.
-  const [prior] = await db
-    .select({ properties: eventsTable.properties, customerId: eventsTable.customerId })
-    .from(eventsTable)
-    .where(
-      and(
-        eq(eventsTable.projectId, projectId),
-        eq(eventsTable.idempotencyKey, originalKey),
-      ),
-    )
-    .limit(1)
-  if (!prior) return 'no-prior'
+  const cancelOnly = vocab.cancellationEvents.filter(n => !vocab.returnEvents.includes(n) && !vocab.refundEvents.includes(n))
+  const eventName =
+    kind === ORDER_STATUS.REFUNDED ? (vocab.refundEvents[0] ?? cancelOnly[0])
+    : kind === ORDER_STATUS.RETURNED ? (vocab.returnEvents[0] ?? cancelOnly[0])
+    : (cancelOnly[0] ?? vocab.cancellationEvents[0])
+  if (!eventName) return 'no-slot'
 
-  const priorProps = (prior.properties ?? {}) as Record<string, unknown>
-  const priorTotal = Number(priorProps.total ?? 0)
-  if (!Number.isFinite(priorTotal) || priorTotal <= 0) return 'no-prior'
-
-  // Stamp the cancellation event at the canceled_at moment if available,
-  // otherwise at the order's created_at. Better than NOW() — keeps the
-  // timeline truthful.
-  const cancelTimestampRaw = (mapped.canceled_at ?? mapped.timestamp) as string
-  let cancelTimestamp: Date
-  try {
-    cancelTimestamp = new Date(cancelTimestampRaw)
-    if (Number.isNaN(cancelTimestamp.getTime())) cancelTimestamp = new Date()
-  } catch {
-    cancelTimestamp = new Date()
-  }
-
-  // Under THIS project's word for a reversal, not the retail one.
-  //
-  // The compensation is how a synced order that turns out to be cancelled gets its
-  // revenue taken back off. Written as the literal `order_cancelled`, a shop whose
-  // reversal slot says something else received an event its own vocabulary does not
-  // recognise: the row lands in the ledger, every money path looks for the shop's word,
-  // finds nothing, and the cancelled order keeps counting as revenue for ever.
-  //
-  // The idempotency KEY deliberately stays `order_cancelled_compensation:<orderId>`.
-  // It is bookkeeping, not vocabulary — it exists so a re-sync cannot write the same
-  // compensation twice. Translating it would make every compensation already emitted
-  // look new, and the next sync would double every reversal.
-  const vocab = await projectVocabulary(projectId)
+  // When it was reversed, if the source says; otherwise the order's own date — an old
+  // cancellation imported today must not look like it happened today.
+  const when = statedMoment('reversal', mapped) ?? new Date(mapped.timestamp as string)
 
   return {
     projectId,
-    eventName: vocab.cancellationEvents[0] ?? 'order_cancelled',
+    eventName,
     platform: 'api',
     source: 'connector_sync',
-    timestamp: cancelTimestamp,
-    idempotencyKey: compensatingKey,
+    timestamp: Number.isNaN(when.getTime()) ? new Date() : when,
+    idempotencyKey: key,
     sessionId: null,
     customerId: null as string | null,
     properties: {
-      order_id: orderId,
-      total: priorTotal,
-      // Cancellation reverses the order; no discount value applies. Kept
-      // explicit so the merge-on-conflict doesn't preserve a stale value
-      // from the original order_placed row.
+      [vocab.orderIdKey]: orderId,
+      [vocab.amountKey]: amount,
       discount: 0,
-      currency: mapped.currency ?? priorProps.currency ?? 'INR',
+      [vocab.currencyKey]: mapped.currency ?? 'INR',
       line_items: [],
-      // Carry the source-side signals so future queries can confirm WHY a
-      // compensation was emitted (audit trail).
+      // The source's own words, kept so it is clear later WHY this reversal exists.
       status: mapped.order_status ?? null,
       fulfillment_status: mapped.fulfillment_status ?? null,
       canceled_at: mapped.canceled_at ?? null,
-      reason: 'source_status_canceled',
-      compensating: true,
+      reason: `source_status_${kind}`,
       historical: true,
     },
   }
@@ -552,7 +498,6 @@ async function buildCompensatingCancellation(
 function buildOrderRow(
   projectId: string,
   mapped: Record<string, unknown>,
-  opts: { isRevival?: boolean } = {},
   // What this project calls a purchase, and where it puts the id and the money.
   //
   // A connector's job is to translate an external feed into Storees' shape, and this
@@ -579,14 +524,9 @@ function buildOrderRow(
     return null
   }
 
-  // Revival keys (`order_placed_revival:<orderId>`) only fire when this order
-  // was previously compensated (non-delivered) and is now delivered. The
-  // distinct key keeps the historical, compensation, and revival rows
-  // coexisting in the events table — full audit trail of the order's
-  // lifecycle through our system.
-  const idempotencyKey = opts.isRevival
-    ? `order_placed_revival:${orderId}`
-    : `order_placed_historical:${orderId}`
+  // One sale per order, ever — the shared fingerprint every door writes for it
+  // (orderEventKey.ts), under the purchase name this row is written as.
+  const idempotencyKey = orderEventKey(vocab.purchaseEvents[0] ?? 'order_placed', orderId)
 
   return {
     projectId,
@@ -610,7 +550,6 @@ function buildOrderRow(
       status: mapped.order_status ?? null,
       fulfillment_status: mapped.fulfillment_status ?? null,
       historical: true,
-      ...(opts.isRevival ? { revival: true, reason: 'delivered_after_compensation' } : {}),
     },
   }
 }
