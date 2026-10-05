@@ -150,6 +150,22 @@ async function computeEcommerceMetrics(
   const vocab = await projectVocabulary(projectId)
   const isPurchase = eventIn(sql`event_name`, vocab.purchaseEvents)
 
+  // "Which order is this event about", under this project's key, with the same
+  // three-way fallback the aggregate worker and the segment evaluator use — the
+  // purchase counts below have to agree with them or one field means two things.
+  //
+  // Needed because the ledger holds the same order more than once whenever two
+  // ingestion paths both record it: a Shopify webhook and a historical sync write
+  // different idempotency keys, so neither collapses the other, and a sync over
+  // rows written before those keys existed adds another copy every run. Counting
+  // event ROWS therefore reported orders a customer never placed. Falling back to
+  // the row id keeps an event that carries no order reference counted exactly once.
+  const orderKey = sql`COALESCE(
+    NULLIF(properties->>${vocab.orderIdKey}, ''),
+    NULLIF(properties->>'order_id', ''),
+    NULLIF(properties->>'id', ''),
+    id::text)`
+
   // Query 1: Event aggregates. The time-windowed order counts live here
   // (not on the orders table) so they're correct for event-driven tenants
   // whose orders table is mostly empty. Mirrors the segment evaluator.
@@ -158,9 +174,9 @@ async function computeEcommerceMetrics(
       COUNT(*) AS total_events,
       MAX(timestamp) AS last_event_at,
       MIN(timestamp) AS first_event_at,
-      COUNT(*) FILTER (WHERE ${isPurchase}) AS order_event_count,
+      COUNT(DISTINCT ${orderKey}) FILTER (WHERE ${isPurchase}) AS order_event_count,
       COUNT(*) FILTER (WHERE ${eventIn(sql`event_name`, vocab.cartEvents)}) AS cart_count,
-      COUNT(*) FILTER (
+      COUNT(DISTINCT ${orderKey}) FILTER (
         WHERE ${isPurchase}
           AND timestamp > NOW() - INTERVAL '30 days'
       ) AS orders_last_30d,

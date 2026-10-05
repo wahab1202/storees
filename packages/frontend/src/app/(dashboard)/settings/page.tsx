@@ -6,12 +6,13 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
+import { buildShopifyPixel } from '@/lib/shopifyPixel'
 import { WhatsappChannelPanel } from './WhatsappChannelPanel'
 import { DataMaintenance } from './DataMaintenance'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
 
-type TabId = 'script' | 'npm' | 'api'
+type TabId = 'script' | 'shopify' | 'npm' | 'api'
 
 const DOMAIN_EVENTS: Record<string, Array<{ name: string; example: string }>> = {
   ecommerce: [
@@ -119,8 +120,11 @@ Storees.identify('user-123', {
     "properties": { "source": "curl_test" }
   }'`
 
+  const shopifyPixel = buildShopifyPixel({ apiUrl, apiKey })
+
   const tabs: { id: TabId; label: string }[] = [
     { id: 'script', label: 'Script Tag' },
+    { id: 'shopify', label: 'Shopify' },
     { id: 'npm', label: 'NPM Package' },
     { id: 'api', label: 'REST API' },
   ]
@@ -223,6 +227,22 @@ Storees.identify('user-123', {
                 Add this snippet before the closing <code className="text-xs bg-surface px-1 py-0.5 rounded">&lt;/head&gt;</code> tag on every page.
               </p>
               <CodeBlock code={scriptSnippet} id="script" copied={copied} onCopy={copyToClipboard} />
+            </div>
+          )}
+
+          {activeTab === 'shopify' && (
+            <div className="space-y-3">
+              <p className="text-sm text-text-secondary">
+                Tracks browsing, cart and checkout on any Shopify theme, with no theme edits.
+                Orders, customers and the catalogue still come from the Shopify connection.
+              </p>
+              <ol className="text-sm text-text-secondary list-decimal pl-5 space-y-1">
+                <li>In Shopify admin, open <span className="text-text-primary">Settings → Customer events</span>.</li>
+                <li>Click <span className="text-text-primary">Add custom pixel</span> and name it <span className="text-text-primary">Storees</span>.</li>
+                <li>Replace everything in the code box with the code below, then <span className="text-text-primary">Save</span> and <span className="text-text-primary">Connect</span>.</li>
+                <li>Add a product to the cart on your store. <code className="text-xs bg-surface px-1 py-0.5 rounded">added_to_cart</code> should appear in the Event Debugger within a few seconds.</li>
+              </ol>
+              <CodeBlock code={shopifyPixel} id="shopify-pixel" copied={copied} onCopy={copyToClipboard} />
             </div>
           )}
 

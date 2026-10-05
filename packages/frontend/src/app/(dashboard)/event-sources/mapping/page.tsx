@@ -37,10 +37,11 @@ const MEANING_GROUPS: Array<{ title: string; help: string; keys: MeaningKey[] }>
   {
     title: 'What happened to the order',
     help: 'How an order moves after it is placed. Each kind is asked for separately '
-        + 'because they are not the same outcome — a cancellation never shipped, a '
-        + 'return came back, a refund may be partial. Left blank, the order stays '
-        + 'pending and a reversal is recorded only as "cancelled".',
-    keys: ['fulfilment', 'cancellation', 'return', 'refund'],
+        + 'because they are not the same outcome — shipped is not yet received, a '
+        + 'cancellation never shipped, a return came back, a refund may be partial. '
+        + 'Left blank, the order stays pending and a reversal is recorded only as '
+        + '"cancelled".',
+    keys: ['fulfilment', 'delivery', 'cancellation', 'return', 'refund'],
   },
 ]
 

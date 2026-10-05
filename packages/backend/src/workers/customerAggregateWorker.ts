@@ -2,13 +2,15 @@ import { Worker } from 'bullmq'
 import { eq, and, sql, isNull, asc } from 'drizzle-orm'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { isReversedOrderStatus, ORDER_STATUS } from '../db/orderStatus.js'
+import { isReversedOrderStatus, ORDER_STATUS, statusFromProperties } from '../db/orderStatus.js'
 import { customers, events, orders } from '../db/schema.js'
 import { upsertProductsFromLineItems } from '../services/productCatalogService.js'
 import { relayConversionEvent } from '../services/conversionApiService.js'
 import { computeClv, updateCustomerAggregates, mlChurnScore } from '../services/customerService.js'
 import { normalizeLineItemFields } from '@storees/shared'
 import { purchaseAwaitingProcessing } from '../services/orderArrival.js'
+import { advanceOrder } from '../services/orderTransitions.js'
+import { statedMoment } from '../services/orderMoments.js'
 import { projectVocabulary } from '../services/projectVocabulary.js'
 
 /**
@@ -78,36 +80,6 @@ const OUTRANKED_BY: Record<string, string[]> = {
   cancelled: ['refunded', 'returned'],
 }
 
-// Events that net-add revenue to a customer's total_spent.
-//
-//   ecommerce:
-//     order_placed           — one-shot purchase
-//     subscription_started   — first billing cycle (recurring revenue)
-//     subscription_renewed   — each subsequent cycle
-//
-//   BFSI (see CLIENT_ONBOARDING.md §7.5 for the per-vertical mental model):
-//     loan_disbursed         — loan amount counts as customer "LTV"
-//                              (total business done with this customer)
-//     emi_paid               — each EMI is recurring revenue
-//     premium_paid           — each insurance premium payment
-//
-// Every event in this set must carry properties.total — the aggregator
-// reads that field and adds it to customer.total_spent.
-const REVENUE_INCREMENT_EVENTS = new Set([
-  'order_placed',
-  'subscription_started',
-  'subscription_renewed',
-  'loan_disbursed',
-  'emi_paid',
-  'premium_paid',
-])
-
-// Events that net-subtract revenue. order_returned mirrors order_refunded
-// for physical-goods returns (return + restock vs refund + no restock).
-// order_cancelled stays in this set because legacy historical-import flows
-// emit it on canceled orders that previously counted as order_placed.
-// claim_settled subtracts the payout amount from the insurance customer's
-// lifetime "premium paid" balance.
 // Repeat payments against an existing commitment. NOT purchases: no id of their own,
 // so they never create an order row, and they are a category every vertical can emit
 // rather than one industry's vocabulary.
@@ -117,12 +89,7 @@ const RECURRING_REVENUE_EVENTS = new Set([
   'premium_paid',
 ])
 
-const REVENUE_DECREMENT_EVENTS = new Set([
-  'order_refunded',
-  'order_returned',
-  'order_cancelled',
-  'claim_settled',
-])
+
 
 
 /** Postgres codes for "your write lost a race" — 40P01 deadlock, 40001 serialisation.
@@ -208,6 +175,7 @@ export function startCustomerAggregateWorker(): Worker {
         if (!orderId) return
         const replayable = v.purchaseEvents.includes(evt.eventName)
           || v.fulfilmentEvents.includes(evt.eventName)
+          || v.deliveryEvents.includes(evt.eventName)
           || v.cancellationEvents.includes(evt.eventName)
         if (!replayable) return
 
@@ -230,7 +198,10 @@ export function startCustomerAggregateWorker(): Worker {
           if (!existing) return
         }
       } else if (evtRow.processedAt) {
-        // Already aggregated.
+        // Already aggregated — money is never counted twice. But a re-sync sends the
+        // same order record again once it has moved on, and shipped / delivered move no
+        // money, so that part still applies (forward only, idempotent).
+        await advanceFromStatedStatus(evt.projectId, evt.eventName, evt.properties)
         return
       }
 
@@ -471,6 +442,14 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
                       AND ${orders.sourceEvent} NOT IN ('shopify_sync', 'historical_import')`,
       })
 
+      // AN ORDER RECORD THAT STATES HOW FAR IT GOT. Many sources send the order with its
+      // current state on it rather than a separate shipped / delivered event; a re-sync
+      // sends it again once it has moved. The row is moved forward to match — through
+      // the same rule every other door uses, never backwards, never over a reversal, and
+      // dated only by a date the record states (its own timestamp is the order date).
+      // Reversals are NOT taken from here: they move money and arrive as their own event.
+      await advanceFromStatedStatus(evt.projectId, eventName, evt.properties)
+
       // `ts` is the event's own timestamp — so a replayed order does not mark this
       // customer as active today. See the `last_seen` note in updateCustomerAggregates.
       await updateCustomerAggregates(customerId, undefined, undefined, ts)
@@ -517,7 +496,7 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
     return
   }
 
-  // Fulfilment moves the order on without touching the money.
+  // Shipping and delivery move the order on without touching the money.
   //
   // The Shopify path has handled this since it was written (eventProcessor's
   // `order_fulfilled` case, one line from the `order_cancelled` case that was
@@ -525,75 +504,23 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
   // stayed `pending` for ever — and two shipped flow templates trigger on it
   // (`Post-Purchase & Review`, `Replenishment Reminder`), which means neither
   // could fire for any shop that is not on Shopify.
-  // Under THIS PROJECT'S name for it, from the mapping screen's Delivered box. The
-  // published name stays in the test for the same reason the reversals keep theirs —
-  // one project can receive both — but only when the project has not claimed it for
-  // something else, which `projectVocabulary` has already resolved by precedence.
+  // Under THIS PROJECT'S names, from the mapping screen's Shipped and Delivered boxes.
+  const isDelivery = vocab.deliveryEvents.includes(eventName)
   const isFulfilment = vocab.fulfilmentEvents.includes(eventName)
-    || (eventName === 'order_fulfilled' && !vocab.cancellationEvents.includes(eventName))
 
-  if (isFulfilment) {
-    const fulfilledOrderId = String(
-      evt.properties[vocab.orderIdKey] ?? evt.properties.order_id ?? '',
-    ).trim()
-    if (fulfilledOrderId) {
-      // Only from `pending`. A refund can land before a late fulfilment webhook,
-      // and "delivered" must not overwrite the fact that the money went back.
-      const marked = await db.update(orders)
-        .set({ status: ORDER_STATUS.FULFILLED, fulfilledAt: ts })
-        .where(and(
-          eq(orders.projectId, evt.projectId),
-          eq(orders.externalOrderId, fulfilledOrderId),
-          eq(orders.status, 'pending'),
-        ))
-        .returning({ id: orders.id })
-
-      // Same race as the reversal branch: a delivery can be handed to a worker before
-      // the purchase it belongs to has become a row, and then quietly mark nothing.
-      //
-      // Zero rows here has three causes and only one of them is a mistake. The order
-      // is already reversed and the guard above is correctly refusing to overwrite a
-      // refund with a delivery — leave it. The order predates this pipeline and no row
-      // will ever exist — leave it. Or the purchase is still in the queue — retry.
-      // The ledger separates the third from the second, and reading the row separates
-      // both from the first.
-      if (marked.length === 0) {
-        const [prior] = await db
-          .select({ status: orders.status })
-          .from(orders)
-          .where(and(
-            eq(orders.projectId, evt.projectId),
-            eq(orders.externalOrderId, fulfilledOrderId),
-          ))
-          .limit(1)
-
-        // JUDGE THE ROW'S STATUS, NOT ITS EXISTENCE.
-        //
-        // Asking only "does the row exist?" reads the wrong moment. The UPDATE ran
-        // when there was no row; by the time this SELECT runs a few milliseconds
-        // later the purchase has inserted one, so existence says "the row is there,
-        // the guard above must have refused it" — and the delivery is dropped for a
-        // reason that was never true. That misread cost 48 of 504 deliveries on a
-        // single import, every one of them an order whose fulfilment happened to be
-        // dequeued before its purchase.
-        //
-        // `pending` is the status the UPDATE would have taken, so finding it here
-        // means the race was lost and nothing else. Anything already fulfilled or
-        // reversed is a real refusal and is left exactly as it stands.
-        if (prior?.status === 'pending') {
-          throw new Error(
-            `Fulfilment '${eventName}' for order ${fulfilledOrderId} lost a race with its `
-            + `purchase (project ${evt.projectId}) — retrying`)
-        }
-        if (!prior && await purchaseAwaitingProcessing(
-          evt.projectId, fulfilledOrderId, vocab.purchaseEvents, vocab.orderIdKey,
-        )) {
-          throw new Error(
-            `Fulfilment '${eventName}' for order ${fulfilledOrderId} arrived before its `
-            + `purchase was processed (project ${evt.projectId}) — retrying`)
-        }
-      }
-    }
+  if (isDelivery || isFulfilment) {
+    // Shipped or delivered: the order moves forward and no money moves. The same
+    // shared rule the Shopify path uses (orderTransitions.ts) — forward only, never
+    // over a reversal, and a delivery that beats its purchase to a worker is retried.
+    await advanceOrder({
+      projectId: evt.projectId,
+      externalOrderId: String(evt.properties[vocab.orderIdKey] ?? evt.properties.order_id ?? '').trim(),
+      to: isDelivery ? ORDER_STATUS.DELIVERED : ORDER_STATUS.FULFILLED,
+      at: ts,
+      eventName,
+      purchaseEvents: vocab.purchaseEvents,
+      orderIdKey: vocab.orderIdKey,
+    })
     await db.execute(sql`
       UPDATE customers SET last_seen = GREATEST(last_seen, ${seenAt}), updated_at = NOW()
       WHERE id = ${customerId}
@@ -612,8 +539,12 @@ async function applyEvent(evt: ResolvedAggregateInput, ts: Date): Promise<void> 
   // The standard names stay in the test as well as the declared ones: a project can
   // receive both, for instance its own events through /v1/events and `order_cancelled`
   // from a Shopify webhook on the same account.
+  // Only the project's Cancelled / Returned / Refunded boxes decide. A fixed list of
+  // published names used to sit beside them, so `order_cancelled` took revenue off for a
+  // project whose mapping says its cancellations are called something else — the
+  // mapping overruled by a list in this file. (`claim_settled` was on it too; a project
+  // with that event maps it into a reversal box like any other.)
   const isRevenueDecrement = vocab.cancellationEvents.includes(eventName)
-    || REVENUE_DECREMENT_EVENTS.has(eventName)
 
   if (isRevenueDecrement) {
     const total = amountOf(evt.properties)
@@ -902,3 +833,27 @@ export async function runStartupCatchUp(): Promise<{ processed: number }> {
   }
   return { processed: total }
 }
+
+/**
+ * Move an order forward to the shipped / delivered state its own purchase record STATES.
+ *
+ * For sources that send the order with its current state on it rather than a separate
+ * shipped or delivered event. Money-neutral and idempotent, which is why it also runs for
+ * a record already counted — a re-sync is exactly how such a source says "it has since
+ * arrived". Reversals are never taken from here: they move money and come as events.
+ */
+async function advanceFromStatedStatus(
+  projectId: string, eventName: string, properties: Record<string, unknown>,
+): Promise<void> {
+  const vocab = await projectVocabulary(projectId)
+  if (!vocab.purchaseEvents.includes(eventName)) return
+  const externalOrderId = String(properties[vocab.orderIdKey] ?? properties.order_id ?? properties.id ?? '').trim()
+  const stated = statusFromProperties(properties)
+  if (!externalOrderId || (stated !== ORDER_STATUS.FULFILLED && stated !== ORDER_STATUS.DELIVERED)) return
+  await advanceOrder({
+    projectId, externalOrderId, to: stated,
+    at: statedMoment(stated === ORDER_STATUS.DELIVERED ? 'delivery' : 'fulfilment', properties),
+    eventName, purchaseEvents: vocab.purchaseEvents, orderIdKey: vocab.orderIdKey,
+  })
+}
+

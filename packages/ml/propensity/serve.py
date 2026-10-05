@@ -29,6 +29,9 @@ from shared.feature_builder import build_feature_matrix
 from shared.cart_rows import build_open_carts
 from shared.cart_xy import CART_FEATURES, OCCASION_STARTED_AT
 from propensity.train_propensity import resolve_dataset, dataset_cache_dir
+# Lives in shared/ because TRAINING needs the same freshness rule and cannot import
+# it from here — serve imports train_propensity, so the other direction is a cycle.
+from shared.dataset import history_stamp as _history_rows, stamp_path
 from propensity.pipeline import POPULATION_DEFINED_BY_WINDOW
 
 app = FastAPI(title="Storees ML Service", version="0.1.0")
@@ -323,11 +326,7 @@ def train_model(req: TrainRequest):
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[serve.train] Exception during train for goal {req.goal_id}:\n{tb}")
-        # Surface the first line of the exception in the `reason` field —
-        # full traceback stays in the ML service logs. Avoids leaking
-        # internal paths into the Node-side DB row.
-        message = f"{type(e).__name__}: {str(e)[:300]}"
-        return TrainResponse(status="error", reason=message)
+        return TrainResponse(status="error", reason=_plain_failure(e))
 
     # Clear model cache so next score request loads the new model
     _model_cache.pop(req.goal_id, None)
@@ -426,47 +425,6 @@ def eligible(req: EligibleRequest):
     return EligibleResponse(goal=goal, customer_ids=ids, n=len(ids))
 
 
-def _history_rows(dataset, before: datetime) -> str:
-    """What the cached copy must describe: the events features are built from, AND
-    which customers exist at all.
-
-    Returns a stamp, not a count, because two different things can go stale.
-
-    EVENTS BEFORE `before` — a backfill changes them and must force a rebuild, while
-    ordinary live events timestamped now do not and must not, or every request would
-    rebuild and this cache would have no purpose.
-
-    THE CUSTOMER ROSTER — and this half was missing. A customer created TODAY has no
-    events before midnight, so the event count did not move, so the copy was judged
-    fresh and simply had no row for them. `score_customers` intersects the requested
-    ids with that copy's index, finds nothing, and returns `{"scores": []}` with a
-    200: no error, no log line, no score. Measured here — a shopper signed up at
-    13:35 and put an item in their basket; the copy had been built at 13:12 and had
-    never heard of them, so the cart model reported nothing wrong and scored no one.
-    A brand-new shopper with a live basket is the single most valuable case a cart
-    model has, and it was the one case that could not work.
-
-    Both counts are indexed and cheap next to the build they guard (measured: the
-    rebuild they trigger is 0.46s / 2.8MB on a 178k-event project). Raw rows, not
-    cleaned ones: cleaning is the expensive step this is deciding whether to run.
-    """
-    import duckdb
-    con = duckdb.connect()
-    try:
-        con.execute("PRAGMA disable_progress_bar")
-        dataset.prepare(con)
-        cutoff = before.strftime("%Y-%m-%d %H:%M:%S")
-        tbl = getattr(dataset.tables, "s", "pg")
-        events = int(con.execute(
-            f"SELECT count(*) FROM {tbl}.events WHERE project_id = ? AND timestamp < TIMESTAMP '{cutoff}'",
-            [dataset.project_id]).fetchone()[0])
-        people = int(con.execute(
-            f"SELECT count(*) FROM {tbl}.customers WHERE project_id = ?",
-            [dataset.project_id]).fetchone()[0])
-        return f"{events}:{people}"
-    finally:
-        con.close()
-
 
 def _scoring_datasets(project_id: str, domain: str, as_of: datetime):
     """Two views of this project: (history, live). They are not interchangeable.
@@ -528,7 +486,7 @@ def _scoring_datasets(project_id: str, domain: str, as_of: datetime):
     # Without that distinction the choice is between a stale copy and rebuilding on every
     # request, which is the 24 GiB query this cache exists to avoid.
     midnight = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
-    stamp = cache / "history.count"
+    stamp = stamp_path(cache, "history.count")
     history_now = _history_rows(dataset, midnight)
     fresh = False
     if marker.exists() and stamp.exists():
@@ -551,7 +509,9 @@ def _scoring_datasets(project_id: str, domain: str, as_of: datetime):
     shutil.rmtree(cache, ignore_errors=True)
     try:
         os.replace(staging, cache)
-        (cache / "history.count").write_text(str(history_now))
+        # Beside the directory, not inside it: this swap replaces the directory whole,
+        # and a note written into it would take training's note down with it.
+        stamp.write_text(str(history_now))
     except OSError:
         return built, dataset  # swap lost a race; our own copy is still correct
     return ProjectDataset(project_id=project_id, root=cache,
@@ -867,3 +827,63 @@ def explain_customer(req: ExplainRequest):
         factors=factors,
         model_version=metadata["model_version"],
     )
+
+
+#: A crash, said to the person reading the goal card rather than to the person fixing it.
+#:
+#: Matched on the exception's own text, in order, first hit wins. Substrings rather than
+#: exception classes because the ones that matter arrive wrapped: DuckDB reports a lost
+#: Postgres connection as `IOException`, and the class alone would not separate it from a
+#: bad file.
+_FAILURE_MEANINGS = (
+    ("server closed the connection",
+     "Lost connection to the database while reading this shop's data. "
+     "Nothing was changed — try again."),
+    ("no buffer space",
+     "Lost connection to the database while reading this shop's data. "
+     "Nothing was changed — try again."),
+    ("too small to be a parquet",
+     "A saved copy of this shop's data was damaged. "
+     "It will be rebuilt automatically on the next run."),
+    ("failed to import",
+     "The prediction service is missing a required component. "
+     "Your administrator needs to reinstall it on the server."),
+    ("no module named",
+     "The prediction service is missing a required component. "
+     "Your administrator needs to reinstall it on the server."),
+    ("out of memory",
+     "The server ran out of memory while training this model. "
+     "Nothing was changed — your administrator needs to look at the machine."),
+    ("permission denied",
+     "The prediction service could not read or write a file it needs. "
+     "Your administrator needs to check its permissions on the server."),
+)
+
+
+def _plain_failure(exc: Exception) -> str:
+    """What a crash should say on the goal card.
+
+    This used to pass the exception's own text through, with a comment claiming it
+    avoided leaking internal paths. It did not — the text IS where the path lives, and a
+    marketing screen showed
+    `InvalidInputException: File '/var/folders/.../ml_cb28b02b.../events.parquet' too
+    small to be a Parquet file`. Nobody reading a goal card can act on that, and the
+    directory layout of the server is not theirs to see.
+
+    Says what happened, whether anything was damaged, and who fixes it. The full
+    traceback is already on its way to the service log at the call site, so the person
+    who needs the stack still has every line of it — this decides only what reaches the
+    database row the dashboard reads.
+
+    An exception this has never seen gets the last line, which promises nothing it cannot
+    know. Pretending to explain an unrecognised failure would be worse than admitting it:
+    the whole point of this week's work is that a message which sounds informative and
+    is not costs days.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    for needle, meaning in _FAILURE_MEANINGS:
+        if needle in text:
+            return meaning
+    return ("Training stopped unexpectedly. Nothing was changed — the previous model, if "
+            "there is one, is untouched. The details are in the prediction service log "
+            f"at {datetime.now().strftime('%H:%M on %d %b')}.")

@@ -704,6 +704,7 @@ const EVENT_PROPERTY_HINTS: Record<string, string[]> = {
   checkout_started:  ['cart_id', 'cart_value', 'currency', 'item_count'],
   order_placed:      ['order_id', 'total', 'currency', 'item_count', 'payment_method'],
   order_fulfilled:   ['order_id', 'total', 'currency'],
+  order_delivered:   ['order_id'],
   order_cancelled:   ['order_id', 'total', 'currency', 'reason'],
   wishlist_added:    ['product_id', 'product_name', 'price'],
   page_viewed:       ['url', 'page_type', 'referrer'],

@@ -91,7 +91,7 @@ async function liveEvalOneGoal(goal: {
       projectId: goal.projectId,
       goalId: goal.id,
       status: 'live_eval',
-      reason: `Skipped: only ${scoreRows.length} scored customers in window`,
+      reason: `Not checked yet: only ${scoreRows.length} customers were scored in this period, and at least 200 are needed to measure accuracy.`,
     })
     return
   }

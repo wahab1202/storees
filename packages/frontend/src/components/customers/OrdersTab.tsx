@@ -19,15 +19,35 @@ function formatDate(date: Date | string): string {
   })
 }
 
-// All five states an order can be in. `returned` was missing, and the fallback is
+// All six states an order can be in. `returned` was missing, and the fallback is
 // `pending` — so a returned order was shown as awaiting fulfilment, in yellow, next to
 // a total that had already been taken back off the customer's spend.
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-800',
-  fulfilled: 'bg-green-100 text-green-800',
+  fulfilled: 'bg-blue-100 text-blue-800',
+  delivered: 'bg-green-100 text-green-800',
   cancelled: 'bg-red-100 text-red-800',
   returned: 'bg-orange-100 text-orange-800',
   refunded: 'bg-gray-100 text-gray-800',
+}
+
+// What each state is CALLED on screen. `fulfilled` is the stored word for an order the
+// shop has sent; people read that as "shipped", and "fulfilled" next to "delivered"
+// left them guessing which came first.
+const STATUS_LABELS: Record<string, string> = {
+  pending: 'Pending',
+  fulfilled: 'Shipped',
+  delivered: 'Delivered',
+  cancelled: 'Cancelled',
+  returned: 'Returned',
+  refunded: 'Refunded',
+}
+
+/** "Sep 3, 2026", or "date unknown" when the order reached that stage but the shop
+ *  never said when. Never a guessed date. */
+function stageDate(reached: boolean, at: Date | string | null | undefined): string | null {
+  if (at) return formatDate(at)
+  return reached ? 'date unknown' : null
 }
 
 export function OrdersTab({ orders, isLoading }: Props) {
@@ -103,16 +123,17 @@ function OrderRow({
               STATUS_COLORS[order.status] ?? STATUS_COLORS.pending,
             )}
           >
-            {order.status}
+            {STATUS_LABELS[order.status] ?? order.status}
           </span>
         </td>
         <td className="py-2 px-2 text-right font-medium text-text-primary">
           {formatCurrency(order.total)}
         </td>
       </tr>
-      {isExpanded && order.lineItems.length > 0 && (
+      {isExpanded && (
         <tr>
           <td colSpan={5} className="bg-surface-elevated px-6 py-3">
+            <OrderStages order={order} />
             <div className="space-y-2">
               {order.lineItems.map((item, i) => (
                 <div key={i} className="flex items-center gap-3 text-sm">
@@ -137,3 +158,18 @@ function OrderRow({
     </>
   )
 }
+
+/** When it shipped and when it arrived — each only once the order reached that stage. */
+function OrderStages({ order }: { order: Order }) {
+  const shippedOrLater = order.status === 'fulfilled' || order.status === 'delivered'
+  const shipped = stageDate(shippedOrLater || !!order.fulfilledAt, order.fulfilledAt)
+  const delivered = stageDate(order.status === 'delivered' || !!order.deliveredAt, order.deliveredAt)
+  if (!shipped && !delivered) return null
+  return (
+    <div className="flex gap-6 text-xs text-text-secondary mb-2">
+      {shipped && <span>Shipped: <span className="text-text-primary">{shipped}</span></span>}
+      {delivered && <span>Delivered: <span className="text-text-primary">{delivered}</span></span>}
+    </div>
+  )
+}
+

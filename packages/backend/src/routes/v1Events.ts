@@ -11,6 +11,8 @@ import { resolveCustomer as resolveCustomerService } from '../services/customerS
 import { linkAnonymousSession } from '../services/anonymousSessionService.js'
 import { setCrossBrandConsent } from '../services/globalIdentityService.js'
 import type { EventIngestionPayload } from '@storees/shared'
+import { projectVocabulary } from '../services/projectVocabulary.js'
+import { orderEventKey } from '../services/orderEventKey.js'
 
 const router = Router()
 
@@ -53,6 +55,48 @@ function deriveIdempotencyKey(
     .digest('hex')
     .slice(0, 24)
   return `auto:${eventName}:${hash}:${when}`
+}
+
+/** The shared fingerprint for an ORDER event — or null for anything else, or an order
+ *  event with no order id to key it on. Which events are order events comes from this
+ *  project's own Purchase / Shipped / Delivered / reversal boxes. */
+async function orderKeyFor(projectId: string, payload: EventIngestionPayload): Promise<string | null> {
+  const name = payload.event_name?.trim()
+  if (!name) return null
+  const vocab = await projectVocabulary(projectId)
+  const isOrderEvent = vocab.purchaseEvents.includes(name) || vocab.fulfilmentEvents.includes(name)
+    || vocab.deliveryEvents.includes(name) || vocab.cancellationEvents.includes(name)
+  if (!isOrderEvent) return null
+  const props = payload.properties ?? {}
+  const orderId = String(props[vocab.orderIdKey] ?? props.order_id ?? '').trim()
+  return orderId ? orderEventKey(name, orderId) : null
+}
+
+/**
+ * An order event that arrived again: fold what it says NOW into the record already held.
+ *
+ * Plenty of sources re-send an order whenever it changes — the status moves from pending
+ * to shipped to delivered on the same record. With one fingerprint per order, the re-send
+ * no longer becomes a second sale; without this merge it would simply be dropped, and the
+ * update with it. Newer properties win. The aggregate worker is handed the merged record:
+ * it never counts money twice (the event is already processed) but does move the order
+ * forward to whatever state it now states.
+ */
+async function mergeOrderRecord(
+  projectId: string, key: string, properties: Record<string, unknown>,
+): Promise<string | undefined> {
+  const [row] = await db.update(events)
+    .set({ properties: sql`${events.properties} || ${JSON.stringify(properties)}::jsonb` })
+    .where(and(eq(events.projectId, projectId), eq(events.idempotencyKey, key)))
+    .returning({ id: events.id, customerId: events.customerId, eventName: events.eventName,
+                 properties: events.properties, timestamp: events.timestamp })
+  if (row?.customerId) {
+    await customerAggregateQueue.add(row.eventName, {
+      eventId: row.id, projectId, customerId: row.customerId, eventName: row.eventName,
+      properties: row.properties as Record<string, unknown>, timestamp: row.timestamp.toISOString(),
+    })
+  }
+  return row?.id
 }
 
 // All v1 routes require API key auth (public-key-only for SDK compatibility)
@@ -122,9 +166,14 @@ router.post('/events', async (req: Request, res: Response) => {
     // rows because a NULL key dedupes nothing. Distinct states differ in
     // properties → different hash → preserved; the time bucket lets a cart
     // legitimately return to an earlier state later without being dropped.
+    //
+    // An ORDER event — a sale, shipment, delivery or reversal carrying its order id — gets
+    // the fingerprint every other door writes for it (orderEventKey.ts), so the same
+    // order arriving here and by a webhook or history pull is stored once.
+    const orderKey = payload.idempotency_key ? null : await orderKeyFor(projectId, payload)
     const effectiveKey = payload.idempotency_key
       ? payload.idempotency_key
-      : deriveIdempotencyKey(payload.event_name.trim(), customerId ?? eventSessionId ?? 'anon',
+      : orderKey ?? deriveIdempotencyKey(payload.event_name.trim(), customerId ?? eventSessionId ?? 'anon',
                              payload.properties, eventTimestamp, Boolean(payload.timestamp))
 
     const result = await db.execute(sql`
@@ -134,6 +183,12 @@ router.post('/events', async (req: Request, res: Response) => {
       RETURNING id
     `)
     if (result.rows.length === 0) {
+      // The same order, sent again — typically with its status moved on. Merged into
+      // the record already held, never counted a second time.
+      if (orderKey) {
+        const merged = await mergeOrderRecord(projectId, orderKey, payload.properties ?? {})
+        return res.status(200).json({ success: true, data: { id: merged, deduplicated: true } })
+      }
       // Already exists — deduplicated (provided or derived key)
       const [existing] = await db
         .select({ id: events.id })
@@ -255,6 +310,15 @@ router.post('/events/batch', async (req: Request, res: Response) => {
       })
     }
 
+    // Phase 1b: order events get the fingerprint every other door writes for them, so a
+    // sale already delivered by a webhook or history pull is recognised here.
+    const orderKeyed = new Set<string>()
+    for (const { payload } of validEvents) {
+      if (payload.idempotency_key) continue
+      const key = await orderKeyFor(projectId, payload)
+      if (key) { payload.idempotency_key = key; orderKeyed.add(key) }
+    }
+
     // Phase 2: Bulk-check idempotency keys in one query
     const idempotencyKeys = validEvents
       .filter(e => e.payload.idempotency_key)
@@ -287,6 +351,10 @@ router.post('/events/batch', async (req: Request, res: Response) => {
         batch.map(async ({ index, payload }) => {
           // Skip if already deduplicated
           if (payload.idempotency_key && existingIdempotencyMap.has(payload.idempotency_key)) {
+            // An order sent again: merge what it says now into the record already held.
+            if (orderKeyed.has(payload.idempotency_key)) {
+              await mergeOrderRecord(projectId, payload.idempotency_key, payload.properties ?? {})
+            }
             results.push({ index, id: existingIdempotencyMap.get(payload.idempotency_key) })
             return null
           }

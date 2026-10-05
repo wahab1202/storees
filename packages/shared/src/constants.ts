@@ -5,6 +5,7 @@ export const STANDARD_EVENTS = {
   CHECKOUT_STARTED: 'checkout_started',
   ORDER_PLACED: 'order_placed',
   ORDER_FULFILLED: 'order_fulfilled',
+  ORDER_DELIVERED: 'order_delivered',
   ORDER_CANCELLED: 'order_cancelled',
   // Revenue decrement events — counted by customerAggregateWorker as
   // negative revenue. order_refunded was already handled by the
@@ -176,8 +177,13 @@ export const SHOPIFY_WEBHOOK_TOPICS = [
   'orders/create',
   'orders/fulfilled',
   'orders/cancelled',
+  // A paid order is undone by a refund, not a cancel — Shopify refuses to cancel it.
+  'refunds/create',
+  // The courier's tracking updates — the only way Shopify reports a delivery.
+  'fulfillment_events/create',
   'checkouts/create',
   'carts/create',
+  'carts/update',
   'products/create',
   'products/update',
   'products/delete',
@@ -198,7 +204,7 @@ export const FLOW_NODE_TYPES = [
 
 export const FLOW_STATUSES = ['draft', 'active', 'paused'] as const
 
-export const ORDER_STATUSES = ['pending', 'fulfilled', 'cancelled', 'refunded'] as const
+export const ORDER_STATUSES = ['pending', 'fulfilled', 'delivered', 'cancelled', 'returned', 'refunded'] as const
 
 export const TRIP_STATUSES = ['active', 'waiting', 'completed', 'exited'] as const
 

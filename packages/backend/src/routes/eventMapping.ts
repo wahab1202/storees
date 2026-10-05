@@ -23,7 +23,7 @@ import { requireProjectId } from '../middleware/projectId.js'
 import { requireSuperAdmin } from '../middleware/membership.js'
 import { LIVE_ORDERS } from '../db/orderStatus.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
-import { invalidateVocabulary } from '../services/projectVocabulary.js'
+import { industryNamesBySlot, invalidateVocabulary } from '../services/projectVocabulary.js'
 import { customerAggregateQueue } from '../services/queue.js'
 
 const router = Router()
@@ -67,9 +67,20 @@ const MEANINGS = [
         + 'alongside each add or removal. Where given, the basket\'s value is read '
         + 'from it instead of being added up from the moves.',
     required: false },
-  { key: 'fulfilment', label: 'Delivered',
-    help: 'The order reached the customer. Moves no money — it only advances the '
-        + 'order\'s status out of pending.', required: false },
+  // TWO MOMENTS, TWO BOXES.
+  //
+  // This box was labelled "Delivered" while its standard event, `order_fulfilled`, means
+  // the shop SENT the parcel — and Shopify fires it at shipping, not on arrival. Anything
+  // built on "delivered" was quietly running on "shipped": a review request could land
+  // before the parcel did. The key stays `fulfilment` so every saved mapping keeps
+  // working; only what the box SAYS changes. Delivery is its own box below.
+  { key: 'fulfilment', label: 'Shipped',
+    help: 'The shop sent the order out — packed and handed to the courier. Moves no '
+        + 'money; it only moves the order on from pending.', required: false },
+  { key: 'delivery', label: 'Delivered',
+    help: 'The customer received the order. Leave empty if the shop cannot report '
+        + 'delivery — anything that waits for it then uses Shipped instead. Moves no '
+        + 'money.', required: false },
   { key: 'cancellation', label: 'Cancelled',
     help: 'Called off before it shipped. The sale comes back off revenue.',
     required: false },
@@ -101,6 +112,15 @@ function readMapping(config: unknown): Mapping {
   return (c.mapping?.events ?? {}) as Mapping
 }
 
+/** Two saved answers for one box mean the same thing — absent, `[]`, one name or a
+ *  list, in any order. Comparing their JSON made a first save in the newer format (which
+ *  writes empty boxes as `[]`) look like a change, and replay a project's whole history
+ *  for nothing. */
+function sameNames(a: unknown, b: unknown): boolean {
+  const x = [...asList(a)].sort(), y = [...asList(b)].sort()
+  return x.length === y.length && x.every((n, i) => n === y[i])
+}
+
 /** A mapping value may be one name or several; the UI always works with a list. */
 function asList(v: unknown): string[] {
   if (!v) return []
@@ -124,6 +144,8 @@ const ROLE_TO_MEANING: Record<string, string> = {
   // everything under `cancellation` still lands in the union, so nothing regresses.
   fulfilment: 'fulfilment',
   fulfillment: 'fulfilment',
+  delivery: 'delivery',
+  delivered: 'delivery',
   return: 'return',
   refund: 'refund',
   cart_snapshot: 'cart_snapshot',
@@ -139,6 +161,14 @@ const ROLE_TO_MEANING: Record<string, string> = {
   cart_remove: 'cart_remove',
   cart_removal: 'cart_remove',
   remove_from_cart: 'cart_remove',
+}
+
+/** The vocabulary's slot -> this screen's box. */
+const MEANING_OF_SLOT: Record<string, string> = {
+  purchaseEvents: 'purchase', viewEvents: 'product_viewed', cartEvents: 'add_to_cart',
+  cartRemoveEvents: 'cart_remove', cartSnapshotEvents: 'cart_snapshot',
+  fulfilmentEvents: 'fulfilment', deliveryEvents: 'delivery',
+  cancellationEvents: 'cancellation', returnEvents: 'return', refundEvents: 'refund',
 }
 
 async function inheritedMapping(projectId: string): Promise<Mapping> {
@@ -158,6 +188,19 @@ async function inheritedMapping(projectId: string): Promise<Mapping> {
     const current = asList(out[key])
     out[key] = [...current, r.eventName]
   }
+
+  // A box the stored rows say nothing about, which the project's industry names today,
+  // is suggested from the industry — the rows predate it (they are written once, at
+  // onboarding). This is exactly what the vocabulary falls back to, so the screen shows
+  // the words the product is actually using rather than an empty box beside them.
+  const industry = await industryNamesBySlot(projectId)
+  if (industry) {
+    for (const [slot, meaning] of Object.entries(MEANING_OF_SLOT)) {
+      const names = industry[slot as keyof typeof industry]
+      if (out[meaning] === undefined && names?.length) out[meaning] = names
+    }
+  }
+
   for (const key of Object.keys(out)) {
     const v = asList(out[key])
     out[key] = v.length === 1 ? v[0] : v
@@ -215,18 +258,26 @@ async function buildMapping(projectId: string, body: Record<string, any>): Promi
   // Refuse a name this project has never sent. The pipeline would accept it, match
   // nothing, and train a model on an empty column; catching it at the point someone
   // types it is the only place the mistake is still obvious.
+  //
+  // EXCEPT THE NAME THIS SCREEN ITSELF SUGGESTED for that box. The screen pre-fills each
+  // box with the project's industry name, and those are not typos — they are the
+  // published names a shop is asked to send. Refusing them meant a new shop could not
+  // save at all until it had sent every one: a shop that has never had a return was
+  // blocked by the `order_returned` the screen had put there for it. Only the same name
+  // in the same box is let through; anything typed by hand still needs data behind it.
   const sent = await db
     .select({ eventName: events.eventName })
     .from(events)
     .where(eq(events.projectId, projectId))
     .groupBy(events.eventName)
   const known = new Set(sent.map(e => e.eventName))
+  const suggested = await inheritedMapping(projectId)
 
   const byMeaning = new Map<string, string[]>(
     MEANING_KEYS.map(k => [k, k === 'purchase' ? purchase : asList(body[k])]),
   )
-  const meanings = [...byMeaning.values()].flat()
-  const unknown = [...new Set(meanings.filter(n => !known.has(n)))]
+  const unknown = [...new Set([...byMeaning].flatMap(([key, names]) =>
+    names.filter(n => !known.has(n) && !asList(suggested[key]).includes(n))))]
   if (unknown.length) {
     return { ok: false, status: 400,
              error: `This project has never sent: ${unknown.join(', ')}. `
@@ -251,10 +302,13 @@ async function buildMapping(projectId: string, body: Record<string, any>): Promi
 
   const one = (v: string[]) => (v.length === 1 ? v[0] : v)
   const nextEvents: Mapping = { purchase: one(purchase) }
+  // Every box is written, the empty ones as `[]`. The screen shows each box pre-filled,
+  // so an empty one at save time was cleared deliberately — and must stay cleared rather
+  // than quietly refilling with the industry default on the next read.
   for (const key of MEANING_KEYS) {
     if (key === 'purchase') continue
     const v = byMeaning.get(key) ?? []
-    if (v.length) nextEvents[key] = one(v)
+    nextEvents[key] = v.length ? one(v) : []
   }
   const ignore = asList(body.ignore_events)
   if (ignore.length) nextEvents.ignore_events = one(ignore)
@@ -423,14 +477,14 @@ router.post('/preview', requireProjectId, requireSuperAdmin(), async (req, res) 
 
     const purchaseNames = asList(nextEvents.purchase)
     const statusNames = [...new Set(
-      (['fulfilment', 'cancellation', 'return', 'refund'] as const)
+      (['fulfilment', 'delivery', 'cancellation', 'return', 'refund'] as const)
         .flatMap(k => asList(nextEvents[k])),
     )]
     const retiredPurchaseEvents = asList(prevEvents.purchase)
       .filter(n => !purchaseNames.includes(n))
 
     const moved = MEANING_KEYS
-      .some(k => JSON.stringify(prevEvents[k] ?? null) !== JSON.stringify(nextEvents[k] ?? null))
+      .some(k => !sameNames(prevEvents[k], nextEvents[k]))
 
     // What exists right now, under the mapping being replaced.
     const [current] = await db.execute<{ orders: number; revenue: string }>(sql`
@@ -622,7 +676,7 @@ router.put('/', requireProjectId, requireSuperAdmin(), async (req, res) => {
       // someone adjusting signals four times replays the whole history four times.
       const prevEvents = (existing.mapping?.events ?? {}) as Record<string, unknown>
       const moved = MEANING_KEYS
-        .some(k => JSON.stringify(prevEvents[k] ?? null) !== JSON.stringify(nextEvents[k] ?? null))
+        .some(k => !sameNames(prevEvents[k], nextEvents[k]))
 
       // A save that reports "nothing to do" when the caller expected a rebuild is
       // indistinguishable from a broken one, and it happened once during testing with
@@ -653,7 +707,7 @@ router.put('/', requireProjectId, requireSuperAdmin(), async (req, res) => {
         // converge on, so replaying them really would inflate what they touch.
         const purchaseNames = asList(nextEvents.purchase)
         const statusNames = [...new Set(
-          (['fulfilment', 'cancellation', 'return', 'refund'] as const)
+          (['fulfilment', 'delivery', 'cancellation', 'return', 'refund'] as const)
             .flatMap(k => asList(nextEvents[k])),
         )]
 

@@ -14,7 +14,7 @@
 import { Worker } from 'bullmq'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { customers, predictionScores, predictionGoals } from '../db/schema.js'
+import { customers, predictionScores, predictionGoals, predictionTrainingRuns } from '../db/schema.js'
 import { eq, and, sql, inArray, notInArray } from 'drizzle-orm'
 import { scoreCustomers, checkMlHealth, eligibleCustomers } from '../services/mlProxyService.js'
 
@@ -310,10 +310,93 @@ export function startScoringWorker() {
     console.log(`[scoring] Job ${job?.id} completed:`, result)
   })
 
-  worker.on('failed', (job, err) => {
+  // A SCORING FAILURE HAS TO LEAVE A MARK SOMEWHERE THE PRODUCT CAN READ.
+  //
+  // This logged and stopped. Training records every attempt in
+  // `prediction_training_runs` and the predictions page reads it back, so a failed
+  // training says so on the card — but scoring wrote nothing anywhere, and the page has
+  // no other way to know. The result was a goal showing a green `active` badge, a real
+  // AUC, and "0 users scored", with nothing on the screen or in the database to say the
+  // write had been refused every night since April. It read as a data problem. It was a
+  // missing unique index, and it hid for five months behind that silence.
+  //
+  // Recorded in `prediction_training_runs` rather than a table of its own: that table
+  // already carries rows that are not training runs — `predictionLiveEvalScheduler`
+  // writes `live_eval` there — and the endpoint the page already calls already reads it.
+  // A new status is all this needs.
+  //
+  // In the `failed` handler, not at each `throw`: every way scoring can give up —
+  // the ML service being down, the eligibility read, any batch — arrives here, and
+  // instrumenting the throws one by one is how the next one gets missed.
+  worker.on('failed', async (job, err) => {
     console.error(`[scoring] Job ${job?.id} failed:`, err.message)
+
+    // Only once the job is genuinely done retrying. The daily sweep asks for five
+    // attempts, and one bad night must not write five rows and look like five.
+    const attempts = job?.opts?.attempts ?? 1
+    if (job && (job.attemptsMade ?? 1) < attempts) return
+
+    // NOT TRAINED YET IS NOT A FAILURE.
+    //
+    // The daily sweep enqueues every active goal, and a new project starts with its
+    // starter goals active and untrained. Recording those as failures wrote one row per
+    // goal per sweep — 28 in four hours on a fresh test shop — and put a permanent
+    // "scoring failed" banner on every new project for a model nobody had asked to
+    // train yet. The card already says it has no model; the log keeps the line above.
+    if (/no model found/i.test(err.message)) return
+
+    const { projectId, goalId } = (job?.data ?? {}) as Partial<ScoringJob>
+    if (!projectId || !goalId) return
+
+    try {
+      await db.insert(predictionTrainingRuns).values({
+        projectId,
+        goalId,
+        status: 'scoring_failed',
+        // WHAT HAPPENED, NOT WHAT THREW. The raw message is written for whoever is
+        // debugging the queue — "ML service unavailable for goal 5c0fc8c2-825d-42d6-
+        // 8420-c3716a2eea18 — will retry" names a service and a uuid, and a person
+        // looking at a goal card can act on neither. `console.error` above keeps it
+        // verbatim for the log.
+        reason: plainScoringFailure(err.message),
+        trainedAt: new Date(),
+      })
+    } catch (recordErr) {
+      // Never let the bookkeeping bury the failure it is describing.
+      console.error('[scoring] Could not record the scoring failure:', recordErr)
+    }
   })
 
   console.log('[scoring] Scoring worker started')
   return worker
+}
+
+/**
+ * A scoring failure, said to the person reading the goal card.
+ *
+ * Matched on the message text in order, first hit wins; an unrecognised failure keeps
+ * its own words rather than being dropped, so a new one is merely ugly and never silent.
+ * Scoring wrote nothing at all until this week, and silence is the fault being repaired.
+ */
+function plainScoringFailure(message: string): string {
+  const m = message.toLowerCase()
+  if (m.includes('ml service unavailable') || m.includes('econnrefused')) {
+    return 'The prediction service could not be reached, so no scores were saved. '
+      + 'Nothing was changed — it will be retried automatically.'
+  }
+  if (m.includes('no model found')) {
+    return 'This goal has no trained model to score with yet. Train it first.'
+  }
+  if (m.includes('on conflict') || m.includes('unique or exclusion constraint')) {
+    return 'Scores could not be saved because the database is missing a rule this '
+      + 'version needs. Your administrator needs to apply the pending database updates.'
+  }
+  if (m.includes('nobody is eligible')) {
+    return 'No customers currently qualify for this prediction, so nothing was scored.'
+  }
+  if (m.includes('timeout') || m.includes('etimedout')) {
+    return 'Scoring took too long and was stopped. Nothing was changed — it will be '
+      + 'retried automatically.'
+  }
+  return `Scoring did not finish. Nothing was changed. (${message.slice(0, 160)})`
 }

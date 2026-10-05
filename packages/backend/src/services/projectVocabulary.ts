@@ -62,9 +62,14 @@ export type ProjectVocabulary = {
   /** money going back to the customer. Can be PARTIAL, and can happen with no return
    *  at all — a goodwill refund on a delivered order. */
   refundEvents: string[]
-  /** the order reached the customer. Moves no money, which is why it sits outside
+  /** the shop SENT the order — packed and handed to the carrier. Not delivery: a
+   *  parcel can be in transit for days. Moves no money, which is why it sits outside
    *  `cancellationEvents` and why nothing here reads it for revenue. */
   fulfilmentEvents: string[]
+  /** the customer RECEIVED the order. A separate moment from shipping, and the one
+   *  anything "after they have it" should wait for. Optional: many shops cannot report
+   *  it. Moves no money, for the same reason as `fulfilmentEvents`. */
+  deliveryEvents: string[]
   /** true only when THIS PROJECT filled in a reversal box on the mapping screen.
    *
    *  The difference matters to one caller: deciding what a reversal it cannot place
@@ -136,6 +141,7 @@ const RETAIL_DEFAULTS: ProjectVocabulary = {
   returnEvents: ['order_returned'],
   refundEvents: ['order_refunded'],
   fulfilmentEvents: ['order_fulfilled'],
+  deliveryEvents: ['order_delivered'],
   reversalsDeclared: false,
   viewEvents: ['product_viewed'],
   cartEvents: ['added_to_cart'],
@@ -178,6 +184,27 @@ const RETAIL_DEFAULTS: ProjectVocabulary = {
   cartLinesKey: 'line_items',
 }
 
+/** The event names THIS project's industry pack gives each slot, or null when the project
+ *  has no industry with a pack. Exported so the mapping screen suggests exactly what the
+ *  vocabulary would fall back to — the two must not disagree about a box. */
+export async function industryNamesBySlot(
+  projectId: string,
+): Promise<Partial<Record<keyof ProjectVocabulary, string[]>> | null> {
+  const [proj] = await db
+    .select({ domainType: projects.domainType })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+  const pack = loadPack(PACK_FOR_DOMAIN[String(proj?.domainType ?? '')] ?? '')
+  if (!pack) return null
+  const collected: Partial<Record<keyof ProjectVocabulary, string[]>> = {}
+  for (const e of (pack.interaction_config ?? []) as Array<{ event_name: string; interaction_type: string }>) {
+    const key = ROLE[String(e.interaction_type).toLowerCase()]
+    if (key) (collected[key] ??= []).push(e.event_name)
+  }
+  return collected
+}
+
 /** onboarding's interaction types -> the meaning the rest of the product uses */
 const ROLE: Record<string, keyof ProjectVocabulary> = {
   conversion: 'purchaseEvents',
@@ -190,7 +217,14 @@ const ROLE: Record<string, keyof ProjectVocabulary> = {
   refund: 'refundEvents',
   fulfilment: 'fulfilmentEvents',
   fulfillment: 'fulfilmentEvents',
+  delivery: 'deliveryEvents',
+  delivered: 'deliveryEvents',
   cart_snapshot: 'cartSnapshotEvents',
+  // The pack's own role name, plus the two a pack author writing from memory lands on —
+  // the same three the mapping screen and the ML pipeline accept.
+  cart_remove: 'cartRemoveEvents',
+  cart_removal: 'cartRemoveEvents',
+  remove_from_cart: 'cartRemoveEvents',
 }
 
 // Vocabulary changes only when someone edits the mapping screen or re-runs a pack —
@@ -269,14 +303,23 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
     ['returnEvents', 'return'],
     ['refundEvents', 'refund'],
     ['fulfilmentEvents', 'fulfilment'],
+    ['deliveryEvents', 'delivery'],
     ['viewEvents', 'product_viewed'],
     ['cartEvents', 'add_to_cart'],
     ['cartRemoveEvents', 'cart_remove'],
     ['cartSnapshotEvents', 'cart_snapshot'],
   ]
+  // A box PRESENT in the saved mapping is answered — even when empty. The mapping
+  // screen shows each box pre-filled with the industry's word, so a box saved empty is
+  // one somebody cleared on purpose: "this shop has no such event". Reading empty as
+  // "unanswered" refilled it with that same default on the very next lookup, so it could
+  // never be cleared — and the ML pipeline already read it the other way (a key present
+  // is settled), so the two halves of the product disagreed about one saved mapping.
+  // A box simply ABSENT (older saves wrote only the filled ones) still falls through.
   for (const [key, mapKey] of fromMapping) {
-    const names = asList(ev[mapKey])
-    if (names.length) { (out[key] as string[]) = names; settled.add(key) }
+    if (!(mapKey in ev)) continue
+    ;(out[key] as string[]) = asList(ev[mapKey])
+    settled.add(key)
   }
 
   // The three reversal boxes are one decision, so they resolve together. Someone who
@@ -307,10 +350,18 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
 
   // 2. onboarding's record fills any EVENT category the connector left unsaid.
   // Field paths have no equivalent there, so an undeclared one keeps the default.
+  //
+  // `cartRemoveEvents` is on this list now. It was the one slot never looked up, so it
+  // always fell to the retail default — a lender was handed a shop's `removed_from_cart`
+  // while the ML pipeline, which does look it up, gave the same lender nothing.
   const eventKeys: Array<keyof ProjectVocabulary> = [
     'purchaseEvents', 'cancellationEvents', 'returnEvents', 'refundEvents',
-    'fulfilmentEvents', 'viewEvents', 'cartEvents', 'cartSnapshotEvents',
+    'fulfilmentEvents', 'deliveryEvents', 'viewEvents', 'cartEvents', 'cartRemoveEvents',
+    'cartSnapshotEvents',
   ]
+  // The project's industry pack, by slot — read once, used by layer 2 to tell a stored
+  // "none" from a stored record that predates the slot, and by layer 2b as the answer.
+  const industry = eventKeys.some(k => !settled.has(k)) ? await industryNamesBySlot(projectId) : null
   if (eventKeys.some(k => !settled.has(k))) {
     const rows = await db
       .select({ eventName: interactionConfigs.eventName, role: interactionConfigs.interactionType })
@@ -335,7 +386,17 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
       // every `declared ? strict : loose` branch took the wide guess for a project
       // that was perfectly well configured — and the pack-file layer below would
       // otherwise overwrite a stored answer with a generic one.
+      //
+      // EXCEPT A SLOT THE STORED ROWS PREDATE. Rows are written once, when the pack is
+      // activated, and never again. A slot added to the pack afterwards — Delivered, Cart
+      // contents, Removed from cart — has no row for any project onboarded before it
+      // existed, and that silence is not an answer: the shop was never asked. Reading it
+      // as "none" left every existing shop with an empty box its own industry fills in.
+      // So the rows answer only what they cover; a slot they are silent on, which the
+      // project's industry DOES name today, is left for the pack layer below. A slot both
+      // are silent on — lending's cancellation — still ends up empty.
       if (rows.length) {
+        if (!names?.length && industry?.[key]?.length) continue
         ;(out[key] as string[]) = names?.length ? names : []
         settled.add(key)
       }
@@ -359,21 +420,10 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
   // This is the layer that makes "every project has slots" true rather than aspirational,
   // and it is what allows the wide multi-industry guess elsewhere to be retired.
   if (eventKeys.some(k => !settled.has(k))) {
-    const [proj] = await db
-      .select({ domainType: projects.domainType })
-      .from(projects)
-      .where(eq(projects.id, projectId))
-      .limit(1)
-    const pack = loadPack(PACK_FOR_DOMAIN[String(proj?.domainType ?? '')] ?? '')
-    if (pack) {
-      const collected: Partial<Record<keyof ProjectVocabulary, string[]>> = {}
-      for (const e of (pack.interaction_config ?? []) as Array<{ event_name: string; interaction_type: string }>) {
-        const key = ROLE[String(e.interaction_type).toLowerCase()]
-        if (key) (collected[key] ??= []).push(e.event_name)
-      }
+    if (industry) {
       for (const key of eventKeys) {
         if (settled.has(key)) continue
-        const names = collected[key]
+        const names = industry[key]
         // Same rule as layer 2: an industry that records no such event ends up EMPTY,
         // not inheriting a shop's words. Lending has no cancellation.
         ;(out[key] as string[]) = names?.length ? names : []
@@ -402,16 +452,21 @@ async function read(projectId: string): Promise<ProjectVocabulary> {
   // three places to forget: a name in ANY of them takes the revenue back off.
   out.cancellationEvents = uniq([...out.cancellationEvents, ...out.returnEvents, ...out.refundEvents])
 
-  // A name can only mean one thing. Precedence runs purchase > reversal > fulfilment,
-  // matching the worker, because getting it wrong the other way is the expensive
-  // direction: a shop whose sale event happens to be called `order_fulfilled` would
-  // have every sale swallowed by the fulfilment branch and book no revenue at all.
+  // A name can only mean one thing. Precedence runs purchase > reversal > delivery >
+  // fulfilment, matching the worker, because getting it wrong the other way is the
+  // expensive direction: a shop whose sale event happens to be called `order_fulfilled`
+  // would have every sale swallowed by the fulfilment branch and book no revenue at all.
+  // Delivery outranks shipping because it is the later, more specific fact — a name in
+  // both boxes is a delivery that also implies it shipped.
   const isPurchase = new Set(out.purchaseEvents)
   out.cancellationEvents = out.cancellationEvents.filter(n => !isPurchase.has(n))
   const isReversal = new Set(out.cancellationEvents)
   out.returnEvents = out.returnEvents.filter(n => isReversal.has(n))
   out.refundEvents = out.refundEvents.filter(n => isReversal.has(n))
-  out.fulfilmentEvents = out.fulfilmentEvents.filter(n => !isPurchase.has(n) && !isReversal.has(n))
+  out.deliveryEvents = out.deliveryEvents.filter(n => !isPurchase.has(n) && !isReversal.has(n))
+  const isDelivery = new Set(out.deliveryEvents)
+  out.fulfilmentEvents = out.fulfilmentEvents
+    .filter(n => !isPurchase.has(n) && !isReversal.has(n) && !isDelivery.has(n))
 
   out.declared = settled.size > 0
   if (!out.declared && !warned.has(projectId)) {

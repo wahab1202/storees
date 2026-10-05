@@ -1,0 +1,12 @@
+-- 0090: when the customer RECEIVED the order, as its own date.
+--
+-- `fulfilled_at` was the only date an order had after it was placed, and it meant three
+-- different things depending on which door wrote it: the day a history pull ran, the
+-- moment a webhook happened to arrive, or — on one path — only ever set when the shop
+-- said "delivered". Shipping and delivery are different moments days apart, so they get
+-- a date each: `fulfilled_at` is when it SHIPPED, this is when it was DELIVERED.
+--
+-- Nullable, no default, no backfill here: an order not yet delivered has no delivery
+-- date, and inventing one would be the same mistake this column exists to end. History
+-- is rebuilt from the stored events separately.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;

@@ -1,6 +1,7 @@
 import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { predictionGoals, predictionScores, segments, events } from '../db/schema.js'
+import { projectVocabulary } from './projectVocabulary.js'
 
 /**
  * The two AUCs, plus how many people the model actually covers.
@@ -127,6 +128,74 @@ export async function createPredictionGoal(
   return goal
 }
 
+
+//: The product's goal NAMES -> the meaning the pipeline runs. Mirrors `GOAL_OF_NAME` in
+//: `propensity/train_propensity.py`, and has to stay in step with it: this decides what
+//: the CARD says a goal watches, and that file decides what TRAINING actually reads. The
+//: two disagreeing is not a cosmetic bug — it is the screen telling a client their model
+//: is aimed at one event while it is fitted on another.
+const GOAL_OF_NAME: Record<string, string> = {
+  'propensity to purchase': 'purchase',
+  'purchase propensity': 'purchase',
+  'repeat purchase propensity': 'repeat_purchase',
+  'repeat purchase': 'repeat_purchase',
+  'predict dormancy': 'dormancy',
+  'dormancy': 'dormancy',
+  'churn risk': 'churn',
+  'churn': 'churn',
+  'predict cart abandonment': 'cart_abandoned',
+  'cart abandonment': 'cart_abandoned',
+}
+
+const GOAL_OF_TARGET: Record<string, string> = {
+  purchase: 'purchase',
+  repeat_purchase: 'repeat_purchase',
+  churn: 'churn',
+  dormancy: 'dormancy',
+  cart_abandoned: 'cart_abandoned',
+}
+
+/**
+ * WHICH OF THE PROJECT'S OWN EVENTS THIS GOAL ACTUALLY WATCHES.
+ *
+ * A goal stores `target_event` at the moment it is created, from whatever the pack
+ * defaulted to, and nothing ever revisits it. Change the Event Mapping screen and that
+ * column keeps its old value for ever — so one shop's card read `Target event:
+ * order_completed` while training resolved the same goal to `order_placed` and fitted on
+ * 4,979 purchases. The card was wrong, the model was right, and the person reading the
+ * card had no way to tell which.
+ *
+ * Resolved here rather than in the page because the answer depends on the project's
+ * mapping, which is what `projectVocabulary` reads. Name first, exactly as the pipeline
+ * does: two goals legitimately share the purchase event and differ only in population.
+ */
+function watchedEventsFor(
+  goal: { name: string; targetEvent: string | null },
+  vocab: { purchaseEvents: string[]; cartAbandonEvents?: string[] },
+): { resolvedGoal: string | null; watchedEvents: string[] } {
+  const target = (goal.targetEvent ?? '').trim()
+  const byName = GOAL_OF_NAME[goal.name.trim().toLowerCase()]
+  const resolved =
+    byName
+    ?? (target && vocab.purchaseEvents.includes(target) ? 'purchase' : undefined)
+    ?? GOAL_OF_TARGET[target]
+    // A custom event goal — "will this specific event happen". It watches exactly the
+    // event it names, so the stored value is already the honest answer.
+    ?? (target ? `event:${target}` : null)
+
+  if (!resolved) return { resolvedGoal: null, watchedEvents: [] }
+  if (resolved.startsWith('event:')) {
+    return { resolvedGoal: resolved, watchedEvents: [resolved.slice('event:'.length)] }
+  }
+  // Only the purchase-shaped goals are answered here. `dormancy`, `churn` and
+  // `cart_abandoned` are already resolved by the page from the same mapping, and
+  // duplicating that here would give two places to disagree.
+  if (resolved === 'purchase' || resolved === 'repeat_purchase') {
+    return { resolvedGoal: resolved, watchedEvents: vocab.purchaseEvents }
+  }
+  return { resolvedGoal: resolved, watchedEvents: [] }
+}
+
 export async function listPredictionGoals(projectId: string) {
   const goals = await db
     .select()
@@ -135,7 +204,12 @@ export async function listPredictionGoals(projectId: string) {
     .orderBy(predictionGoals.createdAt)
 
   const metrics = await metricsFor(projectId, goals.map(g => g.id))
-  return goals.map(g => ({ ...g, ...(metrics.get(g.id) ?? {}) }))
+  const vocab = await projectVocabulary(projectId)
+  return goals.map(g => ({
+    ...g,
+    ...(metrics.get(g.id) ?? {}),
+    ...watchedEventsFor(g, vocab),
+  }))
 }
 
 export async function getPredictionGoal(projectId: string, goalId: string) {

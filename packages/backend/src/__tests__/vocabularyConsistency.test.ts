@@ -185,11 +185,11 @@ describe('role translation agrees across the TypeScript and Python halves', () =
     // while the models never receive it. That is the shape `cart_remove` had, and the
     // shape `cart_snapshot` would have had without this half.
     //
-    // `fulfilment` is exempt and always will be: it moves an order's STATUS and builds
-    // no feature, so the pipeline has no slot for it and needs none. Listed rather than
-    // pattern-matched, so adding a genuinely missing role cannot be waved through by a
-    // loose rule.
-    const TS_ONLY_BY_DESIGN = ['fulfilment', 'fulfillment']
+    // `fulfilment` (shipped) and `delivery` are exempt and always will be: they move an
+    // order's STATUS and build no feature, so the pipeline has no slot for them and needs
+    // none. Listed rather than pattern-matched, so adding a genuinely missing role cannot
+    // be waved through by a loose rule.
+    const TS_ONLY_BY_DESIGN = ['fulfilment', 'fulfillment', 'delivery', 'delivered']
     const missingInPipeline = tsRoles
       .filter(r => !pyRoles.includes(r))
       .filter(r => !TS_ONLY_BY_DESIGN.includes(r))

@@ -166,3 +166,15 @@ class DatasetSignalSource:
     def has_signal(self, signal: str) -> bool:
         n = self.con.execute(f"SELECT count(*) FROM ({self._rows_sql(signal)})").fetchone()[0]
         return int(n) > 0
+
+    def last_cart_add(self):
+        """The day this project's add-to-cart event last arrived, or None if it never has.
+
+        Lets a cart goal with no recent carts say WHY — "nothing since 30 Jun" — instead
+        of the generic "not enough customers", which reads as a small shop rather than a
+        shop that stopped sending the event."""
+        if not self.cart_events:
+            return None
+        return self.con.execute(
+            f"SELECT max(CAST(timestamp AS DATE)) FROM ({self.ds.source('events')}) "
+            f"WHERE event_name IN ({self._names(self.cart_events)})").fetchone()[0]

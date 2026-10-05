@@ -195,7 +195,7 @@ export function useTrainingStatus() {
       /** Goals whose most recent attempt (last 6h) did not produce a model. A failed
        *  training leaves the goal `active` so its existing model keeps scoring, which
        *  means the card alone cannot show that anything went wrong. */
-      failures: Array<{ goalId: string; name: string; reason: string }>
+      failures: Array<{ goalId: string; name: string; reason: string; kind: 'training' | 'scoring'; hasModel: boolean }>
     }>(withProject('/api/prediction-goals/_training-status')),
     refetchInterval: (q) => (q.state.data?.data?.running ? 3000 : false),
   })

@@ -77,25 +77,82 @@ export function verifyOAuthHmac(query: Record<string, string>): boolean {
   }
 }
 
+type ShopifyWebhook = { id: number; topic: string; address: string }
+
+/**
+ * Subscribe this project's Shopify store to SHOPIFY_WEBHOOK_TOPICS, reconciling
+ * against what the store already has rather than blindly POSTing.
+ *
+ * Shopify allows several subscriptions per topic as long as the addresses
+ * differ, so a plain POST-everything call stacks a new subscription on top of
+ * every old one each time it runs. That happens whenever APP_URL changes (a
+ * domain migration, a redeploy behind a new host, a dev tunnel) or the merchant
+ * reconnects — and if the old address is still served, both instances receive
+ * every event and the same order gets counted twice.
+ *
+ * So: list what is there, keep what is already correct, delete what is stale,
+ * create only what is missing. A subscription counts as "stale and ours" only
+ * when its address ends in this project's own webhook path, so subscriptions
+ * belonging to other apps on the same store are never touched.
+ */
 export async function registerWebhooks(shop: string, accessToken: string, projectId: string): Promise<void> {
+  const ourPath = `/api/webhooks/shopify/${projectId}`
+  const wanted = `${APP_URL}${ourPath}`
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Shopify-Access-Token': accessToken,
+  }
+  const api = (path: string) =>
+    `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/${path}`
+
+  // What does the store already have? A failure here is not fatal — fall back
+  // to create-only, which is the behaviour this function had before.
+  let existing: ShopifyWebhook[] = []
+  try {
+    const res = await fetch(api('webhooks.json?limit=250'), { headers })
+    if (res.ok) {
+      existing = ((await res.json()) as { webhooks?: ShopifyWebhook[] }).webhooks ?? []
+    } else {
+      console.warn(`[shopify] could not list webhooks (${res.status}) — will create without reconciling`)
+    }
+  } catch (e) {
+    console.warn('[shopify] could not list webhooks:', (e as Error).message)
+  }
+
+  const ours = existing.filter(w => w.address.endsWith(ourPath))
+  const topics: readonly string[] = SHOPIFY_WEBHOOK_TOPICS
+
+  // Ours, but pointing at an address we no longer serve, or on a topic we no
+  // longer subscribe to. Either way it can only deliver into a void or a
+  // duplicate, so drop it.
+  const stale = ours.filter(w => w.address !== wanted || !topics.includes(w.topic))
+
+  for (const w of stale) {
+    const res = await fetch(api(`webhooks/${w.id}.json`), { method: 'DELETE', headers })
+    if (res.ok) {
+      console.log(`Removed stale webhook: ${w.topic} -> ${w.address}`)
+    } else {
+      console.error(`Failed to remove stale webhook ${w.topic} (${w.id}):`, await res.text())
+    }
+    await delay(SHOPIFY_API_DELAY_MS)
+  }
+
+  const live = new Set(
+    ours.filter(w => !stale.includes(w) && w.address === wanted).map(w => w.topic)
+  )
+
   for (const topic of SHOPIFY_WEBHOOK_TOPICS) {
-    const response = await fetch(
-      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Shopify-Access-Token': accessToken,
-        },
-        body: JSON.stringify({
-          webhook: {
-            topic,
-            address: `${APP_URL}/api/webhooks/shopify/${projectId}`,
-            format: 'json',
-          },
-        }),
-      }
-    )
+    if (live.has(topic)) {
+      console.log(`Webhook already current: ${topic}`)
+      continue
+    }
+
+    const response = await fetch(api('webhooks.json'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ webhook: { topic, address: wanted, format: 'json' } }),
+    })
 
     if (!response.ok) {
       const text = await response.text()

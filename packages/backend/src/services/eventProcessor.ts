@@ -1,4 +1,4 @@
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { events, orders, deadLetterEvents } from '../db/schema.js'
 import { eventsQueue, metricsQueue, interactionQueue, publishEvent } from './queue.js'
@@ -10,6 +10,9 @@ import {
 import { stitchOrderToSession } from './anonymousSessionService.js'
 import { normalizeLineItemFields } from '@storees/shared'
 import { purchaseAwaitingProcessing } from './orderArrival.js'
+import { advanceOrder } from './orderTransitions.js'
+import { orderEventMoment } from './orderMoments.js'
+import { orderEventKey } from './orderEventKey.js'
 import { projectVocabulary } from './projectVocabulary.js'
 import { ORDER_STATUS } from '../db/orderStatus.js'
 
@@ -69,6 +72,19 @@ export async function processWebhookEvent(
         console.error('[order-stitch] failed:', err))
     }
 
+    // 3c. WHEN IT HAPPENED, by what it means.
+    //
+    // An order-shaped payload carries the ORDER's `created_at`, and that was used as the
+    // time of every event about the order. A cancellation a week after purchase was
+    // stored as happening at purchase; so was the shipment. Timelines were wrong, the
+    // debugger buried them under older events, and "cancelled in the last 7 days" missed
+    // them. The payload also says when the thing itself happened — that is the time.
+    const moment = stitchVocab.cancellationEvents.includes(eventName) ? 'reversal'
+      : stitchVocab.deliveryEvents.includes(eventName) ? 'delivery'
+      : stitchVocab.fulfilmentEvents.includes(eventName) ? 'fulfilment'
+      : null
+    if (moment) normalized.timestamp = orderEventMoment(moment, payload, normalized.timestamp)
+
     // 4. Enrich — handle side effects (create order rows, update aggregates)
     await handleSideEffects(projectId, customerId, eventName, normalized, payload)
 
@@ -82,14 +98,47 @@ export async function processWebhookEvent(
       timestamp: normalized.timestamp,
     }
 
+    // One fingerprint per order event across every door (see orderEventKey.ts), and
+    // per checkout across webhook and pixel.
+    //
+    // A checkout reaches us twice when the shop also runs the Storees pixel: once
+    // from Shopify's `checkouts/create` webhook and once from the pixel's
+    // `checkout_started`. Both are keyed on the checkout token, so they land as ONE
+    // row. Whichever arrives first wins; if the pixel got there first without
+    // knowing who the shopper was, this webhook fills the customer in — and only
+    // then does it publish, so a flow never fires twice for one checkout.
+    const idempotencyKey = webhookEventKey(eventName, payload, normalized.properties, stitchVocab)
+
     const [insertedEvent] = await db.insert(events).values({
       projectId: processed.projectId,
       customerId: processed.customerId,
       eventName: processed.eventName,
       properties: processed.properties,
       platform: processed.platform,
+      idempotencyKey,
       timestamp: processed.timestamp,
+    }).onConflictDoUpdate({
+      target: [events.projectId, events.idempotencyKey],
+      set: { customerId: processed.customerId },
+      where: sql`${events.customerId} IS NULL`,
     }).returning({ id: events.id })
+
+    if (!insertedEvent) {
+      console.log(`Event already recorded: ${eventName} (${idempotencyKey})`)
+      return
+    }
+
+    // A CANCELLATION IS SUBTRACTED ONLY ONCE IT IS ON THE RECORD.
+    //
+    // recalculateAggregates counts a purchase event unless it can see a cancellation
+    // event for the same order. It used to run inside handleSideEffects, one step
+    // BEFORE the insert above, so it could never see the cancellation it was reacting
+    // to: the cancelled order kept counting in total_orders / total_spent until the
+    // 03:00 reconcile repaired it. Seen on a live Shopify test — a $785.95 cancelled
+    // order left the customer at 2 orders / $2,285.85 all day instead of 1 / $1,499.90.
+    if (stitchVocab.cancellationEvents.includes(eventName)) {
+      await recalculateAggregates(customerId)
+    }
 
     // 6. Publish — send to BullMQ for segment evaluation + flow triggers
     await publishEvent(eventName, {
@@ -149,7 +198,7 @@ export async function processHistoricalEvent(
   const orderId = properties[histVocab.orderIdKey] ?? properties.order_id
   const idempotencyKey =
     typeof orderId === 'string' || typeof orderId === 'number'
-      ? `${eventName}_historical:${orderId}`
+      ? orderEventKey(eventName, String(orderId))
       : `${eventName}_historical:${customerId}:${timestamp.getTime()}`
 
   await db.insert(events).values({
@@ -373,13 +422,15 @@ async function handleSideEffects(
   // names alone. `isPurchaseEvent` already did; these two did not, so a source using
   // its own words got its purchases recognised and its deliveries and cancellations
   // ignored — the order row created, then frozen at `pending` for ever.
+  const isDeliveryEvent = vocab.deliveryEvents.includes(eventName)
   const isFulfilmentEvent = vocab.fulfilmentEvents.includes(eventName)
   const isReversalEvent = vocab.cancellationEvents.includes(eventName)
 
   switch (
     isPurchaseEvent ? '__purchase__'
-    : isFulfilmentEvent ? '__fulfilment__'
     : isReversalEvent ? '__reversal__'
+    : isDeliveryEvent ? '__delivery__'
+    : isFulfilmentEvent ? '__fulfilment__'
     : eventName
   ) {
     case '__purchase__': {
@@ -442,57 +493,20 @@ async function handleSideEffects(
       break
     }
 
-    case '__fulfilment__': {
-      // Under THIS project's order-id key, the same three-way fallback the purchase
-      // branch uses. Read as the literal `order_id`, a shop naming it anything else —
-      // `txn_ref`, `loan_id`, `enrollment_id` — matched no order row, so the UPDATE
-      // touched nothing and the delivery or reversal was silently dropped. The purchase
-      // branch had been fixed for exactly this and these two were left behind.
-      const externalOrderId = String(
-        payload[vocab.orderIdKey] ?? payload.order_id ?? payload.id ?? '')
-      // SAME RACE AS THE REVERSAL BELOW, SAME ANSWER — with one difference.
-      //
-      // A delivery can also arrive before its purchase has been processed, and then
-      // silently fail to mark the order fulfilled. But zero rows here has a SECOND,
-      // legitimate cause: the guard below deliberately refuses to overwrite a
-      // cancelled, returned or refunded order with a late delivery webhook. That is a
-      // decision, not a miss, and must not be retried.
-      //
-      // So the two are told apart by asking whether the order exists at all. Missing
-      // row: raise, and let the queue's existing retries pick it up once the purchase
-      // has landed. Present but already reversed: leave it exactly as it is.
-      const fulfilled = await db.update(orders).set({
-        status: ORDER_STATUS.FULFILLED,
-        fulfilledAt: new Date(),
-      }).where(and(
-        eq(orders.projectId, projectId),
-        eq(orders.externalOrderId, externalOrderId),
-        // A reversal already on the record is never undone by a late delivery
-        // webhook. `unknown` is not a decision — it is the absence of one — so a
-        // delivery may replace it; `cancelled`, `returned` and `refunded` may not.
-        inArray(orders.status, ['pending', 'unknown', 'processing']),
-      )).returning({ id: orders.id })
-      if (fulfilled.length === 0 && externalOrderId) {
-        const [prior] = await db.select({ status: orders.status }).from(orders)
-          .where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, externalOrderId)))
-          .limit(1)
-        // Judge the row's STATUS, not its existence — by the time this read runs the
-        // purchase may have inserted the row the UPDATE could not find, and "it exists"
-        // would then be misread as "the guard refused it". A status the UPDATE above
-        // would have accepted means the race was lost and nothing else.
-        if (prior && ['pending', 'unknown', 'processing'].includes(prior.status)) {
-          throw new Error(
-            `Fulfilment '${eventName}' for order ${externalOrderId} lost a race with its `
-            + `purchase (project ${projectId}) — retrying`)
-        }
-        if (!prior && await purchaseAwaitingProcessing(
-          projectId, externalOrderId, vocab.purchaseEvents, vocab.orderIdKey,
-        )) {
-          throw new Error(
-            `Fulfilment '${eventName}' for order ${externalOrderId} arrived before its `
-            + `purchase was processed (project ${projectId}) — retrying`)
-        }
-      }
+    case '__fulfilment__':
+    case '__delivery__': {
+      // Shipped or delivered — the order moves forward and no money moves. One shared
+      // rule for every door (see orderTransitions.ts), under THIS project's order-id
+      // key with the same three-way fallback the purchase branch uses.
+      await advanceOrder({
+        projectId,
+        externalOrderId: String(payload[vocab.orderIdKey] ?? payload.order_id ?? payload.id ?? ''),
+        to: isDeliveryEvent ? ORDER_STATUS.DELIVERED : ORDER_STATUS.FULFILLED,
+        at: normalized.timestamp,
+        eventName,
+        purchaseEvents: vocab.purchaseEvents,
+        orderIdKey: vocab.orderIdKey,
+      })
       break
     }
 
@@ -543,7 +557,8 @@ async function handleSideEffects(
           + `was processed (project ${projectId}) — retrying`)
       }
 
-      await recalculateAggregates(customerId)
+      // The customer's totals are recomputed by the caller once THIS event is stored —
+      // see processWebhookEvent. Recomputing here ran a step too early.
       break
     }
   }
@@ -552,4 +567,28 @@ async function handleSideEffects(
 function buildName(first?: string, last?: string): string | null {
   const parts = [first, last].filter(Boolean)
   return parts.length > 0 ? parts.join(' ') : null
+}
+
+
+/**
+ * The key a webhook event is stored under, when the same happening can also reach
+ * us by another path. Only checkouts today: the pixel sends `checkout_started`
+ * keyed `checkout_started:<token>`, and Shopify's checkout webhook carries the same
+ * token. Everything else keeps no key (NULL never conflicts), exactly as before.
+ */
+function webhookEventKey(
+  eventName: string, payload: WebhookPayload, properties: Record<string, unknown>,
+  vocab: { purchaseEvents: string[]; fulfilmentEvents: string[]; deliveryEvents: string[]; cancellationEvents: string[] },
+): string | undefined {
+  if (eventName === 'checkout_started' && typeof payload.token === 'string' && payload.token) {
+    return `checkout_started:${payload.token}`
+  }
+  // An order's sale, shipment, delivery or reversal: the same fingerprint every other door
+  // writes for it (orderEventKey.ts), so a history pull of an order this webhook already
+  // delivered is recognised instead of stored a second time.
+  const isOrderEvent = vocab.purchaseEvents.includes(eventName) || vocab.fulfilmentEvents.includes(eventName)
+    || vocab.deliveryEvents.includes(eventName) || vocab.cancellationEvents.includes(eventName)
+  const orderId = String(properties.order_id ?? '').trim()
+  if (isOrderEvent && orderId) return orderEventKey(eventName, orderId)
+  return undefined
 }

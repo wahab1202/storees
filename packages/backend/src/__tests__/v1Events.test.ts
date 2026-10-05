@@ -57,6 +57,15 @@ vi.mock('../services/customerService.js', () => ({
   resolveCustomer: vi.fn().mockResolvedValue('cust_existing'),
 }))
 
+// The events endpoint asks the project's vocabulary which events are ORDER events, so a
+// sale arriving by two doors gets one fingerprint. Retail's published words stand in.
+vi.mock('../services/projectVocabulary.js', () => ({
+  projectVocabulary: vi.fn().mockResolvedValue({
+    purchaseEvents: ['order_placed'], fulfilmentEvents: ['order_fulfilled'], deliveryEvents: ['order_delivered'],
+    cancellationEvents: ['order_cancelled', 'order_returned', 'order_refunded'], orderIdKey: 'order_id',
+  }),
+}))
+
 vi.mock('../services/queue.js', () => ({
   eventsQueue: { add: vi.fn().mockResolvedValue({ id: 'job_event' }), addBulk: vi.fn().mockResolvedValue([]) },
   metricsQueue: { add: vi.fn().mockResolvedValue({ id: 'job_metrics' }), addBulk: vi.fn().mockResolvedValue([]) },

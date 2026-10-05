@@ -104,6 +104,49 @@ router.post('/shopify/:projectId', async (req, res) => {
       return
     }
 
+    // SHIPMENT TRACKING → DELIVERED.
+    //
+    // Shopify has no "order delivered" topic. Delivery arrives as a fulfillment event —
+    // the courier's tracking update — and only some of those mean the customer has it.
+    // They also carry no customer at all, just the order id, so on their own they are
+    // dropped like any event Storees cannot tie to a person. The order is already known
+    // here, so the customer is read from it and the update goes on as a delivery.
+    if (topic === 'fulfillment_events/create') {
+      res.status(200).json({ success: true })
+      const delivery = await deliveryFromTracking(projectId, payload)
+      if (!delivery) return
+      console.log(`Webhook received: ${topic} (${payload.status}) → order_delivered for project ${projectId}`)
+      processWebhookEvent(projectId, 'order_delivered', delivery).catch(err => {
+        console.error('Async event processing failed for order_delivered:', err)
+        const dlqEntry = JSON.stringify({ webhookId, projectId, topic, eventName: 'order_delivered',
+          error: err instanceof Error ? err.message : String(err), payload, failedAt: new Date().toISOString() })
+        redis.lpush(`${DLQ_PREFIX}${projectId}`, dlqEntry).catch(() => {})
+        redis.ltrim(`${DLQ_PREFIX}${projectId}`, 0, 999).catch(() => {})
+      })
+      return
+    }
+
+    // A REFUND, as the reversal it is.
+    //
+    // Shopify will not cancel an order that has been paid; the shop refunds it instead.
+    // Storees never subscribed to refunds, so a refunded order kept counting as revenue
+    // and never read "Refunded". Like tracking updates, a refund names the order but not
+    // the customer, so the customer is read from the order Storees already holds.
+    if (topic === 'refunds/create') {
+      res.status(200).json({ success: true })
+      const refund = await reversalFromRefund(projectId, payload)
+      if (!refund) return
+      console.log(`Webhook received: ${topic} → order_refunded for project ${projectId}`)
+      processWebhookEvent(projectId, 'order_refunded', refund).catch(err => {
+        console.error('Async event processing failed for order_refunded:', err)
+        const dlqEntry = JSON.stringify({ webhookId, projectId, topic, eventName: 'order_refunded',
+          error: err instanceof Error ? err.message : String(err), payload, failedAt: new Date().toISOString() })
+        redis.lpush(`${DLQ_PREFIX}${projectId}`, dlqEntry).catch(() => {})
+        redis.ltrim(`${DLQ_PREFIX}${projectId}`, 0, 999).catch(() => {})
+      })
+      return
+    }
+
     // Map topic to standard customer-scoped event name
     const eventName = TOPIC_EVENT_MAP[topic]
     if (!eventName) {
@@ -239,4 +282,89 @@ router.post('/shopify/compliance', async (req, res) => {
   res.status(200).json({ success: true })
 })
 
+/**
+ * A Shopify refund, as a reversal Storees can process — or null.
+ *
+ * FULL refunds only. Storees holds one status per order and has no notion of a part
+ * refund; marking a partly refunded order "refunded" would take its whole value off the
+ * books to settle a fraction of it. Counting it in full is the smaller error, and it is
+ * the same rule the history pull applies (`partially_refunded` is not a reversal there).
+ */
+async function reversalFromRefund(
+  projectId: string, refund: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const orderId = refund.order_id != null ? String(refund.order_id) : ''
+  if (!orderId) return null
+
+  const [row] = await db
+    .select({ total: orders.total, externalId: customers.externalId, email: customers.email, phone: customers.phone })
+    .from(orders)
+    .innerJoin(customers, eq(customers.id, orders.customerId))
+    .where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, orderId)))
+    .limit(1)
+  if (!row) {
+    console.warn(`[shopify] refund for order ${orderId} not recorded — Storees has no such order (project ${projectId})`)
+    return null
+  }
+
+  // What actually went back: the successful refund transactions.
+  const refunded = ((refund.transactions as Array<Record<string, unknown>>) ?? [])
+    .filter(t => String(t.kind) === 'refund' && String(t.status) === 'success')
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+  const total = Number(row.total)
+  if (!(refunded > 0) || refunded + 0.005 < total) {
+    console.log(`[shopify] refund of ${refunded} on order ${orderId} (total ${total}) is partial — order still counts`)
+    return null
+  }
+
+  return {
+    order_id: orderId,
+    total,
+    refunded_at: refund.processed_at ?? refund.created_at,
+    customer: { id: row.externalId, email: row.email, phone: row.phone },
+  }
+}
+
+/** Courier statuses that mean the customer now has the parcel. `picked_up` is the
+ *  customer collecting it themselves (local pickup). Everything else — in transit, out for
+ *  delivery, a failed attempt — is not delivery and is not turned into one. */
+const DELIVERED_TRACKING_STATUSES = new Set(['delivered', 'picked_up'])
+
+/**
+ * A Shopify tracking update, as a delivery event Storees can process — or null.
+ *
+ * Null when it is not a delivery, or when Storees has no such order (it cannot know whose
+ * parcel it is). The customer comes from the order row; the moment comes from the courier
+ * (`happened_at`), carried as `delivered_at` so the order's delivered date is when it
+ * arrived, not when this message did.
+ */
+async function deliveryFromTracking(
+  projectId: string, tracking: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const status = String(tracking.status ?? '').toLowerCase()
+  if (!DELIVERED_TRACKING_STATUSES.has(status)) return null
+  const orderId = tracking.order_id != null ? String(tracking.order_id) : ''
+  if (!orderId) return null
+
+  const [row] = await db
+    .select({ externalId: customers.externalId, email: customers.email, phone: customers.phone })
+    .from(orders)
+    .innerJoin(customers, eq(customers.id, orders.customerId))
+    .where(and(eq(orders.projectId, projectId), eq(orders.externalOrderId, orderId)))
+    .limit(1)
+  if (!row) {
+    console.warn(`[shopify] delivery for order ${orderId} not recorded — Storees has no such order (project ${projectId})`)
+    return null
+  }
+
+  return {
+    order_id: orderId,
+    fulfillment_id: tracking.fulfillment_id,
+    delivery_status: 'delivered',
+    delivered_at: tracking.happened_at ?? tracking.created_at,
+    customer: { id: row.externalId, email: row.email, phone: row.phone },
+  }
+}
+
 export default router
+
