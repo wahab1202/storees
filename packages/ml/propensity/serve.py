@@ -36,33 +36,66 @@ from propensity.pipeline import POPULATION_DEFINED_BY_WINDOW
 
 app = FastAPI(title="Storees ML Service", version="0.1.0")
 
-# Model cache: goal_id -> (model, scaler, explainer, metadata)
+# Model cache: "<goal_id>:<version or live>" -> (model, scaler, explainer, metadata)
 _model_cache: dict[str, tuple] = {}
 
 
-def _load_model(goal_id: str):
-    """Load model artifacts from disk, cache in memory."""
-    if goal_id in _model_cache:
-        return _model_cache[goal_id]
+def _forget_model(goal_id: str) -> None:
+    """Drop every cached copy of this goal's model, whichever version it was."""
+    for key in [k for k in _model_cache if k.split(":", 1)[0] == goal_id]:
+        _model_cache.pop(key, None)
+
+
+def _no_model(goal_id: str, why: str):
+    # 404 with "No model found" — the wording the backend recognises as "skip this
+    # goal", not as a failure. A goal without a model is a state, not a crash.
+    return HTTPException(status_code=404, detail=f"No model found for goal {goal_id}: {why}")
+
+
+def _load_model(goal_id: str, version: str | None = None):
+    """The model to score with, and the settings it was fitted with — always a matched pair.
+
+    BY VERSION, WHEN THE CALLER NAMES ONE. The backend records which version is active;
+    the folder's `model.joblib` is only whatever was written there last. Those two drifted:
+    a refused retrain's rehearsals overwrote the live files, so the screen said "29 Sep
+    model" while the server scored with — or crashed on — something else. Loading the
+    named version from `versions/` makes the database the single answer to "which model".
+
+    Without a version (an older caller), the folder's live pair is used, as before.
+
+    A missing file is "no model" (404), never an unhandled crash: the training attempt
+    that created the folder may simply never have produced one.
+    """
+    key = f"{goal_id}:{version or 'live'}"
+    if key in _model_cache:
+        return _model_cache[key]
 
     config = load_config()
     model_dir = Path(config.model_dir) / f"propensity_{goal_id}"
 
-    if not model_dir.exists():
-        raise HTTPException(status_code=404, detail=f"No model found for goal {goal_id}")
+    if version:
+        model_file = model_dir / "versions" / f"model_{version}.joblib"
+        meta_file = model_dir / "versions" / f"metadata_{version}.json"
+    else:
+        model_file = model_dir / "model.joblib"
+        meta_file = model_dir / "metadata.json"
+
+    if not model_file.exists() or not meta_file.exists():
+        raise _no_model(goal_id, f"version {version} is not on this server" if version
+                        else "no trained model in its folder")
 
     # One bundle: the fitted, calibrated model and the exact feature list it was
     # fitted on. There is no separate scaler — the model is a tree ensemble, which
     # does not need inputs rescaled, and a stray scaler is one more thing that can
     # silently disagree with training.
-    bundle = joblib.load(model_dir / "model.joblib")
+    bundle = joblib.load(model_file)
     model = bundle["model"] if isinstance(bundle, dict) else bundle
 
-    with open(model_dir / "metadata.json") as f:
+    with open(meta_file) as f:
         metadata = json.load(f)
 
-    _model_cache[goal_id] = (model, None, None, metadata)
-    return _model_cache[goal_id]
+    _model_cache[key] = (model, None, None, metadata)
+    return _model_cache[key]
 
 
 class ScoreRequest(BaseModel):
@@ -70,6 +103,8 @@ class ScoreRequest(BaseModel):
     goal_id: str
     customer_ids: list[str]
     observation_days: int = 90
+    #: The version the backend records as ACTIVE. Absent from older callers.
+    model_version: str | None = None
 
 
 class ScoreResult(BaseModel):
@@ -100,6 +135,7 @@ class ExplainRequest(BaseModel):
     goal_id: str
     customer_id: str
     observation_days: int = 90
+    model_version: str | None = None
 
 
 class Factor(BaseModel):
@@ -212,7 +248,7 @@ def promote_version(req: PromoteRequest):
     if src_meta.exists():
         shutil.copyfile(src_meta, model_dir / "metadata.json")
 
-    _model_cache.pop(req.goal_id, None)
+    _forget_model(req.goal_id)
     return {"status": "promoted", "goal_id": req.goal_id, "model_version": req.model_version}
 
 
@@ -329,7 +365,7 @@ def train_model(req: TrainRequest):
         return TrainResponse(status="error", reason=_plain_failure(e))
 
     # Clear model cache so next score request loads the new model
-    _model_cache.pop(req.goal_id, None)
+    _forget_model(req.goal_id)
 
     windows = result.get("windows") or {}
     return TrainResponse(
@@ -366,6 +402,8 @@ class EligibleRequest(BaseModel):
     goal_id: str
     target_event: str
     domain: str = "ecommerce"
+    #: The ACTIVE version, so the window read below is the scoring model's own.
+    model_version: str | None = None
 
 
 class EligibleResponse(BaseModel):
@@ -410,7 +448,9 @@ def eligible(req: EligibleRequest):
     # the only thing that could ever qualify.
     meta_days = 30.0
     model_dir = Path(load_config().model_dir) / f"propensity_{req.goal_id}"
-    meta_path = model_dir / "metadata.json"
+    # The same settings file scoring will use — the active version's, when named.
+    meta_path = (model_dir / "versions" / f"metadata_{req.model_version}.json"
+                 if req.model_version else model_dir / "metadata.json")
     if meta_path.exists():
         try:
             meta_days = float(json.loads(meta_path.read_text())
@@ -633,7 +673,7 @@ def _serving_cutoff(at: datetime) -> str:
 
 @app.post("/score", response_model=ScoreResponse)
 def score_customers(req: ScoreRequest):
-    model, _, _, metadata = _load_model(req.goal_id)
+    model, _, _, metadata = _load_model(req.goal_id, req.model_version)
     config = load_config()
 
     # LOCAL WALL CLOCK, NOT UTC.
@@ -744,7 +784,7 @@ def score_customers(req: ScoreRequest):
 
 @app.post("/explain", response_model=ExplainResponse)
 def explain_customer(req: ExplainRequest):
-    model, _, _, metadata = _load_model(req.goal_id)
+    model, _, _, metadata = _load_model(req.goal_id, req.model_version)
     config = load_config()
 
     # LOCAL WALL CLOCK, NOT UTC.

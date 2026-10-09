@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, and, desc, gt } from 'drizzle-orm'
+import { eq, and, desc, gt, inArray } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { predictionTrainingRuns, predictionModelVersions, predictionGoals } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -105,8 +105,15 @@ router.get('/_training-status', requireProjectId, async (req, res) => {
       ).map(r => r.goalId),
     )
 
+    // ONLY WHAT IS BROKEN. A refused training — too few buyers, too few qualify, no
+    // signal yet — is the pipeline doing its job on a shop that is still small, and it
+    // happens every night until the shop grows. Listed here it put the same three goals
+    // in a yellow warning every morning while nothing was wrong, and a warning that is
+    // always there stops being read. Refusals go to their own card instead (`refusals`
+    // below); this list keeps the crashes, the unreachable service and the scoring that
+    // could not save — the things someone has to act on.
     const failures = [...latest.values()]
-      .filter(r => r.status === 'failed' || r.status === 'error' || r.status === 'scoring_failed')
+      .filter(r => r.status === 'error' || r.status === 'scoring_failed')
       .map(r => ({
         goalId: r.goalId,
         name: r.name,
@@ -117,10 +124,39 @@ router.get('/_training-status', requireProjectId, async (req, res) => {
         hasModel: withModel.has(r.goalId),
       }))
 
+    // WHY A GOAL HAS NO NEW MODEL — its latest training attempt, whenever it was, if
+    // that attempt was refused. No time window: a card saying "not enough data yet" has
+    // to be able to say what is missing on any day, not only within six hours of 3am.
+    // A later success supersedes it (only the newest attempt per goal is read).
+    const attempts = await db
+      .selectDistinctOn([predictionTrainingRuns.goalId], {
+        goalId: predictionTrainingRuns.goalId,
+        status: predictionTrainingRuns.status,
+        reason: predictionTrainingRuns.reason,
+        at: predictionTrainingRuns.trainedAt,
+      })
+      .from(predictionTrainingRuns)
+      .where(and(
+        eq(predictionTrainingRuns.projectId, req.projectId!),
+        inArray(predictionTrainingRuns.status, ['success', 'failed', 'insufficient_data', 'error']),
+      ))
+      .orderBy(predictionTrainingRuns.goalId, desc(predictionTrainingRuns.trainedAt))
+    // Every refusal gets a line, with or without a reason: a refusal that recorded no
+    // words is still the latest thing that happened to this goal, and a card that says
+    // nothing reads as though nothing was tried.
+    const refusals = attempts
+      .filter(a => a.status === 'failed' || a.status === 'insufficient_data')
+      .map(a => ({
+        goalId: a.goalId,
+        reason: a.reason?.trim() || "This attempt didn't produce a model.",
+        at: a.at,
+      }))
+
     res.json({ success: true, data: {
       running: running.length > 0,
       goals: running.map(r => ({ id: r.id, name: r.name })),
       failures,
+      refusals,
     } })
   } catch (err) {
     console.error('Training status error:', err)

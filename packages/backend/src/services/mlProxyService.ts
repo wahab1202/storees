@@ -196,6 +196,8 @@ export async function scoreCustomers(
   goalId: string,
   customerIds: string[],
   observationDays?: number,
+  /** The version this database records as active — scored with exactly that model. */
+  modelVersion?: string,
 ): Promise<MlScoreResponse> {
   // Given a real deadline, and sent through the same timeout-free transport as training.
   //
@@ -207,7 +209,7 @@ export async function scoreCustomers(
   // `sorry, too many clients already`. The 500s in the log were the symptom; this was
   // the first domino.
   const result = await longPost('/propensity/score',
-    { projectId, goalId, customerIds, observationDays: observationDays ?? 90 },
+    { projectId, goalId, customerIds, observationDays: observationDays ?? 90, modelVersion },
     SCORE_TIMEOUT)
   return result as MlScoreResponse
 }
@@ -217,10 +219,11 @@ export async function explainCustomer(
   goalId: string,
   customerId: string,
   observationDays?: number,
+  modelVersion?: string,
 ): Promise<MlExplainResponse> {
   const result = await mlFetch('/propensity/explain', {
     method: 'POST',
-    body: { projectId, goalId, customerId, observationDays: observationDays ?? 90 },
+    body: { projectId, goalId, customerId, observationDays: observationDays ?? 90, modelVersion },
   })
   return result as MlExplainResponse
 }
@@ -303,9 +306,10 @@ export async function eligibleCustomers(
   goalId: string,
   targetEvent: string,
   domain = 'ecommerce',
+  modelVersion?: string,
 ): Promise<{ goal: string; customerIds: string[]; n: number }> {
   const result = await longPost('/propensity/eligible',
-    { projectId, goalId, targetEvent, domain }, ELIGIBLE_TIMEOUT)
+    { projectId, goalId, targetEvent, domain, modelVersion }, ELIGIBLE_TIMEOUT)
   return result as { goal: string; customerIds: string[]; n: number }
 }
 

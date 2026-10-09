@@ -354,8 +354,9 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
         if tune_sel.get("selected_features"):
             log("  tuning hyperparameters ONCE, shared by every candidate "
                 f"(on the derived {derived.observe_days}d look-back)")
+            # Throwaway too: only its hyperparameters are kept, never its files.
             tuned = fit_model(dataset, goal, tune_win, tune_sel["selected_features"],
-                              model_dir, learn_from_validation=False)
+                              model_dir, learn_from_validation=False, publish=False)
             shared_params = tuned.get("best_params")
         if shared_params is None:
             log("  could not tune up front — each candidate will tune itself")
@@ -377,8 +378,11 @@ def run_goal(dataset: ProjectDataset, goal: str, data_end: dt.date, model_dir: P
                     eligibility_days=derived.eligibility_days if pinned else look_back,
                     feature_days=look_back, predict_days=derived.predict_days,
                     checkpoints=cuts)
+                # A rehearsal: compared, never kept. `publish=False` leaves the live model
+                # folder untouched, whatever this fit scores.
                 m = fit_model(dataset, goal, win, cand_sel["selected_features"], model_dir,
-                              params=shared_params, learn_from_validation=False)
+                              params=shared_params, learn_from_validation=False,
+                              publish=False)
                 overall = m.get("test_auc_global")
                 active = m.get("test_auc_active_segment")
                 if overall is None:
