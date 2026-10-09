@@ -14,7 +14,7 @@
 import { Worker } from 'bullmq'
 import { redisConnection } from '../services/redis.js'
 import { db } from '../db/connection.js'
-import { customers, predictionScores, predictionGoals, predictionTrainingRuns } from '../db/schema.js'
+import { customers, predictionScores, predictionGoals, predictionTrainingRuns, predictionModelVersions } from '../db/schema.js'
 import { eq, and, sql, inArray, notInArray } from 'drizzle-orm'
 import { scoreCustomers, checkMlHealth, eligibleCustomers } from '../services/mlProxyService.js'
 
@@ -81,6 +81,27 @@ async function processScoring(job: { data: ScoringJob }) {
     return { status: 'skipped', reason: 'goal_not_active' }
   }
 
+  // WHICH MODEL — the version this database records as active, named on every request.
+  //
+  // The ML service used to score with whatever `model.joblib` sat in the goal's folder,
+  // and that file could drift from the version the screen calls active: a refused
+  // retrain's rehearsals overwrote it. Naming the version makes the database the single
+  // answer, so the screen and the scores can no longer disagree.
+  //
+  // No active version means this goal has never produced a model it could stand behind.
+  // That is a state, not a failure: nothing to score, nothing recorded. Asking the
+  // service anyway only produced a daily crash and a warning nobody could act on.
+  const [active] = await db
+    .select({ modelVersion: predictionModelVersions.modelVersion })
+    .from(predictionModelVersions)
+    .where(and(eq(predictionModelVersions.goalId, goalId), eq(predictionModelVersions.isActive, true)))
+    .limit(1)
+  if (!active) {
+    console.log(`[scoring] ${goal.name}: no trained model yet — nothing to score`)
+    return { status: 'skipped', reason: 'no_model' }
+  }
+  const modelVersion = active.modelVersion
+
   // WHO THIS GOAL APPLIES TO — asked of the pipeline, not assumed here.
   //
   // This was `SELECT id FROM customers WHERE project_id = ...`: every row, no condition.
@@ -106,7 +127,7 @@ async function processScoring(job: { data: ScoringJob }) {
     allIds = targeted
     console.log(`[scoring] ${goal.name}: event-driven, scoring ${allIds.length} customer(s)`)
   } else try {
-    const eligible = await eligibleCustomers(projectId, goalId, goal.targetEvent)
+    const eligible = await eligibleCustomers(projectId, goalId, goal.targetEvent, undefined, modelVersion)
     allIds = eligible.customerIds
     const [{ n: total } = { n: 0 }] = await db
       .select({ n: sql<number>`count(*)::int` })
@@ -142,6 +163,7 @@ async function processScoring(job: { data: ScoringJob }) {
         goalId,
         batch,
         goal.observationWindowDays ?? 90,
+        modelVersion,
       )
 
       // Upsert scores — one row per (project, goal, customer). Migration 0058
@@ -343,7 +365,12 @@ export function startScoringWorker() {
     // goal per sweep — 28 in four hours on a fresh test shop — and put a permanent
     // "scoring failed" banner on every new project for a model nobody had asked to
     // train yet. The card already says it has no model; the log keeps the line above.
-    if (/no model found/i.test(err.message)) return
+    //
+    // A MISSING ACTIVE MODEL IS. The scoring job only asks the service when this database
+    // records an active version, so "that version is not on this server" means a model the
+    // screen calls active cannot be loaded — scores stop refreshing while the card looks
+    // healthy. That one is recorded, and shown.
+    if (/no model found/i.test(err.message) && !/not on this server/i.test(err.message)) return
 
     const { projectId, goalId } = (job?.data ?? {}) as Partial<ScoringJob>
     if (!projectId || !goalId) return
@@ -384,6 +411,10 @@ function plainScoringFailure(message: string): string {
     return 'The prediction service could not be reached, so no scores were saved. '
       + 'Nothing was changed — it will be retried automatically.'
   }
+  if (m.includes('not on this server')) {
+    return 'The model this prediction uses is missing from the prediction server, so its '
+      + 'scores were not refreshed. Re-train it, or ask your administrator to restore the file.'
+  }
   if (m.includes('no model found')) {
     return 'This goal has no trained model to score with yet. Train it first.'
   }
@@ -394,9 +425,18 @@ function plainScoringFailure(message: string): string {
   if (m.includes('nobody is eligible')) {
     return 'No customers currently qualify for this prediction, so nothing was scored.'
   }
+  // The service answered, but with an error of its own — a crash on its side, not a
+  // network problem. The detail (and the goal id it names) is in the service log.
+  if (m.includes('ml service error')) {
+    return 'The prediction service ran into an error while scoring, so no new scores '
+      + 'were saved. Nothing was changed — the details are in the prediction service log.'
+  }
   if (m.includes('timeout') || m.includes('etimedout')) {
     return 'Scoring took too long and was stopped. Nothing was changed — it will be '
       + 'retried automatically.'
   }
-  return `Scoring did not finish. Nothing was changed. (${message.slice(0, 160)})`
+  // Still the service's own words, so a new failure is visible — minus internal ids,
+  // which a person reading a goal card can do nothing with.
+  const words = message.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'this goal')
+  return `Scoring did not finish. Nothing was changed. (${words.slice(0, 160)})`
 }

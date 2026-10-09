@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { requireProjectId } from '../middleware/projectId.js'
 import { db } from '../db/connection.js'
-import { predictionScores, predictionGoals, customers } from '../db/schema.js'
+import { predictionScores, predictionGoals, predictionModelVersions, customers } from '../db/schema.js'
 import { isEventDriven } from '../services/predictionCadence.js'
 import { eq, and, desc, asc, count, avg, sql } from 'drizzle-orm'
 import { checkMlHealth, explainCustomer } from '../services/mlProxyService.js'
@@ -325,7 +325,13 @@ router.post('/:customerId/explain', requireProjectId, async (req, res) => {
       })
     }
 
-    const result = await explainCustomer(req.projectId!, goalId, customerId)
+    // Explained by the same model that produced the score: the version recorded active.
+    const [active] = await db
+      .select({ modelVersion: predictionModelVersions.modelVersion })
+      .from(predictionModelVersions)
+      .where(and(eq(predictionModelVersions.goalId, goalId), eq(predictionModelVersions.isActive, true)))
+      .limit(1)
+    const result = await explainCustomer(req.projectId!, goalId, customerId, undefined, active?.modelVersion)
     res.json({ success: true, data: result })
   } catch (err) {
     console.error('Prediction explain error:', err)

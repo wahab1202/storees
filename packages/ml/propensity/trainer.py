@@ -384,7 +384,7 @@ def _segment_auc(y: pd.Series, p: np.ndarray, mask: pd.Series) -> float | None:
 
 def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
           model_dir: Path, params: dict | None = None,
-          learn_from_validation: bool = True) -> dict:
+          learn_from_validation: bool = True, publish: bool = True) -> dict:
     """Fit one model.
 
     `params` and `learn_from_validation` exist for the LOOK-BACK SEARCH, which is a
@@ -394,6 +394,13 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
 
     Both default to today's behaviour, so the final fit — the model that actually
     ships — is unchanged: it tunes itself and learns from every date.
+
+    `publish=False` is the search's third difference: a rehearsal writes NOTHING to disk.
+    It shared `model_dir` with the real model, so every rehearsal fit saved its own
+    `metadata.json` (and its `model.joblib` when it passed the guardrails) over the
+    live ones. When the final fit was then refused, the folder kept a rehearsal's
+    files — a model the screen never listed, scoring customers — or a model from one
+    fit beside the settings of another, and scoring crashed. Measured on live, 6–8 Oct.
 
     WHY THE SEARCH SHOULD NOT TUNE PER CANDIDATE. Re-running the 20-config search
     inside every comparison cost ~91 fits per rehearsal, 18 rehearsals deep, to decide
@@ -621,21 +628,8 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
     # trained or last promoted to.
     model_version = time.strftime("%Y%m%d_%H%M%S")
     versions_dir = model_dir / "versions"
-    versions_dir.mkdir(parents=True, exist_ok=True)
-
-    bundle = {"model": final_model, "features": feature_cols}
-    joblib.dump(bundle, versions_dir / f"model_{model_version}.joblib")
     model_path = model_dir / "model.joblib"
-    # THE DATABASE SAYING "failed" DOES NOT UNLOAD A FILE. `serve._load_model` reads
-    # `model.joblib` by goal id and knows nothing about run status, so a rejected fit
-    # written here would be the model every later scoring request used — the run marked
-    # failed, the customers scored by it anyway, and the previous good model gone. The
-    # versioned copy above is still written: a rejected fit is evidence, and `/promote`
-    # can reach it deliberately if somebody decides otherwise.
-    if status == "ACTIVE":
-        joblib.dump(bundle, model_path)
-    else:
-        log(f"  not published — {model_path.name} left as it was")
+    bundle = {"model": final_model, "features": feature_cols}
 
     # Everything scoring needs to rebuild the exact same inputs later. The windows
     # matter as much as the feature names: score a customer on a different look-back
@@ -651,8 +645,26 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
         "test_cutoff": test_cutoff,
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    (model_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
-    (versions_dir / f"metadata_{model_version}.json").write_text(json.dumps(metadata, indent=2))
+
+    if publish:
+        # Every real fit lands in versions/, accepted or not: a refused fit is evidence,
+        # and `/promote` can reach it deliberately if somebody decides otherwise.
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        joblib.dump(bundle, versions_dir / f"model_{model_version}.joblib")
+        (versions_dir / f"metadata_{model_version}.json").write_text(json.dumps(metadata, indent=2))
+
+        # THE LIVE PAIR MOVES TOGETHER, AND ONLY FOR AN ACCEPTED MODEL. `model.joblib`
+        # and `metadata.json` describe one model between them — the fitted trees and the
+        # columns and windows they expect. Writing the metadata for a refused fit while
+        # keeping the previous model put one model's settings beside another's trees,
+        # and every later score request crashed on the mismatch.
+        if status == "ACTIVE":
+            joblib.dump(bundle, model_path)
+            (model_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+            log(f"  wrote {model_path}")
+        else:
+            log(f"  not published — the live model and its settings left as they were")
+
     result = {
         "project_id": dataset.project_id, "goal": goal, "status": status,
         "test_auc_global": test_auc,
@@ -679,7 +691,6 @@ def train(dataset: ProjectDataset, goal: str, win, selected: list[str],
         "model_path": str(model_path),
         "model_version": model_version,
     }
-    log(f"  wrote {model_path}")
     return result
 
 

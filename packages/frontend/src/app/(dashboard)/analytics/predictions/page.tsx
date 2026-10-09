@@ -108,6 +108,7 @@ export default function PredictionsPage() {
   const trainingFailures = training.data?.data?.failures ?? []
   const failedTraining = trainingFailures.filter(f => f.kind !== 'scoring')
   const failedScoring = trainingFailures.filter(f => f.kind === 'scoring')
+  const refusals = training.data?.data?.refusals ?? []
   // Show the bulk retrain whenever ≥1 goal needs help: either flagged as
   // insufficient_data, OR has no usable AUC (training failed silently in
   // an earlier run, so goal.status stayed 'active' but currentMetric is 0).
@@ -204,8 +205,13 @@ export default function PredictionsPage() {
                 <>Scoring didn&apos;t finish for {failedScoring.map(f => f.name).join(', ')}</>
               )}
             </p>
+            {/* Each reason under its goal's name. Listed bare, four reasons sat under one
+                heading naming four goals, three of them word for word the same, and
+                nothing said which belonged to which. */}
             {trainingFailures.map(f => (
-              <p key={f.goalId} className="mt-0.5 text-amber-700/90 break-words">{f.reason}</p>
+              <p key={`${f.goalId}-${f.kind}`} className="mt-0.5 text-amber-700/90 break-words">
+                <span className="font-medium">{f.name}:</span> {f.reason}
+              </p>
             ))}
             {/* ONLY WHERE ONE EXISTS. Said unconditionally, this was the single false
                 sentence on the page: a goal that has never trained has no previous model
@@ -236,7 +242,11 @@ export default function PredictionsPage() {
       {!isLoading && goals.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {goals.map(goal => (
-            <PredictionGoalCard key={goal.id} goal={goal} />
+            <PredictionGoalCard
+              key={goal.id}
+              goal={goal}
+              refusal={refusals.find(r => r.goalId === goal.id)}
+            />
           ))}
         </div>
       )}
@@ -258,7 +268,11 @@ export default function PredictionsPage() {
   )
 }
 
-function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
+function PredictionGoalCard({ goal, refusal }: {
+  goal: PredictionGoal
+  /** Why the latest training produced no new model, if it was refused. */
+  refusal?: { reason: string; at: string }
+}) {
   // The project's event mapping, so a derived goal can name the shop's OWN events.
   // Cached by TanStack across every card on the page — one request, not one per goal.
   const mapping = useEventMapping()
@@ -355,18 +369,30 @@ function PredictionGoalCard({ goal }: { goal: PredictionGoal }) {
 
   return (
     <div className="bg-white border border-border rounded-xl p-5 hover:border-accent/20 transition-colors">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Target className="w-4 h-4 text-accent" />
+      <div className="flex items-start justify-between gap-2 mb-3">
+        {/* The title wraps, the badge does not: a long goal name squeezed the badge
+            onto two lines ("not enough data / yet"). */}
+        <div className="flex items-center gap-2 min-w-0">
+          <Target className="w-4 h-4 text-accent shrink-0" />
           <h3 className="text-sm font-semibold text-heading">{goal.name}</h3>
         </div>
-        <div className="flex items-center gap-1">
-          <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1', style.bg, style.text)}>
+        <div className="flex items-center gap-1 shrink-0">
+          <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap', style.bg, style.text)}>
             <StatusIcon className="w-3 h-3" />
             {statusLabel}
           </span>
         </div>
       </div>
+
+      {/* WHY THERE IS NO NEW MODEL — on the goal it belongs to. Refusals used to sit in
+          the page-wide warning, which put a small shop's normal nights in yellow every
+          morning; here it is simply part of the goal's state. Hidden while a retrain
+          runs, because that attempt is about to replace it. */}
+      {refusal && !isTrainingNow && (
+        <p className="-mt-1 mb-3 text-xs text-text-muted">
+          Last attempt {formatAttemptDate(refusal.at)}: {refusal.reason}
+        </p>
+      )}
 
       <div className="space-y-2 mb-4">
         {/* WHAT THIS GOAL WATCHES — a real event, or a question derived from meanings.
@@ -981,4 +1007,11 @@ function SegmentBreakdown({
       )}
     </div>
   )
+}
+
+/** "8 Oct, 3:05 am" — when the last attempt ran, in the viewer's own time. */
+function formatAttemptDate(at: string): string {
+  return new Date(at).toLocaleString('en-IN', {
+    day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+  })
 }

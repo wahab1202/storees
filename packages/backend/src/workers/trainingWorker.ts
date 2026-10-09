@@ -259,7 +259,15 @@ async function processTraining(job: { data: TrainingJob }) {
         durationMs,
       })
       console.warn(`[training] Training failed for "${goal.name}": ${result.reason}`)
-      await clearTraining(goalId)
+      // REFUSED, WITH NOTHING TO FALL BACK ON, IS "NOT ENOUGH DATA YET".
+      //
+      // Back to `active` keeps an existing model scoring — right when there is one. With
+      // none, `active` claimed a model that does not exist: the card read "not trained
+      // yet" for a goal that trains every night, and scoring asked for it daily and
+      // failed. The guardrails that refuse a fit are, in the main, "too few buyers / too
+      // few qualify / no signal yet" — what this status means. Nightly retraining still
+      // picks it up, whatever its status.
+      await clearTraining(goalId, await hasActiveModel(goalId) ? 'active' : 'insufficient_data')
       return { status: 'failed', reason: result.reason }
     }
   } catch (err) {
@@ -325,6 +333,15 @@ export const TRAINING_STALE_MS =
  *  so parking a goal anywhere else takes its EXISTING, working model out of service —
  *  a failed attempt at a new model would silently stop the old one from scoring anyone.
  *  The attempt is recorded in `prediction_training_runs` and surfaced from there. */
+async function hasActiveModel(goalId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: predictionModelVersions.id })
+    .from(predictionModelVersions)
+    .where(and(eq(predictionModelVersions.goalId, goalId), eq(predictionModelVersions.isActive, true)))
+    .limit(1)
+  return !!row
+}
+
 async function clearTraining(goalId: string, to = 'active'): Promise<void> {
   await db.update(predictionGoals)
     .set({ status: to, updatedAt: new Date() })
