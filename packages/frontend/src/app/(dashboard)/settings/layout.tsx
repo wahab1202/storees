@@ -17,7 +17,9 @@ const tabs: Tab[] = [
   { href: '/settings/account', label: 'Account' },
   { href: '/settings/security', label: 'Security' },
   { href: '/settings/dealers', label: 'Dealers', adminOnly: true, featureFlag: 'agentRbac' },
-  { href: '/settings/team', label: 'Team', adminOnly: true, featureFlag: 'agentRbac' },
+  // Team is reachable for every project-admin so clients can invite teammates;
+  // the dealer-scoped roles inside only appear when agentRbac is enabled.
+  { href: '/settings/team', label: 'Team', adminOnly: true },
 ]
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {
