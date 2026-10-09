@@ -1,9 +1,10 @@
 import { Router, Response } from 'express'
 import { eq, and, asc, ne } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { adminUsers, agents } from '../db/schema.js'
+import { adminUsers, agents, userProjects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
+import { invalidateMembership } from '../middleware/membership.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { hashPassword } from '../services/authService.js'
 
@@ -113,6 +114,16 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         agentId: adminUsers.agentId,
       })
 
+    // Make the new teammate a first-class member of this project (not just
+    // covered by the home-project allowance), so the membership model is explicit
+    // and consistent with super-admin-created clients.
+    await db.insert(userProjects).values({
+      userId: row.id,
+      projectId,
+      createdBy: req.adminUser!.userId,
+    }).onConflictDoNothing()
+    invalidateMembership(row.id)
+
     res.status(201).json({ success: true, data: row })
   } catch (err) {
     console.error('Admin user create error:', err)
@@ -201,8 +212,8 @@ router.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ success: false, error: 'Cannot delete yourself' })
     }
 
-    // Hard delete since we have no soft-delete column. Safe: no cascade risk —
-    // admin_users has no FK from other tables that would block this.
+    // Hard delete since we have no soft-delete column. user_projects rows for this
+    // user cascade-delete (FK ON DELETE CASCADE), revoking their membership.
     const result = await db
       .delete(adminUsers)
       .where(and(eq(adminUsers.id, id), eq(adminUsers.projectId, projectId)))
@@ -211,6 +222,8 @@ router.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
     if (result.length === 0) {
       return res.status(404).json({ success: false, error: 'Team member not found' })
     }
+
+    invalidateMembership(id) // clear cache so access is revoked immediately
 
     res.json({ success: true, data: { message: 'Team member removed' } })
   } catch (err) {

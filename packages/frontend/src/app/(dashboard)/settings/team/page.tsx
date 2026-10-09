@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useSession } from 'next-auth/react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useAgents } from '@/hooks/useAgents'
+import { useAgentRbacEnabled } from '@/hooks/useProjects'
 import {
   useAdminUsers,
   useCreateAdminUser,
@@ -28,7 +29,7 @@ const emptyForm: FormState = {
   email: '',
   name: '',
   password: '',
-  role: 'agent',
+  role: 'admin', // safe default; dealer-scoped roles only when agentRbac is on
   agentId: '',
 }
 
@@ -48,6 +49,7 @@ export default function TeamSettingsPage() {
   const { data: session } = useSession()
   const currentUserId = session?.user?.id
 
+  const rbac = useAgentRbacEnabled() // dealer-scoped roles (agent/manager) only when enabled
   const { data: usersResp, isLoading } = useAdminUsers()
   const { data: agentsResp } = useAgents()
   const create = useCreateAdminUser()
@@ -138,7 +140,9 @@ export default function TeamSettingsPage() {
     <div>
       <PageHeader
         title="Team"
-        description="Invite teammates and control what each of them can see. Admins see everything; managers and agents are scoped to their assigned dealer."
+        description={rbac
+          ? 'Invite teammates and control what each of them can see. Admins see everything; managers and agents are scoped to their assigned dealer.'
+          : 'Invite teammates to this project. Admins have full access to everything in the project.'}
         actions={
           <button
             onClick={() => setShowInvite(v => !v)}
@@ -165,8 +169,8 @@ export default function TeamSettingsPage() {
                 className="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="admin">Admin — full access</option>
-                <option value="manager">Manager — scoped to dealer + reports</option>
-                <option value="agent">Agent — scoped to one dealer</option>
+                {rbac && <option value="manager">Manager — scoped to dealer + reports</option>}
+                {rbac && <option value="agent">Agent — scoped to one dealer</option>}
               </select>
             </label>
             {needsAgent && (
@@ -254,8 +258,8 @@ export default function TeamSettingsPage() {
                         )}
                       >
                         <option value="admin">{roleLabel.admin}</option>
-                        <option value="manager">{roleLabel.manager}</option>
-                        <option value="agent">{roleLabel.agent}</option>
+                        {(rbac || user.role === 'manager') && <option value="manager">{roleLabel.manager}</option>}
+                        {(rbac || user.role === 'agent') && <option value="agent">{roleLabel.agent}</option>}
                       </select>
                     </td>
                     <td className="px-4 py-2.5">
