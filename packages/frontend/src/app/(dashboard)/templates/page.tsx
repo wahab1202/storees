@@ -10,7 +10,7 @@ import { SlidePanel } from '@/components/shared/SlidePanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles, Layers, RefreshCw, CheckCircle2, Clock, AlertCircle } from 'lucide-react'
+import { Plus, Mail, MessageSquare, Bell, Phone, FileText, Trash2, Loader2, Search, Pencil, Sparkles, Layers, RefreshCw, CheckCircle2, Clock, AlertCircle, Wand2 } from 'lucide-react'
 import { useState, useMemo, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import type { EmailTemplate, TemplateChannel } from '@storees/shared'
@@ -133,6 +133,13 @@ function TemplatesContent() {
             )}
             {!isWhatsappTab && (
             <>
+            <Link
+              href="/templates/ai"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-border text-text-secondary rounded-lg hover:bg-surface transition-colors"
+            >
+              <Wand2 className="h-4 w-4" />
+              Design with AI
+            </Link>
             <button
               onClick={() => seedTemplates.mutate({ force: true }, {
                 onSuccess: (res) => {

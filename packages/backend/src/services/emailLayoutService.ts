@@ -1,6 +1,12 @@
+import { eq } from 'drizzle-orm'
 import type { EmailBlock, EmailBlockType, EmailLayout } from '@storees/shared'
+import { db } from '../db/connection.js'
+import { projects } from '../db/schema.js'
 import { getLlmConfig, chatCompletion } from './llmService.js'
 import { renderBlocksToHtml } from './emailLayoutRenderer.js'
+import { resolveTemplateVariables, type ProjectLike } from './templateContext.js'
+import { renderCartLineItems, renderProductGrid } from './productBlockRenderer.js'
+import { interpolateTemplate } from './emailService.js'
 
 /**
  * AI email layout generator (Email Engine Step 3).
@@ -95,7 +101,7 @@ export function coerceBlocks(raw: unknown): EmailBlock[] {
 export async function generateEmailLayout(
   projectId: string,
   input: EmailLayoutInput,
-): Promise<EmailLayout & { html: string }> {
+): Promise<EmailLayout & { html: string; previewHtml: string }> {
   const config = await getLlmConfig(projectId)
   if (!config) {
     throw new Error('No LLM provider configured for this project — set one in Settings → AI before generating a layout.')
@@ -110,5 +116,41 @@ export async function generateEmailLayout(
   const blocks = coerceBlocks(parsed.blocks)
   if (blocks.length === 0) throw new Error('The model did not return any usable blocks')
   const subject = typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject.trim() : 'A note from {{store_name}}'
-  return { subject, blocks, html: renderBlocksToHtml(blocks) }
+  const html = renderBlocksToHtml(blocks)
+  return { subject, blocks, html, previewHtml: await buildPreview(projectId, html, input) }
+}
+
+/**
+ * Fill the template's tokens with the project's real brand kit + sample product
+ * data, so the UI preview shows what a recipient actually gets (not raw
+ * {{tokens}}). This is the same pipeline the sender uses, with example data.
+ */
+async function buildPreview(projectId: string, template: string, input: EmailLayoutInput): Promise<string> {
+  const [row] = await db
+    .select({ id: projects.id, name: projects.name, emailFromName: projects.emailFromName, brandKit: projects.brandKit })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+  const project: ProjectLike = (row as ProjectLike) ?? { id: projectId, name: 'Your Store' }
+
+  const ctx = resolveTemplateVariables({
+    variables: [],
+    customer: { id: 'preview', name: 'Priya', email: 'priya@example.com' },
+    project,
+  }) as Record<string, string>
+  const accent = ctx.brand_accent
+  if (input.hasCart) {
+    ctx.cart_items = renderCartLineItems([
+      { name: 'Sample Product One', variant: 'Variant', quantity: 1, price: '1290' },
+      { name: 'Sample Product Two', quantity: 2, price: '1190' },
+    ], { accent })
+  }
+  if (input.hasRecommendations) {
+    ctx.recommended_products = renderProductGrid(
+      ['Alpha', 'Beta', 'Gamma', 'Delta'].map((t, i) => ({ title: `Sample ${t}`, price: String(690 + i * 100) })),
+      { accent },
+    )
+  }
+  ctx.cart_url = '#'; ctx.store_url = '#'; ctx.unsubscribe_url = '#'
+  return interpolateTemplate(template, ctx)
 }
