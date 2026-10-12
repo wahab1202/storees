@@ -183,6 +183,55 @@ export async function fetchShopInfo(shop: string, accessToken: string): Promise<
   }
 }
 
+/**
+ * Shop brand assets (logo, colours, slogan) from the GraphQL Admin API's
+ * `shop.brand`. REST /shop.json does NOT carry these. Returns null fields rather
+ * than throwing when the store hasn't set a brand or the token lacks the scope —
+ * the caller falls back to neutral defaults, so a missing brand never blocks a send.
+ */
+export async function fetchShopBrand(shop: string, accessToken: string): Promise<{
+  logoUrl: string | null
+  primaryColor: string | null
+  accentColor: string | null
+  slogan: string | null
+}> {
+  const query = `{
+    shop {
+      brand {
+        slogan
+        logo { image { url } }
+        squareLogo { image { url } }
+        colors { primary { background foreground } secondary { background foreground } }
+      }
+    }
+  }`
+  try {
+    const response = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: { 'X-Shopify-Access-Token': accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    })
+    if (!response.ok) return { logoUrl: null, primaryColor: null, accentColor: null, slogan: null }
+    const json = await response.json() as {
+      data?: { shop?: { brand?: {
+        slogan?: string | null
+        logo?: { image?: { url?: string } | null } | null
+        squareLogo?: { image?: { url?: string } | null } | null
+        colors?: { primary?: Array<{ background?: string; foreground?: string }>; secondary?: Array<{ background?: string }> } | null
+      } | null } | null }
+    }
+    const brand = json.data?.shop?.brand
+    if (!brand) return { logoUrl: null, primaryColor: null, accentColor: null, slogan: null }
+    const logoUrl = brand.logo?.image?.url ?? brand.squareLogo?.image?.url ?? null
+    // Shopify returns colors as groups; take the first primary/secondary swatch.
+    const primaryColor = brand.colors?.primary?.[0]?.background ?? null
+    const accentColor = brand.colors?.secondary?.[0]?.background ?? brand.colors?.primary?.[0]?.foreground ?? null
+    return { logoUrl, primaryColor, accentColor, slogan: brand.slogan ?? null }
+  } catch {
+    return { logoUrl: null, primaryColor: null, accentColor: null, slogan: null }
+  }
+}
+
 export function getCallbackRedirectUrl(token: string, projectId: string): string {
   return `${FRONTEND_URL}/oauth/shopify/callback?token=${encodeURIComponent(token)}&projectId=${encodeURIComponent(projectId)}`
 }

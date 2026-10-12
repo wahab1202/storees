@@ -176,6 +176,40 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
   },
 
   // ═══════════════════════════════════════════════
+  // 2b. ABANDONED CART — Live items + dynamic picks (Email Engine Step 1)
+  //     Uses only auto-filled tokens: {{cart_items}} renders the actual items
+  //     left behind (image/name/qty/price); {{recommended_products}} renders a
+  //     live recommendation grid. Both resolve at send time.
+  // ═══════════════════════════════════════════════
+  {
+    name: 'Abandoned Cart — Live Items & Picks',
+    channel: 'email',
+    subject: '{{customer_name}}, your picks are still here ✨',
+    htmlBody: emailBase(`
+    <!-- Brand header (logo, or wordmark fallback — auto-rendered) -->
+    <tr><td style="padding:22px 48px;border-bottom:1px solid #eef0f4;" class="mob-pad">{{brand_header}}</td></tr>
+    <!-- Hero -->
+    <tr><td style="padding:36px 48px 8px;" class="mob-pad">
+      <h1 style="margin:0 0 8px;font-size:26px;font-weight:800;color:{{brand_primary_color}};">Still thinking it over, {{customer_name}}?</h1>
+      <p style="margin:0 0 8px;font-size:15px;color:#6b7280;line-height:1.6;">Your cart's saved — here's exactly what's waiting for you.</p>
+    </td></tr>
+    <!-- Actual cart items (auto-rendered) -->
+    <tr><td style="padding:8px 48px 0;" class="mob-pad">{{cart_items}}</td></tr>
+    <!-- CTA (brand accent) -->
+    <tr><td style="padding:20px 48px 8px;text-align:center;" class="mob-pad">
+      <a href="{{cart_url}}" style="display:inline-block;width:100%;max-width:360px;padding:16px 24px;background:{{brand_accent}};color:#ffffff;font-size:16px;font-weight:700;border-radius:12px;text-decoration:none;text-align:center;">Complete My Order →</a>
+    </td></tr>
+    <tr><td style="padding:0 48px 24px;text-align:center;" class="mob-pad">
+      <p style="margin:0;font-size:12px;color:#9ca3af;">Free shipping on this order · Secure checkout</p>
+    </td></tr>
+    <!-- Recommendations (auto-rendered grid) -->
+    <tr><td style="background:#faf7f2;padding:28px 40px;" class="mob-pad">
+      <p style="margin:0 0 14px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8a7a63;">Picked for you</p>
+      {{recommended_products}}
+    </td></tr>`),
+  },
+
+  // ═══════════════════════════════════════════════
   // 3. ORDER CONFIRMATION — Clean receipt style
   // ═══════════════════════════════════════════════
   {

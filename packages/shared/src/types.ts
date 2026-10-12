@@ -91,6 +91,46 @@ export type LineItem = {
   imageUrl?: string
 }
 
+/**
+ * Brand kit (Email Engine Step 2) — the store's visual identity, pulled from the
+ * connected Shopify store (shop.brand) and applied to every email automatically.
+ * All fields optional: templates fall back to neutral defaults when absent.
+ * Stored on projects.brand_kit (JSONB).
+ */
+export type BrandKit = {
+  logoUrl?: string | null
+  primaryColor?: string | null   // headings / dark surfaces
+  accentColor?: string | null    // CTAs, prices, links
+  slogan?: string | null
+  fontFamily?: string | null
+  source?: 'shopify' | 'website' | 'manual' | 'default'
+  syncedAt?: string | null       // ISO 8601
+}
+
+/**
+ * AI email layout (Email Engine Step 3). The AI emits a typed BLOCK SCHEMA — never
+ * raw HTML — which a deterministic, brand-aware renderer turns into an email-safe
+ * template. Dynamic blocks (cart_items, product_grid) render as the Step 1/2
+ * tokens, so a generated layout flows straight through the normal send pipeline.
+ */
+export type EmailBlock =
+  | { type: 'hero'; heading: string; subheading?: string }
+  | { type: 'paragraph'; text: string }
+  | { type: 'button'; label: string; href: string }   // href: a {{link_token}} or an https URL
+  | { type: 'cart_items' }
+  | { type: 'product_grid'; heading?: string }
+  | { type: 'discount'; code: string; text?: string }
+  | { type: 'divider' }
+  | { type: 'spacer' }
+  | { type: 'footer_note'; text: string }
+
+export type EmailBlockType = EmailBlock['type']
+
+export type EmailLayout = {
+  subject: string
+  blocks: EmailBlock[]
+}
+
 export type Product = {
   id: string
   projectId: string
