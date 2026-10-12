@@ -12,6 +12,7 @@ type Tab = { href: string; label: string; adminOnly?: boolean; featureFlag?: 'ag
 const tabs: Tab[] = [
   { href: '/settings', label: 'SDK & Integration', adminOnly: true },
   { href: '/settings/project', label: 'Project', adminOnly: true },
+  { href: '/settings/brand', label: 'Brand', adminOnly: true },
   { href: '/settings/ad-conversions', label: 'Ad Conversions', adminOnly: true },
   { href: '/settings/webhooks', label: 'Webhooks', adminOnly: true },
   { href: '/settings/account', label: 'Account' },
