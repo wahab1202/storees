@@ -3,6 +3,7 @@ import { liveOrders } from '../db/orderStatus.js'
 import { db } from '../db/connection.js'
 import { products, productRecommendations } from '../db/schema.js'
 import { projectVocabulary, eventIn } from './projectVocabulary.js'
+import { renderProductGrid, type RenderableProduct } from './productBlockRenderer.js'
 
 /**
  * Decisioning service (Step 1) — the shared "what should this customer get/see"
@@ -218,4 +219,29 @@ export async function buildDecisionVarsForCustomer(projectId: string, customerId
   if (!rec) return {}
   const proof = await socialProof(projectId, rec.productId, 30, cache)
   return assembleDecisionVars(rec, proof)
+}
+
+function toRenderable(recs: RecommendedProduct[]): RenderableProduct[] {
+  return recs.map(r => ({ title: r.title, price: r.price, imageUrl: r.imageUrl }))
+}
+
+/**
+ * Email Engine Step 1: a dynamic multi-product recommendation GRID as ready-to-
+ * inject HTML (the {{recommended_products}} token), not a single token. Resolves
+ * `limit` products — from a triggering product's pairing rules when present, else
+ * per-customer affinity with a top-seller fallback — and renders the email-safe
+ * grid. Returns '' when nothing resolves, so the token collapses cleanly.
+ */
+export async function recommendedProductsBlock(
+  projectId: string,
+  opts: { productId?: string; customerId?: string; accent?: string },
+  limit = 4,
+  cache?: DecisionCache,
+): Promise<string> {
+  let recs: RecommendedProduct[] = []
+  if (opts.productId) recs = await recommendForProduct(projectId, opts.productId, limit)
+  if (recs.length === 0 && opts.customerId) {
+    recs = await recommendForCustomer(projectId, opts.customerId, limit, cache)
+  }
+  return renderProductGrid(toRenderable(recs), { accent: opts.accent })
 }

@@ -8,6 +8,7 @@ import { computeNextBestAction } from '../services/nextBestActionService.js'
 import { chatCompletion, getLlmConfig, testConnection } from '../services/llmService.js'
 import { generateCopy, type CopywriterChannel, type VoiceTone, type CopywriterLanguage } from '../services/copywriterService.js'
 import { generateWhatsappTemplate, type WhatsappCopilotTone } from '../services/whatsappCopilotService.js'
+import { generateEmailLayout, type EmailLayoutInput } from '../services/emailLayoutService.js'
 import { clearProjectChannelProviderCache } from '../services/channelProviderRegistry.js'
 
 const router = Router()
@@ -38,6 +39,35 @@ router.post('/segment', requireProjectId, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'AI generation failed'
     console.error('[AI] Segment generation error:', message)
+    res.status(500).json({ success: false, error: message })
+  }
+})
+
+// POST /api/ai/email-layout — Email Engine Step 3: AI designs a full email as a
+// typed block schema; the renderer turns it into a brand-tokenized, email-safe
+// template. Body: { goal, tone?, audience?, language?, hasCart?, hasRecommendations? }
+router.post('/email-layout', requireProjectId, async (req, res) => {
+  try {
+    const { goal, tone, audience, language, hasCart, hasRecommendations } = req.body as Record<string, unknown>
+    if (typeof goal !== 'string' || goal.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'goal is required' })
+    }
+    if (goal.length > 800) {
+      return res.status(400).json({ success: false, error: 'goal too long (max 800 chars)' })
+    }
+    const input: EmailLayoutInput = {
+      goal: goal.trim(),
+      tone: typeof tone === 'string' ? tone : undefined,
+      audience: typeof audience === 'string' ? audience : undefined,
+      language: typeof language === 'string' ? language : undefined,
+      hasCart: hasCart === true,
+      hasRecommendations: hasRecommendations === true,
+    }
+    const result = await generateEmailLayout(req.query.projectId as string, input)
+    res.json({ success: true, data: result })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Layout generation failed'
+    console.error('[AI] Email layout error:', message)
     res.status(500).json({ success: false, error: message })
   }
 })

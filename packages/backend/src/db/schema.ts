@@ -34,6 +34,10 @@ export const projects = pgTable('projects', {
   // FROM_EMAIL env var with rate cap. Set when client verifies their domain.
   emailFromAddress: varchar('email_from_address', { length: 255 }),
   emailFromName: varchar('email_from_name', { length: 255 }),
+  // Brand kit (Email Engine Step 2) — logo/colours/font pulled from the connected
+  // Shopify store (shop.brand), applied to emails. See migration 0087.
+  // Shape: shared BrandKit { logoUrl, primaryColor, accentColor, slogan, fontFamily, source, syncedAt }.
+  brandKit: jsonb('brand_kit'),
   resendDomainId: varchar('resend_domain_id', { length: 255 }),
   emailMarketingProvider: varchar('email_marketing_provider', { length: 20 }).notNull().default('resend'),
   emailTransactionalProvider: varchar('email_transactional_provider', { length: 20 }).notNull().default('resend'),

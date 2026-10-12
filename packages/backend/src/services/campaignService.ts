@@ -24,7 +24,7 @@ import { injectGmailAnnotation } from './gmailAnnotation.js'
 import { campaignQueue } from './queue.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
 import { computeOptimalSendTime, computeProjectDefaults, type SendTimeResult } from './sendTimeService.js'
-import { buildDecisionVarsForCustomer, newDecisionCache, type DecisionCache } from './decisioningService.js'
+import { buildDecisionVarsForCustomer, recommendedProductsBlock, newDecisionCache, type DecisionCache } from './decisioningService.js'
 import { assertApprovedWhatsappCampaignTemplate } from './whatsappCampaignValidation.js'
 import { filterToSql } from '@storees/segments'
 import type { TemplateVariable, FilterConfig } from '@storees/shared'
@@ -781,11 +781,12 @@ export async function processCampaign(campaignId: string): Promise<void> {
       name: projects.name,
       emailFromAddress: projects.emailFromAddress,
       emailFromName: projects.emailFromName,
+      brandKit: projects.brandKit,
     })
     .from(projects)
     .where(eq(projects.id, campaign.projectId))
     .limit(1)
-  const project: ProjectLike = projectRow ?? { id: campaign.projectId, name: '' }
+  const project: ProjectLike = (projectRow as ProjectLike) ?? { id: campaign.projectId, name: '' }
 
   let sentCount = campaign.sentCount
   let failedCount = campaign.failedCount
@@ -948,6 +949,17 @@ async function sendOneRecipient(
     const useVariantB = send.variant === 'B' && campaign.abTestEnabled
     const rawSubject = useVariantB && campaign.abVariantBSubject ? campaign.abVariantBSubject : campaign.subject ?? ''
     const rawHtml = useVariantB && campaign.abVariantBHtmlBody ? campaign.abVariantBHtmlBody : campaign.htmlBody ?? ''
+    // Email Engine Step 1: resolve the {{recommended_products}} grid per recipient
+    // (per-customer affinity), only when the body actually uses it.
+    if (/\{\{\s*recommended_products\s*\}\}/.test(rawHtml)) {
+      const grid = await recommendedProductsBlock(
+        project.id,
+        { customerId: customerLike.id, accent: project.brandKit?.accentColor ?? undefined },
+        4,
+        decisionCache,
+      ).catch(() => '')
+      if (grid) templateContext.recommended_products = grid
+    }
     const subject = interpolateTemplate(rawSubject, templateContext)
     const personalizedHtml = personalizeDynamicImages(rawHtml, templateContext)
     const htmlWithVariables = interpolateTemplate(personalizedHtml, templateContext)

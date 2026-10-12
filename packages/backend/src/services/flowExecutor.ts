@@ -5,7 +5,8 @@ import { filterToSql } from '@storees/segments'
 import { flowActionsQueue } from './queue.js'
 import { sendEmail, interpolateTemplate, appendUtmParameters } from './emailService.js'
 import { resolveTemplateVariables, type CustomerLike, type ProjectLike } from './templateContext.js'
-import { buildDecisionVars } from './decisioningService.js'
+import { buildDecisionVars, recommendedProductsBlock } from './decisioningService.js'
+import { normalizeLineItems, renderCartLineItems } from './productBlockRenderer.js'
 import { createHash } from 'node:crypto'
 import { evaluateEventFilters, readPath } from '@storees/shared'
 import { filterSqlForProject } from './projectVocabulary.js'
@@ -637,11 +638,12 @@ async function executeAction(
       name: projects.name,
       emailFromAddress: projects.emailFromAddress,
       emailFromName: projects.emailFromName,
+      brandKit: projects.brandKit,
     })
     .from(projects)
     .where(eq(projects.id, projectId))
     .limit(1)
-  const project: ProjectLike = projectRow ?? { id: projectId, name: '' }
+  const project: ProjectLike = (projectRow as ProjectLike) ?? { id: projectId, name: '' }
   const customerLike = customer as CustomerLike
 
   // Trigger payload + earlier node outputs (http_request responses etc.) —
@@ -678,6 +680,24 @@ async function executeAction(
       .where(eq(emailTemplates.name, templateId))
       .limit(1)
 
+    // Email Engine Step 1: dynamic product blocks as injectable HTML tokens.
+    //   {{cart_items}}            — the actual items the shopper left (from the trigger)
+    //   {{recommended_products}}  — a live N-product recommendation grid
+    // Both collapse to '' when there's nothing to show.
+    const brandAccent = project.brandKit?.accentColor ?? undefined
+    const blockVars: Record<string, string> = {}
+    const cartHtml = renderCartLineItems(
+      normalizeLineItems((triggerProps.line_items ?? triggerProps.lineItems)),
+      { accent: brandAccent },
+    )
+    if (cartHtml) blockVars.cart_items = cartHtml
+    const recHtml = await recommendedProductsBlock(
+      projectId,
+      { productId: decisionProductId || undefined, customerId: customerLike.id, accent: brandAccent },
+      4,
+    ).catch(() => '')
+    if (recHtml) blockVars.recommended_products = recHtml
+
     const templateContext = resolveTemplateVariables({
       variables: ((template?.variables as TemplateVariable[]) ?? []),
       customer: customerLike,
@@ -685,8 +705,8 @@ async function executeAction(
       eventProperties,
       // decisionContext: read by `decision`-kind sources. systemVars: shim so
       // legacy raw {{recommended_product}} email tokens keep working.
-      decisionContext: decisionVars,
-      systemVars: decisionVars,
+      decisionContext: { ...decisionVars, ...blockVars },
+      systemVars: { ...decisionVars, ...blockVars },
     })
 
     let subject: string

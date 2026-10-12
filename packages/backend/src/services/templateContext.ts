@@ -2,6 +2,7 @@ import type {
   TemplateVariable,
   TemplateVariableSource,
   TemplateVariableFormat,
+  BrandKit,
 } from '@storees/shared'
 import { readPath } from '@storees/shared'
 
@@ -49,6 +50,20 @@ export type ProjectLike = {
   name: string
   emailFromAddress?: string | null
   emailFromName?: string | null
+  brandKit?: BrandKit | null
+}
+
+// Neutral fallbacks for brand tokens when a store has no brand kit synced.
+const BRAND_DEFAULT_PRIMARY = '#1f2937'
+const BRAND_DEFAULT_ACCENT = '#4f46e5'
+
+/** Allow only http(s) URLs through to brand img src (keep untrusted data safe). */
+function httpUrl(value: string | null | undefined): string | null {
+  const s = String(value ?? '').trim()
+  return /^https?:\/\//i.test(s) ? s.replace(/"/g, '%22') : null
+}
+function escapeAttr(value: string): string {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 export type ProductLike = {
@@ -105,6 +120,20 @@ export function resolveTemplateVariables({
   out.store_name = project.emailFromName ?? project.name
   out.customer_name = nonEmpty(customer.name) ?? 'there'
   out.customer_email = customer.email ?? ''
+
+  // Brand kit tokens (Step 2) — always available, with neutral fallbacks so a
+  // store that hasn't synced a brand still renders a clean, consistent email.
+  const bk = project.brandKit
+  const brandLogo = httpUrl(bk?.logoUrl)
+  out.brand_logo = brandLogo ?? ''
+  out.brand_primary_color = bk?.primaryColor || BRAND_DEFAULT_PRIMARY
+  out.brand_accent = bk?.accentColor || BRAND_DEFAULT_ACCENT
+  out.brand_slogan = bk?.slogan ?? ''
+  // Ready-rendered header: the store's logo when we have one, else a wordmark —
+  // so templates get graceful fallback without conditional logic in the body.
+  out.brand_header = brandLogo
+    ? `<img src="${brandLogo}" alt="${escapeAttr(out.store_name)}" height="34" style="height:34px;display:inline-block;border:0;" />`
+    : `<span style="font-weight:800;font-size:19px;letter-spacing:.5px;color:${out.brand_primary_color};">${escapeAttr(out.store_name)}</span>`
 
   for (const variable of variables ?? []) {
     const raw = readSource(variable.source, customer, project, product, eventProperties, decisionContext)
@@ -275,4 +304,14 @@ export const SYSTEM_VARIABLE_KEYS = new Set([
   'recommended_product_id',
   'social_proof_viewers',
   'social_proof_buyers',
+  // Dynamic product blocks (Email Engine Step 1) — injected as pre-rendered HTML
+  // at send time (cart line items + an N-product recommendation grid).
+  'cart_items',
+  'recommended_products',
+  // Brand kit tokens (Email Engine Step 2) — logo + colours from the store.
+  'brand_logo',
+  'brand_header',
+  'brand_primary_color',
+  'brand_accent',
+  'brand_slogan',
 ])

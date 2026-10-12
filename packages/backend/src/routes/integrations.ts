@@ -16,6 +16,7 @@ import {
   mintShopifyToken,
 } from '../services/shopifyService.js'
 import { encrypt } from '../services/encryption.js'
+import { syncBrandKit } from '../services/brandKitService.js'
 import { redis } from '../services/redis.js'
 import { generateJwt, jwtPayloadFrom } from '../services/authService.js'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -119,6 +120,13 @@ router.get('/shopify/callback', async (req, res) => {
 
     // Trigger historical sync
     await shopifySyncQueue.add('sync', { projectId })
+
+    // Pull the store's brand kit (logo/colours) so emails auto-style to the
+    // brand. Non-blocking + best-effort: a missing brand or scope never fails
+    // the connect flow.
+    syncBrandKit(projectId, { shop, accessToken }).catch(err =>
+      console.warn('[brandKit] initial sync failed (non-fatal):', err?.message ?? err),
+    )
 
     // Fetch shop owner info to auto-create admin account
     const shopInfo = await fetchShopInfo(shop, accessToken)
