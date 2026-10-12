@@ -4,6 +4,8 @@ import { db } from '../db/connection.js'
 import { predictionScores, predictionGoals, customers } from '../db/schema.js'
 import { eq, and, desc, asc, count, avg, sql } from 'drizzle-orm'
 import { checkMlHealth, explainCustomer } from '../services/mlProxyService.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactContactFields } from '../lib/pii.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { scopedCustomerIdsSubquery, customerScopeFilter } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
@@ -116,9 +118,13 @@ router.get('/goals/:goalId/customers', requireProjectId, async (req: Authenticat
       ? Math.round((weightedSum / stats.total) * 100) / 100
       : 0
 
+    // Mask contact PII for roles without viewContactPii.
+    const caps = await getViewerCaps(req)
+    const data = rows.map(row => redactContactFields(row, caps, { emailKeys: ['customerEmail'], phoneKeys: [] }))
+
     res.json({
       success: true,
-      data: rows,
+      data,
       stats,
       pagination: {
         page,

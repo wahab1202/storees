@@ -5,6 +5,7 @@ import { projects, apiKeys, events, segments, consentAuditLog, customers, anonym
 import { eq, and, count, gte, lte, sql, isNotNull, inArray } from 'drizzle-orm'
 import { generateApiKeyPair } from '../middleware/apiKeyAuth.js'
 import { requireRole } from '../middleware/agentScope.js'
+import { requireCapability } from '../middleware/capabilities.js'
 import { requireSuperAdminWhenEnforced, requireProjectAccess, accessibleProjectIds } from '../middleware/membership.js'
 import { getDomainConfig } from '../services/domainRegistry.js'
 import { registerDomain, checkDomainStatus } from '../services/emailDomainService.js'
@@ -800,7 +801,7 @@ router.get('/projects/:id/identity-merge-stats', requireRole('admin'), async (re
  *
  * Admin-only. Default range: last 90 days.
  */
-router.get('/projects/:id/consent-export', requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/projects/:id/consent-export', requireRole('admin'), requireCapability('exportCustomers'), async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id as string
     const fromStr = (req.query.from as string) ?? ''

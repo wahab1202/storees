@@ -4,6 +4,7 @@ import { adminUsers, passwordResetTokens, oauthAccounts } from '../db/schema.js'
 import { eq, and, isNull } from 'drizzle-orm'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { requireAuth, type AuthenticatedRequest } from '../middleware/requireAuth.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
 import { redis } from '../services/redis.js'
 import { sendEmail } from '../services/emailService.js'
 import {
@@ -539,11 +540,17 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
       .from(oauthAccounts)
       .where(eq(oauthAccounts.userId, userId))
 
+    // Resolve the viewer's effective capabilities so the UI can hide actions it
+    // isn't allowed to perform (e.g. the export button). The backend still
+    // enforces these independently — this is purely cosmetic.
+    const capabilities = await getViewerCaps(req)
+
     res.json({
       success: true,
       data: {
         ...user,
         linkedProviders: linkedAccounts.map(a => a.provider),
+        capabilities,
       },
     })
   } catch (err) {

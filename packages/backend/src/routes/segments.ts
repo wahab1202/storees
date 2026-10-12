@@ -4,6 +4,8 @@ import { db } from '../db/connection.js'
 import { segments, customers, customerSegments } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole, resolveScopedAgentIds } from '../middleware/agentScope.js'
+import { getViewerCaps, requireCapability } from '../middleware/capabilities.js'
+import { redactContactFields } from '../lib/pii.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 // Dealer RBAC helpers. A dealer (role 'agent'/'manager') owns the segments they
@@ -114,7 +116,11 @@ router.post('/preview', requireProjectId, async (req: AuthenticatedRequest, res)
       .orderBy(customers.lastSeen)
       .limit(10)
 
-    res.json({ success: true, data: { total, sample } })
+    // Mask sample contact PII for roles without viewContactPii.
+    const caps = await getViewerCaps(req)
+    const redactedSample = sample.map(m => redactContactFields(m, caps, { emailKeys: ['email'], phoneKeys: [] }))
+
+    res.json({ success: true, data: { total, sample: redactedSample } })
   } catch (err) {
     console.error('Segment preview error:', err)
     res.json({ success: true, data: { total: 0, sample: [], error: 'Filter evaluation failed' } })
@@ -158,7 +164,7 @@ router.get('/ad-platforms/list', requireProjectId, (_req, res) => {
 // TikTok/Snap/Pinterest use a generic email_sha256 + phone_sha256 format.
 //
 // GET /api/segments/:id/export-audience?projectId=...&platform=meta
-router.get('/:id/export-audience', requireProjectId, async (req, res) => {
+router.get('/:id/export-audience', requireProjectId, requireCapability('exportCustomers'), async (req, res) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string

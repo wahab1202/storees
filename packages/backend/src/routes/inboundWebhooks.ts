@@ -4,6 +4,8 @@ import { eq, and, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { inboundWebhooks, inboundWebhookEvents, eventDefinitions } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { scrubJsonbPii } from '../lib/pii.js'
 import { inferWebhookSchema } from '../services/inboundWebhookService.js'
 
 const router = Router()
@@ -144,9 +146,12 @@ router.get('/:id/events', requireProjectId, async (req, res) => {
         .where(eq(inboundWebhookEvents.webhookId, webhookId)),
     ])
 
+    // Raw payload/headers jsonb can embed contact PII — deep-scrub for roles
+    // without viewContactPii.
+    const caps = await getViewerCaps(req)
     res.json({
       success: true,
-      data: rows,
+      data: scrubJsonbPii(rows, caps),
       pagination: { page, pageSize, total: count, totalPages: Math.max(1, Math.ceil(count / pageSize)) },
     })
   } catch (err) {
@@ -165,7 +170,18 @@ router.get('/:id/schema', requireProjectId, async (req, res) => {
     if (!hook) return res.status(404).json({ success: false, error: 'Webhook not found' })
 
     const fields = await inferWebhookSchema(webhookId)
-    res.json({ success: true, data: fields })
+    // The inferred schema carries real sample VALUES; mask samples whose leaf
+    // field name is a contact-PII key for roles without viewContactPii. Scrub
+    // via the shared helper (keyed on the path's leaf) so the key set stays in
+    // one place.
+    const caps = await getViewerCaps(req)
+    const scrubbed = fields.map(f => {
+      if (f.sample == null) return f
+      const leaf = f.path.split('.').pop() ?? f.path
+      const masked = scrubJsonbPii({ [leaf]: f.sample }, caps) as Record<string, string | undefined>
+      return { ...f, sample: masked[leaf] }
+    })
+    res.json({ success: true, data: scrubbed })
   } catch (err) {
     console.error('GET /inbound-webhooks/:id/schema error:', err)
     res.status(500).json({ success: false, error: 'Failed to infer schema' })

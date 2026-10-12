@@ -5,6 +5,8 @@ import { customers, orders, events, customerSegments, segments, flowTrips, flows
 import { requireProjectId } from '../middleware/projectId.js'
 import { evaluateAllSegments } from '../services/segmentService.js'
 import { customerScopeFilter, requireRole } from '../middleware/agentScope.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactCustomerContact, scrubJsonbPii } from '../lib/pii.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import { getCustomerJourney, getActivitySummary } from '../services/customerJourneyService.js'
@@ -176,13 +178,15 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       segmentsByCustomer.set(m.customerId, list)
     }
 
-    const data = rows.map(row => ({
+    // Mask contact PII (email/phone) for roles without viewContactPii.
+    const caps = await getViewerCaps(req)
+    const data = rows.map(row => redactCustomerContact({
       ...row,
       totalSpent: Number(row.totalSpent),
       avgOrderValue: Number(row.avgOrderValue),
       clv: Number(row.clv),
       segments: segmentsByCustomer.get(row.id) ?? [],
-    }))
+    }, caps))
 
     res.json({
       success: true,
@@ -230,15 +234,16 @@ router.get('/:id', requireProjectId, async (req: AuthenticatedRequest, res) => {
       .innerJoin(segments, eq(customerSegments.segmentId, segments.id))
       .where(eq(customerSegments.customerId, customer.id))
 
+    const caps = await getViewerCaps(req)
     res.json({
       success: true,
-      data: {
+      data: redactCustomerContact({
         ...customer,
         totalSpent: Number(customer.totalSpent),
         avgOrderValue: Number(customer.avgOrderValue),
         clv: Number(customer.clv),
         segments: segmentRows,
-      },
+      }, caps),
     })
   } catch (err) {
     console.error('Customer detail error:', err)
@@ -506,7 +511,9 @@ router.get('/:id/events', requireProjectId, async (req: AuthenticatedRequest, re
       return row
     })
 
-    res.json({ success: true, data: enriched })
+    // Raw event `properties` can embed contact PII (checkout/identify payloads).
+    const caps = await getViewerCaps(req)
+    res.json({ success: true, data: scrubJsonbPii(enriched, caps) })
   } catch (err) {
     console.error('Customer events error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch events' })
@@ -605,7 +612,9 @@ router.get('/:id/journey', requireProjectId, async (req: AuthenticatedRequest, r
       : undefined
 
     const entries = await getCustomerJourney(customerId, { limit, offset, types })
-    res.json({ success: true, data: entries })
+    // Journey entries carry raw event `meta.properties` (checkout/identify PII).
+    const caps = await getViewerCaps(req)
+    res.json({ success: true, data: scrubJsonbPii(entries, caps) })
   } catch (err) {
     console.error('Customer journey error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch customer journey' })

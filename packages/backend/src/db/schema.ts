@@ -977,6 +977,9 @@ export const adminUsers = pgTable('admin_users', {
   // Cross-tenant super admin (platform operator). Explicit flag, NOT the role
   // string — clients (super_admin=false) can only reach projects in user_projects.
   isSuperAdmin: boolean('is_super_admin').notNull().default(false),
+  // Custom role assignment (data + screen permissions). NULL = full access,
+  // scoped only by the legacy `role` column above. See migration 0086.
+  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
   agentId: uuid('agent_id').references(() => agents.id),
   projectId: uuid('project_id').references(() => projects.id),
   emailVerified: boolean('email_verified').notNull().default(false),
@@ -1001,6 +1004,24 @@ export const userProjects = pgTable('user_projects', {
 }, (table) => [
   primaryKey({ columns: [table.userId, table.projectId] }),
   index('idx_user_projects_project').on(table.projectId),
+])
+
+// ============ CUSTOM ROLES (data + screen permissions) ============
+// Per-project roles that control BOTH screen access and data visibility.
+// permissions shape: { viewContactPii?: boolean; exportCustomers?: boolean; screens?: string[] }
+// Assigned to users via admin_users.role_id. See migration 0086.
+export const roles = pgTable('roles', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 80 }).notNull(),
+  description: text('description'),
+  permissions: jsonb('permissions').notNull().default({}),
+  isSystem: boolean('is_system').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_roles_project_name').on(table.projectId, sql`lower(${table.name})`),
+  index('idx_roles_project').on(table.projectId),
 ])
 
 // ============ PASSWORD RESET TOKENS ============

@@ -51,6 +51,7 @@ import authRoutes from './routes/auth.js'
 import agentRoutes from './routes/agents.js'
 import adminUserRoutes from './routes/adminUsers.js'
 import superAdminRoutes from './routes/superAdmin.js'
+import rolesRoutes from './routes/roles.js'
 import logsRoutes from './routes/logs.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
@@ -196,6 +197,7 @@ app.use('/api/send-time', requireAuth, sendTimeRoutes)
 app.use('/api/agents', requireAuth, agentRoutes)
 app.use('/api/admin-users', requireAuth, adminUserRoutes)
 app.use('/api/super-admin', requireAuth, superAdminRoutes)
+app.use('/api/roles', requireAuth, rolesRoutes)
 app.use('/api/logs', requireAuth, logsRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 app.use('/api/assets', requireAuth, assetRoutes)

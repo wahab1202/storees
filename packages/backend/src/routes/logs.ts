@@ -4,6 +4,8 @@ import { db } from '../db/connection.js'
 import { messages, customers, campaigns, flowTrips, flows } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactContactFields } from '../lib/pii.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 
 const router = Router()
@@ -91,9 +93,13 @@ router.get('/notifications', async (req, res) => {
       .limit(pageSize)
       .offset(offset)
 
+    // Mask recipient contact PII for roles without viewContactPii.
+    const caps = await getViewerCaps(req)
+    const data = rows.map(row => redactContactFields(row, caps, { emailKeys: ['customerEmail'], phoneKeys: ['customerPhone'] }))
+
     res.json({
       success: true,
-      data: rows,
+      data,
       pagination: { page, pageSize, total, totalPages: calcTotalPages(total, pageSize) },
     })
   } catch (err) {
