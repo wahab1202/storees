@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import { Download, ChevronDown, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { withProject } from '@/lib/project'
+import { useMyCapabilities } from '@/hooks/useRoles'
 
 // Gap 8: per-segment "Export as audience" dropdown. Calls the
 // /api/segments/:id/export-audience endpoint, which returns a CSV of
@@ -25,6 +26,7 @@ export function ExportAudienceButton({ segmentId, memberCount }: { segmentId: st
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const caps = useMyCapabilities()
 
   async function handleExport(platform: Platform) {
     setBusy(platform.id)
@@ -67,6 +69,8 @@ export function ExportAudienceButton({ segmentId, memberCount }: { segmentId: st
   }
 
   if (memberCount === 0) return null
+  // Roles without export access don't see the button (backend also 403s).
+  if (!caps.exportCustomers) return null
 
   return (
     <div className="relative" ref={containerRef}>

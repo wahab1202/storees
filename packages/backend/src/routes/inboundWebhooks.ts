@@ -4,6 +4,8 @@ import { eq, and, desc, sql, asc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { inboundWebhooks, inboundWebhookEvents, eventDefinitions } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { scrubJsonbPii } from '../lib/pii.js'
 import { inferWebhookSchema, reprocessWebhook, explainDefinitionsForPayload } from '../services/inboundWebhookService.js'
 
 const router = Router()
@@ -150,9 +152,12 @@ router.get('/:id/events', requireProjectId, async (req, res) => {
         .where(eq(inboundWebhookEvents.webhookId, webhookId)),
     ])
 
+    // Raw payload/headers jsonb can embed contact PII — deep-scrub for roles
+    // without viewContactPii.
+    const caps = await getViewerCaps(req)
     res.json({
       success: true,
-      data: rows,
+      data: scrubJsonbPii(rows, caps),
       pagination: { page, pageSize, total: count, totalPages: Math.max(1, Math.ceil(count / pageSize)) },
     })
   } catch (err) {
@@ -191,7 +196,18 @@ router.get('/:id/schema', requireProjectId, async (req, res) => {
     if (!hook) return res.status(404).json({ success: false, error: 'Webhook not found' })
 
     const fields = await inferWebhookSchema(webhookId)
-    res.json({ success: true, data: fields })
+    // The inferred schema carries real sample VALUES; mask samples whose leaf
+    // field name is a contact-PII key for roles without viewContactPii. Scrub
+    // via the shared helper (keyed on the path's leaf) so the key set stays in
+    // one place.
+    const caps = await getViewerCaps(req)
+    const scrubbed = fields.map(f => {
+      if (f.sample == null) return f
+      const leaf = f.path.split('.').pop() ?? f.path
+      const masked = scrubJsonbPii({ [leaf]: f.sample }, caps) as Record<string, string | undefined>
+      return { ...f, sample: masked[leaf] }
+    })
+    res.json({ success: true, data: scrubbed })
   } catch (err) {
     console.error('GET /inbound-webhooks/:id/schema error:', err)
     res.status(500).json({ success: false, error: 'Failed to infer schema' })
@@ -212,10 +228,14 @@ router.get('/:id/events/:eventId/explain', requireProjectId, async (req, res) =>
       .limit(1)
     if (!row) return res.status(404).json({ success: false, error: 'Event not found' })
 
+    // Scrub contact PII out of the raw headers/payload BEFORE they feed the
+    // explain diagnostic, so neither the resolved identity values nor the
+    // per-rule `actual` values leak to roles without viewContactPii.
+    const caps = await getViewerCaps(req)
     const explain = await explainDefinitionsForPayload(
       req.params.id as string,
-      (row.headers ?? {}) as Record<string, unknown>,
-      (row.payload ?? {}) as Record<string, unknown>,
+      scrubJsonbPii((row.headers ?? {}) as Record<string, unknown>, caps),
+      scrubJsonbPii((row.payload ?? {}) as Record<string, unknown>, caps),
     )
     res.json({ success: true, data: explain })
   } catch (err) {

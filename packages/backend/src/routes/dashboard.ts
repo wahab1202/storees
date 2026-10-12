@@ -5,6 +5,8 @@ import { LIVE_ORDERS } from '../db/orderStatus.js'
 import { customers, orders, events, projects, segments, flows, emailTemplates, campaigns } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { rawCustomerScopeSql, scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactContactFields, scrubJsonbPii } from '../lib/pii.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { projectVocabulary, eventIn, type ProjectVocabulary } from '../services/projectVocabulary.js'
 import type { SQL } from 'drizzle-orm'
@@ -336,7 +338,11 @@ router.get('/activity', requireProjectId, async (req: AuthenticatedRequest, res)
       .orderBy(desc(events.timestamp))
       .limit(limit)
 
-    res.json({ success: true, data: rows })
+    // Mask contact PII for roles without viewContactPii: the customerEmail
+    // column, then deep-scrub raw `properties` blobs.
+    const caps = await getViewerCaps(req)
+    const redacted = rows.map(row => redactContactFields(row, caps, { emailKeys: ['customerEmail'], phoneKeys: [] }))
+    res.json({ success: true, data: scrubJsonbPii(redacted, caps) })
   } catch (err) {
     console.error('Dashboard activity error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch activity' })

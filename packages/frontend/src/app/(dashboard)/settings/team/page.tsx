@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useAgents } from '@/hooks/useAgents'
 import { useAgentRbacEnabled } from '@/hooks/useProjects'
+import { useRoles } from '@/hooks/useRoles'
 import {
   useAdminUsers,
   useCreateAdminUser,
@@ -23,6 +24,7 @@ type FormState = {
   password: string
   role: AdminRole
   agentId: string
+  roleId: string // custom permission role ('' = full access)
 }
 
 const emptyForm: FormState = {
@@ -31,6 +33,7 @@ const emptyForm: FormState = {
   password: '',
   role: 'admin', // safe default; dealer-scoped roles only when agentRbac is on
   agentId: '',
+  roleId: '',
 }
 
 const roleLabel: Record<AdminRole, string> = {
@@ -52,12 +55,14 @@ export default function TeamSettingsPage() {
   const rbac = useAgentRbacEnabled() // dealer-scoped roles (agent/manager) only when enabled
   const { data: usersResp, isLoading } = useAdminUsers()
   const { data: agentsResp } = useAgents()
+  const { data: rolesResp } = useRoles()
   const create = useCreateAdminUser()
   const update = useUpdateAdminUser()
   const del = useDeleteAdminUser()
 
   const users = usersResp?.data ?? []
   const agents = (agentsResp?.data ?? []).filter(a => a.isActive)
+  const roles = rolesResp?.data ?? []
 
   const [showInvite, setShowInvite] = useState(false)
   const [form, setForm] = useState<FormState>(emptyForm)
@@ -83,6 +88,7 @@ export default function TeamSettingsPage() {
         password: form.password,
         role: form.role,
         agentId: needsAgent ? form.agentId : null,
+        roleId: form.roleId || null,
       })
       toast.success('Team member added')
       setForm(emptyForm)
@@ -101,6 +107,15 @@ export default function TeamSettingsPage() {
       toast.success('Role updated')
     } catch (err) {
       toast.error((err as Error).message || 'Failed to update role')
+    }
+  }
+
+  async function handleRoleIdChange(user: TeamMember, roleId: string) {
+    try {
+      await update.mutateAsync({ id: user.id, roleId: roleId || null })
+      toast.success(roleId ? 'Permission role assigned' : 'Reverted to full access')
+    } catch (err) {
+      toast.error((err as Error).message || 'Failed to update permissions')
     }
   }
 
@@ -173,6 +188,19 @@ export default function TeamSettingsPage() {
                 {rbac && <option value="agent">Agent — scoped to one dealer</option>}
               </select>
             </label>
+            <label className="block">
+              <span className="block text-xs font-medium text-slate-700 mb-1">Permission role</span>
+              <select
+                value={form.roleId}
+                onChange={e => setForm(f => ({ ...f, roleId: e.target.value }))}
+                className="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Full access (default)</option>
+                {roles.map(r => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </label>
             {needsAgent && (
               <label className="block col-span-2">
                 <span className="block text-xs font-medium text-slate-700 mb-1">Dealer *</span>
@@ -231,6 +259,7 @@ export default function TeamSettingsPage() {
                 <th className="px-4 py-2.5">Name</th>
                 <th className="px-4 py-2.5">Email</th>
                 <th className="px-4 py-2.5">Role</th>
+                <th className="px-4 py-2.5">Permissions</th>
                 <th className="px-4 py-2.5">Dealer</th>
                 <th className="px-4 py-2.5">Security</th>
                 <th className="px-4 py-2.5 w-24" />
@@ -260,6 +289,19 @@ export default function TeamSettingsPage() {
                         <option value="admin">{roleLabel.admin}</option>
                         {(rbac || user.role === 'manager') && <option value="manager">{roleLabel.manager}</option>}
                         {(rbac || user.role === 'agent') && <option value="agent">{roleLabel.agent}</option>}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <select
+                        value={user.roleId ?? ''}
+                        onChange={e => handleRoleIdChange(user, e.target.value)}
+                        className="text-xs px-2 py-1 rounded border border-slate-300 bg-white max-w-[180px]"
+                        title="Data & screen permissions for this user"
+                      >
+                        <option value="">Full access</option>
+                        {roles.map(r => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
                       </select>
                     </td>
                     <td className="px-4 py-2.5">

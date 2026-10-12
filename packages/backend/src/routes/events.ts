@@ -4,6 +4,8 @@ import { db } from '../db/connection.js'
 import { events, customers } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { scopedCustomerIdsSubquery } from '../middleware/agentScope.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactContactFields, scrubJsonbPii, maskEmail, maskPhone } from '../lib/pii.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 
 /**
@@ -83,7 +85,11 @@ router.get('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
       .orderBy(desc(events.timestamp))
       .limit(limit)
 
-    res.json({ success: true, data: rows })
+    // Mask contact PII for roles without viewContactPii: the top-level
+    // customerEmail column, then deep-scrub raw `properties` blobs.
+    const caps = await getViewerCaps(req)
+    const redacted = rows.map(row => redactContactFields(row, caps, { emailKeys: ['customerEmail'], phoneKeys: [] }))
+    res.json({ success: true, data: scrubJsonbPii(redacted, caps) })
   } catch (err) {
     console.error('Events list error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch events' })
@@ -163,11 +169,21 @@ router.get('/sessions', requireProjectId, async (req: AuthenticatedRequest, res)
     `)).rows as Array<{ id: string; name: string | null; email: string | null; phone: string | null }> : []
     const customerById = new Map(customerRows.map(c => [c.id, c]))
 
+    // Mask seen/label contact PII for roles without viewContactPii.
+    const caps = await getViewerCaps(req)
     const data = sessions.map(s2 => {
       const link = linkBySession.get(s2.session_id)
       const customerId = link?.customer_id ?? s2.event_customer_id
       const cust = customerId ? customerById.get(customerId) : undefined
-      return {
+      // Prefer name as the label; when the only label we have is the email or
+      // phone itself, mask it so a restricted viewer can't read contact PII.
+      let customerLabel: string | null = null
+      if (cust) {
+        if (cust.name) customerLabel = cust.name
+        else if (cust.email) customerLabel = caps.viewContactPii ? cust.email : maskEmail(cust.email)
+        else if (cust.phone) customerLabel = caps.viewContactPii ? cust.phone : maskPhone(cust.phone)
+      }
+      return redactContactFields({
         sessionId: s2.session_id,
         eventCount: s2.event_count,
         firstSeen: s2.first_seen,
@@ -176,11 +192,11 @@ router.get('/sessions', requireProjectId, async (req: AuthenticatedRequest, res)
         seenPhone: s2.seen_phone,
         seenEmail: s2.seen_email,
         customerId: customerId ?? null,
-        customerLabel: cust ? (cust.name || cust.email || cust.phone) : null,
+        customerLabel,
         linkedAt: link?.linked_at ?? null,
         resolvedAt: link?.resolved_at ?? null,
         eventsBackAttributed: link?.events_back_attributed ?? null,
-      }
+      }, caps, { emailKeys: ['seenEmail'], phoneKeys: ['seenPhone'] })
     })
 
     res.json({ success: true, data })

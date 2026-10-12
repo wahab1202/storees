@@ -1,10 +1,11 @@
 import { Router, Response } from 'express'
 import { eq, and, asc, ne } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { adminUsers, agents, userProjects } from '../db/schema.js'
+import { adminUsers, agents, userProjects, roles } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole } from '../middleware/agentScope.js'
 import { invalidateMembership } from '../middleware/membership.js'
+import { invalidateCaps } from '../middleware/capabilities.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { hashPassword } from '../services/authService.js'
 
@@ -28,6 +29,8 @@ router.get('/', async (req, res) => {
         email: adminUsers.email,
         name: adminUsers.name,
         role: adminUsers.role,
+        roleId: adminUsers.roleId,
+        roleName: roles.name,
         agentId: adminUsers.agentId,
         agentName: agents.name,
         agentRegion: agents.region,
@@ -37,6 +40,7 @@ router.get('/', async (req, res) => {
       })
       .from(adminUsers)
       .leftJoin(agents, eq(adminUsers.agentId, agents.id))
+      .leftJoin(roles, eq(adminUsers.roleId, roles.id))
       .where(eq(adminUsers.projectId, projectId))
       .orderBy(asc(adminUsers.createdAt))
 
@@ -53,7 +57,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const projectId = req.projectId!
-    const { email, name, password, role, agentId } = req.body
+    const { email, name, password, role, agentId, roleId } = req.body
 
     if (!email || !name || !password) {
       return res.status(400).json({ success: false, error: 'Email, name, and password are required' })
@@ -69,6 +73,18 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
 
     if (typeof password !== 'string' || password.length < 8) {
       return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' })
+    }
+
+    // Verify custom role belongs to this project when provided
+    if (roleId) {
+      const [roleRow] = await db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(and(eq(roles.id, roleId), eq(roles.projectId, projectId)))
+        .limit(1)
+      if (!roleRow) {
+        return res.status(400).json({ success: false, error: 'Role not found in this project' })
+      }
     }
 
     // Verify agent belongs to this project when provided
@@ -102,6 +118,7 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         name: name.trim(),
         passwordHash,
         role,
+        roleId: roleId || null,
         agentId: agentId || null,
         projectId,
         emailVerified: true, // admin-invited accounts skip verification
@@ -111,6 +128,7 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         email: adminUsers.email,
         name: adminUsers.name,
         role: adminUsers.role,
+        roleId: adminUsers.roleId,
         agentId: adminUsers.agentId,
       })
 
@@ -137,7 +155,7 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const projectId = req.projectId!
     const id = req.params.id as string
-    const { name, role, agentId, password } = req.body
+    const { name, role, agentId, password, roleId } = req.body
 
     // Load target user; guard against cross-project modification
     const [target] = await db
@@ -176,6 +194,19 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response) => {
       }
       updates.agentId = agentId || null
     }
+    if (roleId !== undefined) {
+      if (roleId) {
+        const [roleRow] = await db
+          .select({ id: roles.id })
+          .from(roles)
+          .where(and(eq(roles.id, roleId), eq(roles.projectId, projectId)))
+          .limit(1)
+        if (!roleRow) {
+          return res.status(400).json({ success: false, error: 'Role not found in this project' })
+        }
+      }
+      updates.roleId = roleId || null // null clears the assignment (reverts to full access)
+    }
     if (password !== undefined) {
       if (typeof password !== 'string' || password.length < 8) {
         return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' })
@@ -192,9 +223,11 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response) => {
         email: adminUsers.email,
         name: adminUsers.name,
         role: adminUsers.role,
+        roleId: adminUsers.roleId,
         agentId: adminUsers.agentId,
       })
 
+    invalidateCaps(id) // role change takes effect immediately for this user
     res.json({ success: true, data: row })
   } catch (err) {
     console.error('Admin user update error:', err)

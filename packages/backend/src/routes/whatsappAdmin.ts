@@ -4,6 +4,8 @@ import { db } from '../db/connection.js'
 import { whatsappTemplates, ctwaAttributions, customers, projects, whatsappProvisioningRequests } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { requireRole, requirePlatformAdmin } from '../middleware/agentScope.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactCustomerContact } from '../lib/pii.js'
 import { linkMetaWhatsappAccount, registerWhatsappNumber } from '../services/whatsappMetaConnectService.js'
 import { getBusinessProfile, updateBusinessProfile, setProfilePhotoFromUrl, type BusinessProfilePatch } from '../services/whatsappProfileService.js'
 import { getUsageSummary } from '../services/whatsappUsageService.js'
@@ -595,7 +597,13 @@ router.post('/templates/:id/test-send', requireProjectId, async (req, res) => {
         .from(customers)
         .where(and(eq(customers.id, body.sampleCustomerId), eq(customers.projectId, projectId)))
         .limit(1)
-      if (row) customer = row as CustomerLike
+      // Mask the sample customer's contact PII before it becomes render
+      // context, so a restricted role can't read a real customer's email/phone
+      // out of the rendered template. No-op when caps allow.
+      if (row) {
+        const caps = await getViewerCaps(req)
+        customer = redactCustomerContact(row as Record<string, unknown>, caps) as CustomerLike
+      }
     }
 
     const substitutions = resolveTemplateVariables({

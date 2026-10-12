@@ -11,6 +11,8 @@ export type TeamMember = {
   email: string
   name: string
   role: AdminRole
+  roleId: string | null
+  roleName: string | null
   agentId: string | null
   agentName: string | null
   agentRegion: string | null
@@ -25,6 +27,7 @@ type CreateAdminUserInput = {
   password: string
   role: AdminRole
   agentId?: string | null
+  roleId?: string | null
 }
 
 type UpdateAdminUserInput = {
@@ -32,6 +35,7 @@ type UpdateAdminUserInput = {
   role?: AdminRole
   agentId?: string | null
   password?: string
+  roleId?: string | null
 }
 
 export function useAdminUsers() {

@@ -3,6 +3,8 @@ import { eq, and, desc } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { campaigns, campaignSends, campaignSubscriptionCategories, customers, projects } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { getViewerCaps } from '../middleware/capabilities.js'
+import { redactCustomerContact } from '../lib/pii.js'
 import {
   listCampaigns,
   getCampaignWithSegment,
@@ -745,12 +747,18 @@ router.post('/:id/test-email', requireProjectId, async (req, res) => {
     const [sample] = sampleCustomerId
       ? await db.select(customerSelect).from(customers).where(and(eq(customers.id, sampleCustomerId), eq(customers.projectId, campaign.projectId))).limit(1)
       : await db.select(customerSelect).from(customers).where(eq(customers.projectId, campaign.projectId)).orderBy(desc(customers.lastSeen)).limit(1)
-    const customer: CustomerLike = sample ? sample as CustomerLike : {
-      id: 'sample',
-      email: recipient,
-      name: 'Alex Rivera',
-      customAttributes: {},
-    }
+    // Mask the sample customer's contact PII before it becomes render context,
+    // so a restricted role can't use test-send to read a real customer's
+    // email/phone out of the rendered body. No-op when caps allow.
+    const caps = await getViewerCaps(req)
+    const customer: CustomerLike = sample
+      ? (redactCustomerContact(sample as Record<string, unknown>, caps) as CustomerLike)
+      : {
+          id: 'sample',
+          email: recipient,
+          name: 'Alex Rivera',
+          customAttributes: {},
+        }
 
     const context: Record<string, unknown> = resolveTemplateVariables({
       variables: (campaign.variables as TemplateVariable[]) ?? [],
