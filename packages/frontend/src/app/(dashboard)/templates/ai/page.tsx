@@ -10,9 +10,7 @@ import { useBrandKit } from '@/hooks/useBrandKit'
 import { aiBlocksToBuilderTemplate } from '@/lib/aiEmailToBuilder'
 import { ArrowLeft, Sparkles, Loader2, Save, Wand2, PencilRuler } from 'lucide-react'
 import { toast } from 'sonner'
-
-// Hand-off key read by the template editor (/templates/create?from=ai).
-export const AI_TEMPLATE_STASH = 'storees:ai-template'
+import { AI_TEMPLATE_STASH } from './constants'
 
 const TONES = ['persuasive', 'friendly', 'urgent', 'informative', 'playful', 'premium']
 const inputClass = 'w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
