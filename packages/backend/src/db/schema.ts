@@ -37,6 +37,8 @@ export const projects = pgTable('projects', {
   // Shopify store (shop.brand), applied to emails. See migration 0087.
   // Shape: shared BrandKit { logoUrl, primaryColor, accentColor, slogan, fontFamily, source, syncedAt }.
   brandKit: jsonb('brand_kit'),
+  // ISO-4217 currency for money formatting in emails/notifications. See migration 0088.
+  currency: varchar('currency', { length: 3 }).notNull().default('INR'),
   resendDomainId: varchar('resend_domain_id', { length: 255 }),
   emailMarketingProvider: varchar('email_marketing_provider', { length: 20 }).notNull().default('resend'),
   emailTransactionalProvider: varchar('email_transactional_provider', { length: 20 }).notNull().default('resend'),

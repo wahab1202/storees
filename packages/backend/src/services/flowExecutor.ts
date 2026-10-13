@@ -638,6 +638,7 @@ async function executeAction(
       emailFromAddress: projects.emailFromAddress,
       emailFromName: projects.emailFromName,
       brandKit: projects.brandKit,
+      currency: projects.currency,
     })
     .from(projects)
     .where(eq(projects.id, projectId))
@@ -684,15 +685,16 @@ async function executeAction(
     //   {{recommended_products}}  — a live N-product recommendation grid
     // Both collapse to '' when there's nothing to show.
     const brandAccent = project.brandKit?.accentColor ?? undefined
+    const currency = project.currency ?? undefined
     const blockVars: Record<string, string> = {}
     const cartHtml = renderCartLineItems(
       normalizeLineItems((triggerProps.line_items ?? triggerProps.lineItems)),
-      { accent: brandAccent },
+      { accent: brandAccent, currency },
     )
     if (cartHtml) blockVars.cart_items = cartHtml
     const recHtml = await recommendedProductsBlock(
       projectId,
-      { productId: decisionProductId || undefined, customerId: customerLike.id, accent: brandAccent },
+      { productId: decisionProductId || undefined, customerId: customerLike.id, accent: brandAccent, currency },
       4,
     ).catch(() => '')
     if (recHtml) blockVars.recommended_products = recHtml

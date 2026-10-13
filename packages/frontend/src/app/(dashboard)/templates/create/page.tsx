@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useCreateTemplate } from '@/hooks/useTemplates'
 import { VariablePanel } from '@/components/templates/VariablePanel'
@@ -188,6 +188,28 @@ function CreateTemplateContent() {
   const [bodyText, setBodyText] = useState('')
   const [variables, setVariables] = useState<TemplateVariable[]>([])
   const [selectedLayout, setSelectedLayout] = useState('blank')
+
+  // Hand-off from the AI Email Designer (/templates/ai → "Edit in builder"):
+  // load the generated, translated template once, then clear the stash so a
+  // refresh doesn't resurrect it.
+  useEffect(() => {
+    if (searchParams.get('from') !== 'ai') return
+    try {
+      const raw = sessionStorage.getItem('storees:ai-template')
+      if (!raw) return
+      sessionStorage.removeItem('storees:ai-template')
+      const stash = JSON.parse(raw) as { name?: string; subject?: string; template?: EmailTemplate }
+      if (stash.template) {
+        setEmailTemplate(stash.template)
+        setHtmlBody(compileToHtml(stash.template))
+        setSelectedLayout('')
+      }
+      if (stash.subject) setSubject(stash.subject)
+      if (stash.name) setName(stash.name)
+    } catch {
+      // Corrupt/absent stash — fall back to the blank starter already in state.
+    }
+  }, [searchParams])
 
   // In-app channel extras
   const [imageUrl, setImageUrl] = useState('')

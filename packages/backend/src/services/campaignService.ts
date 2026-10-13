@@ -741,6 +741,7 @@ export async function processCampaign(campaignId: string): Promise<void> {
       emailFromAddress: projects.emailFromAddress,
       emailFromName: projects.emailFromName,
       brandKit: projects.brandKit,
+      currency: projects.currency,
     })
     .from(projects)
     .where(eq(projects.id, campaign.projectId))
@@ -913,7 +914,7 @@ async function sendOneRecipient(
     if (/\{\{\s*recommended_products\s*\}\}/.test(rawHtml)) {
       const grid = await recommendedProductsBlock(
         project.id,
-        { customerId: customerLike.id, accent: project.brandKit?.accentColor ?? undefined },
+        { customerId: customerLike.id, accent: project.brandKit?.accentColor ?? undefined, currency: project.currency ?? undefined },
         4,
         decisionCache,
       ).catch(() => '')

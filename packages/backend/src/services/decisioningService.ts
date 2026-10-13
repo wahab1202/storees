@@ -228,7 +228,7 @@ function toRenderable(recs: RecommendedProduct[]): RenderableProduct[] {
  */
 export async function recommendedProductsBlock(
   projectId: string,
-  opts: { productId?: string; customerId?: string; accent?: string },
+  opts: { productId?: string; customerId?: string; accent?: string; currency?: string },
   limit = 4,
   cache?: DecisionCache,
 ): Promise<string> {
@@ -237,5 +237,5 @@ export async function recommendedProductsBlock(
   if (recs.length === 0 && opts.customerId) {
     recs = await recommendForCustomer(projectId, opts.customerId, limit, cache)
   }
-  return renderProductGrid(toRenderable(recs), { accent: opts.accent })
+  return renderProductGrid(toRenderable(recs), { accent: opts.accent, currency: opts.currency })
 }

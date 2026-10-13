@@ -50,16 +50,29 @@ function safeUrl(value: unknown): string | null {
   return s.replace(/"/g, '%22').replace(/</g, '%3C').replace(/>/g, '%3E')
 }
 
+// Locale per currency so grouping + symbol placement read naturally. Falls back
+// to a neutral locale; Intl supplies the symbol from the currency code itself.
+const CURRENCY_LOCALE: Record<string, string> = {
+  INR: 'en-IN', USD: 'en-US', GBP: 'en-GB', EUR: 'en-IE', AED: 'en-AE',
+  AUD: 'en-AU', CAD: 'en-CA', SGD: 'en-SG',
+}
+
 /**
- * Format a price. Single currency (₹, en-IN) for Phase A — this is the one place
- * multi-currency support will plug in. Accepts number or decimal string; returns
- * '' for null/unparseable so the price line is simply omitted.
+ * Format a price in the project's currency (default INR). Accepts a number or
+ * decimal string; returns '' for null/unparseable so the price line is omitted.
  */
-function formatMoney(raw: string | number | null | undefined): string {
+export function formatMoney(raw: string | number | null | undefined, currency = 'INR'): string {
   if (raw === null || raw === undefined || raw === '') return ''
   const n = Number(raw)
   if (!Number.isFinite(n)) return ''
-  return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const code = /^[A-Z]{3}$/.test(currency) ? currency : 'INR'
+  try {
+    return new Intl.NumberFormat(CURRENCY_LOCALE[code] ?? 'en', {
+      style: 'currency', currency: code, minimumFractionDigits: 2, maximumFractionDigits: 2,
+    }).format(n)
+  } catch {
+    return `${n.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
 }
 
 /** A neutral placeholder tile when a product has no image, so the layout never breaks. */
@@ -73,7 +86,7 @@ function imageCell(imageUrl: string | null, alt: string, size: number): string {
 
 // ── cart line items (what the shopper left behind) ──
 
-export type RenderOpts = { accent?: string }
+export type RenderOpts = { accent?: string; currency?: string }
 const DEFAULT_ACCENT = '#111827'
 
 /** Only allow a hex colour as accent — keep untrusted brand data out of inline styles. */
@@ -85,7 +98,7 @@ export function renderCartLineItems(items: RenderableLineItem[], opts?: RenderOp
   if (!Array.isArray(items) || items.length === 0) return ''
   const accent = safeColor(opts?.accent)
   const rows = items.map(item => {
-    const price = formatMoney(item.price)
+    const price = formatMoney(item.price, opts?.currency)
     const meta = [item.variant ? escapeHtml(item.variant) : '', item.quantity ? `Qty ${Number(item.quantity)}` : '']
       .filter(Boolean).join(' · ')
     return `
@@ -103,8 +116,8 @@ export function renderCartLineItems(items: RenderableLineItem[], opts?: RenderOp
 
 // ── recommendation grid (2-up cards) ──
 
-function productCard(p: RenderableProduct, accent: string): string {
-  const price = formatMoney(p.price)
+function productCard(p: RenderableProduct, accent: string, currency?: string): string {
+  const price = formatMoney(p.price, currency)
   const href = safeUrl(p.url)
   const inner = `
     ${imageCell(p.imageUrl ?? null, p.title, 220)}
@@ -122,7 +135,7 @@ export function renderProductGrid(products: RenderableProduct[], opts?: RenderOp
 
   // Pair into rows of two cells; each cell is a mob-stack card.
   const cells = list.map(p => `
-    <td class="mob-stack" width="50%" valign="top" style="width:50%;padding:8px;vertical-align:top;">${productCard(p, accent)}</td>`)
+    <td class="mob-stack" width="50%" valign="top" style="width:50%;padding:8px;vertical-align:top;">${productCard(p, accent, opts?.currency)}</td>`)
   const rows: string[] = []
   for (let i = 0; i < cells.length; i += 2) {
     const pair = cells.slice(i, i + 2)

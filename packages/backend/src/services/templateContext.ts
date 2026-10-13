@@ -5,6 +5,7 @@ import type {
   BrandKit,
 } from '@storees/shared'
 import { readPath } from '@storees/shared'
+import { formatMoney } from './productBlockRenderer.js'
 
 /**
  * Send-time variable resolver — the heart of Phase 0.
@@ -51,6 +52,7 @@ export type ProjectLike = {
   emailFromAddress?: string | null
   emailFromName?: string | null
   brandKit?: BrandKit | null
+  currency?: string | null
 }
 
 // Neutral fallbacks for brand tokens when a store has no brand kit synced.
@@ -137,7 +139,7 @@ export function resolveTemplateVariables({
 
   for (const variable of variables ?? []) {
     const raw = readSource(variable.source, customer, project, product, eventProperties, decisionContext)
-    const formatted = applyFormat(raw, variable.format)
+    const formatted = applyFormat(raw, variable.format, project.currency ?? undefined)
     const final = nonEmpty(formatted) ?? variable.defaultValue ?? ''
     out[variable.key] = final
   }
@@ -230,16 +232,15 @@ function readProjectField(project: ProjectLike, field: string): unknown {
   }
 }
 
-function applyFormat(raw: unknown, format: TemplateVariableFormat | undefined): string {
+function applyFormat(raw: unknown, format: TemplateVariableFormat | undefined, currency?: string): string {
   if (raw === null || raw === undefined) return ''
   if (!format) return String(raw)
 
   switch (format) {
     case 'money': {
-      const n = Number(raw)
-      if (!Number.isFinite(n)) return String(raw)
-      // Decimal columns store rupees (not paise). Round to 2dp + Indian-locale grouping.
-      return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      // Project currency (default INR). Decimal columns store major units.
+      const formatted = formatMoney(raw as string | number, currency)
+      return formatted || String(raw)
     }
     case 'date':
       return formatDate(raw, 'iso')
