@@ -127,11 +127,12 @@ export async function generateEmailLayout(
  */
 async function buildPreview(projectId: string, template: string, input: EmailLayoutInput): Promise<string> {
   const [row] = await db
-    .select({ id: projects.id, name: projects.name, emailFromName: projects.emailFromName, brandKit: projects.brandKit })
+    .select({ id: projects.id, name: projects.name, emailFromName: projects.emailFromName, brandKit: projects.brandKit, currency: projects.currency })
     .from(projects)
     .where(eq(projects.id, projectId))
     .limit(1)
   const project: ProjectLike = (row as ProjectLike) ?? { id: projectId, name: 'Your Store' }
+  const currency = project.currency ?? undefined
 
   const ctx = resolveTemplateVariables({
     variables: [],
@@ -143,12 +144,12 @@ async function buildPreview(projectId: string, template: string, input: EmailLay
     ctx.cart_items = renderCartLineItems([
       { name: 'Sample Product One', variant: 'Variant', quantity: 1, price: '1290' },
       { name: 'Sample Product Two', quantity: 2, price: '1190' },
-    ], { accent })
+    ], { accent, currency })
   }
   if (input.hasRecommendations) {
     ctx.recommended_products = renderProductGrid(
       ['Alpha', 'Beta', 'Gamma', 'Delta'].map((t, i) => ({ title: `Sample ${t}`, price: String(690 + i * 100) })),
-      { accent },
+      { accent, currency },
     )
   }
   ctx.cart_url = '#'; ctx.store_url = '#'; ctx.unsubscribe_url = '#'

@@ -3,8 +3,26 @@ import {
   renderCartLineItems,
   renderProductGrid,
   normalizeLineItems,
+  formatMoney,
   type RenderableProduct,
 } from './productBlockRenderer.js'
+
+describe('formatMoney', () => {
+  it('defaults to INR (₹)', () => {
+    expect(formatMoney('1290')).toBe('₹1,290.00')
+  })
+  it('formats other currencies by code', () => {
+    expect(formatMoney(1290, 'USD')).toContain('$')
+    expect(formatMoney(1290, 'GBP')).toContain('£')
+  })
+  it('falls back to INR for a bad currency code', () => {
+    expect(formatMoney(100, 'nonsense')).toBe('₹100.00')
+  })
+  it('returns empty for null/unparseable', () => {
+    expect(formatMoney(null)).toBe('')
+    expect(formatMoney('abc')).toBe('')
+  })
+})
 
 describe('renderProductGrid', () => {
   const products: RenderableProduct[] = [

@@ -6,8 +6,13 @@ import Link from 'next/link'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useAiEmailLayout, type EmailLayoutResult } from '@/hooks/useAiEmailLayout'
 import { useCreateTemplate } from '@/hooks/useTemplates'
-import { ArrowLeft, Sparkles, Loader2, Save, Wand2 } from 'lucide-react'
+import { useBrandKit } from '@/hooks/useBrandKit'
+import { aiBlocksToBuilderTemplate } from '@/lib/aiEmailToBuilder'
+import { ArrowLeft, Sparkles, Loader2, Save, Wand2, PencilRuler } from 'lucide-react'
 import { toast } from 'sonner'
+
+// Hand-off key read by the template editor (/templates/create?from=ai).
+export const AI_TEMPLATE_STASH = 'storees:ai-template'
 
 const TONES = ['persuasive', 'friendly', 'urgent', 'informative', 'playful', 'premium']
 const inputClass = 'w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
@@ -16,6 +21,7 @@ export default function AiEmailDesignerPage() {
   const router = useRouter()
   const generate = useAiEmailLayout()
   const createTemplate = useCreateTemplate()
+  const { data: brand } = useBrandKit()
 
   const [goal, setGoal] = useState('')
   const [tone, setTone] = useState('persuasive')
@@ -44,6 +50,20 @@ export default function AiEmailDesignerPage() {
       router.push('/templates')
     } catch (err) {
       toast.error((err as Error).message || 'Failed to save template')
+    }
+  }
+
+  function handleEditInBuilder() {
+    if (!result) return
+    const template = aiBlocksToBuilderTemplate(result.blocks, {
+      subject: result.subject,
+      accent: brand?.data?.effective?.accentColor,
+    })
+    try {
+      sessionStorage.setItem(AI_TEMPLATE_STASH, JSON.stringify({ name: name.trim(), subject: result.subject, template }))
+      router.push('/templates/create?from=ai')
+    } catch {
+      toast.error('Could not open the editor — try saving directly instead')
     }
   }
 
@@ -101,14 +121,23 @@ export default function AiEmailDesignerPage() {
                 <span className="block text-xs font-medium text-text-secondary mb-1">Template name</span>
                 <input value={name} onChange={e => setName(e.target.value)} placeholder="Abandoned cart — AI" className={inputClass} />
               </label>
-              <button
-                onClick={handleSave}
-                disabled={createTemplate.isPending}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50"
-              >
-                {createTemplate.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Save as template
-              </button>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={handleSave}
+                  disabled={createTemplate.isPending}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50"
+                >
+                  {createTemplate.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Save as template
+                </button>
+                <button
+                  onClick={handleEditInBuilder}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold border border-border text-text-secondary rounded-lg hover:bg-background transition-colors"
+                >
+                  <PencilRuler className="h-4 w-4" />
+                  Edit in builder
+                </button>
+              </div>
             </section>
           )}
         </div>
