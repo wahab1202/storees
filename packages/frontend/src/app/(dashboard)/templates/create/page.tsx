@@ -7,6 +7,7 @@ import { VariablePanel } from '@/components/templates/VariablePanel'
 import { EmailBuilder } from '@/components/email-builder/EmailBuilder'
 import { compileToHtml } from '@/lib/emailCompiler'
 import { DEFAULT_TEMPLATE, generateBlockId } from '@/lib/emailTypes'
+import { AI_TEMPLATE_STASH } from '../ai/constants'
 import { ArrowLeft, ChevronRight, Mail, MessageSquare, Bell, Loader2, Columns2, Columns3, Columns4, LayoutTemplate, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { EmailBlock, EmailTemplate } from '@/lib/emailTypes'
@@ -195,9 +196,9 @@ function CreateTemplateContent() {
   useEffect(() => {
     if (searchParams.get('from') !== 'ai') return
     try {
-      const raw = sessionStorage.getItem('storees:ai-template')
+      const raw = sessionStorage.getItem(AI_TEMPLATE_STASH)
       if (!raw) return
-      sessionStorage.removeItem('storees:ai-template')
+      sessionStorage.removeItem(AI_TEMPLATE_STASH)
       const stash = JSON.parse(raw) as { name?: string; subject?: string; template?: EmailTemplate }
       if (stash.template) {
         setEmailTemplate(stash.template)
