@@ -22,9 +22,21 @@ type LlmResponse = {
 }
 
 const DEFAULT_MODELS: Record<LlmProvider, string> = {
-  groq: 'llama-3.3-70b-versatile',
+  // Groq retired llama-3.3-70b-versatile (shutdown 2026-08-16); their mapped
+  // replacement is openai/gpt-oss-120b. See GROQ_FALLBACK_CHAIN for runtime
+  // resilience when a saved/old model is decommissioned.
+  groq: 'openai/gpt-oss-120b',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-sonnet-4-20250514',
+}
+
+// Ordered fallback for Groq: when the requested model is decommissioned (404 /
+// model_not_found), retry down this chain instead of failing the whole feature.
+const GROQ_FALLBACK_CHAIN = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']
+
+function isRetiredModelError(status: number, body: string): boolean {
+  if (status !== 404 && status !== 400) return false
+  return /model_not_found|model_decommissioned|does not exist|decommission/i.test(body)
 }
 
 const PROVIDER_URLS: Record<LlmProvider, string> = {
@@ -51,7 +63,7 @@ export async function getLlmConfig(projectId: string): Promise<LlmConfig | null>
     return {
       provider: settings.ai_provider as LlmProvider,
       apiKey: String(settings.ai_api_key),
-      model: String(settings.ai_model ?? DEFAULT_MODELS[settings.ai_provider as LlmProvider] ?? 'llama-3.3-70b-versatile'),
+      model: String(settings.ai_model ?? DEFAULT_MODELS[settings.ai_provider as LlmProvider] ?? DEFAULT_MODELS.groq),
     }
   }
 
@@ -97,36 +109,53 @@ async function callOpenAICompatible(
   temperature: number,
   maxTokens: number,
 ): Promise<LlmResponse> {
-  const resp = await fetch(PROVIDER_URLS[provider], {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature,
-      max_tokens: maxTokens,
-      response_format: { type: 'json_object' },
-    }),
-  })
+  // Candidate models: the requested one first, then (groq only) the fallback
+  // chain, so a decommissioned model degrades to a working one instead of
+  // failing the whole feature.
+  const candidates = [model]
+  if (provider === 'groq') {
+    for (const m of GROQ_FALLBACK_CHAIN) if (!candidates.includes(m)) candidates.push(m)
+  }
 
-  if (!resp.ok) {
+  let lastError = `${provider} API error`
+  for (let i = 0; i < candidates.length; i++) {
+    const tryModel = candidates[i]
+    const resp = await fetch(PROVIDER_URLS[provider], {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: tryModel,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        response_format: { type: 'json_object' },
+      }),
+    })
+
+    if (resp.ok) {
+      const data = await resp.json() as {
+        choices: Array<{ message: { content: string } }>
+        model: string
+      }
+      if (i > 0) console.warn(`[llm] ${provider} model "${model}" unavailable — used fallback "${tryModel}"`)
+      return {
+        content: data.choices[0]?.message?.content ?? '',
+        model: data.model,
+        provider,
+      }
+    }
+
     const err = await resp.text()
-    throw new Error(`${provider} API error (${resp.status}): ${err}`)
+    lastError = `${provider} API error (${resp.status}): ${err}`
+    // Only fall through on a retired-model error (groq chain); every other
+    // failure (auth, rate limit, bad request) throws immediately as before.
+    const canFallback = provider === 'groq' && isRetiredModelError(resp.status, err) && i < candidates.length - 1
+    if (!canFallback) throw new Error(lastError)
   }
-
-  const data = await resp.json() as {
-    choices: Array<{ message: { content: string } }>
-    model: string
-  }
-
-  return {
-    content: data.choices[0]?.message?.content ?? '',
-    model: data.model,
-    provider,
-  }
+  throw new Error(lastError)
 }
 
 async function callAnthropic(
