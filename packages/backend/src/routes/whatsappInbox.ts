@@ -1,8 +1,9 @@
 import { Router, Response } from 'express'
-import { eq, and, desc, sql, count } from 'drizzle-orm'
+import { eq, and, desc, sql, count, inArray, type SQL } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { whatsappConversations, whatsappInboundMessages, whatsappOutboundMessages, customers, adminUsers } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
+import { resolveScopedAgentIds } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
 import { sendWhatsappSessionText, recordOutbound } from '../services/whatsappChatbotService.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
@@ -13,6 +14,36 @@ router.use(requireProjectId)
 const VALID_STATUS = ['bot', 'human', 'closed'] as const
 type ConvoStatus = (typeof VALID_STATUS)[number]
 
+/**
+ * Dealer RBAC: a conversation belongs to a dealer's scope when its customer is
+ * one of theirs. Returns a SQL condition to AND into conversation queries:
+ *   null  → admin / unscoped (no filter)
+ *   SQL   → restrict to the agent's customers (excludes unknown-number threads)
+ *   'deny'→ caller has no valid scope; return nothing.
+ */
+async function conversationScope(req: AuthenticatedRequest, projectId: string): Promise<SQL | null | 'deny'> {
+  const agentIds = await resolveScopedAgentIds(req)
+  if (agentIds === null) return 'deny'
+  if (agentIds.length === 0) return null // admin — see everything
+  return inArray(
+    whatsappConversations.customerId,
+    db.select({ id: customers.id }).from(customers)
+      .where(and(eq(customers.projectId, projectId), inArray(customers.agentId, agentIds))),
+  )
+}
+
+/** Whether the caller may act on a conversation owned by `customerId`. */
+async function mayAccessConversation(req: AuthenticatedRequest, projectId: string, customerId: string | null): Promise<boolean> {
+  const agentIds = await resolveScopedAgentIds(req)
+  if (agentIds === null) return false
+  if (agentIds.length === 0) return true // admin
+  if (!customerId) return false // agents don't own unknown-number threads
+  const [row] = await db.select({ id: customers.id }).from(customers)
+    .where(and(eq(customers.id, customerId), eq(customers.projectId, projectId), inArray(customers.agentId, agentIds)))
+    .limit(1)
+  return !!row
+}
+
 // GET /api/whatsapp/inbox/conversations?status=&page=&pageSize=
 router.get('/conversations', async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -20,18 +51,26 @@ router.get('/conversations', async (req: AuthenticatedRequest, res: Response) =>
     const page = Math.max(1, Number(req.query.page) || 1)
     const pageSize = clampPageSize(Number(req.query.pageSize) || 25)
     const status = req.query.status as string | undefined
+
+    const scope = await conversationScope(req, projectId)
+    if (scope === 'deny') {
+      return res.json({ success: true, data: [], attention: 0, pagination: { page, pageSize, total: 0, totalPages: 0 } })
+    }
     const conds = [eq(whatsappConversations.projectId, projectId)]
     if (status && VALID_STATUS.includes(status as ConvoStatus)) {
       conds.push(eq(whatsappConversations.status, status))
     }
+    if (scope) conds.push(scope)
     const where = and(...conds)
 
     const [{ total }] = await db.select({ total: count() }).from(whatsappConversations).where(where)
     // Conversations needing a human, for the nav badge — independent of the filter.
+    const attentionConds = [eq(whatsappConversations.projectId, projectId), eq(whatsappConversations.status, 'human')]
+    if (scope) attentionConds.push(scope)
     const [{ attention }] = await db
       .select({ attention: count() })
       .from(whatsappConversations)
-      .where(and(eq(whatsappConversations.projectId, projectId), eq(whatsappConversations.status, 'human')))
+      .where(and(...attentionConds))
 
     const rows = await db
       .select({
@@ -75,11 +114,13 @@ router.get('/conversations/:id/messages', async (req: AuthenticatedRequest, res:
   try {
     const projectId = req.projectId!
     const [convo] = await db
-      .select({ phone: whatsappConversations.phone })
+      .select({ phone: whatsappConversations.phone, customerId: whatsappConversations.customerId })
       .from(whatsappConversations)
       .where(and(eq(whatsappConversations.id, req.params.id as string), eq(whatsappConversations.projectId, projectId)))
       .limit(1)
-    if (!convo) return res.status(404).json({ success: false, error: 'Conversation not found' })
+    if (!convo || !(await mayAccessConversation(req, projectId, convo.customerId))) {
+      return res.status(404).json({ success: false, error: 'Conversation not found' })
+    }
 
     const [inbound, outbound] = await Promise.all([
       db.select({ content: whatsappInboundMessages.content, at: whatsappInboundMessages.receivedAt, mediaType: whatsappInboundMessages.mediaType })
@@ -117,7 +158,9 @@ router.post('/conversations/:id/reply', async (req: AuthenticatedRequest, res: R
       .from(whatsappConversations)
       .where(and(eq(whatsappConversations.id, req.params.id as string), eq(whatsappConversations.projectId, projectId)))
       .limit(1)
-    if (!convo) return res.status(404).json({ success: false, error: 'Conversation not found' })
+    if (!convo || !(await mayAccessConversation(req, projectId, convo.customerId))) {
+      return res.status(404).json({ success: false, error: 'Conversation not found' })
+    }
 
     const sent = await sendWhatsappSessionText(projectId, convo.phone, text)
     if (!sent.ok) {
@@ -146,6 +189,15 @@ router.post('/conversations/:id/status', async (req: AuthenticatedRequest, res: 
     if (!VALID_STATUS.includes(status as ConvoStatus)) {
       return res.status(400).json({ success: false, error: `status must be one of ${VALID_STATUS.join(', ')}` })
     }
+    const [convo] = await db
+      .select({ customerId: whatsappConversations.customerId })
+      .from(whatsappConversations)
+      .where(and(eq(whatsappConversations.id, req.params.id as string), eq(whatsappConversations.projectId, projectId)))
+      .limit(1)
+    if (!convo || !(await mayAccessConversation(req, projectId, convo.customerId))) {
+      return res.status(404).json({ success: false, error: 'Conversation not found' })
+    }
+
     const patch: Record<string, unknown> = { status, updatedAt: new Date() }
     if (status === 'bot') { patch.botTurns = 0; patch.handoffReason = null } // reopen to the bot
 

@@ -58,6 +58,21 @@ export const vonageWhatsappProvider: ChannelProvider = {
     return { messageId: data.message_uuid ?? '', status: 'sent' }
   },
 
+  async sendSessionText(toPhone, text, config) {
+    const { apiKey, apiSecret, from } = config
+    const resp = await fetch('https://api.nexmo.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${apiKey}:${apiSecret}`).toString('base64'),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message_type: 'text', channel: 'whatsapp', from, to: toPhone, text }),
+    })
+    const data = await resp.json() as { message_uuid?: string; error?: { title?: string } }
+    if (!resp.ok) return { messageId: '', status: 'failed', error: data.error?.title ?? `HTTP ${resp.status}` }
+    return { messageId: data.message_uuid ?? '', status: 'sent' }
+  },
+
   /**
    * Vonage Messages API v1 template send. providerTemplateId stored is the WhatsApp HSM
    * template name; namespace is required separately (we stash it in templateLanguage).

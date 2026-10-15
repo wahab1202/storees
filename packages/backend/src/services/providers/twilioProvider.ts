@@ -67,6 +67,21 @@ export const twilioWhatsappProvider: ChannelProvider = {
     return { messageId: data.sid ?? '', status: data.status ?? 'queued' }
   },
 
+  async sendSessionText(toPhone, text, config) {
+    const { accountSid, authToken, fromNumber } = config
+    const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ From: `whatsapp:${fromNumber}`, To: `whatsapp:${toPhone}`, Body: text }),
+    })
+    const data = await resp.json() as { sid?: string; status?: string; message?: string }
+    if (!resp.ok) return { messageId: '', status: 'failed', error: data.message ?? `HTTP ${resp.status}` }
+    return { messageId: data.sid ?? '', status: data.status ?? 'queued' }
+  },
+
   /**
    * Twilio Content API template send. The template's providerTemplateId stored in our DB
    * must be the Twilio ContentSid. Params map to ContentVariables JSON keyed by '1','2',...

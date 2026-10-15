@@ -11,6 +11,7 @@ export type WhatsappChatbotConfig = {
   handoffKeywords: string[]
   faqs: ChatbotFaq[]
   maxTurns: number
+  answerUnknown: boolean
 }
 
 export function useWhatsappChatbotConfig() {

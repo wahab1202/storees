@@ -106,6 +106,21 @@ export const gupshupWhatsappProvider: ChannelProvider = {
     return { messageId: data.messageId ?? '', status: 'sent' }
   },
 
+  async sendSessionText(toPhone, text, config) {
+    const { apiKey, appName, sourceNumber } = config
+    const resp = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
+      method: 'POST',
+      headers: { 'apikey': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        channel: 'whatsapp', source: sourceNumber, destination: toPhone, 'src.name': appName,
+        message: JSON.stringify({ type: 'text', text }),
+      }),
+    })
+    const data = await resp.json() as { messageId?: string; status?: string; message?: string }
+    if (!resp.ok) return { messageId: '', status: 'failed', error: data.message ?? `HTTP ${resp.status}` }
+    return { messageId: data.messageId ?? '', status: 'sent' }
+  },
+
   /**
    * Sends an approved HSM template via Gupshup's template endpoint.
    * Required for messaging dormant contacts (outside 24h session).

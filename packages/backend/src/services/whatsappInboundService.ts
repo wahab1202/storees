@@ -168,11 +168,14 @@ export async function persistInboundMessages(
       if (m.ctwaReferral) {
         await handleCtwaReferral(projectId, customer.id, provider, m.ctwaReferral, m.providerMessageId)
       }
+    }
 
-      // AI chatbot auto-reply — fire-and-forget so it never slows or breaks the
-      // webhook. No-op unless enabled per project; it internally skips consent
-      // keywords, media-only messages, and human-handled threads.
-      void handleInboundForChatbot({ projectId, customerId: customer.id, fromPhone: m.fromPhone, content: m.content })
+    // AI chatbot auto-reply — fire-and-forget so it never slows or breaks the
+    // webhook. Runs for matched AND unmatched numbers (the chatbot decides:
+    // unknown numbers only get FAQ-only replies, and only when opted in). No-op
+    // unless enabled per project; skips consent keywords, media-only, human threads.
+    if (inserted.length > 0) {
+      void handleInboundForChatbot({ projectId, customerId: customer?.id ?? null, fromPhone: m.fromPhone, content: m.content })
     }
   }
 
