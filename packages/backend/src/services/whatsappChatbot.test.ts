@@ -8,6 +8,12 @@ describe('readChatbotConfig', () => {
     expect(cfg.faqs).toEqual([])
     expect(cfg.handoffKeywords).toEqual([])
     expect(cfg.maxTurns).toBe(8)
+    expect(cfg.answerUnknown).toBe(false)
+  })
+
+  it('reads answerUnknown only when explicitly true', () => {
+    expect(readChatbotConfig({ channels: { whatsapp: { chatbot: { answerUnknown: true } } } }).answerUnknown).toBe(true)
+    expect(readChatbotConfig({ channels: { whatsapp: { chatbot: { answerUnknown: 'yes' } } } }).answerUnknown).toBe(false)
   })
 
   it('reads an enabled chatbot config from settings.channels.whatsapp.chatbot', () => {
@@ -51,7 +57,7 @@ describe('readChatbotConfig', () => {
 })
 
 describe('wantsHumanHandoff', () => {
-  const base: ChatbotConfig = { enabled: true, handoffKeywords: [], faqs: [], maxTurns: 8 }
+  const base: ChatbotConfig = { enabled: true, handoffKeywords: [], faqs: [], maxTurns: 8, answerUnknown: false }
 
   it('matches built-in human-request patterns (case-insensitive)', () => {
     expect(wantsHumanHandoff('can I speak to a HUMAN', base)).toBe(true)

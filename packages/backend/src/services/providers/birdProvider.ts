@@ -65,6 +65,18 @@ export const birdWhatsappProvider: ChannelProvider = {
     return { messageId: data.id ?? '', status: 'sent' }
   },
 
+  async sendSessionText(toPhone, text, config) {
+    const { accessKey, channelId } = config
+    const resp = await fetch('https://conversations.messagebird.com/v1/conversations/start', {
+      method: 'POST',
+      headers: { 'Authorization': `AccessKey ${accessKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: toPhone, channelId, type: 'text', content: { text } }),
+    })
+    const data = await resp.json() as { id?: string; status?: string; errors?: Array<{ description: string }> }
+    if (!resp.ok) return { messageId: '', status: 'failed', error: data.errors?.[0]?.description ?? `HTTP ${resp.status}` }
+    return { messageId: data.id ?? '', status: 'sent' }
+  },
+
   /**
    * Bird Conversations template send. providerTemplateId stored in our DB is the Bird HSM
    * template projectId/name (Bird requires both — we serialize as 'projectId:name' or pass name only).

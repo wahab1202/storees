@@ -25,6 +25,8 @@ export type ChatbotConfig = {
   handoffKeywords: string[]
   faqs: Array<{ q: string; a: string }>
   maxTurns: number
+  /** Answer messages from numbers not in `customers` (FAQ-only; no order/rec data). */
+  answerUnknown: boolean
 }
 
 const DEFAULT_HANDOFF_PATTERNS = /\b(agent|human|representative|speak to someone|talk to a person|customer care)\b/i
@@ -39,6 +41,7 @@ export function readChatbotConfig(settings: unknown): ChatbotConfig {
     handoffKeywords: Array.isArray(bot.handoffKeywords) ? bot.handoffKeywords.filter((k: unknown) => typeof k === 'string') : [],
     faqs: Array.isArray(bot.faqs) ? bot.faqs.filter((f: any) => f && typeof f.q === 'string' && typeof f.a === 'string') : [],
     maxTurns: typeof bot.maxTurns === 'number' && bot.maxTurns > 0 ? bot.maxTurns : 8,
+    answerUnknown: bot.answerUnknown === true,
   }
 }
 
@@ -92,11 +95,12 @@ export async function recordOutbound(input: {
  */
 export async function handleInboundForChatbot(input: {
   projectId: string
-  customerId: string
+  customerId: string | null
   fromPhone: string
   content: string | null | undefined
 }): Promise<void> {
-  const { projectId, customerId, fromPhone } = input
+  const { projectId, fromPhone } = input
+  const customerId = input.customerId ?? null
   const content = (input.content ?? '').trim()
   try {
     if (!content) return // media-only / empty
@@ -107,6 +111,9 @@ export async function handleInboundForChatbot(input: {
     if (!project) return
     const cfg = readChatbotConfig(project.settings)
     if (!cfg.enabled) return
+    // Unknown number (no matched customer): answer only when opted in, and FAQ-only
+    // (there's no order/recommendation data to ground anything else).
+    if (!customerId && !cfg.answerUnknown) return
 
     const upper = content.toUpperCase()
     if (CONSENT_KEYWORDS.has(upper)) return // opt-in/out handled upstream
@@ -114,18 +121,28 @@ export async function handleInboundForChatbot(input: {
     const convo = await getOrCreateConversation(projectId, customerId, fromPhone)
     if (convo.status === 'human') return // a human owns this thread
 
+    // Proactive greeting on the first message of a brand-new conversation.
+    if (convo.isNew && cfg.greeting) {
+      const g = await sendWhatsappSessionText(projectId, fromPhone, cfg.greeting)
+      if (g.ok) await recordOutbound({ projectId, customerId, phone: fromPhone, content: cfg.greeting, sentBy: 'bot', providerMessageId: g.messageId })
+    }
+
     // Explicit ask for a person, or we've looped enough — hand off.
     if (wantsHumanHandoff(content, cfg)) return handoff(convo.id, projectId, customerId, fromPhone, 'requested_human')
     if (convo.botTurns >= cfg.maxTurns) return handoff(convo.id, projectId, customerId, fromPhone, 'turn_cap')
 
-    const [customer] = await db
-      .select({ name: customers.name })
-      .from(customers).where(eq(customers.id, customerId)).limit(1)
-    const recentOrders = await loadRecentOrders(projectId, customerId)
+    // Known customer → name + order history; unknown → FAQ-only (no data).
+    let customerName: string | null = null
+    let recentOrders: Array<Record<string, unknown>> = []
+    if (customerId) {
+      const [customer] = await db.select({ name: customers.name }).from(customers).where(eq(customers.id, customerId)).limit(1)
+      customerName = customer?.name ?? null
+      recentOrders = await loadRecentOrders(projectId, customerId)
+    }
 
     const decision = await decide(projectId, cfg, {
       businessName: project.name,
-      customerName: customer?.name ?? null,
+      customerName,
       message: content,
       recentOrders,
     })
@@ -135,7 +152,7 @@ export async function handleInboundForChatbot(input: {
     }
 
     let reply = decision.reply.trim()
-    if (decision.intent === 'product_recommendation') {
+    if (decision.intent === 'product_recommendation' && customerId) {
       const recs = await recommendForCustomer(projectId, customerId, 3).catch(() => [])
       if (recs.length) reply += '\n\n' + recs.map(r => `• ${r.title}`).join('\n')
     }
@@ -159,9 +176,9 @@ export async function handleInboundForChatbot(input: {
 
 // ── internals ──
 
-type ConvoRow = { id: string; status: string; botTurns: number }
+type ConvoRow = { id: string; status: string; botTurns: number; isNew: boolean }
 
-async function getOrCreateConversation(projectId: string, customerId: string, phone: string): Promise<ConvoRow> {
+async function getOrCreateConversation(projectId: string, customerId: string | null, phone: string): Promise<ConvoRow> {
   const now = new Date()
   const [existing] = await db
     .select({ id: whatsappConversations.id, status: whatsappConversations.status, botTurns: whatsappConversations.botTurns })
@@ -175,18 +192,18 @@ async function getOrCreateConversation(projectId: string, customerId: string, ph
       await db.update(whatsappConversations)
         .set({ status: 'bot', botTurns: 0, customerId, lastInboundAt: now, updatedAt: now })
         .where(eq(whatsappConversations.id, existing.id))
-      return { ...existing, status: 'bot', botTurns: 0 }
+      return { ...existing, status: 'bot', botTurns: 0, isNew: false }
     }
     await db.update(whatsappConversations)
       .set({ customerId, lastInboundAt: now, updatedAt: now })
       .where(eq(whatsappConversations.id, existing.id))
-    return existing
+    return { ...existing, isNew: false }
   }
 
   const [row] = await db.insert(whatsappConversations)
     .values({ projectId, customerId, phone, status: 'bot', lastInboundAt: now })
     .returning({ id: whatsappConversations.id, status: whatsappConversations.status, botTurns: whatsappConversations.botTurns })
-  return row
+  return { ...row, isNew: true }
 }
 
 async function loadRecentOrders(projectId: string, customerId: string): Promise<Array<Record<string, unknown>>> {
@@ -214,7 +231,7 @@ async function loadRecentOrders(projectId: string, customerId: string): Promise<
   }))
 }
 
-async function handoff(convoId: string, projectId: string, customerId: string, phone: string, reason: string): Promise<void> {
+async function handoff(convoId: string, projectId: string, customerId: string | null, phone: string, reason: string): Promise<void> {
   await db.update(whatsappConversations)
     .set({ status: 'human', handoffReason: reason, updatedAt: new Date() })
     .where(eq(whatsappConversations.id, convoId))
@@ -225,7 +242,7 @@ async function handoff(convoId: string, projectId: string, customerId: string, p
   await logBotEvent(projectId, customerId, phone, 'whatsapp_handoff', { reason })
 }
 
-async function logBotEvent(projectId: string, customerId: string, phone: string, eventName: string, props: Record<string, unknown>): Promise<void> {
+async function logBotEvent(projectId: string, customerId: string | null, phone: string, eventName: string, props: Record<string, unknown>): Promise<void> {
   await db.insert(events).values({
     projectId,
     customerId,

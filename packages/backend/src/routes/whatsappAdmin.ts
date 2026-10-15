@@ -1154,6 +1154,7 @@ router.put('/chatbot-config', requireProjectId, async (req, res) => {
         .filter((k): k is string => typeof k === 'string' && !!k.trim()).map(k => k.trim()).slice(0, 30),
       faqs,
       maxTurns: typeof b.maxTurns === 'number' && b.maxTurns > 0 ? Math.min(Math.floor(b.maxTurns), 20) : 8,
+      answerUnknown: b.answerUnknown === true,
     }
 
     const [project] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, req.projectId!)).limit(1)

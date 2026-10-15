@@ -15,6 +15,7 @@ export function WhatsappChatbotPanel() {
   const [greeting, setGreeting] = useState('')
   const [keywords, setKeywords] = useState('')
   const [faqs, setFaqs] = useState<ChatbotFaq[]>([])
+  const [answerUnknown, setAnswerUnknown] = useState(false)
 
   useEffect(() => {
     const c = data?.data
@@ -23,6 +24,7 @@ export function WhatsappChatbotPanel() {
     setGreeting(c.greeting ?? '')
     setKeywords((c.handoffKeywords ?? []).join(', '))
     setFaqs(c.faqs ?? [])
+    setAnswerUnknown(c.answerUnknown ?? false)
   }, [data])
 
   function updateFaq(i: number, field: 'q' | 'a', value: string) {
@@ -38,6 +40,7 @@ export function WhatsappChatbotPanel() {
         handoffKeywords: keywords.split(',').map(k => k.trim()).filter(Boolean),
         faqs: cleanFaqs,
         maxTurns: data?.data?.maxTurns ?? 8,
+        answerUnknown,
       })
       toast.success('Chatbot settings saved')
     } catch (err) {
@@ -80,6 +83,22 @@ export function WhatsappChatbotPanel() {
             <input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="refund, complaint, cancel" className={inputClass} />
             <p className="mt-1 text-xs text-text-muted">Comma-separated. A message containing any of these (or asking for a human/agent) is routed to a person instead of the bot.</p>
           </label>
+
+          <div className="flex items-start justify-between gap-4 p-3 border border-border rounded-lg bg-background/40">
+            <div>
+              <p className="text-sm font-medium text-text-primary">Answer unknown numbers</p>
+              <p className="text-xs text-text-muted">Reply to people not yet in your customer list (FAQ-only — no order or recommendation data). Captures cold inbound leads.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={answerUnknown}
+              onClick={() => setAnswerUnknown(v => !v)}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${answerUnknown ? 'bg-accent' : 'bg-slate-300'}`}
+            >
+              <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${answerUnknown ? 'translate-x-5' : 'translate-x-0.5'}`} />
+            </button>
+          </div>
 
           <div>
             <div className="flex items-center justify-between mb-2">
