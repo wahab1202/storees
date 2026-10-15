@@ -32,6 +32,7 @@ import {
   UserCircle,
   PlugsConnected as Webhook,
   ArrowsLeftRight as EventMapIcon,
+  ChatCircleDots as InboxIcon,
 } from '@phosphor-icons/react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -55,6 +56,7 @@ const navItems: NavItem[] = [
   { href: '/segments', label: 'Segments', icon: PieChart },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
+  { href: '/inbox', label: 'Inbox', icon: InboxIcon },
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   { href: '/flows', label: 'Flows', icon: Workflow, adminOnly: true },
   { href: '/event-sources', label: 'Event Sources', icon: Webhook, adminOnly: true },

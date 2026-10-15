@@ -1243,6 +1243,25 @@ export const whatsappConversations = pgTable('whatsapp_conversations', {
   index('idx_wa_convos_status').on(table.projectId, table.status, table.updatedAt),
 ])
 
+// ============ WHATSAPP OUTBOUND MESSAGES (support inbox) ============
+// Chatbot + human-agent replies. Paired with whatsapp_inbound_messages to form
+// the full conversation thread. See migration 0090.
+export const whatsappOutboundMessages = pgTable('whatsapp_outbound_messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+  phone: varchar('phone', { length: 50 }).notNull(),
+  content: text('content').notNull(),
+  // 'bot' | 'agent'
+  sentBy: varchar('sent_by', { length: 10 }).notNull(),
+  agentUserId: uuid('agent_user_id').references(() => adminUsers.id, { onDelete: 'set null' }),
+  providerMessageId: varchar('provider_message_id', { length: 255 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('idx_wa_outbound_phone').on(table.projectId, table.phone, table.createdAt),
+  index('idx_wa_outbound_customer').on(table.projectId, table.customerId, table.createdAt),
+])
+
 // WhatsApp usage metering — one row per billable conversation window (Meta bills
 // per conversation, categorised marketing/utility/authentication/service).
 // See migration 0079_whatsapp_usage.sql for column-level docs.
