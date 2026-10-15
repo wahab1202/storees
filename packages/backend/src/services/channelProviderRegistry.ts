@@ -111,11 +111,19 @@ export type ChannelProvider = {
   /** Refresh status for a previously-submitted template. */
   getTemplateStatus?(providerTemplateId: string, config: Record<string, string>): Promise<TemplateStatusResult>
   parseInbound?(payload: unknown): InboundMessage[]
+  /**
+   * Send a FREE-FORM session text message (WhatsApp 24h customer-service window)
+   * — used by the AI chatbot to reply to inbound messages. Distinct from `send`,
+   * which is template/content-id based. Only providers that support session text
+   * implement it; the chatbot hands off to a human when it's absent.
+   */
+  sendSessionText?(toPhone: string, text: string, config: Record<string, string>): Promise<SendResult>
 }
 
 export type ProviderCapabilities = {
   sendText: boolean
   sendTemplate: boolean
+  sendSessionText: boolean
   syncTemplates: boolean
   submitTemplate: boolean
   getTemplateStatus: boolean
@@ -125,6 +133,7 @@ export type ProviderCapabilities = {
 export function getProviderCapabilities(provider: ChannelProvider): ProviderCapabilities {
   return {
     sendText: typeof provider.send === 'function',
+    sendSessionText: typeof provider.sendSessionText === 'function',
     sendTemplate: typeof provider.sendTemplate === 'function',
     syncTemplates: typeof provider.syncTemplates === 'function',
     submitTemplate: typeof provider.submitTemplate === 'function',

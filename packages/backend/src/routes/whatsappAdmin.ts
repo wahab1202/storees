@@ -10,6 +10,7 @@ import { linkMetaWhatsappAccount, registerWhatsappNumber } from '../services/wha
 import { getBusinessProfile, updateBusinessProfile, setProfilePhotoFromUrl, type BusinessProfilePatch } from '../services/whatsappProfileService.js'
 import { getUsageSummary } from '../services/whatsappUsageService.js'
 import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache, type SubmitTemplateInput } from '../services/channelProviderRegistry.js'
+import { readChatbotConfig } from '../services/whatsappChatbotService.js'
 import { lintTemplate, hasBlockingErrors, type TemplateLintInput } from '../services/templateLinter.js'
 import { countParameters, buildBodyParams } from '../services/providers/whatsappUtils.js'
 import { syncWhatsappTemplatesForProject } from '../services/whatsappTemplateSyncService.js'
@@ -1113,6 +1114,58 @@ router.post('/connect-pinnacle', requireProjectId, async (req, res) => {
   } catch (err) {
     console.error('POST /whatsapp/connect-pinnacle error:', err)
     res.status(500).json({ success: false, error: 'Failed to connect Pinnacle WhatsApp' })
+  }
+})
+
+// ── AI chatbot config (settings.channels.whatsapp.chatbot) ──
+
+// GET /api/whatsapp/chatbot-config
+router.get('/chatbot-config', requireProjectId, async (req, res) => {
+  try {
+    const [project] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, req.projectId!)).limit(1)
+    res.json({ success: true, data: readChatbotConfig(project?.settings) })
+  } catch (err) {
+    console.error('GET /whatsapp/chatbot-config error:', err)
+    res.status(500).json({ success: false, error: 'Failed to load chatbot config' })
+  }
+})
+
+// PUT /api/whatsapp/chatbot-config — body: { enabled, greeting?, handoffKeywords?, faqs?, maxTurns? }
+router.put('/chatbot-config', requireProjectId, async (req, res) => {
+  try {
+    const b = (req.body ?? {}) as Record<string, unknown>
+    const faqsRaw = Array.isArray(b.faqs) ? b.faqs : []
+    const faqs = faqsRaw
+      .filter((f): f is { q: string; a: string } => !!f && typeof (f as any).q === 'string' && typeof (f as any).a === 'string')
+      .map(f => ({ q: f.q.trim(), a: f.a.trim() }))
+      .filter(f => f.q && f.a)
+      .slice(0, 50)
+    const chatbot = {
+      enabled: b.enabled === true,
+      greeting: typeof b.greeting === 'string' ? b.greeting.trim().slice(0, 500) : undefined,
+      handoffKeywords: (Array.isArray(b.handoffKeywords) ? b.handoffKeywords : [])
+        .filter((k): k is string => typeof k === 'string' && !!k.trim()).map(k => k.trim()).slice(0, 30),
+      faqs,
+      maxTurns: typeof b.maxTurns === 'number' && b.maxTurns > 0 ? Math.min(Math.floor(b.maxTurns), 20) : 8,
+    }
+
+    const [project] = await db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, req.projectId!)).limit(1)
+    const settings = (project?.settings ?? {}) as Record<string, any>
+    const channels = (settings.channels ?? {}) as Record<string, any>
+    const whatsapp = (channels.whatsapp ?? {}) as Record<string, any>
+    const mergedChannels = { ...channels, whatsapp: { ...whatsapp, chatbot } }
+
+    await db.execute(sql`
+      UPDATE projects SET
+        settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{channels}', ${JSON.stringify(mergedChannels)}::jsonb),
+        updated_at = NOW()
+      WHERE id = ${req.projectId!}
+    `)
+    clearProjectChannelProviderCache(req.projectId!)
+    res.json({ success: true, data: readChatbotConfig({ channels: mergedChannels }) })
+  } catch (err) {
+    console.error('PUT /whatsapp/chatbot-config error:', err)
+    res.status(500).json({ success: false, error: 'Failed to save chatbot config' })
   }
 })
 

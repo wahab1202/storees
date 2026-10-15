@@ -1222,6 +1222,27 @@ export const whatsappInboundMessages = pgTable('whatsapp_inbound_messages', {
   index('idx_wa_inbound_phone').on(table.projectId, table.fromPhone, table.receivedAt),
 ])
 
+// ============ WHATSAPP CHATBOT CONVERSATIONS ============
+// Per-(project, phone) bot/human state machine for the AI auto-responder.
+// See migration 0089.
+export const whatsappConversations = pgTable('whatsapp_conversations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+  phone: varchar('phone', { length: 50 }).notNull(),
+  // 'bot' | 'human' | 'closed'
+  status: varchar('status', { length: 20 }).notNull().default('bot'),
+  botTurns: integer('bot_turns').notNull().default(0),
+  lastInboundAt: timestamp('last_inbound_at', { withTimezone: true }),
+  lastBotAt: timestamp('last_bot_at', { withTimezone: true }),
+  handoffReason: text('handoff_reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('idx_wa_convos_project_phone').on(table.projectId, table.phone),
+  index('idx_wa_convos_status').on(table.projectId, table.status, table.updatedAt),
+])
+
 // WhatsApp usage metering — one row per billable conversation window (Meta bills
 // per conversation, categorised marketing/utility/authentication/service).
 // See migration 0079_whatsapp_usage.sql for column-level docs.

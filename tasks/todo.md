@@ -1,43 +1,34 @@
-# Data-oriented roles & field-level PII masking
+# AI WhatsApp Chatbot (Bitespeed roadmap — Phase 1)
 
-Goal: custom per-project roles that control BOTH screen access AND data visibility.
-First real use case: "give an employee customer-data access, but hide contact details."
+Auto-respond to inbound WhatsApp: FAQs, order tracking, product recommendations,
+human handoff. Composes existing inbound capture + recommendations + /ai LLM stack.
 
-Locked decisions (2026-10-09):
-- Model: **full custom-roles builder** (per-project roles, not just flags on legacy roles).
-- Masked fields: **email + phone/WhatsApp** (name & address stay visible).
-- Mask style: **partial** — `j•••@•••.com`, `+91•••••7100` (keep last 4).
-- Export: **block entirely** for roles without contact access (403 + hide button).
+## Architecture
+- Inbound hook: `persistInboundMessages` (after persist, matched customer, text content).
+- Replies are SESSION messages (24h customer-service window) — free-form text, no template.
+- Outbound: add `sendText` capability to providers (Meta ✓ via Cloud API; others later).
+  Provider without sendText → engine hands off to a human instead of failing.
+- Per-project config under `settings.channels.whatsapp.chatbot`.
 
-Principle: **masking is enforced server-side** — the API redacts before the response
-leaves the backend. Frontend hiding alone = leak via devtools/network/CSV.
+## Backend
+- [ ] Migration + schema: `whatsapp_conversations` (project, customer, phone, status
+      bot|human|closed, bot_turns, last_inbound_at, last_bot_at, handoff_reason).
+- [ ] `ChannelProvider.sendText?(toPhone, text, config)` + metaWhatsappProvider.sendText
+      + `getProviderCapabilities` exposes it.
+- [ ] `sendWhatsappSessionText(projectId, toPhone, text)` helper (resolves provider).
+- [ ] `whatsappChatbotService.ts`:
+  - [ ] read config (enabled, greeting, handoffKeywords, faqs[])
+  - [ ] guard: enabled, text content, not STOP/START, conversation not 'human', turn cap
+  - [ ] classify intent + draft reply via llmService (strict JSON: intent, reply, needsHuman, confidence)
+  - [ ] order_status → look up customer's recent orders
+  - [ ] product intent → recommendForCustomer → format as text
+  - [ ] handoff → set status 'human', send handoff msg, emit event, stop
+  - [ ] send reply, bump turns, log bot message + emit `whatsapp_bot_reply` event
+- [ ] Wire into `persistInboundMessages` (fire-and-forget, guarded).
+- [ ] Tests: engine (mock LLM + provider): intent routing, handoff, turn cap, disabled no-op.
 
-Default is non-breaking: a user with no custom role (or legacy admin/manager/agent)
-keeps FULL access. Masking only applies when a role explicitly sets viewContactPii=false.
+## Config / UI (follow-on)
+- [ ] Settings → WhatsApp: chatbot toggle + greeting + FAQs + handoff keywords.
 
-## Backend — DONE
-
-- [x] Migration 0086: `roles` table + `admin_users.role_id` FK (ON DELETE SET NULL). Applied, verified in DB.
-- [x] schema.ts: `roles` pgTable + `adminUsers.roleId`.
-- [x] `lib/pii.ts`: maskEmail, maskPhone, redactCustomerContact/redactContactFields, scrubJsonbPii.
-- [x] `middleware/capabilities.ts`: ViewerCapabilities + getViewerCaps (cached, bounded) + invalidateCaps/invalidateAllCaps + requireCapability.
-- [x] Masking enforced at all egress points: customers list/detail/journey/events; events feed + session debugger; logs/notifications; dashboard activity; predictions goal customers; segments preview; inbound-webhook events/explain/schema; test-send sample context (campaigns + whatsappAdmin).
-- [x] Export blocked when !exportCustomers: consent-export (requireRole+requireCapability) + segment export-audience.
-- [x] `routes/roles.ts` (`/api/roles`): list/create/update/delete, mounted in index.ts.
-- [x] adminUsers POST/PATCH accept + validate `roleId`; invalidateCaps on change; GET returns roleId/roleName.
-- [x] `/api/auth/me` returns resolved capabilities.
-
-## Frontend — DONE
-
-- [x] `hooks/useRoles.ts` (+ useMyCapabilities).
-- [x] `settings/roles/page.tsx` — roles builder (toggles: see contact details, export customers).
-- [x] settings/layout.tsx — Roles tab (adminOnly).
-- [x] team page — Permissions column + invite-form select to assign a role.
-- [x] ExportAudienceButton hidden when !capabilities.exportCustomers.
-
-## Verify — DONE
-- [x] typecheck both packages (backend exit 0, frontend clean)
-- [x] masking unit check: j•••@•••.com, phone keeps last 4, nested JSONB scrubbed, viewContactPii=true passes through
-- [ ] Manual UAT: create "Support (no contact)" role → assign → confirm masked list/detail + 403 export
-- [ ] NOTE: screen-level scoping via custom roles is stored (`screens`) but not yet enforced — sidebar still gates by legacy role. Follow-up.
-- [ ] GWM branch: cherry-pick / re-apply (mirrors multi-client pattern). Not pushed.
+## Verify
+- [ ] typecheck both packages; unit tests; full `npm run build`

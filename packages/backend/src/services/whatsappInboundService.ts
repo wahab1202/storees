@@ -5,6 +5,7 @@ import type { InboundMessage, CtwaReferral } from './channelProviderRegistry.js'
 import { resolveCustomer } from './customerService.js'
 import { updateConsent } from './consentService.js'
 import { eventsQueue } from './queue.js'
+import { handleInboundForChatbot } from './whatsappChatbotService.js'
 
 // Compliance-standard opt-out / opt-in keywords (case-insensitive, exact match after trim)
 const OPT_OUT_KEYWORDS = new Set(['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'OPTOUT', 'OPT OUT', 'STOP ALL'])
@@ -167,6 +168,11 @@ export async function persistInboundMessages(
       if (m.ctwaReferral) {
         await handleCtwaReferral(projectId, customer.id, provider, m.ctwaReferral, m.providerMessageId)
       }
+
+      // AI chatbot auto-reply — fire-and-forget so it never slows or breaks the
+      // webhook. No-op unless enabled per project; it internally skips consent
+      // keywords, media-only messages, and human-handled threads.
+      void handleInboundForChatbot({ projectId, customerId: customer.id, fromPhone: m.fromPhone, content: m.content })
     }
   }
 
