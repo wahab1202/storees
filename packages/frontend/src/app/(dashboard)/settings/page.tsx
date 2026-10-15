@@ -7,6 +7,7 @@ import { getProjectId, withProject } from '@/lib/project'
 import { api } from '@/lib/api'
 import { useSdkConfig } from '@/hooks/useSdkConfig'
 import { WhatsappChannelPanel } from './WhatsappChannelPanel'
+import { WhatsappChatbotPanel } from './WhatsappChatbotPanel'
 import { DataMaintenance } from './DataMaintenance'
 import { cn } from '@/lib/utils'
 import { Loader2, CheckCircle2, XCircle, Sparkles, Smartphone, MessageSquare, Bell, Activity, Mail } from 'lucide-react'
@@ -472,7 +473,10 @@ function ChannelProviderSettings() {
       {/* WhatsApp gets a dedicated, multi-section panel (status · connection ·
           business profile · usage). Other channels use the generic form. */}
       {activeChannel === 'whatsapp' ? (
-        <WhatsappChannelPanel />
+        <div className="space-y-4">
+          <WhatsappChannelPanel />
+          <WhatsappChatbotPanel />
+        </div>
       ) : activeChannel ? (
         <div className="border border-border rounded-xl overflow-hidden">
           {/* Provider Grid */}

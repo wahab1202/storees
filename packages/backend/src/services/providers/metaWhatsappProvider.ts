@@ -193,6 +193,27 @@ export const metaWhatsappProvider: ChannelProvider = {
   },
 
   /**
+   * Free-form session text (24h customer-service window) — the AI chatbot's reply
+   * path. Same Cloud API text message as `send`, but with an explicit recipient +
+   * arbitrary body rather than a resolved template.
+   */
+  async sendSessionText(toPhone, text, config) {
+    const { phoneNumberId } = config
+    const accessToken = tokenOf(config)
+    const to = normalizeWhatsAppRecipient(toPhone)
+    if (!to) return { messageId: '', status: 'failed', error: 'No phone number' }
+
+    const resp = await fetch(`https://graph.facebook.com/v23.0/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } }),
+    })
+    const data = await resp.json() as { messages?: Array<{ id: string }>; error?: { message: string } }
+    if (!resp.ok) return { messageId: '', status: 'failed', error: data.error?.message ?? `HTTP ${resp.status}` }
+    return { messageId: data.messages?.[0]?.id ?? '', status: 'sent' }
+  },
+
+  /**
    * Sends an approved HSM template — required for messaging contacts outside the 24h session window.
    */
   async sendTemplate(command, config) {
