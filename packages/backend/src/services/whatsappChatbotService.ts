@@ -1,6 +1,6 @@
 import { and, eq, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { projects, customers, orders, events, whatsappConversations, whatsappOutboundMessages } from '../db/schema.js'
+import { projects, customers, orders, events, whatsappConversations, whatsappInboundMessages, whatsappOutboundMessages } from '../db/schema.js'
 import { getLlmConfig, chatCompletion } from './llmService.js'
 import { getChannelProvider } from './channelProviderRegistry.js'
 import { recommendForCustomer } from './decisioningService.js'
@@ -140,11 +140,13 @@ export async function handleInboundForChatbot(input: {
       recentOrders = await loadRecentOrders(projectId, customerId)
     }
 
+    const history = await loadRecentThread(projectId, fromPhone)
     const decision = await decide(projectId, cfg, {
       businessName: project.name,
       customerName,
       message: content,
       recentOrders,
+      history,
     })
     if (!decision) return handoff(convo.id, projectId, customerId, fromPhone, 'ai_unavailable')
     if (decision.needsHuman || decision.intent === 'handoff' || decision.confidence < 0.4) {
@@ -206,6 +208,29 @@ async function getOrCreateConversation(projectId: string, customerId: string | n
   return { ...row, isNew: true }
 }
 
+/** Last `limit` messages (inbound + outbound) for a phone, chronological — the bot's memory. */
+async function loadRecentThread(projectId: string, phone: string, limit = 8): Promise<ThreadTurn[]> {
+  const [inbound, outbound] = await Promise.all([
+    db.select({ content: whatsappInboundMessages.content, at: whatsappInboundMessages.receivedAt })
+      .from(whatsappInboundMessages)
+      .where(and(eq(whatsappInboundMessages.projectId, projectId), eq(whatsappInboundMessages.fromPhone, phone)))
+      .orderBy(desc(whatsappInboundMessages.receivedAt)).limit(limit),
+    db.select({ content: whatsappOutboundMessages.content, at: whatsappOutboundMessages.createdAt })
+      .from(whatsappOutboundMessages)
+      .where(and(eq(whatsappOutboundMessages.projectId, projectId), eq(whatsappOutboundMessages.phone, phone)))
+      .orderBy(desc(whatsappOutboundMessages.createdAt)).limit(limit),
+  ])
+  const t = (d: Date | string | null) => new Date(d as unknown as string).getTime()
+  return [
+    ...inbound.map(m => ({ role: 'customer' as const, content: (m.content ?? '').trim(), at: m.at })),
+    ...outbound.map(m => ({ role: 'assistant' as const, content: m.content.trim(), at: m.at })),
+  ]
+    .filter(m => m.content)
+    .sort((a, b) => t(a.at) - t(b.at))
+    .slice(-limit)
+    .map(({ role, content }) => ({ role, content }))
+}
+
 async function loadRecentOrders(projectId: string, customerId: string): Promise<Array<Record<string, unknown>>> {
   const rows = await db
     .select({
@@ -254,28 +279,41 @@ async function logBotEvent(projectId: string, customerId: string | null, phone: 
   }).catch(() => {})
 }
 
+export type ThreadTurn = { role: 'customer' | 'assistant'; content: string }
+
 const SYSTEM_PROMPT = [
   'You are a helpful WhatsApp support assistant for an e-commerce store.',
-  'Decide how to handle the customer message and reply concisely (WhatsApp style, under ~500 characters, no markdown).',
+  'You are given the recent conversation (most recent last); reply to the LAST customer message, using the earlier turns for context (resolve references like "the blue one", "my second order", "yes").',
+  'Reply concisely in WhatsApp style (under ~500 characters, no markdown), in the SAME language the customer used.',
   'Respond with STRICT JSON only: {"intent":"faq|order_status|product_recommendation|greeting|other|handoff","reply":"...","needsHuman":false,"confidence":0.0}',
-  'Rules: use ONLY the provided FAQ answers and order data — never invent order numbers, prices, refund outcomes, or policies. If the question needs information you do not have (refunds, complaints, account changes, anything sensitive), set needsHuman=true. confidence is your certainty the reply is correct (0-1).',
-  'For product questions use intent "product_recommendation" (the system appends product suggestions). For order questions use "order_status" and answer from the order data.',
+  'Grounding: use ONLY the provided FAQ answers and order data. NEVER invent order numbers, prices, delivery dates, refund outcomes, discounts, or policies. If you are not sure, or the request needs something you do not have (refunds, complaints, cancellations, payment/account changes, anything sensitive), set needsHuman=true and keep the reply a brief holding message.',
+  'confidence (0-1) is how certain you are the reply is correct and grounded; be honest — a guess is low confidence.',
+  'Intents: "order_status" (answer from the order data), "product_recommendation" (the system appends real product suggestions — keep your reply a short lead-in), "faq", "greeting" (a hello/thanks — reply warmly and briefly, do NOT repeat a greeting the bot already sent), "handoff" (the customer wants a person), "other".',
 ].join('\n')
+
+function renderTranscript(history: ThreadTurn[]): string {
+  return history.map(t => `${t.role === 'customer' ? 'Customer' : 'Assistant'}: ${t.content}`).join('\n')
+}
 
 async function decide(
   projectId: string,
   cfg: ChatbotConfig,
-  ctx: { businessName: string; customerName: string | null; message: string; recentOrders: Array<Record<string, unknown>> },
+  ctx: { businessName: string; customerName: string | null; message: string; recentOrders: Array<Record<string, unknown>>; history: ThreadTurn[] },
 ): Promise<BotDecision | null> {
   const config = await getLlmConfig(projectId)
   if (!config) return null
 
+  // Only feed the FAQs most relevant to the conversation, so grounding scales to
+  // large knowledge bases without blowing the prompt.
+  const faqs = selectRelevantFaqs(cfg.faqs, `${ctx.message} ${ctx.history.map(h => h.content).join(' ')}`)
+  const transcript = ctx.history.length ? renderTranscript(ctx.history) : `Customer: ${ctx.message}`
+
   const user = [
     `Business: ${ctx.businessName}`,
     ctx.customerName ? `Customer name: ${ctx.customerName}` : '',
-    cfg.faqs.length ? `FAQs (use these answers verbatim where relevant):\n${cfg.faqs.map(f => `Q: ${f.q}\nA: ${f.a}`).join('\n')}` : 'No FAQs provided.',
+    faqs.length ? `FAQs (use these answers verbatim where relevant):\n${faqs.map(f => `Q: ${f.q}\nA: ${f.a}`).join('\n')}` : 'No FAQs provided.',
     ctx.recentOrders.length ? `Customer's recent orders (JSON):\n${JSON.stringify(ctx.recentOrders)}` : 'No recent orders on file.',
-    `Customer message: ${ctx.message}`,
+    `Conversation (most recent last):\n${transcript}`,
   ].filter(Boolean).join('\n\n')
 
   try {
@@ -297,6 +335,35 @@ async function decide(
     console.error('[whatsapp-chatbot] LLM decide failed:', (err as Error).message)
     return null
   }
+}
+
+/**
+ * Pick the FAQs most relevant to the current conversation. Returns all when the
+ * knowledge base is small; otherwise scores each FAQ by word overlap with the
+ * query and keeps the top `max`. Pure + cheap (no embeddings).
+ */
+export function selectRelevantFaqs(
+  faqs: Array<{ q: string; a: string }>,
+  query: string,
+  max = 8,
+): Array<{ q: string; a: string }> {
+  if (faqs.length <= max) return faqs
+  const stop = new Set(['the', 'a', 'an', 'is', 'are', 'do', 'does', 'i', 'you', 'my', 'to', 'of', 'for', 'and', 'or', 'on', 'in', 'it', 'me', 'we', 'can', 'how', 'what', 'when', 'where', 'this', 'that'])
+  const tokens = (s: string) => new Set(
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stop.has(w)),
+  )
+  const qWords = tokens(query)
+  if (qWords.size === 0) return faqs.slice(0, max)
+  return faqs
+    .map(f => {
+      const words = tokens(`${f.q} ${f.a}`)
+      let score = 0
+      for (const w of qWords) if (words.has(w)) score++
+      return { f, score }
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map(x => x.f)
 }
 
 function extractJson(raw: string): unknown {
