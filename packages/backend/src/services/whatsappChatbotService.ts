@@ -1,6 +1,6 @@
 import { and, eq, desc, sql } from 'drizzle-orm'
 import { db } from '../db/connection.js'
-import { projects, customers, orders, events, whatsappConversations } from '../db/schema.js'
+import { projects, customers, orders, events, whatsappConversations, whatsappOutboundMessages } from '../db/schema.js'
 import { getLlmConfig, chatCompletion } from './llmService.js'
 import { getChannelProvider } from './channelProviderRegistry.js'
 import { recommendForCustomer } from './decisioningService.js'
@@ -57,12 +57,33 @@ export async function sendWhatsappSessionText(
   projectId: string,
   toPhone: string,
   text: string,
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<{ ok: boolean; reason?: string; messageId?: string }> {
   const resolved = await getChannelProvider(projectId, 'whatsapp')
   if (!resolved) return { ok: false, reason: 'no_provider' }
   if (typeof resolved.provider.sendSessionText !== 'function') return { ok: false, reason: 'unsupported' }
   const res = await resolved.provider.sendSessionText(toPhone, text, resolved.config)
-  return res.status === 'sent' ? { ok: true } : { ok: false, reason: res.error ?? 'send_failed' }
+  return res.status === 'sent' ? { ok: true, messageId: res.messageId } : { ok: false, reason: res.error ?? 'send_failed' }
+}
+
+/** Record an outbound message (bot or agent) for the inbox thread. */
+export async function recordOutbound(input: {
+  projectId: string
+  customerId: string | null
+  phone: string
+  content: string
+  sentBy: 'bot' | 'agent'
+  agentUserId?: string | null
+  providerMessageId?: string | null
+}): Promise<void> {
+  await db.insert(whatsappOutboundMessages).values({
+    projectId: input.projectId,
+    customerId: input.customerId,
+    phone: input.phone,
+    content: input.content,
+    sentBy: input.sentBy,
+    agentUserId: input.agentUserId ?? null,
+    providerMessageId: input.providerMessageId ?? null,
+  }).catch(() => {})
 }
 
 /**
@@ -129,6 +150,7 @@ export async function handleInboundForChatbot(input: {
     await db.update(whatsappConversations)
       .set({ botTurns: sql`${whatsappConversations.botTurns} + 1`, lastBotAt: new Date(), updatedAt: new Date() })
       .where(eq(whatsappConversations.id, convo.id))
+    await recordOutbound({ projectId, customerId, phone: fromPhone, content: reply, sentBy: 'bot', providerMessageId: sent.messageId })
     await logBotEvent(projectId, customerId, fromPhone, 'whatsapp_bot_reply', { intent: decision.intent, reply })
   } catch (err) {
     console.error('[whatsapp-chatbot] handler failed (non-fatal):', (err as Error).message)
@@ -197,7 +219,9 @@ async function handoff(convoId: string, projectId: string, customerId: string, p
     .set({ status: 'human', handoffReason: reason, updatedAt: new Date() })
     .where(eq(whatsappConversations.id, convoId))
   // Best-effort: tell the customer a human is coming (needs session text support).
-  await sendWhatsappSessionText(projectId, phone, "Thanks for your message — I'm connecting you with our team. Someone will reply here shortly.").catch(() => {})
+  const handoffMsg = "Thanks for your message — I'm connecting you with our team. Someone will reply here shortly."
+  const sent = await sendWhatsappSessionText(projectId, phone, handoffMsg).catch(() => ({ ok: false } as { ok: boolean; messageId?: string }))
+  if (sent.ok) await recordOutbound({ projectId, customerId, phone, content: handoffMsg, sentBy: 'bot', providerMessageId: sent.messageId })
   await logBotEvent(projectId, customerId, phone, 'whatsapp_handoff', { reason })
 }
 

@@ -30,6 +30,7 @@ import {
   ShieldCheck,
   UserCircle,
   Webhook,
+  MessageSquare as InboxIcon,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -55,6 +56,7 @@ const navItems: NavItem[] = [
   // dealer-scoped — admin-only until scoped. Dealers get scoped reporting from Dashboard.
   { href: '/analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
   { href: '/campaigns', label: 'Campaigns', icon: Megaphone },
+  { href: '/inbox', label: 'Inbox', icon: InboxIcon },
   { href: '/templates', label: 'Templates', icon: FileText, adminOnly: true },
   // Dealers (agent/manager) build and run their own flows, scoped to their
   // customers — so Flows is visible to them. Backend enforces ownership + audience scope.
