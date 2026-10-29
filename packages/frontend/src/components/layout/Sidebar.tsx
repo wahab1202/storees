@@ -31,6 +31,7 @@ import {
   UserCircle,
   Webhook,
   MessageSquare as InboxIcon,
+  Gauge as TrialsIcon,
 } from 'lucide-react'
 import { SidebarItem } from './SidebarItem'
 import { cn } from '@/lib/utils'
@@ -67,6 +68,7 @@ const navItems: NavItem[] = [
 ]
 
 const bottomItems: NavItem[] = [
+  { href: '/trials', label: 'Trials', icon: TrialsIcon, superAdminOnly: true },
   { href: '/clients', label: 'Clients', icon: UserCircle, superAdminOnly: true },
   { href: '/projects', label: 'Projects', icon: FolderOpen, superAdminOnly: true },
   { href: '/onboarding', label: 'New Project', icon: Plus, superAdminOnly: true },

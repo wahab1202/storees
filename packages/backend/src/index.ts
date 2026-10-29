@@ -70,6 +70,7 @@ import { startDeliveryWorker } from './workers/deliveryWorker.js'
 import { startInteractionWorker } from './workers/interactionWorker.js'
 import { startScoringWorker } from './workers/scoringWorker.js'
 import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
+import { startTrialWorker } from './workers/trialWorker.js'
 import { startIdentityMergeWorker } from './workers/identityMergeWorker.js'
 import { startCustomerAggregateWorker, runStartupCatchUp } from './workers/customerAggregateWorker.js'
 import { startAggregateReconcileWorker } from './workers/aggregateReconcileWorker.js'
@@ -259,6 +260,7 @@ async function bootstrap() {
   startAggregateReconcileWorker()
   startDataSyncWorker()
   startWebhookDeliveryWorker()
+  startTrialWorker()
 
   // One-shot catch-up: process any events ingested before the aggregate worker
   // was running. Idempotent (events.processed_at guard). Backgrounded so boot

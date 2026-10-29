@@ -769,87 +769,6 @@
        }
    }
 
-   /**
-    * Detect a Shopify product/collection page and extract structured info, so the
-    * SDK can emit `product_viewed` / `collection_viewed` (not just generic
-    * page_viewed). These are what the segment engine's has_viewed operator and
-    * product-affinity flows match on.
-    *
-    * Everything is best-effort and defensive: the handle + name (from URL/title)
-    * always resolve; id/price/vendor come from Shopify's on-page data when present
-    * and are simply omitted otherwise. Never throws.
-    */
-   function shopifyMeta() {
-       var _a, _b;
-       const w = window;
-       return (_b = (_a = w.ShopifyAnalytics) === null || _a === void 0 ? void 0 : _a.meta) !== null && _b !== void 0 ? _b : w.meta;
-   }
-   /** Read a numeric price (major units) from JSON-LD or og/product meta tags. */
-   function priceFromDom() {
-       try {
-           for (const el of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
-               const parsed = JSON.parse(el.textContent || '{}');
-               const nodes = Array.isArray(parsed) ? parsed : [parsed];
-               for (const node of nodes) {
-                   if (node['@type'] === 'Product' && node.offers) {
-                       const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-                       const p = Number(offer === null || offer === void 0 ? void 0 : offer.price);
-                       if (Number.isFinite(p))
-                           return p;
-                   }
-               }
-           }
-       }
-       catch ( /* ignore malformed JSON-LD */_a) { /* ignore malformed JSON-LD */ }
-       const metaPrice = document.querySelector('meta[property="product:price:amount"], meta[property="og:price:amount"]');
-       const p = Number(metaPrice === null || metaPrice === void 0 ? void 0 : metaPrice.getAttribute('content'));
-       return Number.isFinite(p) ? p : undefined;
-   }
-   /** If the current page is a product page, return structured info; else null. */
-   function detectProduct() {
-       var _a, _b, _c, _d;
-       const path = window.location.pathname;
-       const m = path.match(/\/products\/([^/?#]+)/);
-       if (!m)
-           return null;
-       const handle = decodeURIComponent(m[1]);
-       const meta = shopifyMeta();
-       const prod = meta === null || meta === void 0 ? void 0 : meta.product;
-       const variantId = (_a = new URLSearchParams(window.location.search).get('variant')) !== null && _a !== void 0 ? _a : undefined;
-       // Price: matching variant from Shopify meta (in cents) → any variant → DOM
-       let price;
-       const variants = (_b = prod === null || prod === void 0 ? void 0 : prod.variants) !== null && _b !== void 0 ? _b : [];
-       const matched = variantId ? variants.find(v => String(v.id) === variantId) : variants[0];
-       if ((matched === null || matched === void 0 ? void 0 : matched.price) != null) {
-           const cents = Number(matched.price);
-           if (Number.isFinite(cents))
-               price = cents / 100;
-       }
-       if (price === undefined)
-           price = priceFromDom();
-       const currencyMeta = document.querySelector('meta[property="product:price:currency"], meta[property="og:price:currency"]');
-       return {
-           product_handle: handle,
-           product_id: (prod === null || prod === void 0 ? void 0 : prod.id) != null ? String(prod.id) : undefined,
-           product_name: ((_c = document.title.split(/\s[–|-]\s/)[0]) === null || _c === void 0 ? void 0 : _c.trim()) || handle,
-           price,
-           currency: (_d = currencyMeta === null || currencyMeta === void 0 ? void 0 : currencyMeta.getAttribute('content')) !== null && _d !== void 0 ? _d : undefined,
-           vendor: prod === null || prod === void 0 ? void 0 : prod.vendor,
-           variant_id: variantId,
-           url: window.location.href,
-       };
-   }
-   /** If the current page is a collection page, return the handle; else null. */
-   function detectCollection() {
-       const m = window.location.pathname.match(/\/collections\/([^/?#]+)/);
-       if (!m)
-           return null;
-       const handle = decodeURIComponent(m[1]);
-       if (handle === 'all')
-           return null;
-       return { collection_handle: handle, url: window.location.href };
-   }
-
    const SESSION_ID_KEY = 'storees_session_id';
    const SESSION_START_KEY = 'storees_session_start';
    const SESSION_PAGES_KEY = 'storees_session_pages';
@@ -860,8 +779,6 @@
            this.utmParams = {};
            this.scrollThresholds = new Set();
            this.cleanupFns = [];
-           this.lastPageViewUrl = '';
-           this.lastPageViewAt = 0;
            this.config = autoTrackConfig;
            this.eventBuilder = eventBuilder;
            this.queue = queue;
@@ -974,36 +891,8 @@
        recordPageView() {
            if (!this.consent.hasCategory('analytics'))
                return;
-           // Dedup redundant re-fires: Shopify themes (and some apps) call
-           // history.replaceState right after load, so the initial record + the
-           // navigation record fire for the SAME url in the same instant → two
-           // page_viewed rows. Skip an identical url within a short window.
-           const url = window.location.href;
-           const now = Date.now();
-           if (url === this.lastPageViewUrl && now - this.lastPageViewAt < 1500)
-               return;
-           this.lastPageViewUrl = url;
-           this.lastPageViewAt = now;
            const event = this.eventBuilder.buildPageView(undefined, this.utmParams);
            this.queue.push(event);
-           // Emit a SPECIFIC event on product / collection pages too — generic
-           // page_viewed can't drive "viewed product X but didn't buy" segments or
-           // product-affinity flows; those need product_viewed with product fields.
-           if (this.config.productViews !== false) {
-               try {
-                   const product = detectProduct();
-                   if (product) {
-                       this.queue.push(this.eventBuilder.build('product_viewed', Object.assign({}, product)));
-                   }
-                   else {
-                       const collection = detectCollection();
-                       if (collection) {
-                           this.queue.push(this.eventBuilder.build('collection_viewed', Object.assign({}, collection)));
-                       }
-                   }
-               }
-               catch ( /* detection is best-effort — never break page tracking */_a) { /* detection is best-effort — never break page tracking */ }
-           }
            // Increment session page count
            const count = parseInt(sessionGet(SESSION_PAGES_KEY) || '0', 10);
            sessionSet(SESSION_PAGES_KEY, String(count + 1));

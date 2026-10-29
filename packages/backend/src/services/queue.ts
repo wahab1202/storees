@@ -104,6 +104,17 @@ export const templateStatusQueue = new Queue('template-status', {
   },
 })
 
+// Daily trial lifecycle: expire finished trials + send 7/2/0-day reminder emails.
+export const trialLifecycleQueue = new Queue('trial-lifecycle', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 10000 },
+    removeOnComplete: true,
+    removeOnFail: { count: 20 },
+  },
+})
+
 // Nightly reconciliation of customer aggregates (total_orders / total_spent /
 // clv) from the authoritative orders table. A self-healing net: any path that
 // adds or re-points orders without recomputing (historical sync, identity
