@@ -40,6 +40,15 @@ export const projects = pgTable('projects', {
   brandKit: jsonb('brand_kit'),
   // ISO-4217 currency for money formatting in emails/notifications. See migration 0088.
   currency: varchar('currency', { length: 3 }).notNull().default('INR'),
+  // Self-serve trial + plan lifecycle (migration 0091). Existing/hand-provisioned
+  // tenants are plan='custom' status='active' (full access, no trial clock);
+  // the Shopify self-serve path sets plan='trial'.
+  plan: varchar('plan', { length: 20 }).notNull().default('custom'),
+  // 'trialing' | 'active' | 'expired' | 'suspended' | 'cancelled'
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  trialStartedAt: timestamp('trial_started_at', { withTimezone: true }),
+  trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
+  signupSource: varchar('signup_source', { length: 20 }).notNull().default('manual'),
   resendDomainId: varchar('resend_domain_id', { length: 255 }),
   emailMarketingProvider: varchar('email_marketing_provider', { length: 20 }).notNull().default('resend'),
   emailTransactionalProvider: varchar('email_transactional_provider', { length: 20 }).notNull().default('resend'),

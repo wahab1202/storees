@@ -4,6 +4,7 @@ import { projects, customers, orders, events, whatsappConversations, whatsappInb
 import { getLlmConfig, chatCompletion } from './llmService.js'
 import { getChannelProvider } from './channelProviderRegistry.js'
 import { recommendForCustomer } from './decisioningService.js'
+import { isFeatureEnabled } from './entitlementService.js'
 
 /**
  * AI WhatsApp chatbot (Bitespeed roadmap — Phase 1).
@@ -111,6 +112,9 @@ export async function handleInboundForChatbot(input: {
     if (!project) return
     const cfg = readChatbotConfig(project.settings)
     if (!cfg.enabled) return
+    // Plan gate: the AI chatbot is a premium feature (off on trial). The inbox
+    // still works manually; we just don't auto-reply.
+    if (!(await isFeatureEnabled(projectId, 'ai_chatbot'))) return
     // Unknown number (no matched customer): answer only when opted in, and FAQ-only
     // (there's no order/recommendation data to ground anything else).
     if (!customerId && !cfg.answerUnknown) return

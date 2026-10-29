@@ -88,12 +88,21 @@ router.get('/shopify/callback', async (req, res) => {
         updatedAt: new Date(),
       }).where(eq(projects.id, projectId))
     } else {
+      // Brand-new Shopify install = self-serve signup → start a 14-day trial.
+      // (Reconnects hit the branch above and never restart the clock.)
+      const trialStart = new Date()
+      const trialEnd = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000)
       const [created] = await db.insert(projects).values({
         name: shop.replace('.myshopify.com', ''),
         shopifyDomain: shop,
         shopifyAccessToken: encryptedToken,
         businessType: 'ecommerce',
         webhookSecret,
+        plan: 'trial',
+        status: 'trialing',
+        trialStartedAt: trialStart,
+        trialEndsAt: trialEnd,
+        signupSource: 'shopify',
       }).returning()
       projectId = created.id
     }
