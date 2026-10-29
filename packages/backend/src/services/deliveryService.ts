@@ -1,6 +1,7 @@
 import { eq, and, sql, gte } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { messages, consents, customers, whatsappTemplates, projects } from '../db/schema.js'
+import { checkSendAllowed } from './entitlementService.js'
 import { deliveryQueue } from './queue.js'
 import { buildBodyParams } from './providers/whatsappUtils.js'
 import { redis } from './redis.js'
@@ -95,6 +96,17 @@ export async function send(command: SendCommand): Promise<string | null> {
   if (!reachable) {
     await recordMessage(command, 'blocked', 'no_channel_reachability')
     return null
+  }
+
+  // Plan/trial entitlement cap — a trial that has spent its channel budget (or an
+  // expired/suspended account) is blocked here. Unlimited plans short-circuit with
+  // no extra query. in_app isn't metered.
+  if (command.channel !== 'inapp') {
+    const allowance = await checkSendAllowed(command.projectId, command.channel as 'whatsapp' | 'email' | 'sms' | 'push')
+    if (!allowance.allowed) {
+      await recordMessage(command, 'blocked', allowance.reason ?? 'trial_limit')
+      return null
+    }
   }
 
   // 4. Record as queued and add to delivery queue

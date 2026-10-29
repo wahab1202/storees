@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useWhatsappChatbotConfig, useSaveWhatsappChatbotConfig, type ChatbotFaq } from '@/hooks/useWhatsappChatbot'
-import { Bot, Loader2, Plus, Trash2, Save } from 'lucide-react'
+import { useFeature } from '@/hooks/useEntitlements'
+import { Bot, Loader2, Plus, Trash2, Save, Lock } from 'lucide-react'
 import { toast } from 'sonner'
 
 const inputClass = 'w-full px-3 py-2 text-sm border border-border rounded-lg bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent placeholder:text-text-muted'
@@ -10,6 +11,7 @@ const inputClass = 'w-full px-3 py-2 text-sm border border-border rounded-lg bg-
 export function WhatsappChatbotPanel() {
   const { data, isLoading } = useWhatsappChatbotConfig()
   const save = useSaveWhatsappChatbotConfig()
+  const unlocked = useFeature('ai_chatbot')
 
   const [enabled, setEnabled] = useState(false)
   const [greeting, setGreeting] = useState('')
@@ -61,15 +63,23 @@ export function WhatsappChatbotPanel() {
         <button
           type="button"
           role="switch"
-          aria-checked={enabled}
+          aria-checked={enabled && unlocked}
+          disabled={!unlocked}
           onClick={() => setEnabled(v => !v)}
-          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${enabled ? 'bg-accent' : 'bg-slate-300'}`}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${enabled && unlocked ? 'bg-accent' : 'bg-slate-300'}`}
         >
           <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
         </button>
       </div>
 
-      {isLoading ? (
+      {!unlocked ? (
+        <div className="flex flex-col items-center text-center gap-2 px-6 py-10">
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-accent/10 text-accent"><Lock className="h-5 w-5" /></span>
+          <p className="text-sm font-medium text-text-primary">The AI chatbot is a premium feature</p>
+          <p className="text-sm text-text-muted max-w-sm">Upgrade from your trial to auto-reply to WhatsApp messages with FAQs, order status and product recommendations.</p>
+          <a href="mailto:sales@storees.io?subject=Upgrade%20my%20Storees%20plan" className="mt-1 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover">Upgrade to unlock</a>
+        </div>
+      ) : isLoading ? (
         <div className="flex items-center justify-center py-10 text-text-muted"><Loader2 className="h-4 w-4 animate-spin mr-2" />Loading…</div>
       ) : (
         <div className="space-y-5 p-5">
