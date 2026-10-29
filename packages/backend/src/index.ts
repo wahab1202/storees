@@ -75,6 +75,7 @@ import { startInteractionWorker } from './workers/interactionWorker.js'
 import { startScoringWorker } from './workers/scoringWorker.js'
 import { startPredictionTriggerWorker } from './workers/predictionTriggerWorker.js'
 import { startTemplateStatusWorker } from './workers/templateStatusWorker.js'
+import { startTrialWorker } from './workers/trialWorker.js'
 import { startIdentityMergeWorker } from './workers/identityMergeWorker.js'
 import { startCustomerAggregateWorker, runStartupCatchUp } from './workers/customerAggregateWorker.js'
 import { startAggregateReconcileWorker } from './workers/aggregateReconcileWorker.js'
@@ -319,6 +320,7 @@ async function bootstrap() {
     startCampaignScheduler()
     startFlowFixedTimeScheduler()
     startTemplateStatusWorker()
+    startTrialWorker()
     startDataSyncWorker()
     startWebhookDeliveryWorker()
     // Nightly rebuild of customer aggregates from the orders table — his
