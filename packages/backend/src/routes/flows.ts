@@ -5,6 +5,7 @@ import { flows, flowTrips, customers, messages, scheduledJobs, whatsappTemplates
 import { requireProjectId } from '../middleware/projectId.js'
 import { resolveScopedAgentIds } from '../middleware/agentScope.js'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
+import { checkCountLimit } from '../services/entitlementService.js'
 import { getFlowAnalytics } from '../services/flowAnalyticsService.js'
 import { listFlowTemplates, installFlowTemplate, type FlowTemplateId, type TemplateIndustry } from '../services/flowTemplates.js'
 
@@ -162,6 +163,13 @@ router.post('/', requireProjectId, async (req: AuthenticatedRequest, res) => {
         return res.status(403).json({ success: false, error: 'No dealer scope assigned' })
       }
       createdByAgentId = req.adminUser.agentId
+    }
+
+    // Plan cap: trials are limited to N flows.
+    const [{ flowCount }] = await db.select({ flowCount: count() }).from(flows).where(eq(flows.projectId, projectId))
+    const flowLimit = await checkCountLimit(projectId, 'flows', Number(flowCount))
+    if (!flowLimit.allowed) {
+      return res.status(403).json({ success: false, error: `Your plan allows ${flowLimit.cap} flows. Upgrade to add more.` })
     }
 
     // Persist the event + any property filters set in the create dialog. The

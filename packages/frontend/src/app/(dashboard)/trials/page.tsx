@@ -3,8 +3,8 @@
 import { useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useSuperAdminGuard } from '@/components/auth/RequireSuperAdmin'
-import { useAdminCustomers, useUpdateCustomerPlan, type AdminCustomer } from '@/hooks/useAdminCustomers'
-import { Loader2, Search, Clock, CheckCircle2, ArrowUpCircle, Ban, Store } from 'lucide-react'
+import { useAdminCustomers, useAdminCustomerDetail, useUpdateCustomerPlan, type AdminCustomer } from '@/hooks/useAdminCustomers'
+import { Loader2, Search, Clock, CheckCircle2, ArrowUpCircle, Ban, Store, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -38,6 +38,7 @@ export default function TrialsPage() {
   const guard = useSuperAdminGuard()
   const [tabKey, setTabKey] = useState('all')
   const [search, setSearch] = useState('')
+  const [detailId, setDetailId] = useState<string | null>(null)
   const tab = TABS.find(t => t.key === tabKey)!
   const { data, isLoading } = useAdminCustomers({ status: tab.status, endingSoon: tab.endingSoon, search: search.trim() || undefined })
   const update = useUpdateCustomerPlan()
@@ -101,8 +102,10 @@ export default function TrialsPage() {
               {rows.map(c => (
                 <tr key={c.id} className="hover:bg-surface/50">
                   <td className="px-4 py-2.5">
-                    <div className="font-medium text-text-primary">{c.name || c.shopifyDomain || '—'}</div>
-                    <div className="text-xs text-text-muted">{c.ownerEmail || c.shopifyDomain || ''}</div>
+                    <button onClick={() => setDetailId(c.id)} className="text-left hover:underline">
+                      <div className="font-medium text-text-primary">{c.name || c.shopifyDomain || '—'}</div>
+                      <div className="text-xs text-text-muted">{c.ownerEmail || c.shopifyDomain || ''}</div>
+                    </button>
                   </td>
                   <td className="px-4 py-2.5 capitalize text-text-secondary">{c.plan}</td>
                   <td className="px-4 py-2.5"><span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-full capitalize', STATUS_STYLE[c.status] ?? 'bg-slate-100 text-slate-600')}>{c.status}</span></td>
@@ -147,6 +150,91 @@ export default function TrialsPage() {
           </table>
         </div>
       )}
+
+      {detailId && <CustomerDrawer projectId={detailId} onClose={() => setDetailId(null)} />}
+    </div>
+  )
+}
+
+function CustomerDrawer({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const { data, isLoading } = useAdminCustomerDetail(projectId)
+  const d = data?.data
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
+      <div className="w-full max-w-md h-full overflow-y-auto bg-white shadow-xl p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <h2 className="text-base font-bold text-text-primary truncate">{d?.name || d?.shopifyDomain || 'Customer'}</h2>
+            <p className="text-xs text-text-muted truncate">{d?.shopifyDomain} · {d?.signupSource}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-text-muted hover:bg-surface rounded"><X className="h-4 w-4" /></button>
+        </div>
+
+        {isLoading || !d ? (
+          <div className="flex items-center justify-center py-16 text-text-muted"><Loader2 className="h-4 w-4 animate-spin mr-2" />Loading…</div>
+        ) : (
+          <div className="space-y-5 text-sm">
+            <section className="grid grid-cols-2 gap-3">
+              <Stat label="Plan" value={d.plan} />
+              <Stat label="Status" value={d.status} />
+              <Stat label="Trial left" value={d.plan === 'trial' && d.trialDaysLeft != null ? (d.status === 'trialing' ? `${d.trialDaysLeft}d` : 'ended') : '—'} />
+              <Stat label="Signed up" value={new Date(d.createdAt).toLocaleDateString()} />
+              <Stat label="Contacts" value={d.usage.contacts.toLocaleString()} />
+              <Stat label="Owner" value={d.admins[0]?.email ?? '—'} />
+            </section>
+
+            <section>
+              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1.5">Sent by channel</p>
+              {Object.keys(d.usage.sentByChannel).length === 0 ? (
+                <p className="text-xs text-text-muted">No sends yet.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(d.usage.sentByChannel).map(([ch, n]) => (
+                    <span key={ch} className="text-xs px-2 py-1 rounded-md bg-surface text-text-secondary capitalize">{ch}: <strong>{n}</strong></span>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section>
+              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1.5">Entitlements</p>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {Object.entries(d.entitlements.features).map(([f, on]) => (
+                  <span key={f} className={`text-[11px] px-2 py-0.5 rounded-full ${on ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{f.replace(/_/g, ' ')}</span>
+                ))}
+              </div>
+              <div className="text-xs text-text-muted">
+                Limits: {Object.entries(d.entitlements.limits).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v < 0 ? '∞' : v}`).join(' · ')}
+              </div>
+            </section>
+
+            <section>
+              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1.5">Recent activity</p>
+              {d.timeline.length === 0 ? (
+                <p className="text-xs text-text-muted">No events yet.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {d.timeline.slice(0, 12).map((e, i) => (
+                    <li key={i} className="flex items-center justify-between text-xs">
+                      <span className="text-text-secondary">{e.eventName.replace(/_/g, ' ')}</span>
+                      <span className="text-text-muted">{new Date(e.at).toLocaleDateString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border px-3 py-2">
+      <p className="text-[11px] text-text-muted">{label}</p>
+      <p className="text-sm font-medium text-text-primary capitalize truncate">{value}</p>
     </div>
   )
 }

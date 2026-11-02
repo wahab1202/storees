@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { eq, and, desc, sql, or, isNull, type SQL } from 'drizzle-orm'
+import { eq, and, desc, sql, or, isNull, type SQL, count } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { whatsappTemplates, ctwaAttributions, customers, projects, whatsappProvisioningRequests } from '../db/schema.js'
 import { requireProjectId } from '../middleware/projectId.js'
@@ -12,6 +12,7 @@ import { getBusinessProfile, updateBusinessProfile, setProfilePhotoFromUrl, type
 import { getUsageSummary } from '../services/whatsappUsageService.js'
 import { getChannelProvider, getProviderCapabilities, clearProjectChannelProviderCache, type SubmitTemplateInput } from '../services/channelProviderRegistry.js'
 import { readChatbotConfig } from '../services/whatsappChatbotService.js'
+import { checkCountLimit } from '../services/entitlementService.js'
 
 // Dealer RBAC — HYBRID template model (same as email templates): a dealer sees
 // SHARED (admin-owned/provider-synced, NULL owner) + their OWN WhatsApp templates.
@@ -183,6 +184,13 @@ router.post('/templates', requireProjectId, async (req: AuthenticatedRequest, re
         error: 'lint_blocking',
         data: { findings },
       })
+    }
+
+    // Plan cap: trials are limited to N templates.
+    const [{ waCount }] = await db.select({ waCount: count() }).from(whatsappTemplates).where(eq(whatsappTemplates.projectId, projectId))
+    const waTplLimit = await checkCountLimit(projectId, 'templates', Number(waCount))
+    if (!waTplLimit.allowed) {
+      return res.status(403).json({ success: false, error: `Your plan allows ${waTplLimit.cap} templates. Upgrade to add more.` })
     }
 
     // 2. Resolve provider + verify capability. Drafts can be authored WITHOUT a

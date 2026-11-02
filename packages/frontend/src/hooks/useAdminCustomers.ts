@@ -35,6 +35,31 @@ export function useAdminCustomers(filters: Filters = {}) {
   })
 }
 
+export type AdminCustomerDetail = {
+  id: string
+  name: string
+  shopifyDomain: string | null
+  plan: string
+  status: string
+  trialStartedAt: string | null
+  trialEndsAt: string | null
+  trialDaysLeft: number | null
+  signupSource: string
+  createdAt: string
+  entitlements: { features: Record<string, boolean>; limits: Record<string, number> }
+  usage: { contacts: number; sentByChannel: Record<string, number> }
+  admins: { email: string; name: string | null }[]
+  timeline: { eventName: string; at: string }[]
+}
+
+export function useAdminCustomerDetail(projectId: string | null) {
+  return useQuery({
+    queryKey: ['admin-customer', projectId],
+    queryFn: () => api.get<AdminCustomerDetail>(`/api/super-admin/customers/${projectId}`),
+    enabled: !!projectId,
+  })
+}
+
 export function useUpdateCustomerPlan() {
   const qc = useQueryClient()
   return useMutation({
