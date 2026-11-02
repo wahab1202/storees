@@ -59,6 +59,7 @@ import superAdminRoutes from './routes/superAdmin.js'
 import rolesRoutes from './routes/roles.js'
 import brandKitRoutes from './routes/brandKit.js'
 import entitlementRoutes from './routes/entitlements.js'
+import billingRoutes, { billingCallback } from './routes/billing.js'
 import logsRoutes from './routes/logs.js'
 import unsubscribeRoutes from './routes/unsubscribe.js'
 import optinWidgetRoutes from './routes/optinWidgets.js'
@@ -228,6 +229,8 @@ app.use('/api/super-admin', requireAuth, superAdminRoutes)
 app.use('/api/roles', requireAuth, rolesRoutes)
 app.use('/api/brand-kit', requireAuth, brandKitRoutes)
 app.use('/api/entitlements', requireAuth, entitlementRoutes)
+app.get('/api/billing/callback', billingCallback) // public — Shopify redirect
+app.use('/api/billing', requireAuth, billingRoutes)
 app.use('/api/logs', requireAuth, logsRoutes)
 app.use('/api/optin-widgets', requireAuth, optinWidgetRoutes)
 app.use('/api/assets', requireAuth, assetRoutes)
