@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEntitlements } from '@/hooks/useEntitlements'
 import { Clock, AlertTriangle } from 'lucide-react'
 
@@ -21,9 +22,9 @@ export function TrialBanner() {
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Your free trial has ended. Upgrade to resume sending and unlock all features.
         </span>
-        <a href="mailto:sales@storees.io?subject=Upgrade%20my%20Storees%20plan" className="shrink-0 rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700">
+        <Link href="/settings/billing" className="shrink-0 rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700">
           Upgrade now
-        </a>
+        </Link>
       </div>
     )
   }
@@ -37,9 +38,9 @@ export function TrialBanner() {
           ? <>You have <strong>{days} {days === 1 ? 'day' : 'days'}</strong> left in your free trial.</>
           : <>Your free trial ends today.</>}
       </span>
-      <a href="mailto:sales@storees.io?subject=Upgrade%20my%20Storees%20plan" className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold text-white ${urgent ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+      <Link href="/settings/billing" className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold text-white ${urgent ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
         Upgrade
-      </a>
+      </Link>
     </div>
   )
 }

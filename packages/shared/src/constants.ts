@@ -147,6 +147,8 @@ export const SHOPIFY_API_DELAY_MS = 500 as const
 export const SHOPIFY_WEBHOOK_TOPICS = [
   'customers/create',
   'customers/update',
+  // App billing status changes (subscribe / cancel / freeze) — self-serve trials.
+  'app_subscriptions/update',
   'orders/create',
   'orders/fulfilled',
   'orders/cancelled',

@@ -15,6 +15,7 @@ const tabs: Tab[] = [
   { href: '/settings/brand', label: 'Brand', adminOnly: true },
   { href: '/settings/ad-conversions', label: 'Ad Conversions', adminOnly: true },
   { href: '/settings/webhooks', label: 'Webhooks', adminOnly: true },
+  { href: '/settings/billing', label: 'Billing', adminOnly: true },
   { href: '/settings/account', label: 'Account' },
   { href: '/settings/security', label: 'Security' },
   { href: '/settings/dealers', label: 'Dealers', adminOnly: true, featureFlag: 'agentRbac' },

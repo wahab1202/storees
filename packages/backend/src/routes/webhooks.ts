@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../db/connection.js'
 import { projects, customers, events, orders } from '../db/schema.js'
+import { handleSubscriptionUpdate } from '../services/billingService.js'
 import { verifyHmac } from '../services/shopifyService.js'
 import { processWebhookEvent } from '../services/eventProcessor.js'
 import { handleProductWebhook, handleCollectionWebhook } from '../services/catalogService.js'
@@ -101,6 +102,15 @@ router.post('/shopify/:projectId', async (req, res) => {
         redis.lpush(`${DLQ_PREFIX}${projectId}`, dlqEntry).catch(() => {})
         redis.ltrim(`${DLQ_PREFIX}${projectId}`, 0, 999).catch(() => {})
       })
+      return
+    }
+
+    // App subscription billing status changes (approved / cancelled / frozen) —
+    // keep the project's plan + status in sync with Shopify.
+    if (topic === 'app_subscriptions/update') {
+      res.status(200).json({ success: true })
+      handleSubscriptionUpdate(projectId, payload).catch(err =>
+        console.error('app_subscriptions/update processing failed:', err))
       return
     }
 

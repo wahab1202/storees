@@ -77,7 +77,7 @@ export function WhatsappChatbotPanel() {
           <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-accent/10 text-accent"><Lock className="h-5 w-5" /></span>
           <p className="text-sm font-medium text-text-primary">The AI chatbot is a premium feature</p>
           <p className="text-sm text-text-muted max-w-sm">Upgrade from your trial to auto-reply to WhatsApp messages with FAQs, order status and product recommendations.</p>
-          <a href="mailto:sales@storees.io?subject=Upgrade%20my%20Storees%20plan" className="mt-1 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover">Upgrade to unlock</a>
+          <a href="/settings/billing" className="mt-1 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent text-white rounded-lg hover:bg-accent-hover">Upgrade to unlock</a>
         </div>
       ) : isLoading ? (
         <div className="flex items-center justify-center py-10 text-text-muted"><Loader2 className="h-4 w-4 animate-spin mr-2" />Loading…</div>
