@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { db } from '../db/connection.js'
 import { emailTemplates, customers, products, projects } from '../db/schema.js'
 import { eq, and, count, desc, sql } from 'drizzle-orm'
+import { checkCountLimit } from '../services/entitlementService.js'
 import { requireProjectId } from '../middleware/projectId.js'
 import { SEED_TEMPLATES } from '../data/seedTemplates.js'
 import { buildVariableCatalog } from '../services/variableSources.js'
@@ -315,6 +316,13 @@ router.post('/', requireProjectId, async (req, res) => {
     const validChannels = ['email', 'sms', 'push', 'whatsapp', 'in_app']
     if (!validChannels.includes(channel)) {
       return res.status(400).json({ success: false, error: 'Invalid channel' })
+    }
+
+    // Plan cap: trials are limited to N templates.
+    const [{ tplCount }] = await db.select({ tplCount: count() }).from(emailTemplates).where(eq(emailTemplates.projectId, projectId))
+    const tplLimit = await checkCountLimit(projectId, 'templates', Number(tplCount))
+    if (!tplLimit.allowed) {
+      return res.status(403).json({ success: false, error: `Your plan allows ${tplLimit.cap} templates. Upgrade to add more.` })
     }
 
     // Save-time lint — undefined `{{key}}` references in body block the save.

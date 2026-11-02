@@ -110,6 +110,20 @@ export async function isFeatureEnabled(projectId: string, key: FeatureKey): Prom
 }
 
 /**
+ * Whether creating one more of a counted resource (flows, templates, team_seats…)
+ * is within plan. Pass the CURRENT count; unlimited plans always allow.
+ */
+export async function checkCountLimit(
+  projectId: string,
+  metric: LimitKey,
+  currentCount: number,
+): Promise<{ allowed: boolean; cap: number }> {
+  const cap = (await getEntitlements(projectId)).limits[metric] ?? -1
+  if (cap < 0) return { allowed: true, cap }
+  return { allowed: currentCount < cap, cap }
+}
+
+/**
  * Can this project still send on `channel`? Unlimited plans short-circuit with no
  * query. Finite (trial) plans count sends in the current trial window against the cap.
  */
