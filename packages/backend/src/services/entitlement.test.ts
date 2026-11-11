@@ -13,11 +13,23 @@ describe('resolveEntitlements', () => {
   })
 
   it('custom/pro: everything on, unlimited', () => {
-    for (const plan of ['custom', 'pro', 'starter']) {
+    for (const plan of ['custom', 'pro']) {
       const e = resolveEntitlements({ plan, status: 'active' })
       expect(e.features.ai_chatbot).toBe(true)
       expect(e.limits.whatsapp_messages).toBe(-1)
     }
+  })
+
+  it('starter: AI features gated, sends unlimited, structural limits finite', () => {
+    const e = resolveEntitlements({ plan: 'starter', status: 'active' })
+    expect(e.features.ai_chatbot).toBe(false)       // Pro upsell
+    expect(e.features.predictions).toBe(false)      // Pro upsell
+    expect(e.features.ai_email_designer).toBe(true) // included
+    expect(e.limits.whatsapp_messages).toBe(-1)     // unlimited sends (see STARTER note)
+    expect(e.limits.email_messages).toBe(-1)
+    expect(e.limits.flows).toBe(10)                 // finite, below Pro
+    expect(e.limits.templates).toBe(25)
+    expect(e.limits.team_seats).toBe(3)
   })
 
   it('unknown plan falls back to full', () => {
