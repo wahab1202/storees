@@ -39,6 +39,16 @@ const TRIAL = {
   limits: { contacts: 1000, whatsapp_messages: 100, email_messages: 500, flows: 2, templates: 5, team_seats: 1, connected_stores: 1 },
 }
 
+// Paid entry tier — core sending (unlimited) + email designer, but the premium
+// AI features stay gated (that's the Pro upsell) and structural limits are finite.
+// Sends are unlimited by design: checkSendAllowed only meters a trial window, so a
+// finite send cap here would count all-time and never reset. Metered monthly send
+// caps are a deliberate follow-on (needs a rolling-window change).
+const STARTER = {
+  features: { ai_chatbot: false, ai_email_designer: true, predictions: false, ad_audience_export: false },
+  limits: { contacts: -1, whatsapp_messages: -1, email_messages: -1, flows: 10, templates: 25, team_seats: 3, connected_stores: 1 },
+}
+
 // Expired / suspended — keep data visible, block outbound + premium.
 const RESTRICTED = {
   features: featureSet(false),
@@ -47,7 +57,7 @@ const RESTRICTED = {
 
 const PLAN_MAP: Record<string, { features: Record<FeatureKey, boolean>; limits: Record<LimitKey, number> }> = {
   trial: TRIAL,
-  starter: FULL, // tiers can diverge later; Phase 1 treats paid/custom as full
+  starter: STARTER, // gated AI features + finite structural limits; Pro unlocks all
   pro: FULL,
   custom: FULL,
 }
