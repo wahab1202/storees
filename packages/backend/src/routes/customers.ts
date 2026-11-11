@@ -15,6 +15,7 @@ import { backfillOrdersFromEvents } from '../services/orderBackfillService.js'
 import { listAbandonments, saveAbandonmentReason } from '../services/abandonmentService.js'
 import { computeAndUpdateMetrics } from '../workers/metricsWorker.js'
 import { getConsentAuditLog, getConsentStatus } from '../services/consentService.js'
+import { exportCustomerData, eraseCustomer } from '../services/dataSubjectService.js'
 import type { JourneyEntryType } from '../services/customerJourneyService.js'
 
 const router = Router()
@@ -785,6 +786,53 @@ router.post('/refresh-metrics', requireRole('admin'), requireProjectId, async (r
   } catch (err) {
     console.error('Refresh metrics error:', err)
     res.status(500).json({ success: false, error: 'Failed to refresh metrics' })
+  }
+})
+
+// ── Data-subject rights (GDPR Art. 15/17 · DPDP §11/§12) ──
+
+// GET /api/customers/:id/data-export — right of access / portability.
+// Admin-only; returns the full dataset held on this customer as portable JSON.
+router.get('/:id/data-export', requireRole('admin'), requireProjectId, async (req: AuthenticatedRequest, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+    if (!(await assertCustomerVisible(req, id, projectId))) {
+      res.status(404).json({ success: false, error: 'Customer not found' })
+      return
+    }
+    const data = await exportCustomerData(projectId, id)
+    if (!data) {
+      res.status(404).json({ success: false, error: 'Customer not found' })
+      return
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="customer-${id}-export.json"`)
+    res.json({ success: true, data })
+  } catch (err) {
+    console.error('Data export error:', err)
+    res.status(500).json({ success: false, error: 'Failed to export customer data' })
+  }
+})
+
+// POST /api/customers/:id/erase — right to erasure ("right to be forgotten").
+// Admin-only; anonymises the customer across every PII store. Irreversible.
+router.post('/:id/erase', requireRole('admin'), requireProjectId, async (req: AuthenticatedRequest, res) => {
+  try {
+    const projectId = req.projectId!
+    const id = req.params.id as string
+    if (!(await assertCustomerVisible(req, id, projectId))) {
+      res.status(404).json({ success: false, error: 'Customer not found' })
+      return
+    }
+    const result = await eraseCustomer(projectId, id)
+    if (!result.erased) {
+      res.status(404).json({ success: false, error: 'Customer not found' })
+      return
+    }
+    res.json({ success: true, data: { erased: true } })
+  } catch (err) {
+    console.error('Customer erase error:', err)
+    res.status(500).json({ success: false, error: 'Failed to erase customer' })
   }
 })
 

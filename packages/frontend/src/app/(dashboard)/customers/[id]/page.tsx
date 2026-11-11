@@ -16,6 +16,7 @@ import { AbandonmentTab } from '@/components/customers/AbandonmentTab'
 import { ConsentTab } from '@/components/customers/ConsentTab'
 import { JourneyTimelineTab } from '@/components/customers/JourneyTimelineTab'
 import { NextBestActionCard } from '@/components/customers/NextBestActionCard'
+import { DataSubjectCard } from '@/components/customers/DataSubjectCard'
 import { cn } from '@/lib/utils'
 
 const TABS = ['User Info', 'CDP Moat', 'Activity', 'Orders', 'Abandonment', 'Journeys', 'Messages', 'Predictions', 'Consent'] as const
@@ -167,6 +168,7 @@ export default function CustomerProfilePage() {
         <div className="space-y-6">
           <UserInfoTab customer={customer} domain={domain} />
           <NextBestActionCard customerId={id} customerEmail={customer.email ?? undefined} customerName={customer.name ?? undefined} />
+          <DataSubjectCard customerId={id} />
         </div>
       )}
       {activeTab === 'CDP Moat' && (

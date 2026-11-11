@@ -6,6 +6,7 @@ import { handleSubscriptionUpdate } from '../services/billingService.js'
 import { verifyHmac } from '../services/shopifyService.js'
 import { processWebhookEvent } from '../services/eventProcessor.js'
 import { handleProductWebhook, handleCollectionWebhook } from '../services/catalogService.js'
+import { resolveCustomerId, exportCustomerData, eraseCustomer, purgeShopData } from '../services/dataSubjectService.js'
 import { redis } from '../services/redis.js'
 
 const router = Router()
@@ -175,22 +176,12 @@ router.post('/shopify/compliance', async (req, res) => {
   try {
     switch (topic) {
       case 'customers/data_request': {
-        // Shopify asks: "what data do you have for this customer?"
-        // Log the request — actual data export would be manual/async
-        const { shop_domain, customer } = payload
-        console.log(`[GDPR] Data request for customer ${customer?.email} from ${shop_domain}`)
-        // In production: queue a job to compile and email the data export
-        break
-      }
-
-      case 'customers/redact': {
-        // Shopify says: "delete this customer's data"
+        // Shopify asks: "what data do you have for this customer?" (GDPR Art. 15 / DPDP §11)
         const { shop_domain, customer } = payload
         const email = customer?.email
-        console.log(`[GDPR] Customer redact request for ${email} from ${shop_domain}`)
+        console.log(`[GDPR] Data request for customer ${email} from ${shop_domain}`)
 
         if (email) {
-          // Find the project for this shop
           const [project] = await db
             .select({ id: projects.id })
             .from(projects)
@@ -198,24 +189,37 @@ router.post('/shopify/compliance', async (req, res) => {
             .limit(1)
 
           if (project) {
-            // Find and anonymize the customer
-            const [cust] = await db
-              .select({ id: customers.id })
-              .from(customers)
-              .where(and(eq(customers.projectId, project.id), eq(customers.email, email)))
-              .limit(1)
+            const customerId = await resolveCustomerId(project.id, { email })
+            if (customerId) {
+              const data = await exportCustomerData(project.id, customerId)
+              // The merchant fulfils the request via the admin DSAR export; we record
+              // that the request arrived + the compiled dataset size for the audit trail.
+              console.log(`[GDPR] Compiled data export for ${email} in project ${project.id}`,
+                { records: data ? Object.keys(data).length : 0 })
+            }
+          }
+        }
+        break
+      }
 
-            if (cust) {
-              // Anonymize customer data (keep row for referential integrity)
-              await db.update(customers).set({
-                email: null,
-                phone: null,
-                name: 'Redacted',
-                customAttributes: {},
-                updatedAt: new Date(),
-              }).where(eq(customers.id, cust.id))
+      case 'customers/redact': {
+        // Shopify says: "delete this customer's data" (GDPR Art. 17 / DPDP §12)
+        const { shop_domain, customer } = payload
+        const email = customer?.email
+        console.log(`[GDPR] Customer redact request for ${email} from ${shop_domain}`)
 
-              console.log(`[GDPR] Customer ${email} data redacted in project ${project.id}`)
+        if (email) {
+          const [project] = await db
+            .select({ id: projects.id })
+            .from(projects)
+            .where(eq(projects.shopifyDomain, shop_domain))
+            .limit(1)
+
+          if (project) {
+            const customerId = await resolveCustomerId(project.id, { email })
+            if (customerId) {
+              await eraseCustomer(project.id, customerId)
+              console.log(`[GDPR] Customer ${email} erased across all PII stores in project ${project.id}`)
             }
           }
         }
@@ -227,14 +231,19 @@ router.post('/shopify/compliance', async (req, res) => {
         const { shop_domain } = payload
         console.log(`[GDPR] Shop redact request for ${shop_domain}`)
 
-        // Clear the Shopify connection (don't delete the project — they may reconnect)
-        await db.update(projects).set({
-          shopifyAccessToken: null,
-          webhookSecret: null,
-          updatedAt: new Date(),
-        }).where(eq(projects.shopifyDomain, shop_domain))
+        const [project] = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(eq(projects.shopifyDomain, shop_domain))
+          .limit(1)
 
-        console.log(`[GDPR] Shop ${shop_domain} credentials cleared`)
+        if (project) {
+          // Anonymise the tenant's customer PII, then sever the Shopify connection.
+          await purgeShopData(project.id)
+          await db.update(projects).set({ webhookSecret: null, updatedAt: new Date() })
+            .where(eq(projects.id, project.id))
+          console.log(`[GDPR] Shop ${shop_domain} PII purged + credentials cleared`)
+        }
         break
       }
 
