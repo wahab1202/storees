@@ -11,6 +11,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 export default function RegisterPage() {
   const router = useRouter()
   const [name, setName] = useState('')
+  const [businessName, setBusinessName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -36,11 +37,11 @@ export default function RegisterPage() {
     setLoading(true)
 
     try {
-      // Register with backend
-      const res = await fetch(`${API_URL}/api/auth/register`, {
+      // Self-serve signup — provisions a tenant + starts a 14-day trial.
+      const res = await fetch(`${API_URL}/api/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name }),
+        body: JSON.stringify({ email, password, name, businessName }),
       })
 
       const data = await res.json()
@@ -76,8 +77,8 @@ export default function RegisterPage() {
     <div className="w-full max-w-[400px]">
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-semibold text-slate-900">Create your account</h1>
-          <p className="text-sm text-slate-500 mt-1">Get started with Storees</p>
+          <h1 className="text-2xl font-semibold text-slate-900">Start your free trial</h1>
+          <p className="text-sm text-slate-500 mt-1">14 days free — no credit card required</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -100,6 +101,22 @@ export default function RegisterPage() {
               autoComplete="name"
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-shadow"
               placeholder="Your name"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="businessName" className="block text-sm font-medium text-slate-700 mb-1.5">
+              Business name
+            </label>
+            <input
+              id="businessName"
+              type="text"
+              value={businessName}
+              onChange={(e) => setBusinessName(e.target.value)}
+              required
+              autoComplete="organization"
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-shadow"
+              placeholder="Your store or company"
             />
           </div>
 
@@ -180,7 +197,7 @@ export default function RegisterPage() {
             className="w-full py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-            Create account
+            Start free trial
           </button>
         </form>
 

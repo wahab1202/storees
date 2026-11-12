@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { db } from '../db/connection.js'
-import { adminUsers, passwordResetTokens, oauthAccounts } from '../db/schema.js'
+import { adminUsers, passwordResetTokens, oauthAccounts, projects } from '../db/schema.js'
+import { activatePack } from '../services/verticalPackService.js'
+import { instantiateDefaultFlows } from '../services/flowService.js'
 import { eq, and, isNull } from 'drizzle-orm'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { requireAuth, type AuthenticatedRequest } from '../middleware/requireAuth.js'
@@ -88,6 +90,92 @@ router.post('/register', rateLimiter(5), async (req: Request, res: Response) => 
   } catch (err) {
     console.error('Register error:', err)
     res.status(500).json({ success: false, error: 'Registration failed' })
+  }
+})
+
+// ── POST /signup ── Self-serve signup: provisions a NEW tenant on a 14-day trial.
+// This is the non-Shopify equivalent of the Shopify install callback — it creates
+// the project (plan=trial), seeds the ecommerce pack + default flows, and creates
+// the owner admin. Gated by ALLOW_SELF_SERVE_SIGNUP (default OFF for prod safety;
+// enable it where you want a public funnel + ideally add captcha/email verification).
+router.post('/signup', rateLimiter(5), async (req: Request, res: Response) => {
+  try {
+    if (process.env.ALLOW_SELF_SERVE_SIGNUP !== 'true') {
+      return res.status(403).json({ success: false, error: 'Self-serve signup is not enabled.' })
+    }
+
+    const { email, password, name, businessName } = req.body
+    if (!email || !password || !name || !businessName) {
+      return res.status(400).json({ success: false, error: 'Email, password, name and business name are required' })
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' })
+    }
+
+    const [existing] = await db
+      .select({ id: adminUsers.id })
+      .from(adminUsers)
+      .where(eq(adminUsers.email, email.toLowerCase()))
+      .limit(1)
+    if (existing) {
+      return res.status(409).json({ success: false, error: 'An account with this email already exists' })
+    }
+
+    // Provision the tenant on a 14-day trial (mirrors the Shopify install callback).
+    const trialStart = new Date()
+    const trialEnd = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000)
+    const [project] = await db.insert(projects).values({
+      name: String(businessName).slice(0, 255),
+      businessType: 'ecommerce',
+      plan: 'trial',
+      status: 'trialing',
+      trialStartedAt: trialStart,
+      trialEndsAt: trialEnd,
+      signupSource: 'self_serve',
+    }).returning({ id: projects.id })
+    const projectId = project.id
+
+    // Seed the ecommerce pack + default flows so the trial isn't empty. Best-effort:
+    // a pack hiccup must not fail signup (the tenant + trial already exist).
+    try {
+      await activatePack(projectId, 'ecommerce')
+      await instantiateDefaultFlows(projectId)
+    } catch (seedErr) {
+      console.warn('[signup] pack/flow seeding failed (non-fatal):', seedErr instanceof Error ? seedErr.message : seedErr)
+    }
+
+    const passwordHash = await hashPassword(password)
+    const [user] = await db
+      .insert(adminUsers)
+      .values({
+        email: email.toLowerCase(),
+        passwordHash,
+        name,
+        projectId,
+        role: 'admin',
+        emailVerified: true, // email verification is a hardening follow-on
+      })
+      .returning({
+        id: adminUsers.id,
+        email: adminUsers.email,
+        name: adminUsers.name,
+        projectId: adminUsers.projectId,
+        role: adminUsers.role,
+        agentId: adminUsers.agentId,
+        isSuperAdmin: adminUsers.isSuperAdmin,
+      })
+
+    const token = generateJwt(jwtPayloadFrom(user))
+    res.status(201).json({
+      success: true,
+      data: {
+        token,
+        user: { id: user.id, email: user.email, name: user.name, projectId: user.projectId },
+      },
+    })
+  } catch (err) {
+    console.error('Signup error:', err)
+    res.status(500).json({ success: false, error: 'Signup failed' })
   }
 })
 
