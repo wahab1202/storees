@@ -60,12 +60,12 @@ export async function sendEmail({
       return result
     }
 
-    if (selection.provider !== 'resend') {
-      console.warn(`Email provider ${selection.provider} returned no message id; falling back to Resend for ${to}`)
-      const fallbackSelection = await getEmailProviderForProject(undefined, contentType)
-      const fallback = await attemptProviderSend('resend', command, fallbackSelection.config)
+    const fallbackSelection = await getEmailProviderForProject(undefined, contentType)
+    if (selection.provider !== fallbackSelection.provider) {
+      console.warn(`Email provider ${selection.provider} returned no message id; falling back to ${fallbackSelection.provider} for ${to}`)
+      const fallback = await attemptProviderSend(fallbackSelection.provider, command, fallbackSelection.config)
       if (fallback) {
-        console.log(`Email sent to ${to} via resend fallback: ${fallback}`)
+        console.log(`Email sent to ${to} via ${fallbackSelection.provider} fallback: ${fallback}`)
         return fallback
       }
     }
@@ -76,13 +76,13 @@ export async function sendEmail({
     console.error('Email send failed:', err)
     try {
       const fallbackSelection = await getEmailProviderForProject(undefined, contentType)
-      const fallback = await attemptProviderSend('resend', command, fallbackSelection.config)
+      const fallback = await attemptProviderSend(fallbackSelection.provider, command, fallbackSelection.config)
       if (fallback) {
-        console.log(`Email sent to ${to} via resend fallback after provider error: ${fallback}`)
+        console.log(`Email sent to ${to} via ${fallbackSelection.provider} fallback after provider error: ${fallback}`)
         return fallback
       }
     } catch (fallbackErr) {
-      console.error('Resend fallback failed:', fallbackErr)
+      console.error('Email fallback failed:', fallbackErr)
     }
     return null
   }

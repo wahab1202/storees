@@ -37,6 +37,13 @@ type EmailProviderConfig = {
 
 const providers = new Map<string, EmailProvider>()
 
+// The provider used for system / no-project emails (signup verification, password
+// reset) and as the cross-provider fallback. Defaults to 'resend' so behaviour is
+// unchanged unless EMAIL_DEFAULT_PROVIDER is set (e.g. 'ses').
+export function getDefaultEmailProvider(): string {
+  return (process.env.EMAIL_DEFAULT_PROVIDER ?? 'resend').toLowerCase()
+}
+
 export function registerEmailProvider(provider: EmailProvider): void {
   providers.set(provider.name, provider)
   console.log(`[email] Registered provider: ${provider.name}`)
@@ -47,7 +54,7 @@ export async function getEmailProviderForProject(
   contentType: CampaignContentType | 'transactional' | 'promotional' = 'promotional',
 ): Promise<EmailProviderConfig> {
   if (!projectId) {
-    return envFallback('resend')
+    return envFallback(getDefaultEmailProvider())
   }
 
   const [project] = await db
@@ -63,7 +70,7 @@ export async function getEmailProviderForProject(
   const configuredProvider = contentType === 'transactional'
     ? project?.emailTransactionalProvider
     : project?.emailMarketingProvider
-  const providerName = configuredProvider || 'resend'
+  const providerName = configuredProvider || getDefaultEmailProvider()
   const settings = (project?.settings ?? {}) as Record<string, unknown>
   const channels = (settings.channels ?? {}) as Record<string, { provider?: string; config?: Record<string, string> }>
   const emailChannel = channels.email
