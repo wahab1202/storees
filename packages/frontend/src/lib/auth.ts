@@ -23,9 +23,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       async authorize(credentials) {
         const password = credentials.password as string
 
-        // Handle JWT pass-through (after 2FA verify or Shopify OAuth)
-        if (password.startsWith('__2FA_JWT__:') || password.startsWith('__SHOPIFY_JWT__:')) {
-          const jwt = password.replace(/^__(?:2FA|SHOPIFY)_JWT__:/, '')
+        // Handle JWT pass-through (after 2FA verify, Shopify OAuth, or email verification)
+        if (password.startsWith('__2FA_JWT__:') || password.startsWith('__SHOPIFY_JWT__:') || password.startsWith('__VERIFY_JWT__:')) {
+          const jwt = password.replace(/^__(?:2FA|SHOPIFY|VERIFY)_JWT__:/, '')
           // Verify the JWT is valid by calling /me
           const meRes = await fetch(`${API_URL}/api/auth/me`, {
             headers: { Authorization: `Bearer ${jwt}` },

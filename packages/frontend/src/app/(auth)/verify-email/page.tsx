@@ -1,14 +1,14 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { signIn } from 'next-auth/react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Loader2, CheckCircle2, XCircle } from 'lucide-react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
 export default function VerifyEmailPage() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const token = searchParams.get('token')
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading')
@@ -38,16 +38,30 @@ export default function VerifyEmailPage() {
         if (!res.ok || !data.success) {
           setStatus('error')
           setMessage(data.error ?? 'Email verification failed')
+          return
+        }
+
+        // Auto-login with the backend JWT the verify step returned (no password needed —
+        // reuses the credentials JWT pass-through), then land on the dashboard.
+        setStatus('success')
+        const result = await signIn('credentials', {
+          email: data.data.user.email,
+          password: `__VERIFY_JWT__:${data.data.token}`,
+          redirect: false,
+        })
+        if (result?.error) {
+          // Verified but auto-login failed — fall back to the login page.
+          window.location.href = '/login?verified=1'
         } else {
-          setStatus('success')
-          setTimeout(() => router.push('/login?verified=1'), 2500)
+          // Full navigation so the new session cookie is sent.
+          window.location.href = '/dashboard'
         }
       } catch {
         setStatus('error')
         setMessage('Something went wrong. Please try again.')
       }
     })()
-  }, [token, router])
+  }, [token])
 
   return (
     <div className="w-full max-w-[400px]">
@@ -69,10 +83,10 @@ export default function VerifyEmailPage() {
             </div>
             <h1 className="text-xl font-semibold text-slate-900 mb-2">You&apos;re all set</h1>
             <p className="text-sm text-slate-500 mb-6">
-              Your email is verified and your 14-day free trial has started. Redirecting to sign in…
+              Your email is verified and your 14-day free trial has started. Taking you to your dashboard…
             </p>
-            <Link href="/login?verified=1" className="text-sm text-indigo-600 hover:text-indigo-700 font-medium">
-              Sign in now
+            <Link href="/dashboard" className="text-sm text-indigo-600 hover:text-indigo-700 font-medium">
+              Go to dashboard
             </Link>
           </>
         )}
