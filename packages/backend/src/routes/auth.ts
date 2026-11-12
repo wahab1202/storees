@@ -93,11 +93,65 @@ router.post('/register', rateLimiter(5), async (req: Request, res: Response) => 
   }
 })
 
-// ── POST /signup ── Self-serve signup: provisions a NEW tenant on a 14-day trial.
-// This is the non-Shopify equivalent of the Shopify install callback — it creates
-// the project (plan=trial), seeds the ecommerce pack + default flows, and creates
-// the owner admin. Gated by ALLOW_SELF_SERVE_SIGNUP (default OFF for prod safety;
-// enable it where you want a public funnel + ideally add captcha/email verification).
+// ── Self-serve signup (email + password) → tenant on a 14-day trial ──
+// Non-Shopify equivalent of the Shopify install callback. Gated by
+// ALLOW_SELF_SERVE_SIGNUP (default OFF). Tenant provisioning is DEFERRED until the
+// email is verified: /signup holds the pending signup in Redis + emails a link, and
+// /verify-email creates the project + owner once the link is clicked. Because nothing
+// is written until verification, an unverified signup simply has no user row — so
+// login needs no extra "is verified" gate.
+
+const SIGNUP_VERIFY_PREFIX = 'signup-verify:'
+const SIGNUP_VERIFY_TTL = 24 * 60 * 60 // 24h
+
+type PendingSignup = { email: string; name: string; businessName: string; passwordHash: string }
+
+// Creates the project (trial) + ecommerce pack/flows + owner admin, returning the user.
+async function provisionSelfServeTenant(p: PendingSignup) {
+  const trialStart = new Date()
+  const trialEnd = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000)
+  const [project] = await db.insert(projects).values({
+    name: p.businessName.slice(0, 255),
+    businessType: 'ecommerce',
+    plan: 'trial',
+    status: 'trialing',
+    trialStartedAt: trialStart,
+    trialEndsAt: trialEnd,
+    signupSource: 'self_serve',
+  }).returning({ id: projects.id })
+  const projectId = project.id
+
+  // Seed the ecommerce pack + default flows so the trial isn't empty. Best-effort:
+  // a pack hiccup must not fail activation (the tenant + trial already exist).
+  try {
+    await activatePack(projectId, 'ecommerce')
+    await instantiateDefaultFlows(projectId)
+  } catch (seedErr) {
+    console.warn('[signup] pack/flow seeding failed (non-fatal):', seedErr instanceof Error ? seedErr.message : seedErr)
+  }
+
+  const [user] = await db
+    .insert(adminUsers)
+    .values({
+      email: p.email,
+      passwordHash: p.passwordHash,
+      name: p.name,
+      projectId,
+      role: 'admin',
+      emailVerified: true,
+    })
+    .returning({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      name: adminUsers.name,
+      projectId: adminUsers.projectId,
+      role: adminUsers.role,
+      agentId: adminUsers.agentId,
+      isSuperAdmin: adminUsers.isSuperAdmin,
+    })
+  return user
+}
+
 router.post('/signup', rateLimiter(5), async (req: Request, res: Response) => {
   try {
     if (process.env.ALLOW_SELF_SERVE_SIGNUP !== 'true') {
@@ -112,70 +166,97 @@ router.post('/signup', rateLimiter(5), async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' })
     }
 
+    const normalizedEmail = String(email).toLowerCase()
     const [existing] = await db
       .select({ id: adminUsers.id })
       .from(adminUsers)
-      .where(eq(adminUsers.email, email.toLowerCase()))
+      .where(eq(adminUsers.email, normalizedEmail))
       .limit(1)
     if (existing) {
       return res.status(409).json({ success: false, error: 'An account with this email already exists' })
     }
 
-    // Provision the tenant on a 14-day trial (mirrors the Shopify install callback).
-    const trialStart = new Date()
-    const trialEnd = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000)
-    const [project] = await db.insert(projects).values({
-      name: String(businessName).slice(0, 255),
-      businessType: 'ecommerce',
-      plan: 'trial',
-      status: 'trialing',
-      trialStartedAt: trialStart,
-      trialEndsAt: trialEnd,
-      signupSource: 'self_serve',
-    }).returning({ id: projects.id })
-    const projectId = project.id
-
-    // Seed the ecommerce pack + default flows so the trial isn't empty. Best-effort:
-    // a pack hiccup must not fail signup (the tenant + trial already exist).
-    try {
-      await activatePack(projectId, 'ecommerce')
-      await instantiateDefaultFlows(projectId)
-    } catch (seedErr) {
-      console.warn('[signup] pack/flow seeding failed (non-fatal):', seedErr instanceof Error ? seedErr.message : seedErr)
-    }
-
+    // Hold the pending signup in Redis — no tenant/user is created until verified.
     const passwordHash = await hashPassword(password)
-    const [user] = await db
-      .insert(adminUsers)
-      .values({
-        email: email.toLowerCase(),
-        passwordHash,
-        name,
-        projectId,
-        role: 'admin',
-        emailVerified: true, // email verification is a hardening follow-on
-      })
-      .returning({
-        id: adminUsers.id,
-        email: adminUsers.email,
-        name: adminUsers.name,
-        projectId: adminUsers.projectId,
-        role: adminUsers.role,
-        agentId: adminUsers.agentId,
-        isSuperAdmin: adminUsers.isSuperAdmin,
-      })
+    const { token, tokenHash } = generatePasswordResetToken()
+    const pending: PendingSignup = {
+      email: normalizedEmail, name: String(name), businessName: String(businessName), passwordHash,
+    }
+    await redis.set(`${SIGNUP_VERIFY_PREFIX}${tokenHash}`, JSON.stringify(pending), 'EX', SIGNUP_VERIFY_TTL)
 
-    const token = generateJwt(jwtPayloadFrom(user))
+    const verifyUrl = `${FRONTEND_URL}/verify-email?token=${token}`
+    if (process.env.NODE_ENV !== 'production') console.log('[signup] email verify URL:', verifyUrl)
+
+    await sendEmail({
+      to: normalizedEmail,
+      subject: 'Verify your email to start your Storees trial',
+      html: `
+        <div style="font-family: Inter, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+          <h2 style="color: #1e293b; margin-bottom: 16px;">Confirm your email</h2>
+          <p style="color: #475569; line-height: 1.6;">
+            Welcome to Storees! Confirm your email to activate your 14-day free trial.
+            This link expires in 24 hours.
+          </p>
+          <a href="${verifyUrl}" style="display: inline-block; background: #4F46E5; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; margin: 24px 0; font-weight: 500;">
+            Verify email &amp; start trial
+          </a>
+          <p style="color: #94a3b8; font-size: 14px;">
+            If you didn't sign up, you can safely ignore this email.
+          </p>
+        </div>
+      `,
+    })
+
     res.status(201).json({
       success: true,
-      data: {
-        token,
-        user: { id: user.id, email: user.email, name: user.name, projectId: user.projectId },
-      },
+      data: { message: 'Check your email to verify your account and start your trial.' },
     })
   } catch (err) {
     console.error('Signup error:', err)
     res.status(500).json({ success: false, error: 'Signup failed' })
+  }
+})
+
+// ── POST /verify-email ── Consumes the token → provisions the tenant + trial.
+router.post('/verify-email', rateLimiter(10), async (req: Request, res: Response) => {
+  try {
+    const { token } = req.body
+    if (!token) {
+      return res.status(400).json({ success: false, error: 'Verification token is required' })
+    }
+
+    const key = `${SIGNUP_VERIFY_PREFIX}${hashToken(token)}`
+    const raw = await redis.get(key)
+    if (!raw) {
+      return res.status(400).json({ success: false, error: 'This verification link is invalid or has expired.' })
+    }
+    const pending = JSON.parse(raw) as PendingSignup
+
+    // Idempotency / race guard: if the account already exists, don't double-provision.
+    const [existing] = await db
+      .select({ id: adminUsers.id })
+      .from(adminUsers)
+      .where(eq(adminUsers.email, pending.email))
+      .limit(1)
+    if (existing) {
+      await redis.del(key)
+      return res.status(409).json({ success: false, error: 'This account is already active. Please log in.' })
+    }
+
+    const user = await provisionSelfServeTenant(pending)
+    await redis.del(key)
+
+    const jwt = generateJwt(jwtPayloadFrom(user))
+    res.status(201).json({
+      success: true,
+      data: {
+        token: jwt,
+        user: { id: user.id, email: user.email, name: user.name, projectId: user.projectId },
+      },
+    })
+  } catch (err) {
+    console.error('Verify email error:', err)
+    res.status(500).json({ success: false, error: 'Email verification failed' })
   }
 })
 

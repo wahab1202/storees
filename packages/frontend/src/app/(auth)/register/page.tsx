@@ -1,15 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { signIn } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Loader2, Eye, EyeOff } from 'lucide-react'
+import { Loader2, Eye, EyeOff, MailCheck } from 'lucide-react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
 export default function RegisterPage() {
-  const router = useRouter()
+  const [submitted, setSubmitted] = useState(false)
   const [name, setName] = useState('')
   const [businessName, setBusinessName] = useState('')
   const [email, setEmail] = useState('')
@@ -52,25 +50,46 @@ export default function RegisterPage() {
         return
       }
 
-      // Auto sign-in after registration
-      const result = await signIn('credentials', {
-        email,
-        password,
-        redirect: false,
-      })
-
-      if (result?.error) {
-        // Registration succeeded but auto-login failed — redirect to login
-        router.push('/login')
-      } else {
-        // Full page navigation to ensure the session cookie is sent with the request
-        window.location.href = '/dashboard'
-      }
+      // Tenant provisioning is deferred until the email is verified — show the
+      // "check your inbox" state instead of logging in.
+      setSubmitted(true)
     } catch {
       setError('Something went wrong. Please try again.')
     } finally {
       setLoading(false)
     }
+  }
+
+  if (submitted) {
+    return (
+      <div className="w-full max-w-[400px]">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-indigo-50">
+            <MailCheck className="h-6 w-6 text-indigo-600" />
+          </div>
+          <h1 className="text-2xl font-semibold text-slate-900">Check your email</h1>
+          <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+            We sent a verification link to <span className="font-medium text-slate-700">{email}</span>.
+            Click it to activate your account and start your 14-day free trial. The link expires in 24 hours.
+          </p>
+          <p className="text-sm text-slate-500 mt-6">
+            Didn&apos;t get it?{' '}
+            <button
+              type="button"
+              onClick={() => { setSubmitted(false) }}
+              className="text-indigo-600 hover:text-indigo-700 font-medium"
+            >
+              Try again
+            </button>
+          </p>
+          <p className="text-center text-sm text-slate-500 mt-4">
+            <Link href="/login" className="text-indigo-600 hover:text-indigo-700 font-medium">
+              Back to sign in
+            </Link>
+          </p>
+        </div>
+      </div>
+    )
   }
 
   return (
