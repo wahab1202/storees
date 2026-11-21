@@ -6,6 +6,7 @@ import {
   type EmailAttachment,
   type EmailSendCommand,
 } from './emailProviderRegistry.js'
+import { checkEmailReputationAllowed, recordEmailSent } from './emailReputationService.js'
 
 type SendEmailParams = {
   to: string
@@ -52,11 +53,25 @@ export async function sendEmail({
       attachments,
   }
 
+  // Deliverability guardrails apply only to project-scoped MARKETING email — never
+  // to system/transactional mail (verification, password reset carry no projectId;
+  // transactional campaigns opt out via contentType). Blocks here are a quiet skip:
+  // warm-up deferral and reputation pauses retry on the next run / next window.
+  const gated = !!projectId && contentType !== 'transactional'
+  if (gated) {
+    const gate = await checkEmailReputationAllowed(projectId!)
+    if (!gate.allowed) {
+      console.warn(`Email to ${to} skipped (${gate.reason}) for project ${projectId}`)
+      return null
+    }
+  }
+
   try {
     const selection = await getEmailProviderForProject(projectId, contentType)
     const result = await attemptProviderSend(selection.provider, command, selection.config)
     if (result) {
       console.log(`Email sent to ${to} via ${selection.provider}: ${result}`)
+      if (gated) await recordEmailSent(projectId!)
       return result
     }
 
@@ -66,6 +81,7 @@ export async function sendEmail({
       const fallback = await attemptProviderSend(fallbackSelection.provider, command, fallbackSelection.config)
       if (fallback) {
         console.log(`Email sent to ${to} via ${fallbackSelection.provider} fallback: ${fallback}`)
+        if (gated) await recordEmailSent(projectId!)
         return fallback
       }
     }
@@ -79,6 +95,7 @@ export async function sendEmail({
       const fallback = await attemptProviderSend(fallbackSelection.provider, command, fallbackSelection.config)
       if (fallback) {
         console.log(`Email sent to ${to} via ${fallbackSelection.provider} fallback after provider error: ${fallback}`)
+        if (gated) await recordEmailSent(projectId!)
         return fallback
       }
     } catch (fallbackErr) {
