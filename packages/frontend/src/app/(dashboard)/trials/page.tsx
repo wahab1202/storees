@@ -197,6 +197,25 @@ function CustomerDrawer({ projectId, onClose }: { projectId: string; onClose: ()
             </section>
 
             <section>
+              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1.5">Email deliverability</p>
+              <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                <span className={`text-[11px] px-2 py-0.5 rounded-full ${d.deliverability.reputation.healthy ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                  {d.deliverability.reputation.healthy
+                    ? 'Reputation healthy'
+                    : `Paused: ${d.deliverability.reputation.reason === 'high_bounce_rate' ? 'high bounce rate' : 'high complaint rate'}`}
+                </span>
+                <span className="text-xs text-text-muted">
+                  Complaints {(d.deliverability.reputation.complaintRate * 100).toFixed(2)}% · Bounces {(d.deliverability.reputation.bounceRate * 100).toFixed(2)}% · {d.deliverability.reputation.sample.toLocaleString()} sent/7d
+                </span>
+              </div>
+              <div className="text-xs text-text-muted">
+                Warm-up: {d.deliverability.warmup.domainVerified
+                  ? `own domain${d.deliverability.warmup.ageDays != null ? `, day ${d.deliverability.warmup.ageDays}` : ''}`
+                  : 'shared pool'} · cap {d.deliverability.warmup.dailyCap < 0 ? '∞' : d.deliverability.warmup.dailyCap.toLocaleString()}/day · {d.deliverability.warmup.sentToday.toLocaleString()} sent today
+              </div>
+            </section>
+
+            <section>
               <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1.5">Entitlements</p>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {Object.entries(d.entitlements.features).map(([f, on]) => (

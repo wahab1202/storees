@@ -48,6 +48,22 @@ export type AdminCustomerDetail = {
   createdAt: string
   entitlements: { features: Record<string, boolean>; limits: Record<string, number> }
   usage: { contacts: number; sentByChannel: Record<string, number> }
+  deliverability: {
+    reputation: {
+      healthy: boolean
+      reason?: 'high_complaint_rate' | 'high_bounce_rate'
+      complaintRate: number
+      bounceRate: number
+      sample: number
+    }
+    warmup: {
+      domainVerified: boolean
+      verifiedAt: string | null
+      ageDays: number | null
+      dailyCap: number
+      sentToday: number
+    }
+  }
   admins: { email: string; name: string | null }[]
   timeline: { eventName: string; at: string }[]
 }

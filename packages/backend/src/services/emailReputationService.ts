@@ -172,6 +172,32 @@ export async function checkEmailReputationAllowed(projectId: string): Promise<Em
   return sentToday < cap ? { allowed: true } : { allowed: false, reason: 'warmup_limit' }
 }
 
+export type WarmupInfo = {
+  domainVerified: boolean
+  verifiedAt: string | null
+  ageDays: number | null
+  dailyCap: number   // -1 = unlimited
+  sentToday: number
+}
+
+/** Warm-up snapshot for admin visibility (domain age, today's volume vs cap). */
+export async function getWarmupInfo(projectId: string): Promise<WarmupInfo> {
+  const [row] = await db
+    .select({ verifiedAt: projects.emailDomainVerifiedAt })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1)
+  const verifiedAt = row?.verifiedAt ?? null
+  const [dailyCap, sentToday] = await Promise.all([getWarmupCap(projectId), getTodayCount(projectId)])
+  return {
+    domainVerified: !!verifiedAt,
+    verifiedAt: verifiedAt ? new Date(verifiedAt).toISOString() : null,
+    ageDays: verifiedAt ? Math.floor((Date.now() - new Date(verifiedAt).getTime()) / 86_400_000) : null,
+    dailyCap,
+    sentToday,
+  }
+}
+
 export function invalidateEmailReputationCaches(projectId: string): void {
   capCache.delete(projectId)
   repCache.delete(projectId)
