@@ -13,6 +13,7 @@ export type EmailSendCommand = {
   to: string
   subject: string
   html: string
+  text?: string | null
   from?: string | null
   replyTo?: string | null
   cc?: string[]

@@ -24,6 +24,7 @@ export const resendEmailProvider: EmailProvider = {
       to: command.to,
       subject: command.subject,
       html: command.html,
+      ...(command.text ? { text: command.text } : {}),
       ...(command.replyTo ? { replyTo: command.replyTo } : {}),
       ...(command.cc && command.cc.length > 0 ? { cc: command.cc } : {}),
       ...(command.bcc && command.bcc.length > 0 ? { bcc: command.bcc } : {}),

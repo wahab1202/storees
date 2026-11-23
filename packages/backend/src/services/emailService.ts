@@ -12,6 +12,7 @@ type SendEmailParams = {
   to: string
   subject: string
   html: string
+  text?: string | null
   projectId?: string
   contentType?: CampaignContentType
   from?: string | null
@@ -19,6 +20,37 @@ type SendEmailParams = {
   cc?: string[]
   bcc?: string[]
   attachments?: EmailAttachment[]
+}
+
+/**
+ * Derive a plain-text alternative from an HTML body. A multipart (text + html)
+ * message is a well-known deliverability boost; a missing text part is a spam
+ * signal. Not a full HTML renderer — strips markup, keeps link URLs, collapses
+ * whitespace — which is exactly what a text/plain fallback needs.
+ */
+export function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (_m, href: string, label: string) => {
+        const text = label.replace(/<[^>]+>/g, '').trim()
+        return text && !href.includes(text) ? `${text} (${href})` : href
+      })
+    .replace(/<\/(p|div|tr|h[1-6]|li|table)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .split('\n').map(l => l.trim()).join('\n')
+    .trim()
 }
 
 export type UtmParameter = {
@@ -34,6 +66,7 @@ export async function sendEmail({
   to,
   subject,
   html,
+  text,
   projectId,
   contentType = 'promotional',
   from,
@@ -46,6 +79,9 @@ export async function sendEmail({
       to,
       subject,
       html,
+      // Always ship a plain-text part (multipart) — generated from the HTML when the
+      // caller didn't supply one. Improves deliverability; absence is a spam signal.
+      text: (text && text.trim()) ? text : htmlToPlainText(html),
       from,
       replyTo,
       cc,

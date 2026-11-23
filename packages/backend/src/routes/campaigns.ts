@@ -15,7 +15,7 @@ import {
   previewCampaignAudienceConfig,
   duplicateCampaign,
 } from '../services/campaignService.js'
-import { lintCampaignContent } from '../services/contentLint.js'
+import { lintCampaignContent, blockingFindings } from '../services/contentLint.js'
 import {
   getCampaignAnalytics,
   compareAbVariants,
@@ -724,6 +724,28 @@ router.post('/:id/send', requireProjectId, async (req: AuthenticatedRequest, res
     // another dealer's (or an admin's project-wide) campaign.
     if (!(await callerOwnsCampaign(req, id))) {
       return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
+
+    // Content lint — blocking findings (empty subject/body, missing unsubscribe
+    // link) refuse the send. These are legal/technical must-fixes, so `force`
+    // (which overrides the stale-list warning) does NOT bypass them.
+    const [campaignRow] = await db
+      .select({ channel: campaigns.channel, subject: campaigns.subject, htmlBody: campaigns.htmlBody, bodyText: campaigns.bodyText })
+      .from(campaigns)
+      .where(and(eq(campaigns.id, id), eq(campaigns.projectId, req.projectId!)))
+      .limit(1)
+    if (!campaignRow) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' })
+    }
+    if (campaignRow.channel === 'email') {
+      const blocking = blockingFindings(lintCampaignContent({
+        subject: campaignRow.subject ?? '',
+        html: campaignRow.htmlBody ?? '',
+        text: campaignRow.bodyText ?? null,
+      }))
+      if (blocking.length > 0) {
+        return res.status(422).json({ success: false, error: 'content_lint_failed', data: { findings: blocking } })
+      }
     }
 
     if (!force) {
