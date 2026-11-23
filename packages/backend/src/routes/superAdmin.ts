@@ -5,6 +5,7 @@ import { adminUsers, userProjects, projects, customers, messages, events } from 
 import { hashPassword } from '../services/authService.js'
 import { requireSuperAdmin, invalidateMembership } from '../middleware/membership.js'
 import { getEntitlements, invalidateEntitlements } from '../services/entitlementService.js'
+import { getReputationStatus, getWarmupInfo } from '../services/emailReputationService.js'
 import { daysLeft } from '../services/trialLifecycleService.js'
 import { clampPageSize, calcTotalPages } from '@storees/shared'
 import type { AuthenticatedRequest } from '../middleware/requireAuth.js'
@@ -203,12 +204,14 @@ router.get('/customers/:projectId', async (req: Request, res: Response) => {
       .from(projects).where(eq(projects.id, projectId)).limit(1)
     if (!project) return res.status(404).json({ success: false, error: 'Customer not found' })
 
-    const [entitlements, [{ contacts }], sentByChannel, admins, timeline] = await Promise.all([
+    const [entitlements, [{ contacts }], sentByChannel, admins, timeline, reputation, warmup] = await Promise.all([
       getEntitlements(projectId),
       db.select({ contacts: count() }).from(customers).where(eq(customers.projectId, projectId)),
       db.select({ channel: messages.channel, c: count() }).from(messages).where(and(eq(messages.projectId, projectId), sql`${messages.status} NOT IN ('failed','blocked')`)).groupBy(messages.channel),
       db.select({ email: adminUsers.email, name: adminUsers.name }).from(adminUsers).where(and(eq(adminUsers.projectId, projectId), eq(adminUsers.role, 'admin'))),
       db.select({ eventName: events.eventName, at: events.timestamp }).from(events).where(eq(events.projectId, projectId)).orderBy(desc(events.timestamp)).limit(25),
+      getReputationStatus(projectId),
+      getWarmupInfo(projectId),
     ])
 
     res.json({
@@ -218,6 +221,7 @@ router.get('/customers/:projectId', async (req: Request, res: Response) => {
         trialDaysLeft: project.plan === 'trial' && project.trialEndsAt ? daysLeft(project.trialEndsAt) : null,
         entitlements,
         usage: { contacts: Number(contacts), sentByChannel: Object.fromEntries(sentByChannel.map(s => [s.channel, Number(s.c)])) },
+        deliverability: { reputation, warmup },
         admins,
         timeline,
       },
