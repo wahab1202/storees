@@ -22,12 +22,19 @@ import type { TemplateVariable } from '@storees/shared'
  *   • {{ }} unrendered template variables (often a forgot-to-fill bug)
  */
 
-export type LintSeverity = 'warning' | 'info'
+// 'error' findings BLOCK a campaign send (legal/technical must-fixes); 'warning'
+// and 'info' are advisory and can be sent through.
+export type LintSeverity = 'error' | 'warning' | 'info'
 
 export type LintFinding = {
   code: string
   severity: LintSeverity
   message: string
+}
+
+/** The blocking subset — a non-empty result means the send must be refused. */
+export function blockingFindings(findings: LintFinding[]): LintFinding[] {
+  return findings.filter(f => f.severity === 'error')
 }
 
 export type LintInput = {
@@ -48,7 +55,7 @@ export function lintCampaignContent(input: LintInput): LintFinding[] {
   if (!subject) {
     findings.push({
       code: 'subject_empty',
-      severity: 'warning',
+      severity: 'error',
       message: 'Subject line is empty.',
     })
   }
@@ -99,7 +106,7 @@ export function lintCampaignContent(input: LintInput): LintFinding[] {
   if (!html) {
     findings.push({
       code: 'html_empty',
-      severity: 'warning',
+      severity: 'error',
       message: 'Email body is empty.',
     })
     return findings // remaining checks need the html — bail
@@ -154,8 +161,8 @@ export function lintCampaignContent(input: LintInput): LintFinding[] {
   if (!hasUnsubLink) {
     findings.push({
       code: 'no_unsubscribe_link',
-      severity: 'warning',
-      message: 'Body has no visible "Unsubscribe" link. The List-Unsubscribe header covers mailbox-provider one-click, but a visible footer link is recommended (and required by CAN-SPAM and many EU jurisdictions).',
+      severity: 'error',
+      message: 'Body has no visible "Unsubscribe" link. A one-click unsubscribe in the body is required by CAN-SPAM, GDPR/DPDP and Gmail/Yahoo bulk-sender rules. Add an {{unsubscribe_url}} link to the footer.',
     })
   }
 

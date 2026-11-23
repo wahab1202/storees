@@ -150,7 +150,10 @@ export const sesEmailProvider: EmailProvider = {
       Content: {
         Simple: {
           Subject: { Data: command.subject, Charset: 'UTF-8' },
-          Body: { Html: { Data: command.html, Charset: 'UTF-8' } },
+          Body: {
+            Html: { Data: command.html, Charset: 'UTF-8' },
+            ...(command.text ? { Text: { Data: command.text, Charset: 'UTF-8' } } : {}),
+          },
         },
       },
       ...(command.replyTo ? { ReplyToAddresses: [command.replyTo] } : {}),

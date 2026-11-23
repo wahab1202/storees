@@ -57,7 +57,7 @@ type CustomerImport = {
 router.post('/import/customers', async (req: Request, res: Response) => {
   try {
     const projectId = req.projectId!
-    const body = req.body as { customers?: CustomerImport[] }
+    const body = req.body as { customers?: CustomerImport[]; consentAttested?: boolean; consentSource?: string }
     const inputs = body.customers ?? []
 
     if (!Array.isArray(inputs) || inputs.length === 0) {
@@ -66,6 +66,19 @@ router.post('/import/customers', async (req: Request, res: Response) => {
     if (inputs.length > MAX_BATCH) {
       return res.status(400).json({ success: false, error: `Batch size limited to ${MAX_BATCH}` })
     }
+
+    // Consent attestation — the single biggest blocklist risk for an email platform
+    // is a purchased / non-consented list hitting spam traps. Require the importer to
+    // affirm consent before any contacts are created. (Shopify/first-party syncs use
+    // their own ingestion path, not this bulk API.)
+    if (body.consentAttested !== true) {
+      return res.status(400).json({
+        success: false,
+        error: 'consent_attestation_required',
+        message: 'Set consentAttested=true to confirm every contact in this import has consented to be contacted. Importing purchased or non-consented lists violates anti-spam law and is refused.',
+      })
+    }
+    console.log(`[import] consent attested for ${inputs.length} contacts in project ${projectId}${body.consentSource ? ` (source: ${body.consentSource})` : ''}`)
 
     let resolved = 0
     let failed = 0
